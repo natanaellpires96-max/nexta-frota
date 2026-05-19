@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEXTA — Gestão de Frota</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script type="module">
+// ═══════════════════════════════════════════════════════════
+// FIREBASE
+// ═══════════════════════════════════════════════════════════
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+  getFirestore, doc, getDoc, setDoc, collection,
+  getDocs, query, where, orderBy, limit, writeBatch, deleteDoc
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBZ9J25d3IjULPv9A7pax4H8_RAtZWJiwU",
+  authDomain: "nexta-frota.firebaseapp.com",
+  projectId: "nexta-frota",
+  storageBucket: "nexta-frota.firebasestorage.app",
+  messagingSenderId: "687719055814",
+  appId: "1:687719055814:web:7039964d768fdca0b3b2c7"
+};
+
+const fbApp = initializeApp(firebaseConfig);
+const db    = getFirestore(fbApp);
+
+// ═══════════════════════════════════════════════════════════
+// DB HELPERS
+// ═══════════════════════════════════════════════════════════
+async function dbGetPlates() {
+  try {
+    const snap = await getDoc(doc(db, "config", "plates"));
+    return snap.exists() ? snap.data().data : {};
+  } catch(e) { console.error(e); return {}; }
+}
+async function dbSavePlates(plates) {
+  await setDoc(doc(db, "config", "plates"), { data: plates });
+}
+
+async function dbGetStatus(carrier, plate, dateStr) {
+  try {
+    const id = `${carrier}__${plate}__${dateStr}`;
+    const snap = await getDoc(doc(db, "availability", id));
+    return snap.exists() ? snap.data().status : "disponivel";
+  } catch { return "disponivel"; }
+}
+async function dbSaveStatus(carrier, plate, dateStr, status) {
+  const id = `${carrier}__${plate}__${dateStr}`;
+  await setDoc(doc(db, "availability", id), {
+    carrier, plate, dateStr, status,
+    updatedAt: new Date().toISOString()
+  });
+}
+
+async function dbGetNotifs() {
+  try {
+    const snap = await getDoc(doc(db, "config", "notifications"));
+    return snap.exists() ? (snap.data().items || []) : [];
+  } catch { return []; }
+}
+async function dbAddNotif(msg) {
+  const items = await dbGetNotifs();
+  items.unshift({ msg, time: new Date().toLocaleString("pt-BR") });
+  if(items.length > 50) items.length = 50;
+  await setDoc(doc(db, "config", "notifications"), { items });
+}
+async function dbClearNotifs() {
+  await setDoc(doc(db, "config", "notifications"), { items: [] });
+}
+
+// Bulk load status for many plates/dates at once (batched reads)
+async function dbLoadStatusBulk(pairs) {
+  // pairs = [{carrier,plate,dateStr}]
+  const result = {};
+  await Promise.all(pairs.map(async ({carrier,plate,dateStr}) => {
+    const key = `${carrier}||${plate}||${dateStr}`;
+    result[key] = await dbGetStatus(carrier, plate, dateStr);
+  }));
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════
+// DATA & CONFIG
+// ═══════════════════════════════════════════════════════════
+const USERS_DB = {
+  admin:     { name:"Administrador",          role:"admin",   initials:"AD", password:"admin123" },
+  transac:   { name:"Transac Transportes",    role:"carrier", initials:"TT", carrier:"Transac Transportes",    password:"transac123" },
+  cavalinho: { name:"Transportes Cavalinho",  role:"carrier", initials:"TC", carrier:"Transportes Cavalinho",  password:"cavalinho123" },
+  jdcocenzo: { name:"JD Cocenzo Transportes", role:"carrier", initials:"JD", carrier:"JD Cocenzo Transportes", password:"jdcocenzo123" },
+  simeira:   { name:"Simeira Transportes",    role:"carrier", initials:"ST", carrier:"Simeira Transportes",    password:"simeira123" },
+  garbuio:   { name:"Garbuio Transportes",    role:"carrier", initials:"GT", carrier:"Garbuio Transportes",    password:"garbuio123" },
+};
+const CARRIERS   = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transportes","Simeira Transportes","Garbuio Transportes"];
+const OPERACOES  = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de Caxias","Brasília","Cubatão","Uberaba"];
+const TIPOS_VEIC = ["Truck","Bi-Truck","Cavalo Mecânico"];
+const IDENTS     = ["Petronas","Branco"];
+const CONTRATOS  = ["Dedicado","Spot"];
+const STATUS_OPTS = [
+  {val:"disponivel",  label:"Disponível",   cls:"st-disp",  badge:"b-green", color:"#6ee04a"},
+  {val:"indisponivel",label:"Indisponível", cls:"st-indisp",badge:"b-red",   color:"#f06060"},
+  {val:"manutencao",  label:"Manutenção",   cls:"st-manut", badge:"b-amber", color:"#f0be40"},
+  {val:"folga",       label:"Folga",        cls:"st-folga", badge:"b-blue",  color:"#70a8f0"},
+];
+
+// ═══════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════
+let S = {
+  user: null, dateOffset: 0, adminTab: "dashboard",
+  notifOpen: false, histDays: 45,
+  histCarrier:"", histStatus:"", histOp:"", todayOp:"",
+};
+
+// ═══════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════
+function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
+function dateStr(off=0){ const d=new Date(); d.setDate(d.getDate()+off); return d.toISOString().slice(0,10); }
+function fmtDate(off=0){
+  const d=new Date(); d.setDate(d.getDate()+off);
+  const days=["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  const mons=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
+  const tag=off===0?" — Hoje":off===1?" — Amanhã":off===-1?" — Ontem":"";
+  return `${days[d.getDay()]}, ${d.getDate()} ${mons[d.getMonth()]}${tag}`;
+}
+function fmtDateStr(ds){
+  const d=new Date(ds+"T12:00:00");
+  const days=["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  const mons=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
+  return `${days[d.getDay()]}, ${d.getDate()} ${mons[d.getMonth()]}`;
+}
+function showToast(msg,ok=true){
+  const t=document.getElementById("toast");
+  document.getElementById("toast-msg").textContent=msg;
+  t.style.background=ok?"var(--lime)":"#f06060";
+  t.style.color=ok?"var(--dark)":"#fff";
+  t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),3000);
+}
+function setLoading(msg="Carregando..."){
+  const mc=document.getElementById("main-content")||document.getElementById("tab-body");
+  if(mc) mc.innerHTML=`<div class="loading"><span class="spin"></span>${msg}</div>`;
+}
+function getDates(days,fromOff=0){
+  const arr=[];
+  for(let i=days-1;i>=0;i--){ const d=new Date(); d.setDate(d.getDate()-i+fromOff); arr.push(d.toISOString().slice(0,10)); }
+  return arr;
+}
+function getMonthDates(year,month){
+  const arr=[]; const d=new Date(year,month,1);
+  while(d.getMonth()===month){ arr.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
+  return arr;
+}
+
+// ═══════════════════════════════════════════════════════════
+// RENDER ROOT
+// ═══════════════════════════════════════════════════════════
+async function render(){
+  const app=document.getElementById("app");
+  if(!S.user){ app.innerHTML=renderLogin(); return; }
+  const u=USERS_DB[S.user];
+  const notifs=await dbGetNotifs();
+  const hasNotif=notifs.length>0;
+  app.innerHTML=`
+    <div class="topbar">
+      <div class="topbar-left">
+        <span class="wordmark">NEXTA</span>
+        <div class="topbar-div"></div>
+        <span class="topbar-sub">Gestão de Frota</span>
+      </div>
+      <div class="topbar-right">
+        ${u.role==="admin"?`<button class="notif-btn" onclick="toggleNotif()" title="Notificações">🔔${hasNotif?'<span class="notif-dot"></span>':''}</button>`:""}
+        <div class="avatar ${u.role==="admin"?"admin":""}">${u.initials}</div>
+        <span class="user-name">${u.role==="admin"?"Administrador":u.carrier}</span>
+        <button class="btn-logout" onclick="logout()">↩ Sair</button>
+      </div>
+    </div>
+    ${S.notifOpen&&u.role==="admin"?await renderNotifPanel(notifs):""}
+    <div class="main" id="main-content"></div>`;
+  if(u.role==="admin") await renderAdmin();
+  else await renderCarrier(u.carrier);
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════════
+function renderLogin(){
+  return `
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="login-logo"><span class="wordmark">NEXTA</span></div>
+        <p class="login-title">Gestão de Frota</p>
+        <p class="login-sub">Acesse com seu usuário e senha</p>
+        <div class="field"><label>USUÁRIO</label><input type="text" id="user-input" placeholder="Digite seu usuário" onkeydown="if(event.key==='Enter')document.getElementById('pwd').focus()"></div>
+        <div class="field"><label>SENHA</label><input type="password" id="pwd" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
+        <div class="login-err" id="login-err"></div>
+        <button class="btn btn-lime btn-full" onclick="doLogin()">Entrar</button>
+      </div>
+    </div>`;
+}
+function doLogin(){
+  const uid=document.getElementById("user-input").value.trim().toLowerCase();
+  const pwd=document.getElementById("pwd").value;
+  const err=document.getElementById("login-err");
+  if(!uid){err.textContent="Informe o usuário.";return;}
+  if(!pwd){err.textContent="Informe a senha.";return;}
+  if(!USERS_DB[uid]){err.textContent="Usuário não encontrado.";return;}
+  if(USERS_DB[uid].password!==pwd){err.textContent="Senha incorreta.";return;}
+  S.user=uid; S.dateOffset=0; render();
+}
+function logout(){ S.user=null; S.notifOpen=false; render(); }
+
+// ═══════════════════════════════════════════════════════════
+// NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════
+async function toggleNotif(){ S.notifOpen=!S.notifOpen; await render(); }
+async function renderNotifPanel(notifs){
+  const items=notifs.length===0
+    ?`<div class="notif-empty">Nenhuma notificação</div>`
+    :notifs.map(n=>`<div class="notif-item"><div>${n.msg}</div><div class="ni-time">${n.time}</div></div>`).join("");
+  return `<div class="notif-panel">
+    <div class="notif-header">
+      <span>Notificações</span>
+      <button class="btn btn-sm btn-outline" onclick="clearNotifsAndRender()">Limpar</button>
+    </div>${items}</div>`;
+}
+async function clearNotifsAndRender(){ await dbClearNotifs(); S.notifOpen=false; await render(); }
+
+// ═══════════════════════════════════════════════════════════
+// CARRIER VIEW
+// ═══════════════════════════════════════════════════════════
+async function renderCarrier(carrier){
+  const ds=dateStr(S.dateOffset);
+  const mc=document.getElementById("main-content");
+  mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p><div class="loading"><span class="spin"></span>Carregando placas...</div>`;
+  const allP=await dbGetPlates();
+  const plates=allP[carrier]||[];
+  if(plates.length===0){
+    mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
+      <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada.<br>Aguarde o administrador.</div>`;
+    return;
+  }
+  const pairs=plates.map(p=>({carrier,plate:p.placa,dateStr:ds}));
+  const statusMap=await dbLoadStatusBulk(pairs);
+  const rows=plates.map(p=>{
+    const cur=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
+    const sOpts=STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
+    const st=getSt(cur);
+    return `<tr>
+      <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
+      <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
+      <td><span class="badge b-lime">${p.tipo}</span></td>
+      <td><select class="st-sel ${st.cls}" onchange="onStChange(this)">${sOpts}</select></td>
+    </tr>`;
+  }).join("");
+  mc.innerHTML=`
+    <p class="sec-title">Disponibilidade da frota</p>
+    <p class="sec-sub">${carrier} — Informe o status de cada veículo</p>
+    <div class="date-nav">
+      <button onclick="chDate(-1)">‹</button>
+      <span class="date-label">${fmtDate(S.dateOffset)}</span>
+      <button onclick="chDate(1)">›</button>
+    </div>
+    <div class="tscroll">
+      <table class="table">
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:1rem;">
+      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">💾 Salvar disponibilidade</button>
+    </div>`;
+}
+function onStChange(sel){ const st=getSt(sel.value); sel.className=`st-sel ${st.cls}`; }
+async function saveAll(carrier,ds){
+  const btn=document.getElementById("save-btn");
+  if(btn){btn.disabled=true;btn.textContent="Salvando...";}
+  const rows=document.querySelectorAll(".table tbody tr");
+  const proms=[];
+  rows.forEach(row=>{
+    const plate=row.cells[0].textContent.trim();
+    const sel=row.querySelector("select");
+    if(sel) proms.push(dbSaveStatus(carrier,plate,ds,sel.value));
+  });
+  await Promise.all(proms);
+  const u=USERS_DB[S.user];
+  await dbAddNotif(`${u.name} atualizou a disponibilidade — ${fmtDateStr(ds)}`);
+  showToast("Disponibilidade salva!");
+  if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
+}
+async function chDate(d){ S.dateOffset+=d; await render(); }
+
+// ═══════════════════════════════════════════════════════════
+// ADMIN SHELL
+// ═══════════════════════════════════════════════════════════
+async function renderAdmin(){
+  const mc=document.getElementById("main-content");
+  const tabs=[
+    {id:"dashboard",label:"Dashboard"},
+    {id:"today",label:"Hoje"},
+    {id:"history",label:"Histórico"},
+    {id:"export",label:"Exportar"},
+    {id:"register",label:"Cadastro de placas"},
+  ];
+  mc.innerHTML=`
+    <p class="sec-title">Painel do administrador</p>
+    <div class="tabs">
+      ${tabs.map(t=>`<button class="tab ${S.adminTab===t.id?"active":""}" onclick="setTab('${t.id}')">${t.label}</button>`).join("")}
+    </div>
+    <div id="tab-body"><div class="loading"><span class="spin"></span>Carregando...</div></div>`;
+  await renderTabBody();
+}
+async function setTab(t){
+  S.adminTab=t;
+  document.querySelectorAll(".tab").forEach(el=>{
+    const map={dashboard:"Dashboard",today:"Hoje",history:"Histórico",export:"Exportar",register:"Cadastro de placas"};
+    el.classList.toggle("active",el.textContent.trim()===map[t]);
+  });
+  await renderTabBody();
+}
+async function renderTabBody(){
+  const body=document.getElementById("tab-body");
+  if(!body) return;
+  if(S.adminTab==="dashboard") await renderDashboard(body);
+  else if(S.adminTab==="today") await renderToday(body);
+  else if(S.adminTab==="history") await renderHistory(body);
+  else if(S.adminTab==="export") await renderExport(body);
+  else await renderRegister(body);
+}
+
+// ═══════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════
+async function renderDashboard(body){
+  body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando dashboard...</div>`;
+  const ds=dateStr(S.dateOffset);
+  const allP=await dbGetPlates();
+  // Build all pairs for today
+  const allPairs=[];
+  for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  const statusMap=await dbLoadStatusBulk(allPairs);
+  let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
+  let byCarrier={};
+  for(const carrier of CARRIERS){
+    byCarrier[carrier]={disponivel:0,indisponivel:0,manutencao:0,folga:0};
+    for(const p of (allP[carrier]||[])){
+      const v=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
+      counts[v]=(counts[v]||0)+1; counts.total++;
+      byCarrier[carrier][v]=(byCarrier[carrier][v]||0)+1;
+    }
+  }
+  // 14 days trend
+  const tDates=getDates(14);
+  const tPairs=[];
+  for(const d of tDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) tPairs.push({carrier,plate:p.placa,dateStr:d});
+  const tMap=await dbLoadStatusBulk(tPairs);
+  const tDisp=tDates.map(d=>{
+    let c=0;
+    for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) if((tMap[`${carrier}||${p.placa}||${d}`]||"disponivel")==="disponivel") c++;
+    return c;
+  });
+
+  body.innerHTML=`
+    <div class="date-nav">
+      <button onclick="chDate(-1)">‹</button>
+      <span class="date-label">${fmtDate(S.dateOffset)}</span>
+      <button onclick="chDate(1)">›</button>
+    </div>
+    <div class="summary-grid">
+      <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">Manutenção</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--blue)">${counts.folga}</div><div class="sum-label">Folga</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
+    </div>
+    <div class="dash-grid">
+      <div class="chart-card"><div class="chart-title">Distribuição de status — hoje</div><canvas id="pie-chart" height="180"></canvas></div>
+      <div class="chart-card"><div class="chart-title">Tendência de disponibilidade — 14 dias</div><canvas id="line-chart" height="180"></canvas></div>
+    </div>
+    <div class="chart-card" style="margin-bottom:1.5rem">
+      <div class="chart-title">Disponibilidade por transportador — hoje</div>
+      <canvas id="bar-chart" height="160"></canvas>
+    </div>`;
+
+  requestAnimationFrame(()=>{
+    drawPie(counts);
+    drawLine(tDates,tDisp);
+    drawBar(byCarrier);
+  });
+}
+
+function drawPie(counts){
+  const canvas=document.getElementById("pie-chart"); if(!canvas) return;
+  const ctx=canvas.getContext("2d");
+  const W=canvas.offsetWidth||350; canvas.width=W; canvas.height=180;
+  const data=[counts.disponivel,counts.indisponivel,counts.manutencao,counts.folga];
+  const colors=["#6ee04a","#f06060","#f0be40","#70a8f0"];
+  const labels=["Disponível","Indisponível","Manutenção","Folga"];
+  const total=data.reduce((a,b)=>a+b,0)||1;
+  const cx=90,cy=90,r=72;
+  let start=-Math.PI/2;
+  data.forEach((v,i)=>{
+    const angle=(v/total)*2*Math.PI;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,r,start,start+angle);
+    ctx.fillStyle=colors[i]; ctx.fill(); start+=angle;
+  });
+  ctx.beginPath(); ctx.arc(cx,cy,38,0,2*Math.PI); ctx.fillStyle="#1c2d12"; ctx.fill();
+  ctx.fillStyle="#e4f2c8"; ctx.font="bold 18px DM Sans,sans-serif"; ctx.textAlign="center";
+  ctx.fillText(total,cx,cy+6); ctx.font="10px DM Sans,sans-serif"; ctx.fillStyle="rgba(228,242,200,.5)";
+  ctx.fillText("total",cx,cy+20); ctx.textAlign="left";
+  const lx=195,ly=24;
+  labels.forEach((l,i)=>{
+    ctx.fillStyle=colors[i]; ctx.beginPath(); ctx.arc(lx+6,ly+i*33+6,6,0,2*Math.PI); ctx.fill();
+    ctx.fillStyle="#e4f2c8"; ctx.font="12px DM Sans,sans-serif";
+    ctx.fillText(`${l}: ${data[i]}`,lx+17,ly+i*33+11);
+  });
+}
+function drawLine(dates,disp){
+  const canvas=document.getElementById("line-chart"); if(!canvas) return;
+  const W=canvas.offsetWidth||350; canvas.width=W; canvas.height=180;
+  const ctx=canvas.getContext("2d");
+  const pad={t:20,r:20,b:40,l:35};
+  const W2=W-pad.l-pad.r, H2=180-pad.t-pad.b;
+  const maxV=Math.max(...disp,1);
+  ctx.strokeStyle="rgba(200,240,50,.12)"; ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){
+    const y=pad.t+H2-i*(H2/4);
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
+    ctx.fillStyle="rgba(228,242,200,.35)"; ctx.font="10px DM Mono,monospace";
+    ctx.fillText(Math.round(i*(maxV/4)),4,y+3);
+  }
+  // gradient fill
+  const grad=ctx.createLinearGradient(0,pad.t,0,pad.t+H2);
+  grad.addColorStop(0,"rgba(200,240,50,.18)"); grad.addColorStop(1,"rgba(200,240,50,0)");
+  ctx.beginPath();
+  disp.forEach((v,i)=>{
+    const x=pad.l+i*(W2/(disp.length-1));
+    const y=pad.t+H2-(v/maxV)*H2;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.lineTo(pad.l+W2,pad.t+H2); ctx.lineTo(pad.l,pad.t+H2);
+  ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
+  ctx.strokeStyle="var(--lime)"; ctx.lineWidth=2; ctx.beginPath();
+  disp.forEach((v,i)=>{
+    const x=pad.l+i*(W2/(disp.length-1));
+    const y=pad.t+H2-(v/maxV)*H2;
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+  ctx.fillStyle="var(--lime)";
+  disp.forEach((v,i)=>{
+    const x=pad.l+i*(W2/(disp.length-1));
+    const y=pad.t+H2-(v/maxV)*H2;
+    ctx.beginPath(); ctx.arc(x,y,3,0,2*Math.PI); ctx.fill();
+  });
+  ctx.fillStyle="rgba(228,242,200,.35)"; ctx.font="9px DM Mono,monospace";
+  dates.forEach((d,i)=>{ if(i%2===0){ const x=pad.l+i*(W2/(dates.length-1)); ctx.fillText(d.slice(5),x-10,178); } });
+}
+function drawBar(byCarrier){
+  const canvas=document.getElementById("bar-chart"); if(!canvas) return;
+  const W=canvas.offsetWidth||700; canvas.width=W; canvas.height=160;
+  const ctx=canvas.getContext("2d");
+  const colors=["#6ee04a","#f06060","#f0be40","#70a8f0"];
+  const statKeys=["disponivel","indisponivel","manutencao","folga"];
+  const pad={t:10,r:20,b:40,l:35};
+  const W2=W-pad.l-pad.r, H2=160-pad.t-pad.b;
+  const grpW=W2/CARRIERS.length, barW=grpW/(statKeys.length+1);
+  const maxV=Math.max(...CARRIERS.map(c=>Object.values(byCarrier[c]||{}).reduce((a,b)=>a+b,0)),4);
+  ctx.strokeStyle="rgba(200,240,50,.1)"; ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){
+    const y=pad.t+H2-i*(H2/4);
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
+    ctx.fillStyle="rgba(228,242,200,.35)"; ctx.font="10px DM Mono,monospace";
+    ctx.fillText(Math.round(i*(maxV/4)),4,y+3);
+  }
+  CARRIERS.forEach((carrier,ci)=>{
+    const gx=pad.l+ci*grpW;
+    statKeys.forEach((sk,si)=>{
+      const v=(byCarrier[carrier]||{})[sk]||0;
+      const x=gx+si*barW+barW*.3;
+      const h=(v/maxV)*H2||0;
+      ctx.fillStyle=colors[si]; ctx.fillRect(x,pad.t+H2-h,barW*.8,h);
+    });
+    const label=carrier.split(" ")[0];
+    ctx.fillStyle="rgba(228,242,200,.45)"; ctx.font="10px DM Sans,sans-serif";
+    ctx.fillText(label,gx+grpW/2-ctx.measureText(label).width/2,158);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// TODAY
+// ═══════════════════════════════════════════════════════════
+async function renderToday(body){
+  body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
+  const ds=dateStr(S.dateOffset);
+  const allP=await dbGetPlates();
+  const opFilter=S.todayOp||"";
+  let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
+  const allPairs=[];
+  for(const carrier of CARRIERS)
+    for(const p of (allP[carrier]||[]).filter(p=>!opFilter||p.operacao===opFilter))
+      allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  const statusMap=await dbLoadStatusBulk(allPairs);
+  let sections="";
+  for(const carrier of CARRIERS){
+    const plates=(allP[carrier]||[]).filter(p=>!opFilter||p.operacao===opFilter);
+    if(!plates.length&&!(allP[carrier]||[]).length){
+      sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
+      continue;
+    }
+    if(!plates.length) continue;
+    const rows=plates.map(p=>{
+      const v=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
+      counts[v]=(counts[v]||0)+1; counts.total++;
+      const st=getSt(v);
+      return `<tr>
+        <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
+        <td style="font-size:12px">${p.operacao}</td>
+        <td><span class="badge b-lime">${p.tipo}</span></td>
+        <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
+        <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
+        <td><span class="cap-tag">${p.capacidade}m³</span></td>
+        <td><span class="badge ${st.badge}">${st.label}</span></td>
+      </tr>`;
+    }).join("");
+    sections+=`<div class="carrier-block">
+      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span></div>
+      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:640px">
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div></div>`;
+  }
+  const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>`<option${o===opFilter?" selected":""}>${o}</option>`).join("")}`;
+  body.innerHTML=`
+    <div class="date-nav">
+      <button onclick="chDate(-1)">‹</button>
+      <span class="date-label">${fmtDate(S.dateOffset)}</span>
+      <button onclick="chDate(1)">›</button>
+    </div>
+    <div class="filters-bar">
+      <select onchange="S.todayOp=this.value;renderTabBody()">${opOpts}</select>
+    </div>
+    <div class="summary-grid">
+      <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">Manutenção</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--blue)">${counts.folga}</div><div class="sum-label">Folga</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
+    </div>
+    ${sections||'<div class="empty"><span class="ei">🔍</span>Nenhuma placa com esse filtro.</div>'}`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// HISTORY
+// ═══════════════════════════════════════════════════════════
+async function renderHistory(body){
+  const cf=S.histCarrier, sf=S.histStatus, of=S.histOp;
+  const carrierOpts=`<option value="">Todos transportadores</option>${CARRIERS.map(c=>`<option${c===cf?" selected":""}>${c}</option>`).join("")}`;
+  const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${s.val}"${s.val===sf?" selected":""}>${s.label}</option>`).join("")}`;
+  const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>`<option${o===of?" selected":""}>${o}</option>`).join("")}`;
+  const daysOpts=[7,15,30,45].map(d=>`<option value="${d}"${d===S.histDays?" selected":""}>${d} dias</option>`).join("");
+  body.innerHTML=`
+    <div class="filters-bar">
+      <select onchange="S.histCarrier=this.value;renderTabBody()">${carrierOpts}</select>
+      <select onchange="S.histStatus=this.value;renderTabBody()">${statusOpts}</select>
+      <select onchange="S.histOp=this.value;renderTabBody()">${opOpts}</select>
+      <select onchange="S.histDays=+this.value;renderTabBody()">${daysOpts}</select>
+    </div>
+    <div id="hist-result"><div class="loading"><span class="spin"></span>Buscando registros...</div></div>`;
+
+  const dates=getDates(S.histDays);
+  const allP=await dbGetPlates();
+  const carriersToShow=cf?[cf]:CARRIERS;
+  const allPairs=[];
+  for(const carrier of carriersToShow)
+    for(const p of (allP[carrier]||[]).filter(p=>!of||p.operacao===of))
+      for(const ds of dates)
+        allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  const statusMap=await dbLoadStatusBulk(allPairs);
+  let rows="";
+  for(const carrier of carriersToShow){
+    for(const p of (allP[carrier]||[]).filter(p=>!of||p.operacao===of)){
+      for(const ds of dates){
+        const v=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
+        if(sf&&v!==sf) continue;
+        const st=getSt(v);
+        rows+=`<tr>
+          <td style="font-size:12px;white-space:nowrap">${fmtDateStr(ds)}</td>
+          <td style="font-size:12px;color:var(--muted)">${carrier}</td>
+          <td style="font-family:'DM Mono',monospace;font-weight:500">${p.placa}</td>
+          <td style="font-size:12px">${p.operacao}</td>
+          <td><span class="badge b-lime">${p.tipo}</span></td>
+          <td><span class="badge ${st.badge}">${st.label}</span></td>
+        </tr>`;
+      }
+    }
+  }
+  const result=document.getElementById("hist-result");
+  if(!rows){result.innerHTML=`<div class="empty"><span class="ei">🔍</span>Nenhum registro encontrado.</div>`;return;}
+  result.innerHTML=`
+    <div class="tscroll"><table class="table">
+      <thead><tr><th>DATA</th><th>TRANSPORTADOR</th><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <p style="font-size:11px;color:var(--muted);margin-top:10px">Últimos ${S.histDays} dias</p>`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// EXPORT
+// ═══════════════════════════════════════════════════════════
+async function renderExport(body){
+  const now=new Date();
+  const mons=["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+  body.innerHTML=`
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem">
+      <div class="card">
+        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">📅 Relatório do dia</p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Disponibilidade de todos os veículos no dia atual</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-lime btn-sm" onclick="exportDay('xlsx')">Excel (.xlsx)</button>
+          <button class="btn btn-outline btn-sm" onclick="exportDay('csv')">CSV</button>
+        </div>
+      </div>
+      <div class="card">
+        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">📆 Relatório semanal</p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Últimos 7 dias de disponibilidade</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-lime btn-sm" onclick="exportWeek('xlsx')">Excel (.xlsx)</button>
+          <button class="btn btn-outline btn-sm" onclick="exportWeek('csv')">CSV</button>
+        </div>
+      </div>
+      <div class="card">
+        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">🗓 Relatório mensal</p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">${mons[now.getMonth()]} ${now.getFullYear()}</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-lime btn-sm" onclick="exportMonth('xlsx')">Excel (.xlsx)</button>
+          <button class="btn btn-outline btn-sm" onclick="exportMonth('csv')">CSV</button>
+        </div>
+      </div>
+    </div>`;
+}
+async function buildRows(dates){
+  const allP=await dbGetPlates();
+  const allPairs=[];
+  for(const ds of dates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  const statusMap=await dbLoadStatusBulk(allPairs);
+  const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status"]];
+  for(const ds of dates)
+    for(const carrier of CARRIERS)
+      for(const p of (allP[carrier]||[])){
+        const v=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
+        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,getSt(v).label]);
+      }
+  return rows;
+}
+function exportXlsx(rows,filename){
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"]=[{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14}];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Relatório");
+  XLSX.writeFile(wb,filename+".xlsx"); showToast("Excel exportado!");
+}
+function exportCsv(rows,filename){
+  const csv=rows.map(r=>r.map(c=>`"${c}"`).join(",")).join("\n");
+  const blob=new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename+".csv"; a.click();
+  showToast("CSV exportado!");
+}
+async function exportDay(fmt){
+  showToast("Gerando relatório...",true);
+  const rows=await buildRows([dateStr(S.dateOffset)]);
+  const fn=`NEXTA_Diario_${dateStr(S.dateOffset)}`;
+  fmt==="xlsx"?exportXlsx(rows,fn):exportCsv(rows,fn);
+}
+async function exportWeek(fmt){
+  showToast("Gerando relatório...",true);
+  const dates=getDates(7);
+  const rows=await buildRows(dates);
+  const fn=`NEXTA_Semanal_${dates[0]}_a_${dates[6]}`;
+  fmt==="xlsx"?exportXlsx(rows,fn):exportCsv(rows,fn);
+}
+async function exportMonth(fmt){
+  showToast("Gerando relatório...",true);
+  const now=new Date();
+  const dates=getMonthDates(now.getFullYear(),now.getMonth());
+  const rows=await buildRows(dates);
+  const fn=`NEXTA_Mensal_${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  fmt==="xlsx"?exportXlsx(rows,fn):exportCsv(rows,fn);
+}
+
+// ═══════════════════════════════════════════════════════════
+// REGISTER
+// ═══════════════════════════════════════════════════════════
+async function renderRegister(body){
+  body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando placas...</div>`;
+  const allP=await dbGetPlates();
+  const carrierOpts=CARRIERS.map(c=>`<option>${c}</option>`).join("");
+  const opOpts=OPERACOES.map(o=>`<option>${o}</option>`).join("");
+  const tvOpts=TIPOS_VEIC.map(o=>`<option>${o}</option>`).join("");
+  const idOpts=IDENTS.map(o=>`<option>${o}</option>`).join("");
+  const ctOpts=CONTRATOS.map(o=>`<option>${o}</option>`).join("");
+  let listHTML="";
+  for(const carrier of CARRIERS){
+    const plates=allP[carrier]||[];
+    if(!plates.length) continue;
+    const rows=plates.map((p,idx)=>`
+      <tr>
+        <td style="font-family:'DM Mono',monospace;font-weight:500">${p.placa}</td>
+        <td style="font-size:12px">${p.operacao}</td>
+        <td><span class="badge b-lime">${p.tipo}</span></td>
+        <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
+        <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
+        <td><span class="cap-tag">${p.capacidade}m³</span></td>
+        <td><button class="btn-danger" onclick="delPlate('${carrier}',${idx})">🗑</button></td>
+      </tr>`).join("");
+    listHTML+=`<div class="carrier-block">
+      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span></div>
+      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:580px">
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div></div>`;
+  }
+  if(!listHTML) listHTML=`<div class="empty"><span class="ei">📋</span>Nenhuma placa cadastrada ainda.<br>Use o formulário acima para começar.</div>`;
+  body.innerHTML=`
+    <div class="card" style="margin-bottom:1.5rem">
+      <p class="reg-heading">+ Nova placa</p>
+      <div class="form-grid">
+        <div class="form-field"><label>TRANSPORTADOR</label><select id="r-carrier">${carrierOpts}</select></div>
+        <div class="form-field"><label>OPERAÇÃO</label><select id="r-op">${opOpts}</select></div>
+        <div class="form-field"><label>PLACA</label><input id="r-placa" type="text" placeholder="Ex: ABC-1234" style="text-transform:uppercase"></div>
+        <div class="form-field"><label>TIPO DE VEÍCULO</label><select id="r-tipo">${tvOpts}</select></div>
+        <div class="form-field"><label>IDENTIFICAÇÃO</label><select id="r-id">${idOpts}</select></div>
+        <div class="form-field"><label>TIPO DE CONTRATO</label><select id="r-contrato">${ctOpts}</select></div>
+        <div class="form-field"><label>CAPACIDADE (m³)</label><input id="r-cap" type="number" placeholder="Ex: 25" min="1" max="999"></div>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-lime" id="add-btn" onclick="addPlate()">+ Cadastrar placa</button>
+        <span id="reg-msg" style="font-size:12px"></span>
+      </div>
+    </div>
+    <p class="sec-title" style="margin-bottom:1rem">Placas cadastradas</p>
+    <div id="plates-list">${listHTML}</div>`;
+}
+async function addPlate(){
+  const carrier=document.getElementById("r-carrier").value;
+  const operacao=document.getElementById("r-op").value;
+  const placa=document.getElementById("r-placa").value.trim().toUpperCase();
+  const tipo=document.getElementById("r-tipo").value;
+  const identificacao=document.getElementById("r-id").value;
+  const contrato=document.getElementById("r-contrato").value;
+  const capacidade=document.getElementById("r-cap").value.trim();
+  const msg=document.getElementById("reg-msg");
+  const btn=document.getElementById("add-btn");
+  if(!placa){msg.textContent="Informe a placa.";msg.style.color="var(--red)";return;}
+  if(!capacidade||isNaN(capacidade)||+capacidade<=0){msg.textContent="Informe a capacidade.";msg.style.color="var(--red)";return;}
+  btn.disabled=true; btn.textContent="Salvando...";
+  const allP=await dbGetPlates();
+  if(!allP[carrier]) allP[carrier]=[];
+  if(CARRIERS.some(c=>(allP[c]||[]).some(p=>p.placa===placa))){
+    msg.textContent="Placa já cadastrada.";msg.style.color="var(--red)";
+    btn.disabled=false;btn.textContent="+ Cadastrar placa";return;
+  }
+  allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade});
+  await dbSavePlates(allP);
+  document.getElementById("r-placa").value="";
+  document.getElementById("r-cap").value="";
+  msg.textContent=`Placa ${placa} cadastrada!`;msg.style.color="var(--green)";
+  showToast(`Placa ${placa} cadastrada!`);
+  setTimeout(()=>{msg.textContent="";},3000);
+  btn.disabled=false;btn.textContent="+ Cadastrar placa";
+  await renderTabBody();
+}
+async function delPlate(carrier,idx){
+  if(!confirm("Remover esta placa?")) return;
+  const allP=await dbGetPlates();
+  if(!allP[carrier]) return;
+  const removed=allP[carrier].splice(idx,1);
+  await dbSavePlates(allP);
+  showToast(`Placa ${removed[0]?.placa} removida.`);
+  await renderTabBody();
+}
+
+// ── Expose to window for inline onclick handlers ──
+window.doLogin=doLogin; window.logout=logout;
+window.chDate=chDate; window.setTab=setTab;
+window.onStChange=onStChange; window.saveAll=saveAll;
+window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
+window.addPlate=addPlate; window.delPlate=delPlate;
+window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth;
+window.renderTabBody=renderTabBody; window.S=S;
+
+// ── INIT ──
+render();
+</script>
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --dark:#111d0a;--mid:#172410;--card:#1c2d12;--card2:#213315;
+  --lime:#c8f032;--lime2:#a8cc28;--lime-bg:rgba(200,240,50,.07);--lime-bg2:rgba(200,240,50,.13);
+  --border:rgba(200,240,50,.15);--border2:rgba(200,240,50,.28);
+  --text:#e4f2c8;--muted:rgba(228,242,200,.48);--dim:rgba(228,242,200,.72);
+  --green:#6ee04a;--red:#f06060;--amber:#f0be40;--blue:#70a8f0;
+  --green-bg:rgba(110,224,74,.12);--red-bg:rgba(240,96,96,.12);
+  --amber-bg:rgba(240,190,64,.12);--blue-bg:rgba(112,168,240,.12);
+  --radius:10px;--radius-lg:14px;
+}
+html,body{height:100%;background:var(--dark);color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;}
+input,select,button,textarea{font-family:'DM Sans',sans-serif;}
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:var(--dark);}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+.app{min-height:100vh;display:flex;flex-direction:column;}
+.topbar{background:var(--mid);border-bottom:1px solid var(--border);padding:0 1.5rem;height:54px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:200;}
+.topbar-left{display:flex;align-items:center;gap:14px;}
+.wordmark{font-size:19px;font-weight:600;letter-spacing:.16em;color:var(--lime);}
+.topbar-div{width:1px;height:18px;background:var(--border2);}
+.topbar-sub{font-size:12px;color:var(--muted);}
+.topbar-right{display:flex;align-items:center;gap:10px;}
+.avatar{width:32px;height:32px;border-radius:50%;background:var(--lime-bg2);border:1px solid var(--border2);color:var(--lime);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;}
+.avatar.admin{border-color:var(--lime);}
+.user-name{font-size:13px;color:var(--dim);}
+.btn-logout{background:none;border:1px solid var(--border2);border-radius:7px;font-size:12px;color:var(--muted);padding:5px 12px;cursor:pointer;transition:all .15s;}
+.btn-logout:hover{border-color:var(--lime);color:var(--lime);}
+.main{flex:1;padding:1.75rem;max-width:1180px;margin:0 auto;width:100%;}
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;}
+.login-card{background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2.5rem;width:100%;max-width:400px;}
+.login-logo{margin-bottom:2rem;}
+.login-title{font-size:16px;font-weight:500;margin-bottom:.25rem;}
+.login-sub{font-size:13px;color:var(--muted);margin-bottom:2rem;}
+.field{margin-bottom:1rem;}
+.field label{display:block;font-size:11px;color:var(--muted);margin-bottom:5px;letter-spacing:.06em;font-weight:500;}
+.field select,.field input{width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:9px 12px;outline:none;transition:border-color .15s;}
+.field select:focus,.field input:focus{border-color:var(--lime);}
+.field select option{background:#111d0a;color:#e4f2c8;}
+.login-err{font-size:12px;color:var(--red);margin-top:.5rem;min-height:18px;}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 20px;border:none;border-radius:var(--radius);font-size:13px;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap;}
+.btn-lime{background:var(--lime);color:var(--dark);}
+.btn-lime:hover{background:var(--lime2);}
+.btn-lime:disabled{opacity:.6;cursor:not-allowed;}
+.btn-outline{background:none;border:1px solid var(--border2);color:var(--dim);}
+.btn-outline:hover{border-color:var(--lime);color:var(--lime);}
+.btn-sm{padding:6px 14px;font-size:12px;}
+.btn-danger{background:none;border:1px solid transparent;color:rgba(240,96,96,.55);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-danger:hover{color:var(--red);border-color:rgba(240,96,96,.3);background:var(--red-bg);}
+.btn-full{width:100%;justify-content:center;}
+.tabs{display:flex;gap:4px;background:var(--mid);border:1px solid var(--border);border-radius:var(--radius);padding:4px;margin-bottom:1.5rem;flex-wrap:wrap;width:fit-content;}
+.tab{padding:7px 16px;font-size:13px;border:none;border-radius:7px;cursor:pointer;color:var(--muted);background:none;transition:all .15s;}
+.tab.active{background:var(--lime);color:var(--dark);font-weight:600;}
+.tab:not(.active):hover{color:var(--lime);}
+.badge{display:inline-flex;align-items:center;font-size:11px;padding:3px 9px;border-radius:99px;white-space:nowrap;border:1px solid transparent;}
+.b-green{background:var(--green-bg);color:var(--green);border-color:rgba(110,224,74,.28);}
+.b-red{background:var(--red-bg);color:var(--red);border-color:rgba(240,96,96,.28);}
+.b-amber{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.28);}
+.b-blue{background:var(--blue-bg);color:var(--blue);border-color:rgba(112,168,240,.28);}
+.b-lime{background:var(--lime-bg2);color:var(--lime);border-color:var(--border2);}
+.b-teal{background:rgba(0,200,140,.12);color:#30d0a0;border-color:rgba(0,200,140,.28);}
+.b-gray{background:rgba(228,242,200,.07);color:var(--dim);border-color:var(--border);}
+.b-ded{background:var(--blue-bg);color:var(--blue);border-color:rgba(112,168,240,.28);}
+.b-spot{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.28);}
+.cap-tag{font-size:11px;color:var(--lime);background:var(--lime-bg);padding:3px 8px;border-radius:99px;border:1px solid var(--border);font-family:'DM Mono',monospace;}
+.tscroll{overflow-x:auto;}
+.table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;}
+.table th{padding:10px 14px;font-size:11px;font-weight:500;color:var(--muted);text-align:left;background:rgba(200,240,50,.04);border-bottom:1px solid var(--border);letter-spacing:.06em;}
+.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;}
+.table tr:last-child td{border-bottom:none;}
+.table tbody tr:hover{background:var(--lime-bg);}
+.st-sel{font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
+.st-disp{background:var(--green-bg);color:var(--green);border-color:rgba(110,224,74,.3);}
+.st-indisp{background:var(--red-bg);color:var(--red);border-color:rgba(240,96,96,.3);}
+.st-manut{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.3);}
+.st-folga{background:var(--blue-bg);color:var(--blue);border-color:rgba(112,168,240,.3);}
+.st-sel option{background:#111d0a;color:#e4f2c8;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.5rem;}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.5rem;}
+.sum-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 12px;text-align:center;}
+.sum-num{font-size:28px;font-weight:600;line-height:1;}
+.sum-label{font-size:11px;color:var(--muted);margin-top:5px;}
+.carrier-block{margin-bottom:1.5rem;}
+.carrier-head{display:flex;align-items:center;gap:8px;padding:11px 14px;background:var(--lime-bg);border:1px solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0;font-size:13px;font-weight:500;}
+.carrier-head .ch-icon{font-size:16px;}
+.carrier-head .ch-count{font-size:11px;font-weight:400;color:var(--muted);margin-left:4px;}
+.date-nav{display:flex;align-items:center;gap:12px;margin-bottom:1.5rem;}
+.date-nav button{background:none;border:1px solid var(--border2);border-radius:8px;width:32px;height:32px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:18px;transition:all .15s;}
+.date-nav button:hover{border-color:var(--lime);color:var(--lime);}
+.date-label{font-size:14px;font-weight:500;flex:1;}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:14px;margin-bottom:1.25rem;}
+.form-field label{display:block;font-size:11px;color:var(--muted);margin-bottom:5px;font-weight:500;letter-spacing:.05em;}
+.form-field input,.form-field select{width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:9px 12px;outline:none;transition:border-color .15s;}
+.form-field input:focus,.form-field select:focus{border-color:var(--lime);}
+.form-field select option{background:#111d0a;color:#e4f2c8;}
+.toast{position:fixed;bottom:24px;right:24px;border-radius:var(--radius);padding:11px 18px;font-size:13px;font-weight:600;display:none;align-items:center;gap:8px;z-index:9999;box-shadow:0 4px 24px rgba(0,0,0,.5);max-width:320px;}
+.toast.show{display:flex;}
+.notif-dot{width:8px;height:8px;border-radius:50%;background:var(--red);position:absolute;top:3px;right:3px;animation:pulse 1.5s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+.notif-btn{position:relative;background:none;border:1px solid var(--border2);border-radius:7px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .15s;}
+.notif-btn:hover{border-color:var(--lime);}
+.notif-panel{position:absolute;top:54px;right:1.5rem;background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-lg);width:320px;max-height:400px;overflow-y:auto;z-index:300;box-shadow:0 8px 32px rgba(0,0,0,.6);}
+.notif-header{padding:12px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:500;display:flex;justify-content:space-between;align-items:center;}
+.notif-item{padding:12px 16px;border-bottom:1px solid var(--border);font-size:12px;line-height:1.6;}
+.notif-item:last-child{border-bottom:none;}
+.ni-time{font-size:11px;color:var(--muted);margin-top:3px;}
+.notif-empty{padding:2rem;text-align:center;color:var(--muted);font-size:13px;}
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem;}
+.chart-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;}
+.chart-title{font-size:13px;font-weight:500;margin-bottom:1rem;color:var(--dim);}
+canvas{display:block;width:100%!important;}
+.sec-title{font-size:16px;font-weight:500;margin-bottom:.25rem;}
+.sec-sub{font-size:13px;color:var(--muted);margin-bottom:1.25rem;}
+.filters-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:1.25rem;align-items:center;}
+.filters-bar select{font-size:13px;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);padding:8px 12px;outline:none;}
+.filters-bar select:focus{border-color:var(--lime);}
+.filters-bar select option{background:#111d0a;color:#e4f2c8;}
+.empty{padding:3rem 2rem;text-align:center;color:var(--muted);font-size:13px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);line-height:1.8;}
+.empty .ei{font-size:32px;display:block;margin-bottom:12px;opacity:.3;}
+.reg-heading{font-size:13px;font-weight:600;color:var(--lime);margin-bottom:1rem;display:flex;align-items:center;gap:7px;letter-spacing:.04em;}
+.loading{display:flex;align-items:center;justify-content:center;padding:3rem;color:var(--muted);font-size:13px;gap:12px;}
+.spin{width:18px;height:18px;border:2px solid var(--border2);border-top-color:var(--lime);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;}
+@keyframes spin{to{transform:rotate(360deg);}}
+@media(max-width:700px){.dash-grid{grid-template-columns:1fr;}}
+@media(max-width:640px){.main{padding:1rem;}.topbar{padding:0 1rem;}.topbar-sub,.topbar-div,.user-name{display:none;}}
+</style>
+</head>
+<body>
+<div class="app" id="app"><div class="loading" style="min-height:100vh"><span class="spin"></span>Iniciando o sistema...</div></div>
+<div class="toast" id="toast">✓ <span id="toast-msg"></span></div>
+</body>
+</html>
