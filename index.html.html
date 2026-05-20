@@ -245,14 +245,16 @@ async function renderCarrier(carrier){
   const pairs=plates.map(p=>({carrier,plate:p.placa,dateStr:ds}));
   const statusMap=await dbLoadStatusBulk(pairs);
   const rows=plates.map(p=>{
-    const cur=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
-    const sOpts=STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
-    const st=getSt(cur);
+    const cur=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+    const blankOpt=cur===null?`<option value="" selected disabled>— Selecione —</option>`:"";
+    const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
+    const st=cur?getSt(cur):null;
+    const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
     return `<tr>
       <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
       <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
       <td><span class="badge b-lime">${p.tipo}</span></td>
-      <td><select class="st-sel ${st.cls}" onchange="onStChange(this)">${sOpts}</select></td>
+      <td><select class="${selCls}" onchange="onStChange(this)">${sOpts}</select></td>
     </tr>`;
   }).join("");
   mc.innerHTML=`
@@ -273,22 +275,25 @@ async function renderCarrier(carrier){
       <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">💾 Salvar disponibilidade</button>
     </div>`;
 }
-function onStChange(sel){ const st=getSt(sel.value); sel.className=`st-sel ${st.cls}`; }
+function onStChange(sel){ if(!sel.value){sel.className='st-sel st-blank';return;} const st=getSt(sel.value); sel.className=`st-sel ${st.cls}`; }
 async function saveAll(carrier,ds){
   const btn=document.getElementById("save-btn");
   if(btn){btn.disabled=true;btn.textContent="Salvando...";}
   const rows=document.querySelectorAll(".table tbody tr");
   const proms=[];
+  let saved=0;
   rows.forEach(row=>{
     const plate=row.cells[0].textContent.trim();
     const sel=row.querySelector("select");
-    if(sel) proms.push(dbSaveStatus(carrier,plate,ds,sel.value));
+    if(sel&&sel.value){ proms.push(dbSaveStatus(carrier,plate,ds,sel.value)); saved++; }
   });
+  if(saved===0){ showToast("Selecione ao menos um status antes de salvar.",false); if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";} return; }
   await Promise.all(proms);
   const u=USERS_DB[S.user];
   await dbAddNotif(`${u.name} atualizou a disponibilidade — ${fmtDateStr(ds)}`);
   showToast("Disponibilidade salva!");
   if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
+  await renderCarrier(carrier);
 }
 async function chDate(d){ S.dateOffset+=d; await render(); }
 
@@ -346,9 +351,9 @@ async function renderDashboard(body){
   for(const carrier of CARRIERS){
     byCarrier[carrier]={disponivel:0,indisponivel:0,manutencao:0,folga:0};
     for(const p of (allP[carrier]||[])){
-      const v=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
-      counts[v]=(counts[v]||0)+1; counts.total++;
-      byCarrier[carrier][v]=(byCarrier[carrier][v]||0)+1;
+      const v=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+      if(v){ counts[v]=(counts[v]||0)+1; byCarrier[carrier][v]=(byCarrier[carrier][v]||0)+1; }
+      counts.total++;
     }
   }
   // 14 days trend
@@ -460,14 +465,16 @@ function drawLine(dates,disp){
 }
 function drawBar(byCarrier){
   const canvas=document.getElementById("bar-chart"); if(!canvas) return;
-  const W=canvas.offsetWidth||700; canvas.width=W; canvas.height=160;
+  // Increase height to fit full carrier names (two lines)
+  const W=canvas.offsetWidth||700; canvas.width=W; canvas.height=200;
   const ctx=canvas.getContext("2d");
   const colors=["#6ee04a","#f06060","#f0be40","#70a8f0"];
   const statKeys=["disponivel","indisponivel","manutencao","folga"];
-  const pad={t:10,r:20,b:40,l:35};
-  const W2=W-pad.l-pad.r, H2=160-pad.t-pad.b;
+  const pad={t:20,r:20,b:55,l:35};
+  const W2=W-pad.l-pad.r, H2=200-pad.t-pad.b;
   const grpW=W2/CARRIERS.length, barW=grpW/(statKeys.length+1);
   const maxV=Math.max(...CARRIERS.map(c=>Object.values(byCarrier[c]||{}).reduce((a,b)=>a+b,0)),4);
+  // Grid lines
   ctx.strokeStyle="rgba(200,240,50,.1)"; ctx.lineWidth=1;
   for(let i=0;i<=4;i++){
     const y=pad.t+H2-i*(H2/4);
@@ -481,11 +488,36 @@ function drawBar(byCarrier){
       const v=(byCarrier[carrier]||{})[sk]||0;
       const x=gx+si*barW+barW*.3;
       const h=(v/maxV)*H2||0;
-      ctx.fillStyle=colors[si]; ctx.fillRect(x,pad.t+H2-h,barW*.8,h);
+      const barTop=pad.t+H2-h;
+      // Draw bar
+      ctx.fillStyle=colors[si]; ctx.fillRect(x,barTop,barW*.8,h);
+      // Data label on top of bar (only if value > 0)
+      if(v>0){
+        ctx.fillStyle="#e4f2c8";
+        ctx.font="bold 10px DM Sans,sans-serif";
+        ctx.textAlign="center";
+        ctx.fillText(v, x+barW*.4, barTop-4);
+        ctx.textAlign="left";
+      }
     });
-    const label=carrier.split(" ")[0];
-    ctx.fillStyle="rgba(228,242,200,.45)"; ctx.font="10px DM Sans,sans-serif";
-    ctx.fillText(label,gx+grpW/2-ctx.measureText(label).width/2,158);
+    // Full carrier name — split into words, max 2 lines
+    const words=carrier.split(" ");
+    const mid=gx+grpW/2;
+    const lineY=pad.t+H2+14;
+    ctx.fillStyle="rgba(228,242,200,.6)";
+    ctx.textAlign="center";
+    if(words.length<=2){
+      ctx.font="10px DM Sans,sans-serif";
+      ctx.fillText(carrier, mid, lineY);
+    } else {
+      // Split into two lines: first word on line1, rest on line2
+      const line1=words[0];
+      const line2=words.slice(1).join(" ");
+      ctx.font="10px DM Sans,sans-serif";
+      ctx.fillText(line1, mid, lineY);
+      ctx.fillText(line2, mid, lineY+13);
+    }
+    ctx.textAlign="left";
   });
 }
 
@@ -512,9 +544,9 @@ async function renderToday(body){
     }
     if(!plates.length) continue;
     const rows=plates.map(p=>{
-      const v=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
-      counts[v]=(counts[v]||0)+1; counts.total++;
-      const st=getSt(v);
+      const v=statusMap[`${carrier}||${p.placa}||${ds}`];
+      if(v){ counts[v]=(counts[v]||0)+1; } counts.total++;
+      const st=v?getSt(v):null;
       return `<tr>
         <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
         <td style="font-size:12px">${p.operacao}</td>
@@ -522,7 +554,7 @@ async function renderToday(body){
         <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
-        <td><span class="badge ${st.badge}">${st.label}</span></td>
+        <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
       </tr>`;
     }).join("");
     sections+=`<div class="carrier-block">
@@ -921,6 +953,7 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .b-ded{background:var(--blue-bg);color:var(--blue);border-color:rgba(112,168,240,.28);}
 .b-spot{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.28);}
 .b-blank{background:rgba(228,242,200,.06);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-style:italic;}
+.st-blank{background:rgba(228,242,200,.05);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
 .cap-tag{font-size:11px;color:var(--lime);background:var(--lime-bg);padding:3px 8px;border-radius:99px;border:1px solid var(--border);font-family:'DM Mono',monospace;}
 .tscroll{overflow-x:auto;}
 .table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;}
