@@ -44,13 +44,13 @@ async function dbGetStatus(carrier, plate, dateStr) {
   try {
     const id = `${carrier}__${plate}__${dateStr}`;
     const snap = await getDoc(doc(db, "availability", id));
-    return snap.exists() ? snap.data().status : "disponivel";
-  } catch { return "disponivel"; }
+    return snap.exists() ? snap.data().status : null;
+  } catch { return null; }
 }
 async function dbSaveStatus(carrier, plate, dateStr, status) {
   const id = `${carrier}__${plate}__${dateStr}`;
   await setDoc(doc(db, "availability", id), {
-    carrier, plate, dateStr, status,
+    carrier, plate, dateStr, status, filled: true,
     updatedAt: new Date().toISOString()
   });
 }
@@ -558,7 +558,7 @@ async function renderToday(body){
 async function renderHistory(body){
   const cf=S.histCarrier, sf=S.histStatus, of=S.histOp;
   const carrierOpts=`<option value="">Todos transportadores</option>${CARRIERS.map(c=>`<option${c===cf?" selected":""}>${c}</option>`).join("")}`;
-  const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${s.val}"${s.val===sf?" selected":""}>${s.label}</option>`).join("")}`;
+  const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${s.val}"${s.val===sf?" selected":""}>${s.label}</option>`).join("")}<option value="nao_preenchido"${"nao_preenchido"===sf?" selected":""}>Não preenchido</option>`;
   const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>`<option${o===of?" selected":""}>${o}</option>`).join("")}`;
   const daysOpts=[7,15,30,45].map(d=>`<option value="${d}"${d===S.histDays?" selected":""}>${d} dias</option>`).join("");
   body.innerHTML=`
@@ -583,16 +583,21 @@ async function renderHistory(body){
   for(const carrier of carriersToShow){
     for(const p of (allP[carrier]||[]).filter(p=>!of||p.operacao===of)){
       for(const ds of dates){
-        const v=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
-        if(sf&&v!==sf) continue;
-        const st=getSt(v);
+        const v=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = nao preenchido
+        if(sf==="nao_preenchido"){ if(v!==null) continue; }
+        else if(sf){ if(v!==sf) continue; }
+        const isBlank=v===null;
+        const st=isBlank?null:getSt(v);
+        const statusBadge=isBlank
+          ?`<span class="badge b-blank">Não preenchido</span>`
+          :`<span class="badge ${st.badge}">${st.label}</span>`;
         rows+=`<tr>
           <td style="font-size:12px;white-space:nowrap">${fmtDateStr(ds)}</td>
           <td style="font-size:12px;color:var(--muted)">${carrier}</td>
           <td style="font-family:'DM Mono',monospace;font-weight:500">${p.placa}</td>
           <td style="font-size:12px">${p.operacao}</td>
           <td><span class="badge b-lime">${p.tipo}</span></td>
-          <td><span class="badge ${st.badge}">${st.label}</span></td>
+          <td>${statusBadge}</td>
         </tr>`;
       }
     }
@@ -705,19 +710,22 @@ async function renderRegister(body){
     const plates=allP[carrier]||[];
     if(!plates.length) continue;
     const rows=plates.map((p,idx)=>`
-      <tr>
+      <tr id="row-${carrier.replace(/ /g,'_')}-${idx}">
         <td style="font-family:'DM Mono',monospace;font-weight:500">${p.placa}</td>
         <td style="font-size:12px">${p.operacao}</td>
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
-        <td><button class="btn-danger" onclick="delPlate('${carrier}',${idx})">🗑</button></td>
+        <td style="display:flex;gap:6px;align-items:center">
+          <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">✏️</button>
+          <button class="btn-danger" onclick="delPlate('${carrier}',${idx})" title="Remover">🗑</button>
+        </td>
       </tr>`).join("");
     listHTML+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span></div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:580px">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th></th></tr></thead>
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>AÇÕES</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -781,12 +789,62 @@ async function delPlate(carrier,idx){
   await renderTabBody();
 }
 
+// ═══════════════════════════════════════════════════════════
+// EDIT PLATE MODAL
+// ═══════════════════════════════════════════════════════════
+function openEditModal(carrier, idx){
+  const allP=loadPlatesCache||{};
+  // fetch fresh
+  dbGetPlates().then(allP=>{
+    const p=allP[carrier][idx];
+    if(!p) return;
+    const opOpts=OPERACOES.map(o=>`<option${o===p.operacao?' selected':''}>${o}</option>`).join('');
+    const tvOpts=TIPOS_VEIC.map(o=>`<option${o===p.tipo?' selected':''}>${o}</option>`).join('');
+    const idOpts=IDENTS.map(o=>`<option${o===p.identificacao?' selected':''}>${o}</option>`).join('');
+    const ctOpts=CONTRATOS.map(o=>`<option${o===p.contrato?' selected':''}>${o}</option>`).join('');
+    const modal=document.createElement('div');
+    modal.id='edit-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
+    modal.innerHTML=`
+      <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:600px;max-height:90vh;overflow-y:auto">
+        <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar placa — ${p.placa}</p>
+        <div class="form-grid">
+          <div class="form-field"><label>OPERAÇÃO</label><select id="e-op">${opOpts}</select></div>
+          <div class="form-field"><label>TIPO DE VEÍCULO</label><select id="e-tipo">${tvOpts}</select></div>
+          <div class="form-field"><label>IDENTIFICAÇÃO</label><select id="e-id">${idOpts}</select></div>
+          <div class="form-field"><label>TIPO DE CONTRATO</label><select id="e-contrato">${ctOpts}</select></div>
+          <div class="form-field"><label>CAPACIDADE (m³)</label><input id="e-cap" type="number" value="${p.capacidade}" min="1" max="999"></div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
+          <button class="btn btn-outline" onclick="document.getElementById('edit-modal').remove()">Cancelar</button>
+          <button class="btn btn-lime" onclick="saveEdit('${carrier}',${idx})">💾 Salvar alterações</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  });
+}
+async function saveEdit(carrier, idx){
+  const operacao=document.getElementById('e-op').value;
+  const tipo=document.getElementById('e-tipo').value;
+  const identificacao=document.getElementById('e-id').value;
+  const contrato=document.getElementById('e-contrato').value;
+  const capacidade=document.getElementById('e-cap').value.trim();
+  if(!capacidade||isNaN(capacidade)||+capacidade<=0){showToast('Informe a capacidade.',false);return;}
+  const allP=await dbGetPlates();
+  if(!allP[carrier]||!allP[carrier][idx]) return;
+  allP[carrier][idx]={...allP[carrier][idx], operacao, tipo, identificacao, contrato, capacidade:+capacidade};
+  await dbSavePlates(allP);
+  document.getElementById('edit-modal').remove();
+  showToast('Placa atualizada com sucesso!');
+  await renderTabBody();
+}
+
 // ── Expose to window for inline onclick handlers ──
 window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.delPlate=delPlate;
+window.addPlate=addPlate; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth;
 window.renderTabBody=renderTabBody; window.S=S;
 
@@ -844,6 +902,8 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .btn-outline:hover{border-color:var(--lime);color:var(--lime);}
 .btn-sm{padding:6px 14px;font-size:12px;}
 .btn-danger{background:none;border:1px solid transparent;color:rgba(240,96,96,.55);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-edit{background:none;border:1px solid transparent;color:rgba(200,240,50,.5);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-edit:hover{color:var(--lime);border-color:var(--border2);background:var(--lime-bg);}
 .btn-danger:hover{color:var(--red);border-color:rgba(240,96,96,.3);background:var(--red-bg);}
 .btn-full{width:100%;justify-content:center;}
 .tabs{display:flex;gap:4px;background:var(--mid);border:1px solid var(--border);border-radius:var(--radius);padding:4px;margin-bottom:1.5rem;flex-wrap:wrap;width:fit-content;}
@@ -860,6 +920,7 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .b-gray{background:rgba(228,242,200,.07);color:var(--dim);border-color:var(--border);}
 .b-ded{background:var(--blue-bg);color:var(--blue);border-color:rgba(112,168,240,.28);}
 .b-spot{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.28);}
+.b-blank{background:rgba(228,242,200,.06);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-style:italic;}
 .cap-tag{font-size:11px;color:var(--lime);background:var(--lime-bg);padding:3px 8px;border-radius:99px;border:1px solid var(--border);font-family:'DM Mono',monospace;}
 .tscroll{overflow-x:auto;}
 .table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;}
