@@ -687,8 +687,9 @@ async function buildRows(dates){
   for(const ds of dates)
     for(const carrier of CARRIERS)
       for(const p of (allP[carrier]||[])){
-        const v=statusMap[`${carrier}||${p.placa}||${ds}`]||"disponivel";
-        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,getSt(v).label]);
+        const v=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+        const statusLabel=v?getSt(v).label:"Não preenchido";
+        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel]);
       }
   return rows;
 }
