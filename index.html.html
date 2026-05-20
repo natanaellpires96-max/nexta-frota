@@ -71,6 +71,33 @@ async function dbClearNotifs() {
   await setDoc(doc(db, "config", "notifications"), { items: [] });
 }
 
+// Users config
+async function dbGetUsers() {
+  try {
+    const snap = await getDoc(doc(db, "config", "users"));
+    return snap.exists() ? snap.data().data : null;
+  } catch(e) { return null; }
+}
+async function dbSaveUsers(users) {
+  await setDoc(doc(db, "config", "users"), { data: users });
+}
+// Carriers config
+async function dbGetCarriers() {
+  try {
+    const snap = await getDoc(doc(db, "config", "carriers"));
+    return snap.exists() ? snap.data().list : null;
+  } catch(e) { return null; }
+}
+async function dbSaveCarriers(list) {
+  await setDoc(doc(db, "config", "carriers"), { list });
+}
+// Load users and carriers from Firebase, fall back to defaults
+async function loadConfig() {
+  const [fbUsers, fbCarriers] = await Promise.all([dbGetUsers(), dbGetCarriers()]);
+  if(fbUsers) USERS_DB = fbUsers;
+  if(fbCarriers) CARRIERS = fbCarriers;
+}
+
 // Bulk load status for many plates/dates at once (batched reads)
 async function dbLoadStatusBulk(pairs) {
   // pairs = [{carrier,plate,dateStr}]
@@ -85,15 +112,16 @@ async function dbLoadStatusBulk(pairs) {
 // ═══════════════════════════════════════════════════════════
 // DATA & CONFIG
 // ═══════════════════════════════════════════════════════════
-const USERS_DB = {
-  admin:     { name:"Administrador",          role:"admin",   initials:"AD", password:"admin123" },
+// USERS_DB and CARRIERS are loaded dynamically from Firebase
+let USERS_DB = {
+  admin: { name:"Administrador", role:"admin", initials:"AD", password:"admin123" },
   transac:   { name:"Transac Transportes",    role:"carrier", initials:"TT", carrier:"Transac Transportes",    password:"transac123" },
   cavalinho: { name:"Transportes Cavalinho",  role:"carrier", initials:"TC", carrier:"Transportes Cavalinho",  password:"cavalinho123" },
   jdcocenzo: { name:"JD Cocenzo Transportes", role:"carrier", initials:"JD", carrier:"JD Cocenzo Transportes", password:"jdcocenzo123" },
   simeira:   { name:"Simeira Transportes",    role:"carrier", initials:"ST", carrier:"Simeira Transportes",    password:"simeira123" },
   garbuio:   { name:"Garbuio Transportes",    role:"carrier", initials:"GT", carrier:"Garbuio Transportes",    password:"garbuio123" },
 };
-const CARRIERS   = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transportes","Simeira Transportes","Garbuio Transportes"];
+let CARRIERS = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transportes","Simeira Transportes","Garbuio Transportes"];
 const OPERACOES  = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de Caxias","Brasília","Cubatão","Uberaba"];
 const TIPOS_VEIC = ["Truck","Bi-Truck","Cavalo Mecânico"];
 const IDENTS     = ["Petronas","Branco"];
@@ -308,6 +336,7 @@ async function renderAdmin(){
     {id:"history",label:"Histórico"},
     {id:"export",label:"Exportar"},
     {id:"register",label:"Cadastro de placas"},
+    {id:"users",label:"Usuários"},
   ];
   mc.innerHTML=`
     <p class="sec-title">Painel do administrador</p>
@@ -320,7 +349,7 @@ async function renderAdmin(){
 async function setTab(t){
   S.adminTab=t;
   document.querySelectorAll(".tab").forEach(el=>{
-    const map={dashboard:"Dashboard",today:"Hoje",history:"Histórico",export:"Exportar",register:"Cadastro de placas"};
+    const map={dashboard:"Dashboard",today:"Hoje",history:"Histórico",export:"Exportar",register:"Cadastro de placas",users:"Usuários"};
     el.classList.toggle("active",el.textContent.trim()===map[t]);
   });
   await renderTabBody();
@@ -332,7 +361,8 @@ async function renderTabBody(){
   else if(S.adminTab==="today") await renderToday(body);
   else if(S.adminTab==="history") await renderHistory(body);
   else if(S.adminTab==="export") await renderExport(body);
-  else await renderRegister(body);
+  else if(S.adminTab==="register") await renderRegister(body);
+  else await renderUsers(body);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -823,6 +853,190 @@ async function delPlate(carrier,idx){
 }
 
 // ═══════════════════════════════════════════════════════════
+// USERS MANAGEMENT
+// ═══════════════════════════════════════════════════════════
+async function renderUsers(body){
+  body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
+
+  // Carriers section
+  const carrierRows = CARRIERS.map((c,i)=>`
+    <tr>
+      <td style="font-size:13px">${c}</td>
+      <td><button class="btn-danger" onclick="deleteCarrier(${i})">🗑</button></td>
+    </tr>`).join("");
+
+  // Users section (exclude admin from edit/delete)
+  const userRows = Object.entries(USERS_DB).map(([uid,u])=>`
+    <tr>
+      <td style="font-family:'DM Mono',monospace;font-weight:500">${uid}</td>
+      <td style="font-size:12px">${u.name}</td>
+      <td><span class="badge ${u.role==='admin'?'b-lime':'b-blue'}">${u.role==='admin'?'Admin':'Transportador'}</span></td>
+      <td style="font-size:12px;color:var(--muted)">${u.carrier||'—'}</td>
+      <td style="display:flex;gap:6px">
+        <button class="btn-edit" onclick="openEditUser('${uid}')" title="Editar">✏️</button>
+        ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${uid}')" title="Remover">🗑</button>`:''}
+      </td>
+    </tr>`).join("");
+
+  body.innerHTML=`
+    <!-- NEW CARRIER -->
+    <div class="card" style="margin-bottom:1.5rem">
+      <p class="reg-heading">+ Novo transportador</p>
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <div class="form-field" style="flex:1;min-width:200px">
+          <label>NOME DO TRANSPORTADOR</label>
+          <input id="new-carrier-name" type="text" placeholder="Ex: Souza Transportes">
+        </div>
+        <button class="btn btn-lime" onclick="addCarrier()" style="margin-bottom:0">+ Adicionar</button>
+        <span id="carrier-msg" style="font-size:12px"></span>
+      </div>
+    </div>
+
+    <!-- CARRIERS LIST -->
+    <p class="sec-title" style="margin-bottom:.75rem">Transportadores cadastrados</p>
+    <div class="tscroll" style="margin-bottom:2rem">
+      <table class="table" style="min-width:360px">
+        <thead><tr><th>TRANSPORTADOR</th><th></th></tr></thead>
+        <tbody>${carrierRows||'<tr><td colspan="2" style="color:var(--muted);font-size:13px">Nenhum transportador</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <!-- NEW USER -->
+    <div class="card" style="margin-bottom:1.5rem">
+      <p class="reg-heading">+ Novo usuário</p>
+      <div class="form-grid">
+        <div class="form-field"><label>LOGIN (usuário)</label><input id="new-uid" type="text" placeholder="Ex: souza"></div>
+        <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="new-uname" type="text" placeholder="Ex: Souza Transportes"></div>
+        <div class="form-field"><label>SENHA</label><input id="new-upwd" type="text" placeholder="Mín. 6 caracteres"></div>
+        <div class="form-field"><label>PERFIL</label>
+          <select id="new-urole" onchange="toggleCarrierField()">
+            <option value="carrier">Transportador</option>
+            <option value="admin">Administrador</option>
+          </select>
+        </div>
+        <div class="form-field" id="new-carrier-field"><label>TRANSPORTADOR</label>
+          <select id="new-ucarrier">${CARRIERS.map(c=>`<option>${c}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-lime" onclick="addUser()">+ Criar usuário</button>
+        <span id="user-msg" style="font-size:12px"></span>
+      </div>
+    </div>
+
+    <!-- USERS LIST -->
+    <p class="sec-title" style="margin-bottom:.75rem">Usuários cadastrados</p>
+    <div class="tscroll">
+      <table class="table" style="min-width:520px">
+        <thead><tr><th>LOGIN</th><th>NOME</th><th>PERFIL</th><th>TRANSPORTADOR</th><th>AÇÕES</th></tr></thead>
+        <tbody>${userRows}</tbody>
+      </table>
+    </div>`;
+}
+
+function toggleCarrierField(){
+  const role=document.getElementById('new-urole')?.value;
+  const field=document.getElementById('new-carrier-field');
+  if(field) field.style.display=role==='admin'?'none':'';
+}
+
+async function addCarrier(){
+  const name=document.getElementById('new-carrier-name').value.trim();
+  const msg=document.getElementById('carrier-msg');
+  if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
+  if(CARRIERS.includes(name)){msg.textContent='Transportador já existe.';msg.style.color='var(--red)';return;}
+  CARRIERS.push(name);
+  await dbSaveCarriers(CARRIERS);
+  document.getElementById('new-carrier-name').value='';
+  msg.textContent=`${name} adicionado!`;msg.style.color='var(--green)';
+  showToast(`Transportador ${name} cadastrado!`);
+  setTimeout(()=>{msg.textContent='';},3000);
+  await renderTabBody();
+}
+
+async function deleteCarrier(idx){
+  const name=CARRIERS[idx];
+  if(!confirm(`Remover o transportador "${name}"?
+Isso não remove as placas já cadastradas.`)) return;
+  CARRIERS.splice(idx,1);
+  await dbSaveCarriers(CARRIERS);
+  showToast(`${name} removido.`);
+  await renderTabBody();
+}
+
+async function addUser(){
+  const uid=document.getElementById('new-uid').value.trim().toLowerCase().replace(/\s/g,'');
+  const name=document.getElementById('new-uname').value.trim();
+  const pwd=document.getElementById('new-upwd').value.trim();
+  const role=document.getElementById('new-urole').value;
+  const carrier=role==='carrier'?document.getElementById('new-ucarrier').value:'';
+  const msg=document.getElementById('user-msg');
+  if(!uid){msg.textContent='Informe o login.';msg.style.color='var(--red)';return;}
+  if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
+  if(!pwd||pwd.length<6){msg.textContent='Senha deve ter mín. 6 caracteres.';msg.style.color='var(--red)';return;}
+  if(USERS_DB[uid]){msg.textContent='Login já existe.';msg.style.color='var(--red)';return;}
+  const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  USERS_DB[uid]={name, role, initials, password:pwd, ...(carrier?{carrier}:{})};
+  await dbSaveUsers(USERS_DB);
+  ['new-uid','new-uname','new-upwd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  msg.textContent=`Usuário ${uid} criado!`;msg.style.color='var(--green)';
+  showToast(`Usuário ${uid} criado com sucesso!`);
+  setTimeout(()=>{msg.textContent='';},3000);
+  await renderTabBody();
+}
+
+async function deleteUser(uid){
+  if(!confirm(`Remover o usuário "${uid}"?`)) return;
+  delete USERS_DB[uid];
+  await dbSaveUsers(USERS_DB);
+  showToast(`Usuário ${uid} removido.`);
+  await renderTabBody();
+}
+
+function openEditUser(uid){
+  const u=USERS_DB[uid];
+  if(!u) return;
+  const carrierOpts=CARRIERS.map(c=>`<option${c===u.carrier?' selected':''}>${c}</option>`).join('');
+  const modal=document.createElement('div');
+  modal.id='edit-user-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
+  modal.innerHTML=`
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:460px">
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar usuário — ${uid}</p>
+      <div class="form-grid">
+        <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="eu-name" type="text" value="${u.name}"></div>
+        <div class="form-field"><label>NOVA SENHA</label><input id="eu-pwd" type="text" placeholder="Deixe em branco para manter" value="${u.password}"></div>
+        ${u.role==='carrier'?`<div class="form-field"><label>TRANSPORTADOR</label><select id="eu-carrier">${carrierOpts}</select></div>`:''}
+      </div>
+      <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('edit-user-modal').remove()">Cancelar</button>
+        <button class="btn btn-lime" onclick="saveEditUser('${uid}')">💾 Salvar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function saveEditUser(uid){
+  const name=document.getElementById('eu-name').value.trim();
+  const pwd=document.getElementById('eu-pwd').value.trim();
+  const carrierEl=document.getElementById('eu-carrier');
+  if(!name){showToast('Informe o nome.',false);return;}
+  if(pwd&&pwd.length<6){showToast('Senha deve ter mín. 6 caracteres.',false);return;}
+  const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  USERS_DB[uid]={
+    ...USERS_DB[uid],
+    name,
+    initials,
+    ...(pwd?{password:pwd}:{}),
+    ...(carrierEl?{carrier:carrierEl.value}:{})
+  };
+  await dbSaveUsers(USERS_DB);
+  document.getElementById('edit-user-modal').remove();
+  showToast(`Usuário ${uid} atualizado!`);
+  await renderTabBody();
+}
+
+// ═══════════════════════════════════════════════════════════
 // EDIT PLATE MODAL
 // ═══════════════════════════════════════════════════════════
 function openEditModal(carrier, idx){
@@ -877,12 +1091,12 @@ window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit;
+window.addPlate=addPlate; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth;
 window.renderTabBody=renderTabBody; window.S=S;
 
 // ── INIT ──
-render();
+loadConfig().then(()=>render());
 </script>
 
 <style>
