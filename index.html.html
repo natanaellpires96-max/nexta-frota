@@ -100,6 +100,25 @@ async function loadConfig() {
   if(fbCarriers) CARRIERS = fbCarriers;
 }
 
+// ── Monthly archive helpers ──
+async function dbGetArchives() {
+  try {
+    const snap = await getDoc(doc(db, "config", "monthly_archives"));
+    return snap.exists() ? (snap.data().archives || []) : [];
+  } catch { return []; }
+}
+async function dbSaveArchive(archive) {
+  // archive = { key, label, generatedAt, data (base64 xlsx) }
+  let archives = await dbGetArchives();
+  // Replace if same key exists, else prepend
+  const idx = archives.findIndex(a => a.key === archive.key);
+  if(idx >= 0) archives[idx] = archive;
+  else archives.unshift(archive);
+  // Keep only last 6
+  if(archives.length > 6) archives = archives.slice(0, 6);
+  await setDoc(doc(db, "config", "monthly_archives"), { archives });
+}
+
 // Check if a carrier/date submission is locked (all plates filled)
 async function dbGetLock(carrier, dateStr) {
   try {
@@ -455,12 +474,15 @@ async function chDate(d){ S.dateOffset+=d; await render(); }
 // ADMIN SHELL
 // ═══════════════════════════════════════════════════════════
 async function renderAdmin(){
+  // Auto-generate monthly archive if needed (first 3 days of month)
+  checkAndGenerateMonthlyArchive().catch(()=>{});
   const mc=document.getElementById("main-content");
   const tabs=[
     {id:"dashboard",label:"Dashboard"},
     {id:"today",label:"Hoje"},
     {id:"history",label:"Histórico"},
     {id:"export",label:"Exportar"},
+    {id:"archives",label:"Arquivos Mensais"},
     {id:"register",label:"Cadastro de placas"},
     {id:"users",label:"Usuários"},
   ];
@@ -475,7 +497,7 @@ async function renderAdmin(){
 async function setTab(t){
   S.adminTab=t;
   document.querySelectorAll(".tab").forEach(el=>{
-    const map={dashboard:"Dashboard",today:"Hoje",history:"Histórico",export:"Exportar",register:"Cadastro de placas",users:"Usuários"};
+    const map={dashboard:"Dashboard",today:"Hoje",history:"Histórico",export:"Exportar",archives:"Arquivos Mensais",register:"Cadastro de placas",users:"Usuários"};
     el.classList.toggle("active",el.textContent.trim()===map[t]);
   });
   await renderTabBody();
@@ -488,6 +510,7 @@ async function renderTabBody(){
   else if(S.adminTab==="history") await renderHistory(body);
   else if(S.adminTab==="export") await renderExport(body);
   else if(S.adminTab==="register") await renderRegister(body);
+  else if(S.adminTab==="archives") await renderArchives(body);
   else await renderUsers(body);
 }
 
@@ -821,8 +844,13 @@ async function renderHistory(body){
 async function renderExport(body){
   const now=new Date();
   const mons=["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+  // Min date = 45 days ago (history limit), max = today
+  const maxDate=localDateStr(now);
+  const minD=new Date(); minD.setDate(minD.getDate()-45);
+  const minDate=localDateStr(minD);
+
   body.innerHTML=`
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-bottom:1.5rem">
       <div class="card">
         <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">📅 Relatório do dia</p>
         <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Disponibilidade de todos os veículos no dia atual</p>
@@ -847,7 +875,65 @@ async function renderExport(body){
           <button class="btn btn-outline btn-sm" onclick="exportMonth('csv')">CSV</button>
         </div>
       </div>
+    </div>
+
+    <!-- CUSTOM DATE RANGE -->
+    <div class="card">
+      <p style="font-size:13px;font-weight:500;margin-bottom:.25rem">📋 Relatório por período personalizado</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">Selecione um intervalo dentro dos últimos 45 dias</p>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.25rem">
+        <div class="form-field" style="min-width:160px">
+          <label>DATA INICIAL</label>
+          <input type="date" id="exp-date-from" min="${minDate}" max="${maxDate}" value="${minDate}"
+            style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 11px;outline:none;width:100%"
+            onchange="validateCustomDates()">
+        </div>
+        <div class="form-field" style="min-width:160px">
+          <label>DATA FINAL</label>
+          <input type="date" id="exp-date-to" min="${minDate}" max="${maxDate}" value="${maxDate}"
+            style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 11px;outline:none;width:100%"
+            onchange="validateCustomDates()">
+        </div>
+        <div id="custom-date-msg" style="font-size:12px;color:var(--red);align-self:center"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-lime btn-sm" onclick="exportCustom('xlsx')">Excel (.xlsx)</button>
+        <button class="btn btn-outline btn-sm" onclick="exportCustom('csv')">CSV</button>
+      </div>
     </div>`;
+}
+
+function validateCustomDates(){
+  const from=document.getElementById('exp-date-from')?.value;
+  const to=document.getElementById('exp-date-to')?.value;
+  const msg=document.getElementById('custom-date-msg');
+  if(!msg) return true;
+  if(from&&to&&from>to){
+    msg.textContent='A data inicial deve ser anterior à data final.';
+    return false;
+  }
+  msg.textContent='';
+  return true;
+}
+
+async function exportCustom(fmt){
+  if(!validateCustomDates()) return;
+  const from=document.getElementById('exp-date-from')?.value;
+  const to=document.getElementById('exp-date-to')?.value;
+  if(!from||!to){ showToast('Selecione as datas.',false); return; }
+  // Build date array between from and to
+  const dates=[];
+  const cur=new Date(from+'T12:00:00');
+  const end=new Date(to+'T12:00:00');
+  while(cur<=end){
+    dates.push(localDateStr(cur));
+    cur.setDate(cur.getDate()+1);
+  }
+  if(dates.length===0){ showToast('Nenhuma data no intervalo.',false); return; }
+  showToast('Gerando relatório...',true);
+  const rows=await buildRows(dates);
+  const fn=`NEXTA_Personalizado_${from}_a_${to}`;
+  fmt==='xlsx'?exportXlsx(rows,fn):exportCsv(rows,fn);
 }
 async function buildRows(dates){
   const allP=await dbGetPlates();
@@ -992,6 +1078,142 @@ async function delPlate(carrier,idx){
   await dbSavePlates(allP);
   showToast(`Placa ${removed[0]?.placa} removida.`);
   await renderTabBody();
+}
+
+// ═══════════════════════════════════════════════════════════
+// MONTHLY ARCHIVES
+// ═══════════════════════════════════════════════════════════
+const MONTH_NAMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+
+async function checkAndGenerateMonthlyArchive() {
+  // Runs on login — if today is day 1-3 of a new month, auto-generate last month's archive
+  const now = new Date();
+  const dayOfMonth = now.getDate();
+  if(dayOfMonth > 3) return; // Only trigger in first 3 days of month
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const key = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth()+1).padStart(2,'0')}`;
+  const archives = await dbGetArchives();
+  if(archives.find(a => a.key === key)) return; // Already generated
+  // Generate
+  await generateMonthlyArchive(lastMonth.getFullYear(), lastMonth.getMonth(), true);
+}
+
+async function generateMonthlyArchive(year, month, silent=false) {
+  const key = `${year}-${String(month+1).padStart(2,'0')}`;
+  const label = `${MONTH_NAMES[month]} ${year}`;
+  if(!silent) showToast(`Gerando arquivo de ${label}...`, true);
+  const dates = getMonthDates(year, month);
+  const rows = await buildRows(dates);
+  // Convert to XLSX base64
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14},{wch:10}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Relatório");
+  const xlsxData = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
+  const now = new Date();
+  await dbSaveArchive({
+    key, label,
+    generatedAt: now.toLocaleString("pt-BR"),
+    filename: `NEXTA_Mensal_${key}`,
+    data: xlsxData,
+    rows: rows.length - 1 // exclude header
+  });
+  if(!silent) showToast(`Arquivo de ${label} gerado!`);
+}
+
+async function renderArchives(body) {
+  body.innerHTML = `<div class="loading"><span class="spin"></span>Carregando arquivos...</div>`;
+  const archives = await dbGetArchives();
+  const now = new Date();
+
+  // Available months to manually generate (last 6 months)
+  const monthOpts = [];
+  for(let i=1; i<=6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    const label = `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+    monthOpts.push({ key, label, year: d.getFullYear(), month: d.getMonth() });
+  }
+  const monthSelOpts = monthOpts.map(m =>
+    `<option value="${m.key}" data-year="${m.year}" data-month="${m.month}">${m.label}</option>`
+  ).join('');
+
+  const archiveCards = archives.length === 0
+    ? `<div class="empty"><span class="ei">📁</span>Nenhum arquivo gerado ainda.<br>Os relatórios mensais são gerados automaticamente no início de cada mês,<br>ou manualmente pelo botão abaixo.</div>`
+    : archives.map(a => `
+      <div class="archive-card">
+        <div class="archive-icon">📄</div>
+        <div class="archive-info">
+          <div class="archive-label">${a.label}</div>
+          <div class="archive-meta">${a.rows} registros · Gerado em ${a.generatedAt}</div>
+        </div>
+        <div class="archive-actions">
+          <button class="btn btn-lime btn-sm" onclick="downloadArchive('${a.key}')">⬇ Excel</button>
+          <button class="btn btn-outline btn-sm" onclick="downloadArchiveCsv('${a.key}')">⬇ CSV</button>
+          <button class="btn btn-outline btn-sm" onclick="regenArchive('${a.key}')">🔄</button>
+        </div>
+      </div>`).join('');
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:1.5rem">
+      <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">⚡ Gerar arquivo manualmente</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Selecione o mês e gere ou atualize o arquivo a qualquer momento</p>
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <div class="form-field" style="min-width:200px">
+          <label>MÊS DE REFERÊNCIA</label>
+          <select id="archive-month-sel">${monthSelOpts}</select>
+        </div>
+        <button class="btn btn-lime" onclick="manualGenArchive()">📊 Gerar arquivo</button>
+      </div>
+    </div>
+    <p class="sec-title" style="margin-bottom:1rem">
+      Últimos arquivos gerados
+      <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Armazenados os 6 mais recentes</span>
+    </p>
+    <div id="archive-list">${archiveCards}</div>`;
+}
+
+async function manualGenArchive() {
+  const sel = document.getElementById('archive-month-sel');
+  if(!sel) return;
+  const opt = sel.options[sel.selectedIndex];
+  const year = parseInt(opt.dataset.year);
+  const month = parseInt(opt.dataset.month);
+  await generateMonthlyArchive(year, month, false);
+  await renderTabBody();
+}
+
+async function regenArchive(key) {
+  const [year, month] = key.split('-').map(Number);
+  await generateMonthlyArchive(year, month - 1, false);
+  await renderTabBody();
+}
+
+function downloadArchive(key) {
+  dbGetArchives().then(archives => {
+    const a = archives.find(x => x.key === key);
+    if(!a || !a.data) { showToast('Arquivo não encontrado.', false); return; }
+    const bin = atob(a.data);
+    const bytes = new Uint8Array(bin.length);
+    for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${a.filename}.xlsx`;
+    link.click();
+    showToast('Excel baixado!');
+  });
+}
+
+async function downloadArchiveCsv(key) {
+  const archives = await dbGetArchives();
+  const arch = archives.find(x => x.key === key);
+  if(!arch) { showToast('Arquivo não encontrado.', false); return; }
+  // Re-generate CSV from stored data by rebuilding rows
+  const [year, month] = key.split('-').map(Number);
+  const dates = getMonthDates(year, month - 1);
+  const rows = await buildRows(dates);
+  exportCsv(rows, arch.filename);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1246,8 +1468,8 @@ window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField;
-window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField;
+window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
 window.renderTabBody=renderTabBody; window.S=S;
 
 // ── INIT ──
@@ -1326,6 +1548,13 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .b-blank{background:rgba(228,242,200,.06);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-style:italic;}
 .btn-unlock{background:none;border:1px solid rgba(240,96,96,.3);border-radius:7px;font-size:11px;color:rgba(240,96,96,.7);padding:4px 10px;cursor:pointer;white-space:nowrap;transition:all .15s;}
 .btn-unlock:hover{background:rgba(240,96,96,.1);border-color:var(--red);color:var(--red);}
+.archive-card{display:flex;align-items:center;gap:16px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem 1.5rem;margin-bottom:10px;flex-wrap:wrap;}
+.archive-card:hover{background:var(--card2);}
+.archive-icon{font-size:28px;flex-shrink:0;}
+.archive-info{flex:1;min-width:160px;}
+.archive-label{font-size:14px;font-weight:500;color:var(--text);margin-bottom:3px;}
+.archive-meta{font-size:11px;color:var(--muted);}
+.archive-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
 .locked-banner{background:rgba(200,240,50,.07);border:1px solid var(--border2);border-radius:var(--radius);padding:12px 16px;font-size:13px;color:var(--lime);margin-bottom:1.25rem;display:flex;align-items:center;gap:8px;}
 .st-blank{background:rgba(228,242,200,.05);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
 .time-sel{font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;font-family:'DM Mono',monospace;}
