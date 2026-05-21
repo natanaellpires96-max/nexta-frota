@@ -164,7 +164,19 @@ function buildTimeOpts(selected=""){
   opts+=`<option value="23:59"${'23:59'===selected?' selected':''}>23:59</option>`;
   return opts;
 }
-function dateStr(off=0){ const d=new Date(); d.setDate(d.getDate()+off); return d.toISOString().slice(0,10); }
+// ── Date helpers using LOCAL time (avoids UTC offset issues for BR timezone) ──
+function localDateStr(d){
+  // Returns YYYY-MM-DD using local timezone, not UTC
+  const y=d.getFullYear();
+  const m=String(d.getMonth()+1).padStart(2,'0');
+  const day=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function dateStr(off=0){
+  const d=new Date();
+  d.setDate(d.getDate()+off);
+  return localDateStr(d);
+}
 function fmtDate(off=0){
   const d=new Date(); d.setDate(d.getDate()+off);
   const days=["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
@@ -173,7 +185,9 @@ function fmtDate(off=0){
   return `${days[d.getDay()]}, ${d.getDate()} ${mons[d.getMonth()]}${tag}`;
 }
 function fmtDateStr(ds){
-  const d=new Date(ds+"T12:00:00");
+  // Parse YYYY-MM-DD as local date (not UTC)
+  const [y,m,day]=ds.split('-').map(Number);
+  const d=new Date(y,m-1,day);
   const days=["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
   const mons=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
   return `${days[d.getDay()]}, ${d.getDate()} ${mons[d.getMonth()]}`;
@@ -191,12 +205,12 @@ function setLoading(msg="Carregando..."){
 }
 function getDates(days,fromOff=0){
   const arr=[];
-  for(let i=days-1;i>=0;i--){ const d=new Date(); d.setDate(d.getDate()-i+fromOff); arr.push(d.toISOString().slice(0,10)); }
+  for(let i=days-1;i>=0;i--){ const d=new Date(); d.setDate(d.getDate()-i+fromOff); arr.push(localDateStr(d)); }
   return arr;
 }
 function getMonthDates(year,month){
   const arr=[]; const d=new Date(year,month,1);
-  while(d.getMonth()===month){ arr.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
+  while(d.getMonth()===month){ arr.push(localDateStr(d)); d.setDate(d.getDate()+1); }
   return arr;
 }
 
