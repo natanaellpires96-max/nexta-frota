@@ -1407,16 +1407,27 @@ function openEditUser(uid){
   const u=USERS_DB[uid];
   if(!u) return;
   const carrierOpts=CARRIERS.map(c=>`<option${c===u.carrier?' selected':''}>${c}</option>`).join('');
+  const isAdmin=uid==='admin';
+  const roleOpts=[
+    {val:'carrier',  label:'Transportador'},
+    {val:'operacional',label:'Operacional'},
+    {val:'admin',    label:'Administrador'},
+  ].map(r=>`<option value="${r.val}"${u.role===r.val?' selected':''}>${r.label}</option>`).join('');
+
   const modal=document.createElement('div');
   modal.id='edit-user-modal';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
   modal.innerHTML=`
-    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:460px">
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:480px">
       <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar usuário — ${uid}</p>
       <div class="form-grid">
         <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="eu-name" type="text" value="${u.name}"></div>
         <div class="form-field"><label>NOVA SENHA</label><input id="eu-pwd" type="text" placeholder="Deixe em branco para manter" value="${u.password}"></div>
-        ${u.role==='carrier'?`<div class="form-field"><label>TRANSPORTADOR</label><select id="eu-carrier">${carrierOpts}</select></div>`:u.role==='operacional'?`<div class="form-field"><label>PERFIL</label><input type="text" value="Operacional" disabled style="opacity:.5"></div>`:''}
+        ${isAdmin?'':`<div class="form-field"><label>PERFIL</label><select id="eu-role" onchange="onEditRoleChange()">${roleOpts}</select></div>`}
+        <div class="form-field" id="eu-carrier-field" style="display:${u.role==='carrier'?'block':'none'}">
+          <label>TRANSPORTADOR</label>
+          <select id="eu-carrier">${carrierOpts}</select>
+        </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('edit-user-modal').remove()">Cancelar</button>
@@ -1426,10 +1437,19 @@ function openEditUser(uid){
   document.body.appendChild(modal);
 }
 
+function onEditRoleChange(){
+  const role=document.getElementById('eu-role')?.value;
+  const field=document.getElementById('eu-carrier-field');
+  if(field) field.style.display=role==='carrier'?'block':'none';
+}
+
 async function saveEditUser(uid){
   const name=document.getElementById('eu-name').value.trim();
   const pwd=document.getElementById('eu-pwd').value.trim();
+  const roleEl=document.getElementById('eu-role');
   const carrierEl=document.getElementById('eu-carrier');
+  const newRole=roleEl?roleEl.value:USERS_DB[uid].role;
+  const newCarrier=(newRole==='carrier'&&carrierEl)?carrierEl.value:'';
   if(!name){showToast('Informe o nome.',false);return;}
   if(pwd&&pwd.length<6){showToast('Senha deve ter mín. 6 caracteres.',false);return;}
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
@@ -1437,8 +1457,9 @@ async function saveEditUser(uid){
     ...USERS_DB[uid],
     name,
     initials,
+    role: newRole,
     ...(pwd?{password:pwd}:{}),
-    ...(carrierEl?{carrier:carrierEl.value}:{})
+    ...(newCarrier?{carrier:newCarrier}:{carrier:''})
   };
   await dbSaveUsers(USERS_DB);
   document.getElementById('edit-user-modal').remove();
@@ -1599,7 +1620,7 @@ window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
 window.renderTabBody=renderTabBody; window.S=S;
 
