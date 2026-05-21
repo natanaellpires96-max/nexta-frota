@@ -297,13 +297,15 @@ async function renderCarrier(carrier){
     const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
     const st=cur?getSt(cur):null;
     const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
-    const timeCls=curTime?`time-sel time-filled`:`time-sel time-blank`;
+    const isIndisp=cur==='indisponivel';
+    const timeCls=isIndisp?`time-sel time-na`:curTime?`time-sel time-filled`:`time-sel time-blank`;
+    const timeDisabled=(!cur||isIndisp)?'disabled':'';
     return `<tr>
       <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
       <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
       <td><span class="badge b-lime">${p.tipo}</span></td>
       <td><select class="${selCls}" onchange="onStChange(this)">${sOpts}</select></td>
-      <td><select class="${timeCls}" ${!cur?'disabled':''} onchange="onTimeChange(this)">${buildTimeOpts(curTime)}</select></td>
+      <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime)}</select></td>
     </tr>`;
   }).join("");
   mc.innerHTML=`
@@ -334,7 +336,17 @@ function onStChange(sel){
   }
   const st=getSt(sel.value);
   sel.className=`st-sel ${st.cls}`;
-  if(timeSel){timeSel.disabled=false;}
+  if(timeSel){
+    if(sel.value==='indisponivel'){
+      // Horário não se aplica para indisponível
+      timeSel.disabled=true;
+      timeSel.value='';
+      timeSel.className='time-sel time-na';
+    } else {
+      timeSel.disabled=false;
+      if(timeSel.className==='time-sel time-na') timeSel.className='time-sel time-blank';
+    }
+  }
 }
 function onTimeChange(sel){
   if(sel.value) sel.className='time-sel time-filled';
@@ -350,8 +362,9 @@ async function saveAll(carrier,ds){
     const statusSel=row.querySelector(".st-sel,.st-blank");
     const timeSel=row.querySelector(".time-sel");
     const hasStatus=statusSel&&statusSel.value;
+    const isIndisp=statusSel&&statusSel.value==='indisponivel';
     const hasTime=timeSel&&timeSel.value;
-    if(!hasStatus||!hasTime) missing.push(plate);
+    if(!hasStatus||(! isIndisp&&!hasTime)) missing.push(plate);
   });
   if(missing.length>0){
     showToast(`Preencha status e horário de todas as placas antes de salvar.`,false);
@@ -1235,6 +1248,7 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .time-filled{background:var(--lime-bg2);color:var(--lime);border-color:var(--border2);}
 .time-blank{background:rgba(228,242,200,.05);color:rgba(228,242,200,.3);border-color:rgba(228,242,200,.12);}
 .time-sel:disabled{opacity:.35;cursor:not-allowed;}
+.time-na{background:rgba(240,96,96,.07);color:rgba(240,96,96,.35);border-color:rgba(240,96,96,.15);font-size:12px;padding:5px 9px;border-radius:7px;border:1px solid;outline:none;font-family:'DM Mono',monospace;}
 .time-sel option{background:#111d0a;color:#e4f2c8;}
 .cap-tag{font-size:11px;color:var(--lime);background:var(--lime-bg);padding:3px 8px;border-radius:99px;border:1px solid var(--border);font-family:'DM Mono',monospace;}
 .tscroll{overflow-x:auto;}
