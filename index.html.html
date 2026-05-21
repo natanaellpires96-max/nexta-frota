@@ -44,13 +44,15 @@ async function dbGetStatus(carrier, plate, dateStr) {
   try {
     const id = `${carrier}__${plate}__${dateStr}`;
     const snap = await getDoc(doc(db, "availability", id));
-    return snap.exists() ? snap.data().status : null;
+    if(!snap.exists()) return null;
+    const d = snap.data();
+    return { status: d.status, time: d.time||"" };
   } catch { return null; }
 }
-async function dbSaveStatus(carrier, plate, dateStr, status) {
+async function dbSaveStatus(carrier, plate, dateStr, status, time) {
   const id = `${carrier}__${plate}__${dateStr}`;
   await setDoc(doc(db, "availability", id), {
-    carrier, plate, dateStr, status, filled: true,
+    carrier, plate, dateStr, status, time: time||"", filled: true,
     updatedAt: new Date().toISOString()
   });
 }
@@ -101,6 +103,7 @@ async function loadConfig() {
 // Bulk load status for many plates/dates at once (batched reads)
 async function dbLoadStatusBulk(pairs) {
   // pairs = [{carrier,plate,dateStr}]
+  // Returns {key: {status, time} | null}
   const result = {};
   await Promise.all(pairs.map(async ({carrier,plate,dateStr}) => {
     const key = `${carrier}||${plate}||${dateStr}`;
@@ -146,6 +149,20 @@ let S = {
 // HELPERS
 // ═══════════════════════════════════════════════════════════
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
+function buildTimeOpts(selected=""){
+  let opts=`<option value="" ${!selected?'selected':''} disabled>— Horário —</option>`;
+  for(let h=0;h<24;h++){
+    for(let m=0;m<60;m+=15){
+      const hh=String(h).padStart(2,'0');
+      const mm=String(m).padStart(2,'0');
+      const val=`${hh}:${mm}`;
+      opts+=`<option value="${val}"${val===selected?' selected':''}>${val}</option>`;
+    }
+  }
+  // also add :59 for 23
+  opts+=`<option value="23:59"${'23:59'===selected?' selected':''}>23:59</option>`;
+  return opts;
+}
 function dateStr(off=0){ const d=new Date(); d.setDate(d.getDate()+off); return d.toISOString().slice(0,10); }
 function fmtDate(off=0){
   const d=new Date(); d.setDate(d.getDate()+off);
@@ -273,16 +290,20 @@ async function renderCarrier(carrier){
   const pairs=plates.map(p=>({carrier,plate:p.placa,dateStr:ds}));
   const statusMap=await dbLoadStatusBulk(pairs);
   const rows=plates.map(p=>{
-    const cur=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+    const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+    const cur=rec?rec.status:null;
+    const curTime=rec?rec.time:"";
     const blankOpt=cur===null?`<option value="" selected disabled>— Selecione —</option>`:"";
     const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
     const st=cur?getSt(cur):null;
     const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
+    const timeCls=curTime?`time-sel time-filled`:`time-sel time-blank`;
     return `<tr>
       <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
       <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
       <td><span class="badge b-lime">${p.tipo}</span></td>
       <td><select class="${selCls}" onchange="onStChange(this)">${sOpts}</select></td>
+      <td><select class="${timeCls}" ${!cur?'disabled':''} onchange="onTimeChange(this)">${buildTimeOpts(curTime)}</select></td>
     </tr>`;
   }).join("");
   mc.innerHTML=`
@@ -295,7 +316,7 @@ async function renderCarrier(carrier){
     </div>
     <div class="tscroll">
       <table class="table">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th></tr></thead>
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>DISPONÍVEL ÀS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -303,19 +324,53 @@ async function renderCarrier(carrier){
       <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">💾 Salvar disponibilidade</button>
     </div>`;
 }
-function onStChange(sel){ if(!sel.value){sel.className='st-sel st-blank';return;} const st=getSt(sel.value); sel.className=`st-sel ${st.cls}`; }
+function onStChange(sel){
+  const row=sel.closest('tr');
+  const timeSel=row?row.querySelector('.time-sel'):null;
+  if(!sel.value){
+    sel.className='st-sel st-blank';
+    if(timeSel){timeSel.disabled=true;timeSel.value='';timeSel.className='time-sel time-blank';}
+    return;
+  }
+  const st=getSt(sel.value);
+  sel.className=`st-sel ${st.cls}`;
+  if(timeSel){timeSel.disabled=false;}
+}
+function onTimeChange(sel){
+  if(sel.value) sel.className='time-sel time-filled';
+  else sel.className='time-sel time-blank';
+}
 async function saveAll(carrier,ds){
   const btn=document.getElementById("save-btn");
-  if(btn){btn.disabled=true;btn.textContent="Salvando...";}
   const rows=document.querySelectorAll(".table tbody tr");
-  const proms=[];
-  let saved=0;
+  // Validate: all rows must have status AND time filled
+  let missing=[];
   rows.forEach(row=>{
     const plate=row.cells[0].textContent.trim();
-    const sel=row.querySelector("select");
-    if(sel&&sel.value){ proms.push(dbSaveStatus(carrier,plate,ds,sel.value)); saved++; }
+    const statusSel=row.querySelector(".st-sel,.st-blank");
+    const timeSel=row.querySelector(".time-sel");
+    const hasStatus=statusSel&&statusSel.value;
+    const hasTime=timeSel&&timeSel.value;
+    if(!hasStatus||!hasTime) missing.push(plate);
   });
-  if(saved===0){ showToast("Selecione ao menos um status antes de salvar.",false); if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";} return; }
+  if(missing.length>0){
+    showToast(`Preencha status e horário de todas as placas antes de salvar.`,false);
+    // Highlight missing rows
+    rows.forEach(row=>{
+      const plate=row.cells[0].textContent.trim();
+      if(missing.includes(plate)) row.style.background="rgba(240,96,96,.08)";
+      else row.style.background="";
+    });
+    return;
+  }
+  if(btn){btn.disabled=true;btn.textContent="Salvando...";}
+  const proms=[];
+  rows.forEach(row=>{
+    const plate=row.cells[0].textContent.trim();
+    const statusSel=row.querySelector(".st-sel");
+    const timeSel=row.querySelector(".time-sel");
+    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value));
+  });
   await Promise.all(proms);
   const u=USERS_DB[S.user];
   await dbAddNotif(`${u.name} atualizou a disponibilidade — ${fmtDateStr(ds)}`);
@@ -381,7 +436,8 @@ async function renderDashboard(body){
   for(const carrier of CARRIERS){
     byCarrier[carrier]={disponivel:0,indisponivel:0,manutencao:0,folga:0};
     for(const p of (allP[carrier]||[])){
-      const v=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+      const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+      const v=rec?rec.status:null;
       if(v){ counts[v]=(counts[v]||0)+1; byCarrier[carrier][v]=(byCarrier[carrier][v]||0)+1; }
       counts.total++;
     }
@@ -574,7 +630,8 @@ async function renderToday(body){
     }
     if(!plates.length) continue;
     const rows=plates.map(p=>{
-      const v=statusMap[`${carrier}||${p.placa}||${ds}`];
+      const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
+      const v=rec?rec.status:null;
       if(v){ counts[v]=(counts[v]||0)+1; } counts.total++;
       const st=v?getSt(v):null;
       return `<tr>
@@ -585,12 +642,13 @@ async function renderToday(body){
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
         <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
+        <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?rec.time:'—'}</td>
       </tr>`;
     }).join("");
     sections+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span></div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:640px">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th></tr></thead>
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>HORÁRIO</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -645,7 +703,9 @@ async function renderHistory(body){
   for(const carrier of carriersToShow){
     for(const p of (allP[carrier]||[]).filter(p=>!of||p.operacao===of)){
       for(const ds of dates){
-        const v=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = nao preenchido
+        const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = nao preenchido
+        const v=rec?rec.status:null;
+        const t=rec?rec.time:"";
         if(sf==="nao_preenchido"){ if(v!==null) continue; }
         else if(sf){ if(v!==sf) continue; }
         const isBlank=v===null;
@@ -660,6 +720,7 @@ async function renderHistory(body){
           <td style="font-size:12px">${p.operacao}</td>
           <td><span class="badge b-lime">${p.tipo}</span></td>
           <td>${statusBadge}</td>
+          <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${t||'—'}</td>
         </tr>`;
       }
     }
@@ -668,7 +729,7 @@ async function renderHistory(body){
   if(!rows){result.innerHTML=`<div class="empty"><span class="ei">🔍</span>Nenhum registro encontrado.</div>`;return;}
   result.innerHTML=`
     <div class="tscroll"><table class="table">
-      <thead><tr><th>DATA</th><th>TRANSPORTADOR</th><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th></tr></thead>
+      <thead><tr><th>DATA</th><th>TRANSPORTADOR</th><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>HORÁRIO</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <p style="font-size:11px;color:var(--muted);margin-top:10px">Últimos ${S.histDays} dias</p>`;
@@ -713,19 +774,20 @@ async function buildRows(dates){
   const allPairs=[];
   for(const ds of dates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
-  const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status"]];
+  const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status","Horário"]];
   for(const ds of dates)
     for(const carrier of CARRIERS)
       for(const p of (allP[carrier]||[])){
-        const v=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
-        const statusLabel=v?getSt(v).label:"Não preenchido";
-        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel]);
+        const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+        const statusLabel=rec?getSt(rec.status).label:"Não preenchido";
+        const timeLabel=rec?rec.time||"—":"—";
+        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel]);
       }
   return rows;
 }
 function exportXlsx(rows,filename){
   const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws["!cols"]=[{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14}];
+  ws["!cols"]=[{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14},{wch:10}];
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Relatório");
   XLSX.writeFile(wb,filename+".xlsx"); showToast("Excel exportado!");
 }
@@ -1091,7 +1153,7 @@ window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth;
 window.renderTabBody=renderTabBody; window.S=S;
 
@@ -1169,6 +1231,11 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .b-spot{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.28);}
 .b-blank{background:rgba(228,242,200,.06);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-style:italic;}
 .st-blank{background:rgba(228,242,200,.05);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
+.time-sel{font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;font-family:'DM Mono',monospace;}
+.time-filled{background:var(--lime-bg2);color:var(--lime);border-color:var(--border2);}
+.time-blank{background:rgba(228,242,200,.05);color:rgba(228,242,200,.3);border-color:rgba(228,242,200,.12);}
+.time-sel:disabled{opacity:.35;cursor:not-allowed;}
+.time-sel option{background:#111d0a;color:#e4f2c8;}
 .cap-tag{font-size:11px;color:var(--lime);background:var(--lime-bg);padding:3px 8px;border-radius:99px;border:1px solid var(--border);font-family:'DM Mono',monospace;}
 .tscroll{overflow-x:auto;}
 .table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;}
