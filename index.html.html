@@ -100,6 +100,26 @@ async function loadConfig() {
   if(fbCarriers) CARRIERS = fbCarriers;
 }
 
+// Check if a carrier/date submission is locked (all plates filled)
+async function dbGetLock(carrier, dateStr) {
+  try {
+    const id = `lock__${carrier}__${dateStr}`;
+    const snap = await getDoc(doc(db, "locks", id));
+    return snap.exists() ? snap.data() : null;
+  } catch { return null; }
+}
+async function dbSetLock(carrier, dateStr, userName) {
+  const id = `lock__${carrier}__${dateStr}`;
+  await setDoc(doc(db, "locks", id), {
+    carrier, dateStr, lockedBy: userName,
+    lockedAt: new Date().toLocaleString("pt-BR")
+  });
+}
+async function dbRemoveLock(carrier, dateStr) {
+  const id = `lock__${carrier}__${dateStr}`;
+  await deleteDoc(doc(db, "locks", id));
+}
+
 // Bulk load status for many plates/dates at once (batched reads)
 async function dbLoadStatusBulk(pairs) {
   // pairs = [{carrier,plate,dateStr}]
@@ -302,17 +322,29 @@ async function renderCarrier(carrier){
       <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada.<br>Aguarde o administrador.</div>`;
     return;
   }
-  const pairs=plates.map(p=>({carrier,plate:p.placa,dateStr:ds}));
+  const [pairs, lock] = [plates.map(p=>({carrier,plate:p.placa,dateStr:ds})), await dbGetLock(carrier,ds)];
   const statusMap=await dbLoadStatusBulk(pairs);
   const rows=plates.map(p=>{
-    const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+    const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
     const cur=rec?rec.status:null;
     const curTime=rec?rec.time:"";
+    const st=cur?getSt(cur):null;
+    const isIndisp=cur==='indisponivel'||cur==='programado';
+    if(lock){
+      // LOCKED — read-only view
+      const stBadge=cur?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">—</span>`;
+      const timeBadge=isIndisp?`<span style="font-size:11px;color:var(--muted)">N/A</span>`:curTime?`<span style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${curTime}</span>`:`<span style="color:var(--muted)">—</span>`;
+      return `<tr>
+        <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
+        <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
+        <td><span class="badge b-lime">${p.tipo}</span></td>
+        <td>${stBadge}</td>
+        <td>${timeBadge}</td>
+      </tr>`;
+    }
     const blankOpt=cur===null?`<option value="" selected disabled>— Selecione —</option>`:"";
     const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
-    const st=cur?getSt(cur):null;
     const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
-    const isIndisp=cur==='indisponivel'||cur==='programado';
     const timeCls=isIndisp?`time-sel time-na`:curTime?`time-sel time-filled`:`time-sel time-blank`;
     const timeDisabled=(!cur||isIndisp)?'disabled':'';
     return `<tr>
@@ -323,6 +355,16 @@ async function renderCarrier(carrier){
       <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime)}</select></td>
     </tr>`;
   }).join("");
+
+  const lockedBanner=lock?`
+    <div class="locked-banner">
+      🔒 Disponibilidade enviada em ${lock.lockedAt} — não é possível editar.
+    </div>`:'';
+  const actionBar=lock?'':`
+    <div style="display:flex;gap:10px;margin-top:1rem;">
+      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">💾 Salvar disponibilidade</button>
+    </div>`;
+
   mc.innerHTML=`
     <p class="sec-title">Disponibilidade da frota</p>
     <p class="sec-sub">${carrier} — Informe o status de cada veículo</p>
@@ -331,15 +373,14 @@ async function renderCarrier(carrier){
       <span class="date-label">${fmtDate(S.dateOffset)}</span>
       <button onclick="chDate(1)">›</button>
     </div>
+    ${lockedBanner}
     <div class="tscroll">
       <table class="table">
         <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>DISPONÍVEL ÀS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div style="display:flex;gap:10px;margin-top:1rem;">
-      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">💾 Salvar disponibilidade</button>
-    </div>`;
+    ${actionBar}`;
 }
 function onStChange(sel){
   const row=sel.closest('tr');
@@ -401,8 +442,10 @@ async function saveAll(carrier,ds){
   });
   await Promise.all(proms);
   const u=USERS_DB[S.user];
-  await dbAddNotif(`${u.name} atualizou a disponibilidade — ${fmtDateStr(ds)}`);
-  showToast("Disponibilidade salva!");
+  // Lock this carrier/date so it can't be edited again
+  await dbSetLock(carrier, ds, u.name);
+  await dbAddNotif(`${u.name} enviou a disponibilidade — ${fmtDateStr(ds)}`);
+  showToast("Disponibilidade salva e bloqueada! ✓");
   if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
   await renderCarrier(carrier);
 }
@@ -674,8 +717,15 @@ async function renderToday(body){
         <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?rec.time:'—'}</td>
       </tr>`;
     }).join("");
+    const lock=await dbGetLock(carrier,ds);
+    const lockBadge=lock
+      ?`<span style="font-size:11px;color:var(--lime);margin-left:8px;background:var(--lime-bg);border:1px solid var(--border2);padding:2px 8px;border-radius:99px;">🔒 Enviado ${lock.lockedAt}</span>`
+      :`<span style="font-size:11px;color:var(--muted);margin-left:8px;">Pendente</span>`;
+    const unlockBtn=lock
+      ?`<button class="btn-unlock" onclick="adminUnlock('${carrier}','${ds}')" title="Desfazer lançamento">🔓 Desbloquear</button>`
+      :'';
     sections+=`<div class="carrier-block">
-      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span></div>
+      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:640px">
         <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>HORÁRIO</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -945,6 +995,19 @@ async function delPlate(carrier,idx){
 }
 
 // ═══════════════════════════════════════════════════════════
+// ADMIN UNLOCK
+// ═══════════════════════════════════════════════════════════
+async function adminUnlock(carrier, ds){
+  if(!confirm(`Desbloquear o lançamento de "${carrier}" em ${fmtDateStr(ds)}?
+
+O transportador poderá editar e reenviar a disponibilidade.`)) return;
+  await dbRemoveLock(carrier, ds);
+  await dbAddNotif(`Admin desbloqueou o lançamento de ${carrier} — ${fmtDateStr(ds)}`);
+  showToast(`Lançamento de ${carrier} desbloqueado!`);
+  await renderTabBody();
+}
+
+// ═══════════════════════════════════════════════════════════
 // USERS MANAGEMENT
 // ═══════════════════════════════════════════════════════════
 async function renderUsers(body){
@@ -1183,7 +1246,7 @@ window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth;
 window.renderTabBody=renderTabBody; window.S=S;
 
@@ -1261,6 +1324,9 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .b-spot{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.28);}
 .b-purple{background:rgba(176,126,240,.12);color:#b07ef0;border-color:rgba(176,126,240,.28);}
 .b-blank{background:rgba(228,242,200,.06);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-style:italic;}
+.btn-unlock{background:none;border:1px solid rgba(240,96,96,.3);border-radius:7px;font-size:11px;color:rgba(240,96,96,.7);padding:4px 10px;cursor:pointer;white-space:nowrap;transition:all .15s;}
+.btn-unlock:hover{background:rgba(240,96,96,.1);border-color:var(--red);color:var(--red);}
+.locked-banner{background:rgba(200,240,50,.07);border:1px solid var(--border2);border-radius:var(--radius);padding:12px 16px;font-size:13px;color:var(--lime);margin-bottom:1.25rem;display:flex;align-items:center;gap:8px;}
 .st-blank{background:rgba(228,242,200,.05);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
 .time-sel{font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;font-family:'DM Mono',monospace;}
 .time-filled{background:var(--lime-bg2);color:var(--lime);border-color:var(--border2);}
