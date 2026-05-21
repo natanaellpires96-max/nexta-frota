@@ -130,10 +130,11 @@ const TIPOS_VEIC = ["Truck","Bi-Truck","Cavalo Mecânico"];
 const IDENTS     = ["Petronas","Branco"];
 const CONTRATOS  = ["Dedicado","Spot"];
 const STATUS_OPTS = [
-  {val:"disponivel",  label:"Disponível",   cls:"st-disp",  badge:"b-green", color:"#6ee04a"},
-  {val:"indisponivel",label:"Indisponível", cls:"st-indisp",badge:"b-red",   color:"#f06060"},
-  {val:"manutencao",  label:"Manutenção",   cls:"st-manut", badge:"b-amber", color:"#f0be40"},
-  {val:"folga",       label:"Folga",        cls:"st-folga", badge:"b-blue",  color:"#70a8f0"},
+  {val:"disponivel",  label:"Disponível",        cls:"st-disp",  badge:"b-green",  color:"#6ee04a"},
+  {val:"indisponivel",label:"Indisponível",       cls:"st-indisp",badge:"b-red",    color:"#f06060"},
+  {val:"manutencao",  label:"Manutenção",         cls:"st-manut", badge:"b-amber",  color:"#f0be40"},
+  {val:"folga",       label:"Folga",              cls:"st-folga", badge:"b-blue",   color:"#70a8f0"},
+  {val:"programado",  label:"Programado/Em viagem",cls:"st-prog", badge:"b-purple", color:"#b07ef0"},
 ];
 
 // ═══════════════════════════════════════════════════════════
@@ -297,7 +298,7 @@ async function renderCarrier(carrier){
     const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
     const st=cur?getSt(cur):null;
     const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
-    const isIndisp=cur==='indisponivel';
+    const isIndisp=cur==='indisponivel'||cur==='programado';
     const timeCls=isIndisp?`time-sel time-na`:curTime?`time-sel time-filled`:`time-sel time-blank`;
     const timeDisabled=(!cur||isIndisp)?'disabled':'';
     return `<tr>
@@ -337,8 +338,8 @@ function onStChange(sel){
   const st=getSt(sel.value);
   sel.className=`st-sel ${st.cls}`;
   if(timeSel){
-    if(sel.value==='indisponivel'){
-      // Horário não se aplica para indisponível
+    if(sel.value==='indisponivel'||sel.value==='programado'){
+      // Horário não se aplica para indisponível e programado/em viagem
       timeSel.disabled=true;
       timeSel.value='';
       timeSel.className='time-sel time-na';
@@ -362,7 +363,7 @@ async function saveAll(carrier,ds){
     const statusSel=row.querySelector(".st-sel,.st-blank");
     const timeSel=row.querySelector(".time-sel");
     const hasStatus=statusSel&&statusSel.value;
-    const isIndisp=statusSel&&statusSel.value==='indisponivel';
+    const isIndisp=statusSel&&(statusSel.value==='indisponivel'||statusSel.value==='programado');
     const hasTime=timeSel&&timeSel.value;
     if(!hasStatus||(! isIndisp&&!hasTime)) missing.push(plate);
   });
@@ -477,6 +478,7 @@ async function renderDashboard(body){
       <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">Manutenção</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--blue)">${counts.folga}</div><div class="sum-label">Folga</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--purple)">${counts.programado||0}</div><div class="sum-label">Prog./Viagem</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
     </div>
     <div class="dash-grid">
@@ -499,9 +501,9 @@ function drawPie(counts){
   const canvas=document.getElementById("pie-chart"); if(!canvas) return;
   const ctx=canvas.getContext("2d");
   const W=canvas.offsetWidth||350; canvas.width=W; canvas.height=180;
-  const data=[counts.disponivel,counts.indisponivel,counts.manutencao,counts.folga];
-  const colors=["#6ee04a","#f06060","#f0be40","#70a8f0"];
-  const labels=["Disponível","Indisponível","Manutenção","Folga"];
+  const data=[counts.disponivel,counts.indisponivel,counts.manutencao,counts.folga,counts.programado||0];
+  const colors=["#6ee04a","#f06060","#f0be40","#70a8f0","#b07ef0"];
+  const labels=["Disponível","Indisponível","Manutenção","Folga","Prog./Viagem"];
   const total=data.reduce((a,b)=>a+b,0)||1;
   const cx=90,cy=90,r=72;
   let start=-Math.PI/2;
@@ -567,8 +569,8 @@ function drawBar(byCarrier){
   // Increase height to fit full carrier names (two lines)
   const W=canvas.offsetWidth||700; canvas.width=W; canvas.height=200;
   const ctx=canvas.getContext("2d");
-  const colors=["#6ee04a","#f06060","#f0be40","#70a8f0"];
-  const statKeys=["disponivel","indisponivel","manutencao","folga"];
+  const colors=["#6ee04a","#f06060","#f0be40","#70a8f0","#b07ef0"];
+  const statKeys=["disponivel","indisponivel","manutencao","folga","programado"];
   const pad={t:20,r:20,b:55,l:35};
   const W2=W-pad.l-pad.r, H2=200-pad.t-pad.b;
   const grpW=W2/CARRIERS.length, barW=grpW/(statKeys.length+1);
@@ -680,6 +682,7 @@ async function renderToday(body){
       <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">Manutenção</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--blue)">${counts.folga}</div><div class="sum-label">Folga</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--purple)">${counts.programado||0}</div><div class="sum-label">Prog./Viagem</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
     </div>
     ${sections||'<div class="empty"><span class="ei">🔍</span>Nenhuma placa com esse filtro.</div>'}`;
@@ -1182,7 +1185,7 @@ loadConfig().then(()=>render());
   --lime:#c8f032;--lime2:#a8cc28;--lime-bg:rgba(200,240,50,.07);--lime-bg2:rgba(200,240,50,.13);
   --border:rgba(200,240,50,.15);--border2:rgba(200,240,50,.28);
   --text:#e4f2c8;--muted:rgba(228,242,200,.48);--dim:rgba(228,242,200,.72);
-  --green:#6ee04a;--red:#f06060;--amber:#f0be40;--blue:#70a8f0;
+  --green:#6ee04a;--red:#f06060;--amber:#f0be40;--blue:#70a8f0;--purple:#b07ef0;
   --green-bg:rgba(110,224,74,.12);--red-bg:rgba(240,96,96,.12);
   --amber-bg:rgba(240,190,64,.12);--blue-bg:rgba(112,168,240,.12);
   --radius:10px;--radius-lg:14px;
@@ -1242,6 +1245,7 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .b-gray{background:rgba(228,242,200,.07);color:var(--dim);border-color:var(--border);}
 .b-ded{background:var(--blue-bg);color:var(--blue);border-color:rgba(112,168,240,.28);}
 .b-spot{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.28);}
+.b-purple{background:rgba(176,126,240,.12);color:#b07ef0;border-color:rgba(176,126,240,.28);}
 .b-blank{background:rgba(228,242,200,.06);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-style:italic;}
 .st-blank{background:rgba(228,242,200,.05);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
 .time-sel{font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;font-family:'DM Mono',monospace;}
@@ -1262,6 +1266,7 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .st-indisp{background:var(--red-bg);color:var(--red);border-color:rgba(240,96,96,.3);}
 .st-manut{background:var(--amber-bg);color:var(--amber);border-color:rgba(240,190,64,.3);}
 .st-folga{background:var(--blue-bg);color:var(--blue);border-color:rgba(112,168,240,.3);}
+.st-prog{background:rgba(176,126,240,.12);color:#b07ef0;border-color:rgba(176,126,240,.3);}
 .st-sel option{background:#111d0a;color:#e4f2c8;}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.5rem;}
 .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.5rem;}
