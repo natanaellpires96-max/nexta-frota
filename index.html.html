@@ -347,7 +347,7 @@ async function renderCarrier(carrier){
   const mc=document.getElementById("main-content");
   mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p><div class="loading"><span class="spin"></span>Carregando placas...</div>`;
   const allP=await dbGetPlates();
-  const plates=allP[carrier]||[];
+  const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
   if(plates.length===0){
     mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
       <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada.<br>Aguarde o administrador.</div>`;
@@ -545,13 +545,13 @@ async function renderDashboard(body){
   const allP=await dbGetPlates();
   // Build all pairs for today
   const allPairs=[];
-  for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   let byCarrier={};
   for(const carrier of CARRIERS){
     byCarrier[carrier]={disponivel:0,indisponivel:0,manutencao:0,folga:0};
-    for(const p of (allP[carrier]||[])){
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
       const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
       const v=rec?rec.status:null;
       if(v){ counts[v]=(counts[v]||0)+1; byCarrier[carrier][v]=(byCarrier[carrier][v]||0)+1; }
@@ -561,11 +561,11 @@ async function renderDashboard(body){
   // 14 days trend
   const tDates=getDates(14);
   const tPairs=[];
-  for(const d of tDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) tPairs.push({carrier,plate:p.placa,dateStr:d});
+  for(const d of tDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) tPairs.push({carrier,plate:p.placa,dateStr:d});
   const tMap=await dbLoadStatusBulk(tPairs);
   const tDisp=tDates.map(d=>{
     let c=0;
-    for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) if((tMap[`${carrier}||${p.placa}||${d}`]||"disponivel")==="disponivel") c++;
+    for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) if((tMap[`${carrier}||${p.placa}||${d}`]||"disponivel")==="disponivel") c++;
     return c;
   });
 
@@ -735,12 +735,12 @@ async function renderToday(body){
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   const allPairs=[];
   for(const carrier of CARRIERS)
-    for(const p of (allP[carrier]||[]).filter(p=>!opFilter||p.operacao===opFilter))
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)))
       allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
   let sections="";
   for(const carrier of CARRIERS){
-    const plates=(allP[carrier]||[]).filter(p=>!opFilter||p.operacao===opFilter);
+    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter));
     if(!plates.length&&!(allP[carrier]||[]).length){
       sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
       continue;
@@ -827,7 +827,7 @@ async function renderHistory(body){
   const statusMap=await dbLoadStatusBulk(allPairs);
   let rows="";
   for(const carrier of carriersToShow){
-    for(const p of (allP[carrier]||[]).filter(p=>!of||p.operacao===of)){
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!of||p.operacao===of))){
       for(const ds of dates){
         const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = nao preenchido
         const v=rec?rec.status:null;
@@ -961,12 +961,12 @@ async function exportCustom(fmt){
 async function buildRows(dates){
   const allP=await dbGetPlates();
   const allPairs=[];
-  for(const ds of dates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[])) allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  for(const ds of dates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
   const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status","Horário"]];
   for(const ds of dates)
     for(const carrier of CARRIERS)
-      for(const p of (allP[carrier]||[])){
+      for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
         const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
         const statusLabel=rec?getSt(rec.status).label:"Não preenchido";
         const timeLabel=rec?rec.time||"—":"—";
@@ -1032,23 +1032,35 @@ async function renderRegister(body){
   for(const carrier of CARRIERS){
     const plates=allP[carrier]||[];
     if(!plates.length) continue;
-    const rows=plates.map((p,idx)=>`
-      <tr id="row-${carrier.replace(/ /g,'_')}-${idx}">
+    const rows=plates.map((p,idx)=>{
+      const ativo=p.ativo!==false;
+      const statusBadge=ativo
+        ?`<span class="badge b-green" style="font-size:10px">Ativo</span>`
+        :`<span class="badge b-red" style="font-size:10px">Inativo</span>`;
+      const toggleBtn=ativo
+        ?`<button class="btn-toggle-off" onclick="togglePlate('${carrier}',${idx},false)" title="Desativar">⏸</button>`
+        :`<button class="btn-toggle-on" onclick="togglePlate('${carrier}',${idx},true)" title="Ativar">▶</button>`;
+      return `<tr id="row-${carrier.replace(/ /g,'_')}-${idx}" style="${ativo?'':'opacity:.55;background:rgba(240,96,96,.04)'}">
         <td style="font-family:'DM Mono',monospace;font-weight:500">${p.placa}</td>
         <td style="font-size:12px">${p.operacao}</td>
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
+        <td>${statusBadge}</td>
         <td style="display:flex;gap:6px;align-items:center">
+          ${toggleBtn}
           <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">✏️</button>
           <button class="btn-danger" onclick="delPlate('${carrier}',${idx})" title="Remover">🗑</button>
         </td>
-      </tr>`).join("");
+      </tr>`;
+    }).join("");
+    const activeCount=plates.filter(p=>p.ativo!==false).length;
+    const inactiveCount=plates.length-activeCount;
     listHTML+=`<div class="carrier-block">
-      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span></div>
-      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:580px">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>AÇÕES</th></tr></thead>
+      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${activeCount} ativo(s)</span>${inactiveCount>0?`<span class="ch-count" style="color:var(--red)">${inactiveCount} inativo(s)</span>`:''}</div>
+      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:620px">
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>AÇÕES</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -1566,6 +1578,23 @@ async function saveEditOp(idx){
 }
 
 // ═══════════════════════════════════════════════════════════
+// TOGGLE PLATE ACTIVE/INACTIVE
+// ═══════════════════════════════════════════════════════════
+async function togglePlate(carrier, idx, activate){
+  const allP=await dbGetPlates();
+  if(!allP[carrier]||!allP[carrier][idx]) return;
+  const plate=allP[carrier][idx];
+  const action=activate?'ativar':'desativar';
+  if(!confirm(`Deseja ${action} a placa ${plate.placa}?`)) return;
+  allP[carrier][idx].ativo=activate;
+  // Record when deactivated/activated for reporting purposes
+  allP[carrier][idx].ativoUpdatedAt=localDateStr(new Date());
+  await dbSavePlates(allP);
+  showToast(`Placa ${plate.placa} ${activate?'ativada':'desativada'}!`);
+  await renderTabBody();
+}
+
+// ═══════════════════════════════════════════════════════════
 // EDIT PLATE MODAL
 // ═══════════════════════════════════════════════════════════
 function openEditModal(carrier, idx){
@@ -1620,7 +1649,7 @@ window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
 window.renderTabBody=renderTabBody; window.S=S;
 
@@ -1679,6 +1708,10 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .btn-sm{padding:6px 14px;font-size:12px;}
 .btn-danger{background:none;border:1px solid transparent;color:rgba(240,96,96,.55);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
 .btn-edit{background:none;border:1px solid transparent;color:rgba(200,240,50,.5);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-toggle-off{background:none;border:1px solid rgba(240,190,64,.3);color:rgba(240,190,64,.7);padding:4px 8px;border-radius:7px;font-size:12px;cursor:pointer;}
+.btn-toggle-off:hover{background:rgba(240,190,64,.1);color:var(--amber);border-color:var(--amber);}
+.btn-toggle-on{background:none;border:1px solid rgba(110,224,74,.3);color:rgba(110,224,74,.7);padding:4px 8px;border-radius:7px;font-size:12px;cursor:pointer;}
+.btn-toggle-on:hover{background:rgba(110,224,74,.1);color:var(--green);border-color:var(--green);}
 .btn-edit:hover{color:var(--lime);border-color:var(--border2);background:var(--lime-bg);}
 .btn-danger:hover{color:var(--red);border-color:rgba(240,96,96,.3);background:var(--red-bg);}
 .btn-full{width:100%;justify-content:center;}
