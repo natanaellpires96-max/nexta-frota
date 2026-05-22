@@ -558,7 +558,7 @@ async function renderAdmin(){
   const mc=document.getElementById("main-content");
   const allTabs=[
     {id:"dashboard",label:"Dashboard"},
-    {id:"today",label:"Hoje"},
+    {id:"today",label:"Painel de disponibilidade"},
     {id:"history",label:"Histórico"},
     {id:"export",label:"Exportar"},
     {id:"archives",label:"Arquivos Mensais"},
@@ -580,7 +580,7 @@ async function renderAdmin(){
 async function setTab(t){
   S.adminTab=t;
   document.querySelectorAll(".tab").forEach(el=>{
-    const map={dashboard:"Dashboard",today:"Hoje",history:"Histórico",export:"Exportar",archives:"Arquivos Mensais",register:"Cadastros",users:"Usuários"}; const u2=USERS_DB[S.user]; if(u2&&u2.role==="operacional"&&(t==="register"||t==="users")){showToast("Acesso restrito.",false);return;}
+    const map={dashboard:"Dashboard",today:"Painel de disponibilidade",history:"Histórico",export:"Exportar",archives:"Arquivos Mensais",register:"Cadastros",users:"Usuários"}; const u2=USERS_DB[S.user]; if(u2&&u2.role==="operacional"&&(t==="register"||t==="users")){showToast("Acesso restrito.",false);return;}
     el.classList.toggle("active",el.textContent.trim()===map[t]);
   });
   await renderTabBody();
