@@ -212,7 +212,7 @@ const STATUS_OPTS = [
 let S = {
   user: null, dateOffset: 0, adminTab: "dashboard",
   notifOpen: false, histDays: 45,
-  histCarrier:"", histStatus:"", histOp:"", todayOp:"",
+  histCarrier:"", histStatus:"", histOp:"", histPlaca:"", todayOp:"", todayPlaca:"",
   registerSubTab: "plates",
 };
 const SESSION_KEY = "nexta_frota_user";
@@ -873,15 +873,16 @@ async function renderToday(body){
   const allP=await dbGetPlates();
   const pendingAlerts=await buildPendingAlerts(allP);
   const opFilter=S.todayOp||"";
+  const placaFilter=(S.todayPlaca||"").toUpperCase();
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   const allPairs=[];
   for(const carrier of CARRIERS)
-    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)))
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter))))
       allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
   let sections="";
   for(const carrier of CARRIERS){
-    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter));
+    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)));
     if(!plates.length&&!(allP[carrier]||[]).length){
       sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
       continue;
@@ -931,6 +932,7 @@ async function renderToday(body){
     </div>
     <div class="filters-bar">
       <select onchange="S.todayOp=this.value;renderTabBody()">${opOpts}</select>
+      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.todayPlaca||""}" onchange="S.todayPlaca=this.value;renderTabBody()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;" onkeyup="this.onchange()">
     </div>
     ${pendingAlerts}
     <div class="summary-grid">
@@ -949,6 +951,7 @@ async function renderToday(body){
 // ═══════════════════════════════════════════════════════════
 async function renderHistory(body){
   const cf=S.histCarrier, sf=S.histStatus, of=S.histOp;
+  const placaFilter=(S.histPlaca||"").toUpperCase();
   const carrierOpts=`<option value="">Todos transportadores</option>${CARRIERS.map(c=>`<option${c===cf?" selected":""}>${c}</option>`).join("")}`;
   const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${s.val}"${s.val===sf?" selected":""}>${s.label}</option>`).join("")}<option value="nao_preenchido"${"nao_preenchido"===sf?" selected":""}>Não preenchido</option>`;
   const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>`<option${o===of?" selected":""}>${o}</option>`).join("")}`;
@@ -959,6 +962,7 @@ async function renderHistory(body){
       <select onchange="S.histStatus=this.value;renderTabBody()">${statusOpts}</select>
       <select onchange="S.histOp=this.value;renderTabBody()">${opOpts}</select>
       <select onchange="S.histDays=+this.value;renderTabBody()">${daysOpts}</select>
+      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.histPlaca||""}" onchange="S.histPlaca=this.value;renderTabBody()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;" onkeyup="this.onchange()">
     </div>
     <div id="hist-result"><div class="loading"><span class="spin"></span>Buscando registros...</div></div>`;
 
@@ -967,13 +971,13 @@ async function renderHistory(body){
   const carriersToShow=cf?[cf]:CARRIERS;
   const allPairs=[];
   for(const carrier of carriersToShow)
-    for(const p of (allP[carrier]||[]).filter(p=>!of||p.operacao===of))
+    for(const p of (allP[carrier]||[]).filter(p=>(!of||p.operacao===of)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter))))
       for(const ds of dates)
         allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
   let rows="";
   for(const carrier of carriersToShow){
-    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!of||p.operacao===of))){
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!of||p.operacao===of)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)))){
       for(const ds of dates){
         const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = nao preenchido
         const v=rec?rec.status:null;
