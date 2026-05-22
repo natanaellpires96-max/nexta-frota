@@ -159,6 +159,15 @@ async function dbRemoveLock(carrier, dateStr) {
   const id = `lock__${carrier}__${dateStr}`;
   await deleteDoc(doc(db, "locks", id));
 }
+async function dbClearStatusForDate(carrier, dateStr) {
+  // Remove all availability records for this carrier+date so status returns to "not filled"
+  const allP = await dbGetPlates();
+  const plates = (allP[carrier] || []).filter(p => p.ativo !== false);
+  await Promise.all(plates.map(async p => {
+    const id = `${carrier}__${p.placa}__${dateStr}`;
+    try { await deleteDoc(doc(db, "availability", id)); } catch(e) {}
+  }));
+}
 
 // Bulk load status for many plates/dates at once (batched reads)
 async function dbLoadStatusBulk(pairs) {
@@ -421,7 +430,7 @@ async function renderCarrier(carrier){
     ${lockedBanner}
     <div class="tscroll">
       <table class="table">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>DISPONÍVEL ÀS</th><th>MOTORISTAS</th></tr></thead>
+        <thead><tr><th style="width:12%">PLACA</th><th style="width:20%">OPERAÇÃO</th><th style="width:12%">TIPO</th><th style="width:18%">STATUS</th><th style="width:14%">DISPONÍVEL ÀS</th><th style="width:24%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -805,7 +814,7 @@ async function renderToday(body){
     sections+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:640px">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>HORÁRIO</th><th>MOTORISTAS</th></tr></thead>
+        <thead><tr><th style="width:9%">PLACA</th><th style="width:15%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:11%">IDENTIFICAÇÃO</th><th style="width:9%">CONTRATO</th><th style="width:9%">CAPACIDADE</th><th style="width:11%">STATUS</th><th style="width:8%">HORÁRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -888,7 +897,7 @@ async function renderHistory(body){
   if(!rows){result.innerHTML=`<div class="empty"><span class="ei">🔍</span>Nenhum registro encontrado.</div>`;return;}
   result.innerHTML=`
     <div class="tscroll"><table class="table">
-      <thead><tr><th>DATA</th><th>TRANSPORTADOR</th><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>HORÁRIO</th><th>MOTORISTAS</th></tr></thead>
+      <thead><tr><th style="width:11%">DATA</th><th style="width:20%">TRANSPORTADOR</th><th style="width:9%">PLACA</th><th style="width:13%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:11%">STATUS</th><th style="width:8%">HORÁRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <p style="font-size:11px;color:var(--muted);margin-top:10px">Últimos ${S.histDays} dias</p>`;
@@ -1098,7 +1107,7 @@ async function renderRegister(body){
     listHTML+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${activeCount} ativo(s)</span>${inactiveCount>0?`<span class="ch-count" style="color:var(--red)">${inactiveCount} inativo(s)</span>`:''}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:620px">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>MOTORISTAS</th><th>AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:10%">PLACA</th><th style="width:16%">OPERAÇÃO</th><th style="width:10%">TIPO</th><th style="width:12%">IDENTIFICAÇÃO</th><th style="width:10%">CONTRATO</th><th style="width:9%">CAPACIDADE</th><th style="width:8%">STATUS</th><th style="width:15%">MOTORISTAS</th><th style="width:10%">AÇÕES</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -1309,12 +1318,14 @@ async function downloadArchiveCsv(key) {
 // ADMIN UNLOCK
 // ═══════════════════════════════════════════════════════════
 async function adminUnlock(carrier, ds){
-  if(!confirm(`Desbloquear o lançamento de "${carrier}" em ${fmtDateStr(ds)}?
-
-O transportador poderá editar e reenviar a disponibilidade.`)) return;
-  await dbRemoveLock(carrier, ds);
-  await dbAddNotif(`Admin desbloqueou o lançamento de ${carrier} — ${fmtDateStr(ds)}`);
-  showToast(`Lançamento de ${carrier} desbloqueado!`);
+  if(!confirm(`Desbloquear o lançamento de "${carrier}" em ${fmtDateStr(ds)}?\n\nOs status serão apagados e o transportador deverá preencher novamente.`)) return;
+  // Remove lock AND clear all status records so carrier starts fresh
+  await Promise.all([
+    dbRemoveLock(carrier, ds),
+    dbClearStatusForDate(carrier, ds)
+  ]);
+  await dbAddNotif(`Admin desbloqueou e resetou o lançamento de ${carrier} — ${fmtDateStr(ds)}`);
+  showToast(`Lançamento de ${carrier} desbloqueado e resetado!`);
   await renderTabBody();
 }
 
@@ -1362,7 +1373,7 @@ async function renderUsers(body){
     <p class="sec-title" style="margin-bottom:.75rem">Transportadores cadastrados</p>
     <div class="tscroll" style="margin-bottom:2rem">
       <table class="table" style="min-width:360px">
-        <thead><tr><th>TRANSPORTADOR</th><th></th></tr></thead>
+        <thead><tr><th style="width:85%">TRANSPORTADOR</th><th style="width:15%">AÇÕES</th></tr></thead>
         <tbody>${carrierRows||'<tr><td colspan="2" style="color:var(--muted);font-size:13px">Nenhum transportador</td></tr>'}</tbody>
       </table>
     </div>
@@ -1395,7 +1406,7 @@ async function renderUsers(body){
     <p class="sec-title" style="margin-bottom:.75rem">Usuários cadastrados</p>
     <div class="tscroll">
       <table class="table" style="min-width:520px">
-        <thead><tr><th>LOGIN</th><th>NOME</th><th>PERFIL</th><th>TRANSPORTADOR</th><th>AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:14%">LOGIN</th><th style="width:26%">NOME</th><th style="width:12%">PERFIL</th><th style="width:30%">TRANSPORTADOR</th><th style="width:18%">AÇÕES</th></tr></thead>
         <tbody>${userRows}</tbody>
       </table>
     </div>`;
@@ -1582,7 +1593,7 @@ async function renderRegisterDrivers(body, subTabs=''){
           <td style="font-weight:500">${d.nome}</td>
           <td><span class="badge ${d.turno==='Diurno'?'b-amber':'b-blue'}">${d.turno==='Diurno'?'☀ Diurno':'🌙 Noturno'}</span></td>
           <td><span class="badge ${ativo?'b-green':'b-red'}" style="font-size:10px">${ativo?'Ativo':'Inativo'}</span></td>
-          <td style="display:flex;gap:6px;align-items:center">
+          <td style="white-space:nowrap">
             <button class="btn-toggle-${ativo?'off':'on'}" onclick="toggleDriver('${carrier}',${realIdx},${!ativo})" title="${ativo?'Desativar':'Ativar'}">${ativo?'⏸':'▶'}</button>
             <button class="btn-edit" onclick="openEditDriver('${carrier}',${realIdx})" title="Editar">✏️</button>
             <button class="btn-danger" onclick="deleteDriver('${carrier}',${realIdx})" title="Remover">🗑</button>
@@ -1591,8 +1602,8 @@ async function renderRegisterDrivers(body, subTabs=''){
       }).join('');
       opSections+=`<div style="margin-bottom:1rem">
         <p style="font-size:11px;color:var(--muted);letter-spacing:.06em;margin-bottom:.5rem;padding:0 2px">📍 ${op}</p>
-        <table class="table" style="min-width:420px">
-          <thead><tr><th>NOME</th><th>TURNO</th><th>STATUS</th><th>AÇÕES</th></tr></thead>
+        <table class="table" style="min-width:420px;table-layout:fixed;width:100%">
+          <thead><tr><th style="width:55%">NOME</th><th style="width:15%">TURNO</th><th style="width:12%">STATUS</th><th style="width:18%">AÇÕES</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
@@ -1758,7 +1769,7 @@ async function renderRegisterOps(body, subTabs=''){
     <p class="sec-title" style="margin-bottom:.75rem">Operações cadastradas</p>
     <div class="tscroll">
       <table class="table" style="min-width:320px">
-        <thead><tr><th>OPERAÇÃO</th><th>AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:85%">OPERAÇÃO</th><th style="width:15%">AÇÕES</th></tr></thead>
         <tbody>${opRows||'<tr><td colspan="2" style="color:var(--muted);font-size:13px">Nenhuma operação cadastrada</td></tr>'}</tbody>
       </table>
     </div>`;
@@ -2044,9 +2055,9 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .time-sel option{background:#111d0a;color:#e4f2c8;}
 .cap-tag{font-size:11px;color:var(--lime);background:var(--lime-bg);padding:3px 8px;border-radius:99px;border:1px solid var(--border);font-family:'DM Mono',monospace;}
 .tscroll{overflow-x:auto;}
-.table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;}
+.table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;table-layout:fixed;}
 .table th{padding:10px 14px;font-size:11px;font-weight:500;color:var(--muted);text-align:left;background:rgba(200,240,50,.04);border-bottom:1px solid var(--border);letter-spacing:.06em;}
-.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;}
+.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;word-break:break-word;}
 .table tr:last-child td{border-bottom:none;}
 .table tbody tr:hover{background:var(--lime-bg);}
 .st-sel{font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
