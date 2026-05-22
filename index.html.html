@@ -215,6 +215,7 @@ let S = {
   histCarrier:"", histStatus:"", histOp:"", todayOp:"",
   registerSubTab: "plates",
 };
+const SESSION_KEY = "nexta_frota_user";
 
 // ═══════════════════════════════════════════════════════════
 // HELPERS
@@ -292,6 +293,19 @@ function getMonthDates(year,month){
   while(d.getMonth()===month){ arr.push(localDateStr(d)); d.setDate(d.getDate()+1); }
   return arr;
 }
+function saveSession(uid){
+  try { localStorage.setItem(SESSION_KEY, uid); } catch(e) {}
+}
+function clearSession(){
+  try { localStorage.removeItem(SESSION_KEY); } catch(e) {}
+}
+function restoreSession(){
+  try {
+    const uid=localStorage.getItem(SESSION_KEY);
+    if(uid&&USERS_DB[uid]){ S.user=uid; S.dateOffset=0; return; }
+    if(uid) clearSession();
+  } catch(e) {}
+}
 
 // ═══════════════════════════════════════════════════════════
 // RENDER ROOT
@@ -348,9 +362,9 @@ function doLogin(){
   if(!pwd){err.textContent="Informe a senha.";return;}
   if(!USERS_DB[uid]){err.textContent="Usuário não encontrado.";return;}
   if(USERS_DB[uid].password!==pwd){err.textContent="Senha incorreta.";return;}
-  S.user=uid; S.dateOffset=0; render();
+  S.user=uid; S.dateOffset=0; saveSession(uid); render();
 }
-function logout(){ S.user=null; S.notifOpen=false; render(); }
+function logout(){ S.user=null; S.notifOpen=false; clearSession(); render(); }
 
 // ═══════════════════════════════════════════════════════════
 // NOTIFICATIONS
@@ -1968,7 +1982,10 @@ window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exp
 window.renderTabBody=renderTabBody; window.S=S;
 
 // ── INIT ──
-loadConfig().then(()=>render());
+loadConfig().then(()=>{
+  restoreSession();
+  render();
+});
 </script>
 
 <style>
