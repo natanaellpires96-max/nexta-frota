@@ -220,6 +220,7 @@ let S = {
 // HELPERS
 // ═══════════════════════════════════════════════════════════
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
+function statusSemHorario(v){ return v==='indisponivel'||v==='programado'||v==='folga'; }
 function buildTimeOpts(selected=""){
   let opts=`<option value="" ${!selected?'selected':''} disabled>— Horário —</option>`;
   for(let h=0;h<24;h++){
@@ -380,7 +381,7 @@ async function renderCarrier(carrier){
     const cur=rec?rec.status:null;
     const curTime=rec?rec.time:"";
     const st=cur?getSt(cur):null;
-    const isIndisp=cur==='indisponivel'||cur==='programado';
+    const isIndisp=statusSemHorario(cur);
     if(lock){
       // LOCKED — read-only view
       const stBadge=cur?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">—</span>`;
@@ -451,7 +452,7 @@ function onStChange(sel){
   const st=getSt(sel.value);
   sel.className=`st-sel ${st.cls}`;
   if(timeSel){
-    if(sel.value==='indisponivel'||sel.value==='programado'){
+    if(statusSemHorario(sel.value)){
       // Horário não se aplica — desabilita e limpa
       timeSel.disabled=true;
       timeSel.value='';
@@ -483,12 +484,12 @@ async function saveAll(carrier,ds){
     const statusSel=row.querySelector(".st-sel,.st-blank");
     const timeSel=row.querySelector(".time-sel");
     const hasStatus=statusSel&&statusSel.value;
-    const isIndisp=statusSel&&(statusSel.value==='indisponivel'||statusSel.value==='programado');
+    const isIndisp=statusSel&&statusSemHorario(statusSel.value);
     const hasTime=timeSel&&timeSel.value;
     if(!hasStatus||(! isIndisp&&!hasTime)) missing.push(plate);
   });
   if(missing.length>0){
-    showToast(`Preencha status e horário de todas as placas antes de salvar.`,false);
+    showToast(`Preencha status e horário quando aplicável antes de salvar.`,false);
     // Highlight missing rows
     rows.forEach(row=>{
       const plate=row.cells[0].textContent.trim();
@@ -813,8 +814,8 @@ async function renderToday(body){
       :'';
     sections+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
-      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:640px">
-        <thead><tr><th style="width:9%">PLACA</th><th style="width:15%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:11%">IDENTIFICAÇÃO</th><th style="width:9%">CONTRATO</th><th style="width:9%">CAPACIDADE</th><th style="width:11%">STATUS</th><th style="width:8%">HORÁRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
+      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:920px">
+        <thead><tr><th style="width:9%">PLACA</th><th style="width:15%">OPERAÇÃO</th><th style="width:12%">TIPO</th><th style="width:11%">IDENTIFICAÇÃO</th><th style="width:9%">CONTRATO</th><th style="width:9%">CAPACIDADE</th><th style="width:12%">STATUS</th><th style="width:7%">HORÁRIO</th><th style="width:16%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -1011,7 +1012,7 @@ async function buildRows(dates){
       for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
         const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
         const statusLabel=rec?getSt(rec.status).label:"Não preenchido";
-        const timeLabel=rec?rec.time||"—":"—";
+        const timeLabel=rec?(statusSemHorario(rec.status)?"N/A":rec.time||"—"):"—";
         const motDLabel=rec?((rec.motoristaDiurno)||p.motoristaDiurno||"—"):"—";
         const motNLabel=rec?((rec.motoristaNoturno)||p.motoristaNoturno||"—"):"—";
         rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,motDLabel,motNLabel]);
