@@ -652,15 +652,40 @@ async function renderDashboard(body){
   const statusMap=await dbLoadStatusBulk(allPairs);
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   let byCarrier={};
+  let byOp={};
   for(const carrier of CARRIERS){
     byCarrier[carrier]={disponivel:0,indisponivel:0,manutencao:0,folga:0};
     for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
       const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
       const v=rec?rec.status:null;
+      const op=p.operacao||"Sem operação";
+      if(!byOp[op]) byOp[op]={disponivel:0,indisponivel:0,manutencao:0,folga:0,programado:0,pendente:0,total:0};
       if(v){ counts[v]=(counts[v]||0)+1; byCarrier[carrier][v]=(byCarrier[carrier][v]||0)+1; }
+      if(v) byOp[op][v]=(byOp[op][v]||0)+1;
+      else byOp[op].pendente++;
+      byOp[op].total++;
       counts.total++;
     }
   }
+  const opOrder=[...OPERACOES,...Object.keys(byOp).filter(o=>!OPERACOES.includes(o)).sort()];
+  const opRows=opOrder.filter(op=>byOp[op]).map(op=>{
+    const r=byOp[op];
+    const dispPct=r.total?Math.round((r.disponivel/r.total)*100):0;
+    return `<tr>
+      <td style="font-weight:500">${op}</td>
+      <td><span class="badge b-green">${r.disponivel}</span></td>
+      <td><span class="badge b-red">${r.indisponivel}</span></td>
+      <td><span class="badge b-amber">${r.manutencao}</span></td>
+      <td><span class="badge b-blue">${r.folga}</span></td>
+      <td><span class="badge b-purple">${r.programado||0}</span></td>
+      <td><span class="badge b-blank">${r.pendente}</span></td>
+      <td><span class="cap-tag">${r.total}</span></td>
+      <td>
+        <div class="op-meter"><span style="width:${dispPct}%"></span></div>
+        <div class="op-meter-label">${dispPct}% disponível</div>
+      </td>
+    </tr>`;
+  }).join("");
   // 14 days trend
   const tDates=getDates(14);
   const tPairs=[];
@@ -694,6 +719,15 @@ async function renderDashboard(body){
     <div class="chart-card" style="margin-bottom:1.5rem">
       <div class="chart-title">Disponibilidade por transportador — hoje</div>
       <canvas id="bar-chart" height="160"></canvas>
+    </div>
+    <div class="chart-card" style="margin-bottom:1.5rem">
+      <div class="chart-title">Resumo por operação — ${fmtDate(S.dateOffset)}</div>
+      <div class="tscroll">
+        <table class="table op-summary-table" style="min-width:860px">
+          <thead><tr><th style="width:22%">OPERAÇÃO</th><th>DISP.</th><th>INDISP.</th><th>MANUT.</th><th>FOLGA</th><th>PROG.</th><th>PEND.</th><th>TOTAL</th><th style="width:18%">DISPONIBILIDADE</th></tr></thead>
+          <tbody>${opRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px">Nenhuma operação com placas ativas.</td></tr>'}</tbody>
+        </table>
+      </div>
     </div>`;
 
   requestAnimationFrame(()=>{
@@ -2164,6 +2198,10 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .pa-list{display:flex;flex-wrap:wrap;gap:6px;}
 .pa-chip{display:inline-flex;align-items:center;max-width:100%;border-radius:99px;padding:4px 9px;font-size:11px;color:var(--amber);background:rgba(240,190,64,.12);border:1px solid rgba(240,190,64,.28);}
 .pa-chip.ok{color:var(--green);background:rgba(110,224,74,.1);border-color:rgba(110,224,74,.25);}
+.op-summary-table td:not(:first-child),.op-summary-table th:not(:first-child){text-align:center;}
+.op-meter{height:7px;background:rgba(228,242,200,.08);border:1px solid rgba(228,242,200,.1);border-radius:99px;overflow:hidden;}
+.op-meter span{display:block;height:100%;background:var(--green);border-radius:99px;}
+.op-meter-label{font-size:10px;color:var(--muted);margin-top:4px;text-align:left;white-space:nowrap;}
 .carrier-block{margin-bottom:1.5rem;}
 .carrier-head{display:flex;align-items:center;gap:8px;padding:11px 14px;background:var(--lime-bg);border:1px solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0;font-size:13px;font-weight:500;}
 .carrier-head .ch-icon{font-size:16px;}
