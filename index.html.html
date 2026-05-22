@@ -221,6 +221,14 @@ let S = {
 // ═══════════════════════════════════════════════════════════
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
 function statusSemHorario(v){ return v==='indisponivel'||v==='programado'||v==='folga'; }
+function renderDriverCell(diurno='', noturno=''){
+  const motD=diurno||'—';
+  const motN=noturno||'—';
+  return `<div class="driver-cell">
+    <div class="driver-line"><span class="driver-icon">☀</span><span class="driver-name" title="${motD}">${motD}</span></div>
+    <div class="driver-line"><span class="driver-icon">🌙</span><span class="driver-name" title="${motN}">${motN}</span></div>
+  </div>`;
+}
 function buildTimeOpts(selected=""){
   let opts=`<option value="" ${!selected?'selected':''} disabled>— Horário —</option>`;
   for(let h=0;h<24;h++){
@@ -394,7 +402,7 @@ async function renderCarrier(carrier){
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td>${stBadge}</td>
         <td>${timeBadge}</td>
-        <td style="font-size:11px;color:var(--muted);line-height:1.7">☀ ${motD}<br>🌙 ${motN}</td>
+        <td>${renderDriverCell(motD,motN)}</td>
       </tr>`;
     }
     const blankOpt=cur===null?`<option value="" selected disabled>— Selecione —</option>`:"";
@@ -801,7 +809,7 @@ async function renderToday(body){
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
         <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
         <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?rec.time:'—'}</td>
-        <td style="font-size:11px;color:var(--muted);line-height:1.7">${motDToday?`☀ ${motDToday}`:'☀ —'}<br>${motNToday?`🌙 ${motNToday}`:'🌙 —'}</td>
+        <td>${renderDriverCell(motDToday,motNToday)}</td>
       </tr>`;
     }).join("");
     const lock=await dbGetLock(carrier,ds);
@@ -814,8 +822,8 @@ async function renderToday(body){
       :'';
     sections+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
-      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:920px">
-        <thead><tr><th style="width:9%">PLACA</th><th style="width:15%">OPERAÇÃO</th><th style="width:12%">TIPO</th><th style="width:11%">IDENTIFICAÇÃO</th><th style="width:9%">CONTRATO</th><th style="width:9%">CAPACIDADE</th><th style="width:12%">STATUS</th><th style="width:7%">HORÁRIO</th><th style="width:16%">MOTORISTAS</th></tr></thead>
+      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1080px">
+        <thead><tr><th style="width:9%">PLACA</th><th style="width:13%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:9%">IDENTIFICAÇÃO</th><th style="width:8%">CONTRATO</th><th style="width:7%">CAPACIDADE</th><th style="width:17%">STATUS</th><th style="width:6%">HORÁRIO</th><th style="width:22%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -889,7 +897,7 @@ async function renderHistory(body){
           <td><span class="badge b-lime">${p.tipo}</span></td>
           <td>${statusBadge}</td>
           <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${t||'—'}</td>
-          <td style="font-size:11px;color:var(--muted);line-height:1.7">${!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?`☀ ${(rec&&rec.motoristaDiurno)||p.motoristaDiurno}`:'☀ —'}<br>${!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?`🌙 ${(rec&&rec.motoristaNoturno)||p.motoristaNoturno}`:'🌙 —'}</td>
+        <td>${renderDriverCell(!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?((rec&&rec.motoristaDiurno)||p.motoristaDiurno):'',!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?((rec&&rec.motoristaNoturno)||p.motoristaNoturno):'')}</td>
         </tr>`;
       }
     }
@@ -1095,7 +1103,7 @@ async function renderRegister(body){
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
         <td>${statusBadge}</td>
-        <td style="font-size:11px;color:var(--muted);line-height:1.6">${p.motoristaDiurno?`☀ ${p.motoristaDiurno}`:'<span style="opacity:.4">—</span>'}<br>${p.motoristaNoturno?`🌙 ${p.motoristaNoturno}`:'<span style="opacity:.4">—</span>'}</td>
+        <td>${renderDriverCell(p.motoristaDiurno,p.motoristaNoturno)}</td>
         <td style="display:flex;gap:6px;align-items:center">
           ${toggleBtn}
           <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">✏️</button>
@@ -2055,6 +2063,10 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .time-na{background:rgba(240,96,96,.07);color:rgba(240,96,96,.35);border-color:rgba(240,96,96,.15);font-size:12px;padding:5px 9px;border-radius:7px;border:1px solid;outline:none;font-family:'DM Mono',monospace;}
 .time-sel option{background:#111d0a;color:#e4f2c8;}
 .cap-tag{font-size:11px;color:var(--lime);background:var(--lime-bg);padding:3px 8px;border-radius:99px;border:1px solid var(--border);font-family:'DM Mono',monospace;}
+.driver-cell{display:grid;gap:4px;font-size:12px;color:var(--dim);min-width:0;}
+.driver-line{display:grid;grid-template-columns:18px minmax(0,1fr);align-items:center;column-gap:3px;min-width:0;line-height:1.35;}
+.driver-icon{width:18px;text-align:center;color:var(--amber);font-size:13px;line-height:1;opacity:.9;}
+.driver-name{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .tscroll{overflow-x:auto;}
 .table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;table-layout:fixed;}
 .table th{padding:10px 14px;font-size:11px;font-weight:500;color:var(--muted);text-align:left;background:rgba(200,240,50,.04);border-bottom:1px solid var(--border);letter-spacing:.06em;}
