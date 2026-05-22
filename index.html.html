@@ -2086,8 +2086,9 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .driver-name{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .tscroll{overflow-x:auto;}
 .table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;table-layout:fixed;}
-.table th{padding:10px 14px;font-size:11px;font-weight:500;color:var(--muted);text-align:left;background:rgba(200,240,50,.04);border-bottom:1px solid var(--border);letter-spacing:.06em;}
-.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;word-break:break-word;}
+.table th{padding:10px 14px;font-size:11px;font-weight:500;color:var(--muted);text-align:left;background:rgba(200,240,50,.04);border-bottom:1px solid var(--border);letter-spacing:.06em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;word-break:break-word;overflow:hidden;}
+.table .badge,.table .cap-tag{max-width:100%;overflow:hidden;text-overflow:ellipsis;}
 .table tr:last-child td{border-bottom:none;}
 .table tbody tr:hover{background:var(--lime-bg);}
 .st-sel{font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
