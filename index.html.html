@@ -295,6 +295,47 @@ function getMonthDates(year,month){
   while(d.getMonth()===month){ arr.push(localDateStr(d)); d.setDate(d.getDate()+1); }
   return arr;
 }
+async function buildPendingAlerts(allP){
+  const activeCarriers=CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
+  if(!activeCarriers.length) return "";
+  const targets=[
+    {label:"Hoje", ds:dateStr(0)},
+    {label:"Amanhã", ds:dateStr(1)}
+  ];
+  const groups=await Promise.all(targets.map(async t=>{
+    const checks=await Promise.all(activeCarriers.map(async carrier=>({
+      carrier,
+      lock: await dbGetLock(carrier,t.ds)
+    })));
+    return {
+      ...t,
+      pending: checks.filter(x=>!x.lock).map(x=>x.carrier)
+    };
+  }));
+  const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
+  if(total===0){
+    return `<div class="pending-alert ok">
+      <div class="pa-icon">✓</div>
+      <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todos os transportadores preencheram hoje e amanhã.</div></div>
+    </div>`;
+  }
+  return `<div class="pending-alert warn">
+    <div class="pa-icon">!</div>
+    <div class="pa-content">
+      <div class="pa-title">Pendências de preenchimento</div>
+      <div class="pa-sub">Transportadores sem envio concluído para o dia atual e seguinte.</div>
+      <div class="pa-groups">
+        ${groups.map(g=>`
+          <div class="pa-group">
+            <div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div>
+            <div class="pa-list">
+              ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendências</span>`}
+            </div>
+          </div>`).join("")}
+      </div>
+    </div>
+  </div>`;
+}
 function saveSession(uid){
   try { localStorage.setItem(SESSION_KEY, uid); } catch(e) {}
 }
@@ -604,6 +645,7 @@ async function renderDashboard(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando dashboard...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
+  const pendingAlerts=await buildPendingAlerts(allP);
   // Build all pairs for today
   const allPairs=[];
   for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
@@ -636,6 +678,7 @@ async function renderDashboard(body){
       <span class="date-label">${fmtDate(S.dateOffset)}</span>
       <button onclick="chDate(1)">›</button>
     </div>
+    ${pendingAlerts}
     <div class="summary-grid">
       <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
@@ -792,6 +835,7 @@ async function renderToday(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
+  const pendingAlerts=await buildPendingAlerts(allP);
   const opFilter=S.todayOp||"";
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   const allPairs=[];
@@ -852,6 +896,7 @@ async function renderToday(body){
     <div class="filters-bar">
       <select onchange="S.todayOp=this.value;renderTabBody()">${opOpts}</select>
     </div>
+    ${pendingAlerts}
     <div class="summary-grid">
       <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
@@ -2104,6 +2149,21 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .sum-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 12px;text-align:center;}
 .sum-num{font-size:28px;font-weight:600;line-height:1;}
 .sum-label{font-size:11px;color:var(--muted);margin-top:5px;}
+.pending-alert{display:flex;align-items:flex-start;gap:14px;border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:1.5rem;border:1px solid var(--border);}
+.pending-alert.warn{background:rgba(240,190,64,.09);border-color:rgba(240,190,64,.34);}
+.pending-alert.ok{background:rgba(110,224,74,.08);border-color:rgba(110,224,74,.28);}
+.pa-icon{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-weight:700;font-size:14px;background:rgba(240,190,64,.16);color:var(--amber);border:1px solid rgba(240,190,64,.35);}
+.pending-alert.ok .pa-icon{background:rgba(110,224,74,.14);color:var(--green);border-color:rgba(110,224,74,.35);}
+.pa-content{flex:1;min-width:0;}
+.pa-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:2px;}
+.pa-sub{font-size:12px;color:var(--muted);margin-bottom:10px;}
+.pa-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;}
+.pa-group{background:rgba(17,29,10,.42);border:1px solid rgba(228,242,200,.08);border-radius:var(--radius);padding:10px;}
+.pa-day{font-size:11px;font-weight:600;color:var(--amber);letter-spacing:.05em;margin-bottom:8px;text-transform:uppercase;}
+.pa-day span{font-weight:400;color:var(--muted);letter-spacing:0;text-transform:none;margin-left:6px;}
+.pa-list{display:flex;flex-wrap:wrap;gap:6px;}
+.pa-chip{display:inline-flex;align-items:center;max-width:100%;border-radius:99px;padding:4px 9px;font-size:11px;color:var(--amber);background:rgba(240,190,64,.12);border:1px solid rgba(240,190,64,.28);}
+.pa-chip.ok{color:var(--green);background:rgba(110,224,74,.1);border-color:rgba(110,224,74,.25);}
 .carrier-block{margin-bottom:1.5rem;}
 .carrier-head{display:flex;align-items:center;gap:8px;padding:11px 14px;background:var(--lime-bg);border:1px solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0;font-size:13px;font-weight:500;}
 .carrier-head .ch-icon{font-size:16px;}
