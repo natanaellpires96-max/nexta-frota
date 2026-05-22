@@ -46,13 +46,15 @@ async function dbGetStatus(carrier, plate, dateStr) {
     const snap = await getDoc(doc(db, "availability", id));
     if(!snap.exists()) return null;
     const d = snap.data();
-    return { status: d.status, time: d.time||"" };
+    return { status: d.status, time: d.time||"", motoristaDiurno: d.motoristaDiurno||"", motoristaNoturno: d.motoristaNoturno||"" };
   } catch { return null; }
 }
-async function dbSaveStatus(carrier, plate, dateStr, status, time) {
+async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno) {
   const id = `${carrier}__${plate}__${dateStr}`;
   await setDoc(doc(db, "availability", id), {
     carrier, plate, dateStr, status, time: time||"", filled: true,
+    motoristaDiurno: motoristaDiurno||"",
+    motoristaNoturno: motoristaNoturno||"",
     updatedAt: new Date().toISOString()
   });
 }
@@ -101,6 +103,15 @@ async function dbGetOperacoes() {
 }
 async function dbSaveOperacoes(list) {
   await setDoc(doc(db, "config", "operacoes"), { list });
+}
+async function dbGetDrivers() {
+  try {
+    const snap = await getDoc(doc(db, "config", "drivers"));
+    return snap.exists() ? (snap.data().data || {}) : {};
+  } catch(e) { return {}; }
+}
+async function dbSaveDrivers(data) {
+  await setDoc(doc(db, "config", "drivers"), { data });
 }
 // Load users and carriers from Firebase, fall back to defaults
 async function loadConfig() {
@@ -365,12 +376,15 @@ async function renderCarrier(carrier){
       // LOCKED — read-only view
       const stBadge=cur?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">—</span>`;
       const timeBadge=isIndisp?`<span style="font-size:11px;color:var(--muted)">N/A</span>`:curTime?`<span style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${curTime}</span>`:`<span style="color:var(--muted)">—</span>`;
+      const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'—';
+      const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'—';
       return `<tr>
         <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
         <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td>${stBadge}</td>
         <td>${timeBadge}</td>
+        <td style="font-size:11px;color:var(--muted);line-height:1.7">☀ ${motD}<br>🌙 ${motN}</td>
       </tr>`;
     }
     const blankOpt=cur===null?`<option value="" selected disabled>— Selecione —</option>`:"";
@@ -407,7 +421,7 @@ async function renderCarrier(carrier){
     ${lockedBanner}
     <div class="tscroll">
       <table class="table">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>DISPONÍVEL ÀS</th></tr></thead>
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>DISPONÍVEL ÀS</th><th>MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -415,23 +429,34 @@ async function renderCarrier(carrier){
 }
 function onStChange(sel){
   const row=sel.closest('tr');
-  const timeSel=row?row.querySelector('.time-sel'):null;
+  const timeSel=row?row.querySelector('.time-sel, .time-na, .time-blank, .time-filled'):null;
   if(!sel.value){
     sel.className='st-sel st-blank';
-    if(timeSel){timeSel.disabled=true;timeSel.value='';timeSel.className='time-sel time-blank';}
+    if(timeSel){
+      timeSel.disabled=true;
+      timeSel.value='';
+      timeSel.className='time-sel time-blank';
+    }
     return;
   }
   const st=getSt(sel.value);
   sel.className=`st-sel ${st.cls}`;
   if(timeSel){
     if(sel.value==='indisponivel'||sel.value==='programado'){
-      // Horário não se aplica para indisponível e programado/em viagem
+      // Horário não se aplica — desabilita e limpa
       timeSel.disabled=true;
       timeSel.value='';
       timeSel.className='time-sel time-na';
+      // Replace options with N/A
+      timeSel.innerHTML='<option value="">N/A</option>';
     } else {
+      // Habilita e restaura as opções de horário
       timeSel.disabled=false;
-      if(timeSel.className==='time-sel time-na') timeSel.className='time-sel time-blank';
+      // Rebuild time options if currently showing N/A
+      if(!timeSel.options||timeSel.options.length<=1||timeSel.options[0]?.text==='N/A'){
+        timeSel.innerHTML=buildTimeOpts('');
+      }
+      timeSel.className=timeSel.value?'time-sel time-filled':'time-sel time-blank';
     }
   }
 }
@@ -464,12 +489,15 @@ async function saveAll(carrier,ds){
     return;
   }
   if(btn){btn.disabled=true;btn.textContent="Salvando...";}
+  const allP=await dbGetPlates();
   const proms=[];
   rows.forEach(row=>{
     const plate=row.cells[0].textContent.trim();
     const statusSel=row.querySelector(".st-sel");
     const timeSel=row.querySelector(".time-sel");
-    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value));
+    // Snapshot current drivers from plate record
+    const pRecord=(allP[carrier]||[]).find(p=>p.placa===plate)||{};
+    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,pRecord.motoristaDiurno||'',pRecord.motoristaNoturno||''));
   });
   await Promise.all(proms);
   const u=USERS_DB[S.user];
@@ -751,6 +779,9 @@ async function renderToday(body){
       const v=rec?rec.status:null;
       if(v){ counts[v]=(counts[v]||0)+1; } counts.total++;
       const st=v?getSt(v):null;
+      // Only show drivers if availability was actually filled
+      const motDToday=v?((rec&&rec.motoristaDiurno)||p.motoristaDiurno||''):'';
+      const motNToday=v?((rec&&rec.motoristaNoturno)||p.motoristaNoturno||''):'';
       return `<tr>
         <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
         <td style="font-size:12px">${p.operacao}</td>
@@ -760,6 +791,7 @@ async function renderToday(body){
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
         <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
         <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?rec.time:'—'}</td>
+        <td style="font-size:11px;color:var(--muted);line-height:1.7">${motDToday?`☀ ${motDToday}`:'☀ —'}<br>${motNToday?`🌙 ${motNToday}`:'🌙 —'}</td>
       </tr>`;
     }).join("");
     const lock=await dbGetLock(carrier,ds);
@@ -773,7 +805,7 @@ async function renderToday(body){
     sections+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:640px">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>HORÁRIO</th></tr></thead>
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>HORÁRIO</th><th>MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -847,6 +879,7 @@ async function renderHistory(body){
           <td><span class="badge b-lime">${p.tipo}</span></td>
           <td>${statusBadge}</td>
           <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${t||'—'}</td>
+          <td style="font-size:11px;color:var(--muted);line-height:1.7">${!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?`☀ ${(rec&&rec.motoristaDiurno)||p.motoristaDiurno}`:'☀ —'}<br>${!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?`🌙 ${(rec&&rec.motoristaNoturno)||p.motoristaNoturno}`:'🌙 —'}</td>
         </tr>`;
       }
     }
@@ -855,7 +888,7 @@ async function renderHistory(body){
   if(!rows){result.innerHTML=`<div class="empty"><span class="ei">🔍</span>Nenhum registro encontrado.</div>`;return;}
   result.innerHTML=`
     <div class="tscroll"><table class="table">
-      <thead><tr><th>DATA</th><th>TRANSPORTADOR</th><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>HORÁRIO</th></tr></thead>
+      <thead><tr><th>DATA</th><th>TRANSPORTADOR</th><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>STATUS</th><th>HORÁRIO</th><th>MOTORISTAS</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <p style="font-size:11px;color:var(--muted);margin-top:10px">Últimos ${S.histDays} dias</p>`;
@@ -963,20 +996,22 @@ async function buildRows(dates){
   const allPairs=[];
   for(const ds of dates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
-  const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status","Horário"]];
+  const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status","Horário","Motorista Diurno","Motorista Noturno"]];
   for(const ds of dates)
     for(const carrier of CARRIERS)
       for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
         const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
         const statusLabel=rec?getSt(rec.status).label:"Não preenchido";
         const timeLabel=rec?rec.time||"—":"—";
-        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel]);
+        const motDLabel=rec?((rec.motoristaDiurno)||p.motoristaDiurno||"—"):"—";
+        const motNLabel=rec?((rec.motoristaNoturno)||p.motoristaNoturno||"—"):"—";
+        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,motDLabel,motNLabel]);
       }
   return rows;
 }
 function exportXlsx(rows,filename){
   const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws["!cols"]=[{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14},{wch:10}];
+  ws["!cols"]=[{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14},{wch:10},{wch:22},{wch:22}];
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Relatório");
   XLSX.writeFile(wb,filename+".xlsx"); showToast("Excel exportado!");
 }
@@ -1018,9 +1053,11 @@ async function renderRegister(body){
   const subTabs=`
     <div style="display:flex;gap:4px;background:var(--mid);border:1px solid var(--border);border-radius:var(--radius);padding:4px;width:fit-content;margin-bottom:1.5rem">
       <button class="tab ${S.registerSubTab==='plates'?'active':''}" onclick="setRegSubTab('plates')">🚛 Placas</button>
+      <button class="tab ${S.registerSubTab==='drivers'?'active':''}" onclick="setRegSubTab('drivers')">👤 Motoristas</button>
       ${isAdmin?`<button class="tab ${S.registerSubTab==='ops'?'active':''}" onclick="setRegSubTab('ops')">📍 Operações</button>`:''}
     </div>`;
   if(S.registerSubTab==='ops'&&isAdmin){ await renderRegisterOps(body, subTabs); return; }
+  if(S.registerSubTab==='drivers'){ await renderRegisterDrivers(body, subTabs); return; }
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando placas...</div>`;
   const allP=await dbGetPlates();
   const carrierOpts=CARRIERS.map(c=>`<option>${c}</option>`).join("");
@@ -1048,6 +1085,7 @@ async function renderRegister(body){
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
         <td>${statusBadge}</td>
+        <td style="font-size:11px;color:var(--muted);line-height:1.6">${p.motoristaDiurno?`☀ ${p.motoristaDiurno}`:'<span style="opacity:.4">—</span>'}<br>${p.motoristaNoturno?`🌙 ${p.motoristaNoturno}`:'<span style="opacity:.4">—</span>'}</td>
         <td style="display:flex;gap:6px;align-items:center">
           ${toggleBtn}
           <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">✏️</button>
@@ -1060,22 +1098,25 @@ async function renderRegister(body){
     listHTML+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${activeCount} ativo(s)</span>${inactiveCount>0?`<span class="ch-count" style="color:var(--red)">${inactiveCount} inativo(s)</span>`:''}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:620px">
-        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>AÇÕES</th></tr></thead>
+        <thead><tr><th>PLACA</th><th>OPERAÇÃO</th><th>TIPO</th><th>IDENTIFICAÇÃO</th><th>CONTRATO</th><th>CAPACIDADE</th><th>STATUS</th><th>MOTORISTAS</th><th>AÇÕES</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
   if(!listHTML) listHTML=`<div class="empty"><span class="ei">📋</span>Nenhuma placa cadastrada ainda.<br>Use o formulário acima para começar.</div>`;
+  // After render, populate driver dropdowns and add listeners
   body.innerHTML=subTabs+`
     <div class="card" style="margin-bottom:1.5rem">
       <p class="reg-heading">+ Nova placa</p>
       <div class="form-grid">
-        <div class="form-field"><label>TRANSPORTADOR</label><select id="r-carrier">${carrierOpts}</select></div>
-        <div class="form-field"><label>OPERAÇÃO</label><select id="r-op">${opOpts}</select></div>
+        <div class="form-field"><label>TRANSPORTADOR</label><select id="r-carrier" onchange="populateDriverSelects()">${carrierOpts}</select></div>
+        <div class="form-field"><label>OPERAÇÃO</label><select id="r-op" onchange="populateDriverSelects()">${opOpts}</select></div>
         <div class="form-field"><label>PLACA</label><input id="r-placa" type="text" placeholder="Ex: ABC-1234" style="text-transform:uppercase"></div>
         <div class="form-field"><label>TIPO DE VEÍCULO</label><select id="r-tipo">${tvOpts}</select></div>
         <div class="form-field"><label>IDENTIFICAÇÃO</label><select id="r-id">${idOpts}</select></div>
         <div class="form-field"><label>TIPO DE CONTRATO</label><select id="r-contrato">${ctOpts}</select></div>
         <div class="form-field"><label>CAPACIDADE (m³)</label><input id="r-cap" type="number" placeholder="Ex: 25" min="1" max="999"></div>
+        <div class="form-field"><label>MOTORISTA DIURNO</label><select id="r-mot-d"><option value="">— Sem motorista —</option></select></div>
+        <div class="form-field"><label>MOTORISTA NOTURNO</label><select id="r-mot-n"><option value="">— Sem motorista —</option></select></div>
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-lime" id="add-btn" onclick="addPlate()">+ Cadastrar placa</button>
@@ -1084,6 +1125,8 @@ async function renderRegister(body){
     </div>
     <p class="sec-title" style="margin-bottom:1rem">Placas cadastradas</p>
     <div id="plates-list">${listHTML}</div>`;
+  // Populate driver selects after render
+  setTimeout(()=>populateDriverSelects(), 50);
 }
 async function addPlate(){
   const carrier=document.getElementById("r-carrier").value;
@@ -1104,7 +1147,9 @@ async function addPlate(){
     msg.textContent="Placa já cadastrada.";msg.style.color="var(--red)";
     btn.disabled=false;btn.textContent="+ Cadastrar placa";return;
   }
-  allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade});
+  const motDiurno=document.getElementById('r-mot-d')?.value||'';
+  const motNoturno=document.getElementById('r-mot-n')?.value||'';
+  allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade,motoristaDiurno:motDiurno,motoristaNoturno:motNoturno});
   await dbSavePlates(allP);
   document.getElementById("r-placa").value="";
   document.getElementById("r-cap").value="";
@@ -1487,6 +1532,204 @@ function setRegSubTab(tab){
   renderTabBody();
 }
 
+// ── Populate driver selects in plate form ──
+async function populateDriverSelects(selDiurno='', selNoturno=''){
+  const carrier=document.getElementById('r-carrier')?.value;
+  const op=document.getElementById('r-op')?.value;
+  const selD=document.getElementById('r-mot-d');
+  const selN=document.getElementById('r-mot-n');
+  if(!selD||!selN) return;
+  const allDrivers=await dbGetDrivers();
+  const blank='<option value="">— Sem motorista —</option>';
+  let opts=blank;
+  if(carrier&&op){
+    const list=(allDrivers[carrier]||[]).filter(d=>d.ativo!==false&&d.operacao===op);
+    opts+=list.map(d=>`<option value="${d.nome}"${d.nome===selDiurno?' selected':''}>${d.nome}</option>`).join('');
+  }
+  selD.innerHTML=opts;
+  selN.innerHTML=opts.replace(`value="${selDiurno}"${selDiurno?' selected':''}`,`value="${selDiurno}"`);
+  if(selNoturno) selN.value=selNoturno;
+}
+
+// ═══════════════════════════════════════════════════════════
+// DRIVERS MANAGEMENT
+// ═══════════════════════════════════════════════════════════
+async function renderRegisterDrivers(body, subTabs=''){
+  const u=USERS_DB[S.user];
+  const isAdmin=u&&u.role==='admin';
+  const allDrivers=await dbGetDrivers();
+
+  // Filter by carrier for non-admin
+  const carriersToShow=isAdmin?CARRIERS:[u.carrier].filter(Boolean);
+
+  // Build driver list grouped by carrier then operation
+  let listHTML='';
+  for(const carrier of carriersToShow){
+    const drivers=(allDrivers[carrier]||[]);
+    if(!drivers.length&&!isAdmin) continue;
+    // Group by operation
+    const byOp={};
+    for(const d of drivers){
+      if(!byOp[d.operacao]) byOp[d.operacao]=[];
+      byOp[d.operacao].push(d);
+    }
+    let opSections='';
+    for(const [op,drvs] of Object.entries(byOp)){
+      const rows=drvs.map((d,i)=>{
+        const realIdx=(allDrivers[carrier]||[]).findIndex(x=>x.nome===d.nome&&x.operacao===d.operacao&&x.turno===d.turno);
+        const ativo=d.ativo!==false;
+        return `<tr style="${ativo?'':'opacity:.5;background:rgba(240,96,96,.04)'}">
+          <td style="font-weight:500">${d.nome}</td>
+          <td><span class="badge ${d.turno==='Diurno'?'b-amber':'b-blue'}">${d.turno==='Diurno'?'☀ Diurno':'🌙 Noturno'}</span></td>
+          <td><span class="badge ${ativo?'b-green':'b-red'}" style="font-size:10px">${ativo?'Ativo':'Inativo'}</span></td>
+          <td style="display:flex;gap:6px;align-items:center">
+            <button class="btn-toggle-${ativo?'off':'on'}" onclick="toggleDriver('${carrier}',${realIdx},${!ativo})" title="${ativo?'Desativar':'Ativar'}">${ativo?'⏸':'▶'}</button>
+            <button class="btn-edit" onclick="openEditDriver('${carrier}',${realIdx})" title="Editar">✏️</button>
+            <button class="btn-danger" onclick="deleteDriver('${carrier}',${realIdx})" title="Remover">🗑</button>
+          </td>
+        </tr>`;
+      }).join('');
+      opSections+=`<div style="margin-bottom:1rem">
+        <p style="font-size:11px;color:var(--muted);letter-spacing:.06em;margin-bottom:.5rem;padding:0 2px">📍 ${op}</p>
+        <table class="table" style="min-width:420px">
+          <thead><tr><th>NOME</th><th>TURNO</th><th>STATUS</th><th>AÇÕES</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    }
+    if(!opSections) opSections=`<p style="font-size:13px;color:var(--muted);padding:.75rem 0">Nenhum motorista cadastrado.</p>`;
+    listHTML+=`<div class="carrier-block" style="margin-bottom:1.5rem">
+      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${drivers.filter(d=>d.ativo!==false).length} ativo(s)</span></div>
+      <div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem">
+        <div class="tscroll">${opSections}</div>
+      </div>
+    </div>`;
+  }
+  if(!listHTML) listHTML=`<div class="empty"><span class="ei">👤</span>Nenhum motorista cadastrado.</div>`;
+
+  const carrierOpts=carriersToShow.map(c=>`<option>${c}</option>`).join('');
+  const opOpts=OPERACOES.map(o=>`<option>${o}</option>`).join('');
+
+  // Only admin/same carrier can add drivers
+  const addForm=isAdmin||u.role==='operacional'?`
+    <div class="card" style="margin-bottom:1.5rem">
+      <p class="reg-heading">+ Novo motorista</p>
+      <div class="form-grid">
+        <div class="form-field"><label>TRANSPORTADOR</label><select id="drv-carrier">${carrierOpts}</select></div>
+        <div class="form-field"><label>OPERAÇÃO</label><select id="drv-op">${opOpts}</select></div>
+        <div class="form-field"><label>NOME COMPLETO</label><input id="drv-nome" type="text" placeholder="Ex: João da Silva"></div>
+        <div class="form-field"><label>TURNO</label>
+          <select id="drv-turno">
+            <option value="Diurno">☀ Diurno</option>
+            <option value="Noturno">🌙 Noturno</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-lime" onclick="addDriver()">+ Cadastrar motorista</button>
+        <span id="drv-msg" style="font-size:12px"></span>
+      </div>
+    </div>`:
+    `<div class="card" style="margin-bottom:1.5rem;padding:.75rem 1rem;font-size:13px;color:var(--muted)">
+      ℹ️ Somente administradores e operacionais podem cadastrar novos motoristas.
+    </div>`;
+
+  body.innerHTML=subTabs+addForm+`
+    <p class="sec-title" style="margin-bottom:1rem">Motoristas cadastrados</p>
+    <div id="drivers-list">${listHTML}</div>`;
+}
+
+async function addDriver(){
+  const carrier=document.getElementById('drv-carrier')?.value;
+  const op=document.getElementById('drv-op')?.value;
+  const nome=document.getElementById('drv-nome')?.value.trim();
+  const turno=document.getElementById('drv-turno')?.value;
+  const msg=document.getElementById('drv-msg');
+  if(!nome){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
+  const allDrivers=await dbGetDrivers();
+  if(!allDrivers[carrier]) allDrivers[carrier]=[];
+  const dup=allDrivers[carrier].find(d=>d.nome===nome&&d.operacao===op&&d.turno===turno);
+  if(dup){msg.textContent='Motorista já cadastrado com esse turno e operação.';msg.style.color='var(--red)';return;}
+  allDrivers[carrier].push({nome,operacao:op,turno,ativo:true});
+  await dbSaveDrivers(allDrivers);
+  document.getElementById('drv-nome').value='';
+  msg.textContent=`${nome} cadastrado!`;msg.style.color='var(--green)';
+  showToast(`Motorista ${nome} cadastrado!`);
+  setTimeout(()=>{msg.textContent='';},3000);
+  await renderTabBody();
+}
+
+async function toggleDriver(carrier,idx,activate){
+  const allDrivers=await dbGetDrivers();
+  if(!allDrivers[carrier]||!allDrivers[carrier][idx]) return;
+  const nome=allDrivers[carrier][idx].nome;
+  if(!confirm(`${activate?'Ativar':'Desativar'} motorista ${nome}?`)) return;
+  allDrivers[carrier][idx].ativo=activate;
+  await dbSaveDrivers(allDrivers);
+  showToast(`${nome} ${activate?'ativado':'desativado'}!`);
+  await renderTabBody();
+}
+
+async function deleteDriver(carrier,idx){
+  const allDrivers=await dbGetDrivers();
+  if(!allDrivers[carrier]||!allDrivers[carrier][idx]) return;
+  const nome=allDrivers[carrier][idx].nome;
+  if(!confirm(`Remover motorista ${nome}?`)) return;
+  allDrivers[carrier].splice(idx,1);
+  await dbSaveDrivers(allDrivers);
+  showToast(`${nome} removido.`);
+  await renderTabBody();
+}
+
+function openEditDriver(carrier,idx){
+  dbGetDrivers().then(allDrivers=>{
+    const d=allDrivers[carrier]&&allDrivers[carrier][idx];
+    if(!d) return;
+    _editPending={driverCarrier:carrier,driverIdx:idx};
+    const opOpts=OPERACOES.map(o=>`<option${o===d.operacao?' selected':''}>${o}</option>`).join('');
+    const existing=document.getElementById('edit-driver-modal');
+    if(existing) existing.remove();
+    const modal=document.createElement('div');
+    modal.id='edit-driver-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
+    modal.innerHTML=`
+      <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:460px">
+        <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar motorista — ${d.nome}</p>
+        <div class="form-grid">
+          <div class="form-field"><label>NOME COMPLETO</label><input id="ed-nome" type="text" value="${d.nome}"></div>
+          <div class="form-field"><label>OPERAÇÃO</label><select id="ed-op">${opOpts}</select></div>
+          <div class="form-field"><label>TURNO</label>
+            <select id="ed-turno">
+              <option value="Diurno"${d.turno==='Diurno'?' selected':''}>☀ Diurno</option>
+              <option value="Noturno"${d.turno==='Noturno'?' selected':''}>🌙 Noturno</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
+          <button class="btn btn-outline" onclick="document.getElementById('edit-driver-modal').remove()">Cancelar</button>
+          <button class="btn btn-lime" onclick="saveEditDriver()">💾 Salvar</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  });
+}
+
+async function saveEditDriver(){
+  const {driverCarrier:carrier,driverIdx:idx}=_editPending;
+  if(!carrier&&carrier!==0) return;
+  const nome=document.getElementById('ed-nome')?.value.trim();
+  const op=document.getElementById('ed-op')?.value;
+  const turno=document.getElementById('ed-turno')?.value;
+  if(!nome){showToast('Informe o nome.',false);return;}
+  const allDrivers=await dbGetDrivers();
+  allDrivers[carrier][idx]={...allDrivers[carrier][idx],nome,operacao:op,turno};
+  await dbSaveDrivers(allDrivers);
+  document.getElementById('edit-driver-modal')?.remove();
+  _editPending={};
+  showToast('Motorista atualizado!');
+  await renderTabBody();
+}
+
 // ═══════════════════════════════════════════════════════════
 // OPERACOES MANAGEMENT (admin only)
 // ═══════════════════════════════════════════════════════════
@@ -1609,6 +1852,17 @@ async function openEditModal(carrier, idx){
   const tvOpts=TIPOS_VEIC.map(o=>`<option${o===p.tipo?' selected':''}>${o}</option>`).join('');
   const idOpts=IDENTS.map(o=>`<option${o===p.identificacao?' selected':''}>${o}</option>`).join('');
   const ctOpts=CONTRATOS.map(o=>`<option${o===p.contrato?' selected':''}>${o}</option>`).join('');
+  // Load drivers for this carrier + operation
+  const allDrivers = await dbGetDrivers();
+  const drvList = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false && d.operacao===p.operacao);
+  const drvDiurnos = drvList.filter(d=>d.turno==='Diurno');
+  const drvNoturnos = drvList.filter(d=>d.turno==='Noturno');
+  const blankOpt = '<option value="">— Sem motorista —</option>';
+  const dOptsDiurno = blankOpt + drvDiurnos.map(d=>`<option value="${d.nome}"${d.nome===p.motoristaDiurno?' selected':''}>${d.nome}</option>`).join('');
+  const dOptsNoturno = blankOpt + drvNoturnos.map(d=>`<option value="${d.nome}"${d.nome===p.motoristaNoturno?' selected':''}>${d.nome}</option>`).join('');
+  // helper note if no drivers
+  const noDiurnoNote = drvDiurnos.length===0 ? `<p style="font-size:11px;color:var(--muted);margin-top:4px">Nenhum motorista diurno ativo nesta operação</p>` : '';
+  const noNoturnoNote = drvNoturnos.length===0 ? `<p style="font-size:11px;color:var(--muted);margin-top:4px">Nenhum motorista noturno ativo nesta operação</p>` : '';
   // Remove any existing modal
   const existing=document.getElementById('edit-modal');
   if(existing) existing.remove();
@@ -1616,14 +1870,29 @@ async function openEditModal(carrier, idx){
   modal.id='edit-modal';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
   modal.innerHTML=`
-    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:600px;max-height:90vh;overflow-y:auto">
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:620px;max-height:90vh;overflow-y:auto">
       <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar placa — ${p.placa}</p>
       <div class="form-grid">
-        <div class="form-field"><label>OPERAÇÃO</label><select id="e-op">${opOpts}</select></div>
+        <div class="form-field"><label>OPERAÇÃO</label><select id="e-op" onchange="refreshEditDriverOpts('${carrier}')">${opOpts}</select></div>
         <div class="form-field"><label>TIPO DE VEÍCULO</label><select id="e-tipo">${tvOpts}</select></div>
         <div class="form-field"><label>IDENTIFICAÇÃO</label><select id="e-id">${idOpts}</select></div>
         <div class="form-field"><label>TIPO DE CONTRATO</label><select id="e-contrato">${ctOpts}</select></div>
         <div class="form-field"><label>CAPACIDADE (m³)</label><input id="e-cap" type="number" value="${p.capacidade}" min="1" max="999"></div>
+      </div>
+      <div style="border-top:1px solid var(--border);margin:1.25rem 0;padding-top:1.25rem">
+        <p style="font-size:12px;font-weight:500;color:var(--lime);margin-bottom:1rem;letter-spacing:.04em">MOTORISTAS VINCULADOS</p>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>☀ MOTORISTA DIURNO</label>
+            <select id="e-mot-d">${dOptsDiurno}</select>
+            ${noDiurnoNote}
+          </div>
+          <div class="form-field">
+            <label>🌙 MOTORISTA NOTURNO</label>
+            <select id="e-mot-n">${dOptsNoturno}</select>
+            ${noNoturnoNote}
+          </div>
+        </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('edit-modal').remove()">Cancelar</button>
@@ -1631,6 +1900,21 @@ async function openEditModal(carrier, idx){
       </div>
     </div>`;
   document.body.appendChild(modal);
+}
+
+// Refresh driver selects when operation changes inside edit modal
+async function refreshEditDriverOpts(carrier){
+  const op = document.getElementById('e-op')?.value;
+  if(!op) return;
+  const allDrivers = await dbGetDrivers();
+  const drvList = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false && d.operacao===op);
+  const drvDiurnos = drvList.filter(d=>d.turno==='Diurno');
+  const drvNoturnos = drvList.filter(d=>d.turno==='Noturno');
+  const blank = '<option value="">— Sem motorista —</option>';
+  const selD = document.getElementById('e-mot-d');
+  const selN = document.getElementById('e-mot-n');
+  if(selD) selD.innerHTML = blank + drvDiurnos.map(d=>`<option value="${d.nome}">${d.nome}</option>`).join('');
+  if(selN) selN.innerHTML = blank + drvNoturnos.map(d=>`<option value="${d.nome}">${d.nome}</option>`).join('');
 }
 async function saveEdit(){
   const {carrier, idx} = _editPending;
@@ -1643,7 +1927,9 @@ async function saveEdit(){
   if(!capacidade||isNaN(capacidade)||+capacidade<=0){showToast('Informe a capacidade.',false);return;}
   const allP=await dbGetPlates();
   if(!allP[carrier]||!allP[carrier][idx]){ showToast('Placa não encontrada.',false); return; }
-  allP[carrier][idx]={...allP[carrier][idx], operacao, tipo, identificacao, contrato, capacidade:+capacidade};
+  const motD=document.getElementById('e-mot-d')?.value||'';
+  const motN=document.getElementById('e-mot-n')?.value||'';
+  allP[carrier][idx]={...allP[carrier][idx], operacao, tipo, identificacao, contrato, capacidade:+capacidade, motoristaDiurno:motD, motoristaNoturno:motN};
   await dbSavePlates(allP);
   const modal=document.getElementById('edit-modal');
   if(modal) modal.remove();
@@ -1657,7 +1943,7 @@ window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
 window.renderTabBody=renderTabBody; window.S=S;
 
