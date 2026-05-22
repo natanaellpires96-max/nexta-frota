@@ -222,6 +222,7 @@ const SESSION_KEY = "nexta_frota_user";
 // ═══════════════════════════════════════════════════════════
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
 function statusSemHorario(v){ return v==='indisponivel'||v==='programado'||v==='folga'; }
+function fmtTimeValue(v){ return v==='sem_previsao'?'Sem previsão':(v||'—'); }
 function renderDriverCell(diurno='', noturno=''){
   const motD=diurno||'—';
   const motN=noturno||'—';
@@ -230,8 +231,9 @@ function renderDriverCell(diurno='', noturno=''){
     <div class="driver-line"><span class="driver-icon">🌙</span><span class="driver-name" title="${motN}">${motN}</span></div>
   </div>`;
 }
-function buildTimeOpts(selected=""){
+function buildTimeOpts(selected="", allowNoForecast=false){
   let opts=`<option value="" ${!selected?'selected':''} disabled>— Horário —</option>`;
+  if(allowNoForecast) opts+=`<option value="sem_previsao"${selected==='sem_previsao'?' selected':''}>Sem previsão</option>`;
   for(let h=0;h<24;h++){
     for(let m=0;m<60;m+=15){
       const hh=String(h).padStart(2,'0');
@@ -407,7 +409,7 @@ async function renderCarrier(carrier){
     if(lock){
       // LOCKED — read-only view
       const stBadge=cur?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">—</span>`;
-      const timeBadge=isIndisp?`<span style="font-size:11px;color:var(--muted)">N/A</span>`:curTime?`<span style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${curTime}</span>`:`<span style="color:var(--muted)">—</span>`;
+      const timeBadge=isIndisp?`<span style="font-size:11px;color:var(--muted)">N/A</span>`:curTime?`<span style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(curTime)}</span>`:`<span style="color:var(--muted)">—</span>`;
       const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'—';
       const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'—';
       return `<tr>
@@ -429,7 +431,7 @@ async function renderCarrier(carrier){
       <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
       <td><span class="badge b-lime">${p.tipo}</span></td>
       <td><select class="${selCls}" onchange="onStChange(this)">${sOpts}</select></td>
-      <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime)}</select></td>
+      <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select></td>
     </tr>`;
   }).join("");
 
@@ -484,10 +486,9 @@ function onStChange(sel){
     } else {
       // Habilita e restaura as opções de horário
       timeSel.disabled=false;
-      // Rebuild time options if currently showing N/A
-      if(!timeSel.options||timeSel.options.length<=1||timeSel.options[0]?.text==='N/A'){
-        timeSel.innerHTML=buildTimeOpts('');
-      }
+      const allowNoForecast=sel.value==='manutencao';
+      const keepValue=timeSel.value==='sem_previsao'&&!allowNoForecast?'':timeSel.value;
+      timeSel.innerHTML=buildTimeOpts(keepValue,allowNoForecast);
       timeSel.className=timeSel.value?'time-sel time-filled':'time-sel time-blank';
     }
   }
@@ -822,7 +823,7 @@ async function renderToday(body){
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
         <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
-        <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?rec.time:'—'}</td>
+        <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?fmtTimeValue(rec.time):'—'}</td>
         <td>${renderDriverCell(motDToday,motNToday)}</td>
       </tr>`;
     }).join("");
@@ -910,7 +911,7 @@ async function renderHistory(body){
           <td style="font-size:12px">${p.operacao}</td>
           <td><span class="badge b-lime">${p.tipo}</span></td>
           <td>${statusBadge}</td>
-          <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${t||'—'}</td>
+          <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(t)}</td>
         <td>${renderDriverCell(!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?((rec&&rec.motoristaDiurno)||p.motoristaDiurno):'',!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?((rec&&rec.motoristaNoturno)||p.motoristaNoturno):'')}</td>
         </tr>`;
       }
@@ -1034,7 +1035,7 @@ async function buildRows(dates){
       for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
         const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
         const statusLabel=rec?getSt(rec.status).label:"Não preenchido";
-        const timeLabel=rec?(statusSemHorario(rec.status)?"N/A":rec.time||"—"):"—";
+        const timeLabel=rec?(statusSemHorario(rec.status)?"N/A":fmtTimeValue(rec.time)):"—";
         const motDLabel=rec?((rec.motoristaDiurno)||p.motoristaDiurno||"—"):"—";
         const motNLabel=rec?((rec.motoristaNoturno)||p.motoristaNoturno||"—"):"—";
         rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,motDLabel,motNLabel]);
