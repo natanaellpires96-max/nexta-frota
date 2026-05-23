@@ -484,19 +484,12 @@ async function renderCarrier(carrier){
       const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'—';
       const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'—';
       return `<tr>
-        <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
-        <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
+        <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${p.placa}</td>
+        <td style="font-size:11px;color:var(--muted)">${p.operacao}</td>
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td>${stBadge}</td>
-        <td style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace">
-          <div style="display:flex;gap:6px;align-items:center">
-            <span style="display:inline-block;width:14px;height:14px;color:var(--muted);flex-shrink:0"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a9 9 0 1 0 9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 12l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-            <div>${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</div>
-          </div>
-        </td>
-        <td>
-          <div style="display:flex;gap:8px;align-items:center"><span style="display:inline-block;width:14px;height:14px;color:var(--muted);flex-shrink:0">🕒</span><div>${timeBadge}</div></div>
-        </td>
+        <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--dim)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</td>
+        <td style="font-size:11px;font-family:'DM Mono',monospace">${timeBadge}</td>
         <td>${renderDriverCell(motD,motN)}</td>
       </tr>`;
     }
@@ -508,17 +501,12 @@ async function renderCarrier(carrier){
     const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'—';
     const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'—';
     return `<tr>
-      <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
-      <td style="font-size:12px;color:var(--muted)">${p.operacao}</td>
+      <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${p.placa}</td>
+      <td style="font-size:11px;color:var(--muted)">${p.operacao}</td>
       <td><span class="badge b-lime">${p.tipo}</span></td>
-      <td style="min-width:130px"><select class="${selCls}" style="width:130px;box-sizing:border-box" onchange="onStChange(this)">${sOpts}</select></td>
-      <td><div style="display:flex;gap:6px;align-items:center">${isCarrierUser?`<span style="display:inline-block;width:14px;height:14px;color:var(--muted);flex-shrink:0"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a9 9 0 1 0 9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 12l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><input class="odo-input" type="number" min="0" placeholder="Hodômetro" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:90px;box-sizing:border-box;font-size:12px;padding:5px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace;text-align:right">`:`<span style="display:inline-block;width:14px;height:14px;color:var(--muted);flex-shrink:0"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a9 9 0 1 0 9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 12l3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div style="color:var(--muted);font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</div>`}</div></td>
-      <td>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span style="display:inline-block;width:14px;height:14px;color:var(--muted);flex-shrink:0">🕒</span>
-          <select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)" style="width:90px;box-sizing:border-box">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select>
-        </div>
-      </td>
+      <td><select class="${selCls}" style="width:128px;box-sizing:border-box;font-size:11px" onchange="onStChange(this)">${sOpts}</select></td>
+      <td>${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Ex: 251000" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:96px;box-sizing:border-box;font-size:11px;padding:5px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace">`:`<span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--muted)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</span>`}</td>
+      <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)" style="width:96px;box-sizing:border-box;font-size:11px">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select></td>
       <td>${renderDriverCell(motD,motN)}</td>
     </tr>`;
   }).join("");
@@ -542,8 +530,8 @@ async function renderCarrier(carrier){
     </div>
     ${lockedBanner}
     <div class="tscroll">
-      <table class="table" style="min-width:860px">
-        <thead><tr><th style="width:10%">PLACA</th><th style="width:18%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:16%">STATUS</th><th style="width:13%">HODÔMETRO</th><th style="width:14%">DISPONÍVEL ÀS</th><th style="width:20%">MOTORISTAS</th></tr></thead>
+      <table class="table" style="min-width:800px">
+        <thead><tr><th style="width:11%">PLACA</th><th style="width:19%">OPERAÇÃO</th><th style="width:10%">TIPO</th><th style="width:15%">STATUS</th><th style="width:12%">HODÔMETRO</th><th style="width:12%">DISPONÍVEL ÀS</th><th style="width:21%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
