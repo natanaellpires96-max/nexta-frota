@@ -46,15 +46,16 @@ async function dbGetStatus(carrier, plate, dateStr) {
     const snap = await getDoc(doc(db, "availability", id));
     if(!snap.exists()) return null;
     const d = snap.data();
-    return { status: d.status, time: d.time||"", motoristaDiurno: d.motoristaDiurno||"", motoristaNoturno: d.motoristaNoturno||"" };
+    return { status: d.status, time: d.time||"", motoristaDiurno: d.motoristaDiurno||"", motoristaNoturno: d.motoristaNoturno||"", hodometro: d.hodometro!==undefined?d.hodometro:null };
   } catch { return null; }
 }
-async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno) {
+async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodometro) {
   const id = `${carrier}__${plate}__${dateStr}`;
   await setDoc(doc(db, "availability", id), {
     carrier, plate, dateStr, status, time: time||"", filled: true,
     motoristaDiurno: motoristaDiurno||"",
     motoristaNoturno: motoristaNoturno||"",
+    hodometro: hodometro!==undefined?hodometro:null,
     updatedAt: new Date().toISOString()
   });
 }
@@ -443,6 +444,7 @@ async function renderCarrier(carrier){
   }
   const [pairs, lock] = [plates.map(p=>({carrier,plate:p.placa,dateStr:ds})), await dbGetLock(carrier,ds)];
   const statusMap=await dbLoadStatusBulk(pairs);
+  const isCarrierUser = USERS_DB[S.user] && USERS_DB[S.user].role==='carrier';
   const rows=plates.map(p=>{
     const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
     const cur=rec?rec.status:null;
@@ -461,6 +463,7 @@ async function renderCarrier(carrier){
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td>${stBadge}</td>
         <td>${timeBadge}</td>
+        ${isCarrierUser?`<td style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</td>`:''}
         <td>${renderDriverCell(motD,motN)}</td>
       </tr>`;
     }
@@ -475,6 +478,7 @@ async function renderCarrier(carrier){
       <td><span class="badge b-lime">${p.tipo}</span></td>
       <td><select class="${selCls}" onchange="onStChange(this)">${sOpts}</select></td>
       <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select></td>
+      ${isCarrierUser?`<td><input class="odo-input" type="number" min="0" placeholder="Hodômetro" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:100%;padding:6px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text)"></td>`:''}
     </tr>`;
   }).join("");
 
@@ -498,7 +502,7 @@ async function renderCarrier(carrier){
     ${lockedBanner}
     <div class="tscroll">
       <table class="table">
-        <thead><tr><th style="width:12%">PLACA</th><th style="width:20%">OPERAÇÃO</th><th style="width:12%">TIPO</th><th style="width:18%">STATUS</th><th style="width:14%">DISPONÍVEL ÀS</th><th style="width:24%">MOTORISTAS</th></tr></thead>
+        <thead><tr><th style="width:12%">PLACA</th><th style="width:20%">OPERAÇÃO</th><th style="width:12%">TIPO</th><th style="width:18%">STATUS</th><th style="width:14%">DISPONÍVEL ÀS</th>${isCarrierUser?`<th style="width:12%">HODÔMETRO (km)</th>`:''}<th style="width:24%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -544,15 +548,18 @@ async function saveAll(carrier,ds){
   const btn=document.getElementById("save-btn");
   const rows=document.querySelectorAll(".table tbody tr");
   // Validate: all rows must have status AND time filled
+  const isCarrierUser = USERS_DB[S.user] && USERS_DB[S.user].role==='carrier';
   let missing=[];
   rows.forEach(row=>{
     const plate=row.cells[0].textContent.trim();
     const statusSel=row.querySelector(".st-sel,.st-blank");
     const timeSel=row.querySelector(".time-sel");
+    const odoInput=row.querySelector('.odo-input');
     const hasStatus=statusSel&&statusSel.value;
     const isIndisp=statusSel&&statusSemHorario(statusSel.value);
     const hasTime=timeSel&&timeSel.value;
-    if(!hasStatus||(! isIndisp&&!hasTime)) missing.push(plate);
+    const hasOdo = !isCarrierUser || (odoInput && odoInput.value!=='');
+    if(!hasStatus||(! isIndisp&&!hasTime) || !hasOdo) missing.push(plate);
   });
   if(missing.length>0){
     showToast(`Preencha status e horário quando aplicável antes de salvar.`,false);
@@ -573,7 +580,9 @@ async function saveAll(carrier,ds){
     const timeSel=row.querySelector(".time-sel");
     // Snapshot current drivers from plate record
     const pRecord=(allP[carrier]||[]).find(p=>p.placa===plate)||{};
-    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,pRecord.motoristaDiurno||'',pRecord.motoristaNoturno||''));
+    const odoInput=row.querySelector('.odo-input');
+    const hodometro = odoInput && odoInput.value!==''? Number(odoInput.value) : null;
+    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,pRecord.motoristaDiurno||'',pRecord.motoristaNoturno||'', hodometro));
   });
   await Promise.all(proms);
   const u=USERS_DB[S.user];
@@ -997,6 +1006,7 @@ async function renderHistory(body){
           <td><span class="badge b-lime">${p.tipo}</span></td>
           <td>${statusBadge}</td>
           <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(t)}</td>
+        <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</td>
         <td>${renderDriverCell(!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?((rec&&rec.motoristaDiurno)||p.motoristaDiurno):'',!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?((rec&&rec.motoristaNoturno)||p.motoristaNoturno):'')}</td>
         </tr>`;
       }
@@ -1006,7 +1016,7 @@ async function renderHistory(body){
   if(!rows){result.innerHTML=`<div class="empty"><span class="ei">🔍</span>Nenhum registro encontrado.</div>`;return;}
   result.innerHTML=`
     <div class="tscroll"><table class="table">
-      <thead><tr><th style="width:11%">DATA</th><th style="width:20%">TRANSPORTADOR</th><th style="width:9%">PLACA</th><th style="width:13%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:11%">STATUS</th><th style="width:8%">HORÁRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
+      <thead><tr><th style="width:11%">DATA</th><th style="width:18%">TRANSPORTADOR</th><th style="width:9%">PLACA</th><th style="width:12%">OPERAÇÃO</th><th style="width:8%">TIPO</th><th style="width:11%">STATUS</th><th style="width:8%">HORÁRIO</th><th style="width:11%">HODÔMETRO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <p style="font-size:11px;color:var(--muted);margin-top:10px">Últimos ${S.histDays} dias</p>`;
@@ -1112,24 +1122,41 @@ async function exportCustom(fmt){
 async function buildRows(dates){
   const allP=await dbGetPlates();
   const allPairs=[];
-  for(const ds of dates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  const prevMap={};
+  const neededDates=new Set();
+  for(const ds of dates){
+    neededDates.add(ds);
+    const [y,m,day]=ds.split('-').map(Number);
+    const dobj=new Date(y,m-1,day); dobj.setDate(dobj.getDate()-1);
+    const prevDs=localDateStr(dobj);
+    prevMap[ds]=prevDs;
+    neededDates.add(prevDs);
+  }
+  for(const ds of neededDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
-  const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status","Horário","Motorista Diurno","Motorista Noturno"]];
+  const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status","Horário","Hodômetro","Km percorrido (km)","Motorista Diurno","Motorista Noturno"]];
   for(const ds of dates)
     for(const carrier of CARRIERS)
       for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
         const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+        const prevRec=statusMap[`${carrier}||${p.placa}||${prevMap[ds]}`];
         const statusLabel=rec?getSt(rec.status).label:"Não preenchido";
         const timeLabel=rec?(statusSemHorario(rec.status)?"N/A":fmtTimeValue(rec.time)):"—";
+        const hod = rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:"";
+        let km="";
+        if(hod!=="" && prevRec && prevRec.hodometro!==undefined && prevRec.hodometro!==null){
+          const numCur=Number(hod); const numPrev=Number(prevRec.hodometro);
+          if(!isNaN(numCur) && !isNaN(numPrev)) km=(numCur - numPrev);
+        }
         const motDLabel=rec?((rec.motoristaDiurno)||p.motoristaDiurno||"—"):"—";
         const motNLabel=rec?((rec.motoristaNoturno)||p.motoristaNoturno||"—"):"—";
-        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,motDLabel,motNLabel]);
+        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,hod,km,motDLabel,motNLabel]);
       }
   return rows;
 }
 function exportXlsx(rows,filename){
   const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws["!cols"]=[{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14},{wch:10},{wch:22},{wch:22}];
+  ws["!cols"]=[{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14},{wch:10},{wch:12},{wch:14},{wch:22},{wch:22}];
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Relatório");
   XLSX.writeFile(wb,filename+".xlsx"); showToast("Excel exportado!");
 }
