@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NEXTA — Gestão de Frota</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CiAgPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzE3MjQxMCIvPgogIDxyZWN0IHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgcng9IjciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2M4ZjAzMiIgc3Ryb2tlLXdpZHRoPSIxLjUiIG9wYWNpdHk9IjAuNSIvPgogIDx0ZXh0IHg9IjE2IiB5PSIyMiIgZm9udC1mYW1pbHk9IkRNIFNhbnMsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjE0IiBmb250LXdlaWdodD0iNzAwIgogICAgdGV4dC1hbmNob3I9Im1pZGRsZSIgbGV0dGVyLXNwYWNpbmc9IjEiIGZpbGw9IiNjOGYwMzIiPk5YPC90ZXh0Pgo8L3N2Zz4=">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 // ═══════════════════════════════════════════════════════════
@@ -953,7 +954,6 @@ async function renderToday(body){
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
         <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
-        <td style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;white-space:nowrap">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?`<span style="color:var(--dim)">${rec.hodometro}</span>`:'—'}</td>
         <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?fmtTimeValue(rec.time):'—'}</td>
         <td>${renderDriverCell(motDToday,motNToday)}</td>
       </tr>`;
@@ -968,8 +968,8 @@ async function renderToday(body){
       :'';
     sections+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
-      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1160px">
-        <thead><tr><th style="width:8%">PLACA</th><th style="width:12%">OPERAÇÃO</th><th style="width:8%">TIPO</th><th style="width:8%">IDENTIFICAÇÃO</th><th style="width:7%">CONTRATO</th><th style="width:6%">CAPACIDADE</th><th style="width:13%">STATUS</th><th style="width:7%"><span style="font-size:9px">HODÔMETRO</span></th><th style="width:6%">HORÁRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
+      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1080px">
+        <thead><tr><th style="width:9%">PLACA</th><th style="width:13%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:9%">IDENTIFICAÇÃO</th><th style="width:8%">CONTRATO</th><th style="width:7%">CAPACIDADE</th><th style="width:17%">STATUS</th><th style="width:6%">HORÁRIO</th><th style="width:22%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
