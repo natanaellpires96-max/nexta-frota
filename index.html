@@ -40,6 +40,13 @@ async function dbSavePlates(plates) {
   await setDoc(doc(db, "config", "plates"), { data: plates });
 }
 
+async function withTimeout(promise, ms, message){
+  return Promise.race([
+    promise,
+    new Promise((_, reject)=>setTimeout(()=>reject(new Error(message)), ms))
+  ]);
+}
+
 async function dbGetStatus(carrier, plate, dateStr) {
   try {
     const id = `${carrier}__${plate}__${dateStr}`;
@@ -116,7 +123,12 @@ async function dbSaveDrivers(data) {
 }
 // Load users and carriers from Firebase, fall back to defaults
 async function loadConfig() {
-  const [fbUsers, fbCarriers, fbOps] = await Promise.all([dbGetUsers(), dbGetCarriers(), dbGetOperacoes()]);
+  const loaders = [
+    withTimeout(dbGetUsers(), 10000, "Timeout dbGetUsers").catch(e=>{console.error(e); return null}),
+    withTimeout(dbGetCarriers(), 10000, "Timeout dbGetCarriers").catch(e=>{console.error(e); return null}),
+    withTimeout(dbGetOperacoes(), 10000, "Timeout dbGetOperacoes").catch(e=>{console.error(e); return null})
+  ];
+  const [fbUsers, fbCarriers, fbOps] = await Promise.all(loaders);
   if(fbUsers) USERS_DB = fbUsers;
   if(fbCarriers) CARRIERS = fbCarriers;
   if(fbOps) OPERACOES = fbOps;
@@ -435,15 +447,28 @@ async function renderCarrier(carrier){
   const ds=dateStr(S.dateOffset);
   const mc=document.getElementById("main-content");
   mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p><div class="loading"><span class="spin"></span>Carregando placas...</div>`;
-  const allP=await dbGetPlates();
-  const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
-  if(plates.length===0){
+  let allP={};
+  let statusMap={};
+  let lock=null;
+  const plates=[];
+  try {
+    allP = await withTimeout(dbGetPlates(), 15000, "Falha ao carregar placas");
+    const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false);
+    if(loadedPlates.length===0){
+      mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
+        <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada.<br>Aguarde o administrador.</div>`;
+      return;
+    }
+    plates.push(...loadedPlates);
+    const [pairsTemp, lockTemp] = [plates.map(p=>({carrier,plate:p.placa,dateStr:ds})), await withTimeout(dbGetLock(carrier,ds),15000,"Falha ao carregar status")];
+    lock = lockTemp;
+    statusMap = await withTimeout(dbLoadStatusBulk(pairsTemp),15000,"Falha ao carregar status");
+  } catch(e){
+    console.error(e);
     mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
-      <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada.<br>Aguarde o administrador.</div>`;
+      <div class="empty"><span class="ei">⚠</span>Erro ao carregar a disponibilidade.<br>Atualize a página ou tente novamente.</div>`;
     return;
   }
-  const [pairs, lock] = [plates.map(p=>({carrier,plate:p.placa,dateStr:ds})), await dbGetLock(carrier,ds)];
-  const statusMap=await dbLoadStatusBulk(pairs);
   const isCarrierUser = USERS_DB[S.user] && USERS_DB[S.user].role==='carrier';
   const rows=plates.map(p=>{
     const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
@@ -485,7 +510,7 @@ async function renderCarrier(carrier){
       <td><select class="${selCls}" onchange="onStChange(this)">${sOpts}</select></td>
       <td style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;min-width:0">
         <select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)" style="flex:1;min-width:110px;max-width:100%;box-sizing:border-box">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select>
-        ${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Hodômetro" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:100px;flex-shrink:0;box-sizing:border-box;padding:6px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text)">`:''}
+        ${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Hodômetro" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="flex:1;min-width:110px;max-width:100%;box-sizing:border-box;font-size:12px;padding:5px 9px;border-radius:7px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace">`:''}
       </td>
       <td>${renderDriverCell(motD,motN)}</td>
     </tr>`;
@@ -2104,7 +2129,7 @@ window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exp
 window.renderTabBody=renderTabBody; window.S=S;
 
 // ── INIT ──
-loadConfig().then(()=>{
+loadConfig().catch(e=>{ console.error(e); }).then(()=>{
   restoreSession();
   render();
 });
