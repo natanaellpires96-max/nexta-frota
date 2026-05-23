@@ -288,6 +288,11 @@ function fmtDateStr(ds){
   const mons=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
   return `${days[d.getDay()]}, ${d.getDate()} ${mons[d.getMonth()]}`;
 }
+function fmtDateExport(ds){
+  // Retorna DD/MM/YYYY para uso nos relatórios exportados
+  const [y,m,day]=ds.split('-').map(Number);
+  return `${String(day).padStart(2,'0')}/${String(m).padStart(2,'0')}/${y}`;
+}
 function showToast(msg,ok=true){
   const t=document.getElementById("toast");
   document.getElementById("toast-msg").textContent=msg;
@@ -1180,7 +1185,7 @@ async function buildRows(dates){
         }
         const motDLabel=rec?((rec.motoristaDiurno)||p.motoristaDiurno||"—"):"—";
         const motNLabel=rec?((rec.motoristaNoturno)||p.motoristaNoturno||"—"):"—";
-        rows.push([fmtDateStr(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,hod,km,motDLabel,motNLabel]);
+        rows.push([fmtDateExport(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,hod,km,motDLabel,motNLabel]);
       }
   return rows;
 }
