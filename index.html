@@ -490,7 +490,7 @@ async function renderCarrier(carrier){
         <td>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;min-width:0">
             <div>${timeBadge}</div>
-            ${isCarrierUser?`<div style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</div>`:''}
+            ${isCarrierUser?`<div style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'Não preenchido'}</div>`:''}
           </div>
         </td>
         <td>${renderDriverCell(motD,motN)}</td>
@@ -1040,7 +1040,7 @@ async function renderHistory(body){
           <td><span class="badge b-lime">${p.tipo}</span></td>
           <td>${statusBadge}</td>
           <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(t)}</td>
-        <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</td>
+        <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'Não preenchido'}</td>
         <td>${renderDriverCell(!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?((rec&&rec.motoristaDiurno)||p.motoristaDiurno):'',!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?((rec&&rec.motoristaNoturno)||p.motoristaNoturno):'')}</td>
         </tr>`;
       }
@@ -1176,9 +1176,9 @@ async function buildRows(dates){
         const prevRec=statusMap[`${carrier}||${p.placa}||${prevMap[ds]}`];
         const statusLabel=rec?getSt(rec.status).label:"Não preenchido";
         const timeLabel=rec?(statusSemHorario(rec.status)?"N/A":fmtTimeValue(rec.time)):"—";
-        const hod = rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:"";
+        const hod = rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:"Não preenchido";
         let km="";
-        if(hod!=="" && prevRec && prevRec.hodometro!==undefined && prevRec.hodometro!==null){
+        if(hod!=="Não preenchido" && prevRec && prevRec.hodometro!==undefined && prevRec.hodometro!==null){
           const numCur=Number(hod); const numPrev=Number(prevRec.hodometro);
           if(!isNaN(numCur) && !isNaN(numPrev)) km=(numCur - numPrev);
         }
