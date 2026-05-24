@@ -334,15 +334,63 @@ function getMonthDates(year,month){
   while(d.getMonth()===month){ arr.push(localDateStr(d)); d.setDate(d.getDate()+1); }
   return arr;
 }
-async function buildPendingAlerts(allP){
-  // Só mostra alerta quando estamos no dia atual
+async function buildPendingAlerts(allP, filterOps){
+  // filterOps: array de operações para filtrar (usuário restrito), ou null para todas
   if(S.dateOffset !== 0) return "";
-  const activeCarriers=CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
-  if(!activeCarriers.length) return "";
   const targets=[
     {label:"Hoje", ds:dateStr(0)},
     {label:"Amanhã", ds:dateStr(1)}
   ];
+
+  if(filterOps&&filterOps.length){
+    // Modo restrito: verifica por operação se todas as placas daquela operação foram preenchidas
+    const groups=await Promise.all(targets.map(async t=>{
+      const pendingItems=[];
+      for(const carrier of CARRIERS){
+        const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&filterOps.includes(p.operacao));
+        if(!plates.length) continue;
+        const pairs=plates.map(p=>({carrier,plate:p.placa,dateStr:t.ds}));
+        const sm=await dbLoadStatusBulk(pairs);
+        const allFilled=plates.every(p=>sm[`${carrier}||${p.placa}||${t.ds}`]);
+        if(!allFilled){
+          for(const op of filterOps){
+            const opPlates=plates.filter(p=>p.operacao===op);
+            if(!opPlates.length) continue;
+            const opFilled=opPlates.every(p=>sm[`${carrier}||${p.placa}||${t.ds}`]);
+            if(!opFilled) pendingItems.push(`${carrier} em ${op}`);
+          }
+        }
+      }
+      return {...t, pending: pendingItems};
+    }));
+    const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
+    if(total===0){
+      return `<div class="pending-alert ok">
+        <div class="pa-icon">✓</div>
+        <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todas as operações preencheram hoje e amanhã.</div></div>
+      </div>`;
+    }
+    return `<div class="pending-alert warn">
+      <div class="pa-icon">!</div>
+      <div class="pa-content">
+        <div class="pa-title">Pendências de preenchimento</div>
+        <div class="pa-sub">Operações sem envio concluído.</div>
+        <div class="pa-groups">
+          ${groups.map(g=>`
+            <div class="pa-group">
+              <div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div>
+              <div class="pa-list">
+                ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendências</span>`}
+              </div>
+            </div>`).join("")}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // Modo normal: por transportador com lock
+  const activeCarriers=CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
+  if(!activeCarriers.length) return "";
   const groups=await Promise.all(targets.map(async t=>{
     const checks=await Promise.all(activeCarriers.map(async carrier=>({
       carrier,
@@ -400,7 +448,7 @@ async function render(){
   const u=USERS_DB[S.user];
   const notifs=await dbGetNotifs();
   const hasNotif=notifs.length>0;
-  const helpManual = u.role==="operacional" ? "http://127.0.0.1:8000/pdfs/MANUAL_OPERACIONAL.pdf" : u.role==="carrier" ? "http://127.0.0.1:8000/pdfs/MANUAL_TRANSPORTADOR.pdf" : "";
+  const helpRole = u.role==="operacional" ? "operacional" : u.role==="carrier" ? "transportador" : "";
   const helpLabel = u.role==="operacional" ? "Ajuda operacional" : u.role==="carrier" ? "Ajuda transportador" : "";
   const helpTitle = u.role==="operacional" ? "Abrir manual operacional" : u.role==="carrier" ? "Abrir manual transportador" : "";
   app.innerHTML=`
@@ -412,7 +460,7 @@ async function render(){
       </div>
       <div class="topbar-right">
         ${(u.role==="admin"||u.role==="operacional")?`<button class="notif-btn" onclick="toggleNotif()" title="Notificações">🔔${hasNotif?'<span class="notif-dot"></span>':''}</button>`:""}
-        ${helpManual?`<button class="help-btn" onclick="openHelpModal('${helpManual}')" title="${helpTitle}">❓ ${helpLabel}</button>`:""}
+        ${helpRole?`<button class="help-btn" onclick="openHelpModal('${helpRole}')" title="${helpTitle}">❓ ${helpLabel}</button>`:""}
         <div class="avatar ${u.role==="admin"||u.role==="operacional"?"admin":""}">${u.initials}</div>
         <span class="user-name">${u.role==="admin"?"Administrador":u.role==="operacional"?u.name:u.carrier}</span>
         <button class="btn-logout" onclick="logout()">↩ Sair</button>
@@ -425,41 +473,196 @@ async function render(){
   else await renderCarrier(u.carrier);
 }
 
-function openHelpModal(file){
-  if(!file){ return; }
+// ── Conteúdo dos manuais embutidos ──────────────────────────
+const MANUAL_TRANSPORTADOR_HTML = `
+<div class="hm-body">
+  <div class="hm-section-title">1. Acesso ao sistema</div>
+  <p>O NEXTA é acessado pelo navegador, no endereço fornecido pelo administrador. Não é necessário instalar nenhum aplicativo.</p>
+  <div class="hm-sub">Como fazer login:</div>
+  <ul>
+    <li>No campo <b>USUÁRIO</b>, digite seu login (fornecido pelo administrador).</li>
+    <li>No campo <b>SENHA</b>, digite sua senha e clique em <b>Entrar</b>.</li>
+    <li>Sua sessão é salva automaticamente — se fechar e reabrir o navegador, você continuará logado.</li>
+  </ul>
+
+  <div class="hm-section-title">2. Tela de disponibilidade</div>
+  <p>Após o login, você verá a lista de placas da sua frota para o dia selecionado. É nessa tela que você informa o status de cada veículo.</p>
+  <table class="hm-table">
+    <thead><tr><th>Elemento</th><th>Função</th></tr></thead>
+    <tbody>
+      <tr><td>Setas ‹ ›</td><td>Navegar entre os dias</td></tr>
+      <tr><td>Tabela de frota</td><td>Lista de placas com campos para preenchimento</td></tr>
+      <tr><td>Botão Salvar</td><td>Confirma e envia o preenchimento</td></tr>
+      <tr><td>Banner verde</td><td>Confirma que os dados foram enviados e bloqueados</td></tr>
+    </tbody>
+  </table>
+
+  <div class="hm-section-title">3. Preenchendo cada veículo</div>
+  <p>Para cada placa, preencha os três campos obrigatórios antes de salvar:</p>
+  <div class="hm-steps">
+    <div class="hm-step"><span class="hm-step-n">1</span><div><b>Status</b> — selecione a situação do veículo no dia.</div></div>
+    <div class="hm-step"><span class="hm-step-n">2</span><div><b>Hodômetro</b> — informe a leitura atual do odômetro (só números, sem ponto ou vírgula). O valor não pode ser menor que o do dia anterior.</div></div>
+    <div class="hm-step"><span class="hm-step-n">3</span><div><b>Disponível às</b> — selecione o horário de disponibilidade. Obrigatório apenas para status <b>Disponível</b>.</div></div>
+  </div>
+  <div class="hm-callout">⚠️ Se algum campo estiver faltando, a linha ficará destacada em vermelho ao tentar salvar.</div>
+
+  <div class="hm-section-title">4. Status e seus significados</div>
+  <table class="hm-table">
+    <thead><tr><th>Status</th><th>Significado</th><th>Horário?</th></tr></thead>
+    <tbody>
+      <tr><td><span class="hm-badge green">Disponível</span></td><td>Veículo pronto para operar</td><td>✅ Obrigatório</td></tr>
+      <tr><td><span class="hm-badge red">Indisponível</span></td><td>Veículo fora de operação</td><td>❌ N/A</td></tr>
+      <tr><td><span class="hm-badge amber">Manutenção</span></td><td>Em manutenção preventiva ou corretiva</td><td>Opcional</td></tr>
+      <tr><td><span class="hm-badge blue">Folga</span></td><td>Motorista em folga / veículo parado</td><td>❌ N/A</td></tr>
+      <tr><td><span class="hm-badge purple">Prog./Viagem</span></td><td>Programado ou em viagem</td><td>❌ N/A</td></tr>
+    </tbody>
+  </table>
+
+  <div class="hm-section-title">5. Salvando e enviando</div>
+  <p>Após preencher todas as placas, clique em <b>💾 Salvar disponibilidade</b>. Após o envio:</p>
+  <ul>
+    <li>Um banner verde confirma o envio com data e hora do registro.</li>
+    <li>A tabela passa para modo somente leitura — não é mais possível editar.</li>
+    <li>O administrador é notificado automaticamente.</li>
+    <li>Para corrigir algo após o envio, solicite o desbloqueio ao administrador.</li>
+  </ul>
+
+  <div class="hm-section-title">6. Navegação por datas</div>
+  <p>Use as setas <b>‹</b> e <b>›</b> para navegar entre os dias. É possível preencher a disponibilidade de amanhã com antecedência — recomendamos preencher sempre o dia atual e o seguinte.</p>
+
+  <div class="hm-section-title">7. Perguntas frequentes</div>
+  <table class="hm-table">
+    <thead><tr><th>Dúvida</th><th>Resposta</th></tr></thead>
+    <tbody>
+      <tr><td>Enviei errado. Como corrigir?</td><td>Solicite o desbloqueio ao administrador e preencha novamente.</td></tr>
+      <tr><td>Posso usar pelo celular?</td><td>Sim, funciona em qualquer navegador.</td></tr>
+      <tr><td>O sistema salva automaticamente?</td><td>Não. Você precisa clicar em "Salvar disponibilidade".</td></tr>
+      <tr><td>Esqueci minha senha.</td><td>Entre em contato com o administrador para redefinir.</td></tr>
+      <tr><td>O hodômetro pode ser menor que ontem?</td><td>Não. O sistema bloqueia valores menores que o último registrado.</td></tr>
+    </tbody>
+  </table>
+</div>`;
+
+const MANUAL_OPERACIONAL_HTML = `
+<div class="hm-body">
+  <div class="hm-section-title">1. Visão geral do painel</div>
+  <p>O perfil operacional tem acesso de acompanhamento e leitura. Após o login, você verá as seguintes abas:</p>
+  <table class="hm-table">
+    <thead><tr><th>Aba</th><th>O que encontrar</th></tr></thead>
+    <tbody>
+      <tr><td><b>Dashboard</b></td><td>Resumo executivo com indicadores do dia e gráficos de tendência</td></tr>
+      <tr><td><b>Painel de Disponibilidade</b></td><td>Tabela completa com status de todos os veículos por transportador</td></tr>
+      <tr><td><b>Histórico</b></td><td>Registros dos últimos 7 a 45 dias com filtros avançados</td></tr>
+      <tr><td><b>Exportar</b></td><td>Geração de relatórios em Excel ou CSV</td></tr>
+      <tr><td><b>Arquivos Mensais</b></td><td>Relatórios mensais gerados automaticamente</td></tr>
+    </tbody>
+  </table>
+
+  <div class="hm-section-title">2. Dashboard</div>
+  <p>Exibe indicadores consolidados para o dia selecionado. Use as setas <b>‹ ›</b> para navegar entre datas.</p>
+  <ul>
+    <li><b>Cards de resumo:</b> Disponíveis, Indisponíveis, Manutenção, Folga, Prog./Viagem e Total.</li>
+    <li><b>Alerta de pendências:</b> mostra quais transportadores ainda não enviaram para hoje e amanhã.</li>
+    <li><b>Gráfico de pizza:</b> distribuição percentual dos status no dia.</li>
+    <li><b>Linha de tendência:</b> evolução da disponibilidade nos últimos 14 dias.</li>
+    <li><b>Barras por transportador:</b> comparativo entre as empresas.</li>
+    <li><b>Tabela por operação:</b> resumo por unidade operacional com barra de disponibilidade.</li>
+  </ul>
+
+  <div class="hm-section-title">3. Painel de disponibilidade</div>
+  <p>Tabela detalhada de todos os veículos agrupados por transportador. Para cada veículo são exibidos:</p>
+  <table class="hm-table">
+    <thead><tr><th>Coluna</th><th>Informação</th></tr></thead>
+    <tbody>
+      <tr><td>PLACA</td><td>Identificação do veículo</td></tr>
+      <tr><td>OPERAÇÃO</td><td>Unidade operacional</td></tr>
+      <tr><td>TIPO</td><td>Truck, Bi-Truck ou Cavalo Mecânico</td></tr>
+      <tr><td>IDENTIFICAÇÃO</td><td>Petronas ou Branco</td></tr>
+      <tr><td>CONTRATO</td><td>Dedicado ou Spot</td></tr>
+      <tr><td>STATUS</td><td>Status informado pelo transportador</td></tr>
+      <tr><td>HODÔMETRO</td><td>Quilometragem registrada no dia</td></tr>
+      <tr><td>HORÁRIO</td><td>Horário de disponibilidade</td></tr>
+      <tr><td>MOTORISTAS</td><td>Diurno ☀ e noturno 🌙</td></tr>
+    </tbody>
+  </table>
+  <div class="hm-callout">💡 O badge <b>🔒 Enviado</b> indica que o transportador concluiu o preenchimento. <b>Pendente</b> indica que ainda não enviou.</div>
+
+  <div class="hm-section-title">4. Filtros e busca</div>
+  <table class="hm-table">
+    <thead><tr><th>Filtro</th><th>Função</th></tr></thead>
+    <tbody>
+      <tr><td>Operação</td><td>Filtra veículos de uma unidade específica</td></tr>
+      <tr><td>Busca livre</td><td>Filtra por placa ou nome do transportador</td></tr>
+      <tr><td>Transportador</td><td>Filtra por empresa (no Histórico)</td></tr>
+      <tr><td>Status</td><td>Filtra por um status específico (no Histórico)</td></tr>
+      <tr><td>Período</td><td>7, 15, 30 ou 45 dias (no Histórico)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="hm-section-title">5. Exportação de relatórios</div>
+  <p>Na aba <b>Exportar</b>, gere relatórios em Excel (.xlsx) ou CSV. Os relatórios incluem km percorrido calculado automaticamente.</p>
+  <table class="hm-table">
+    <thead><tr><th>Tipo</th><th>Período</th></tr></thead>
+    <tbody>
+      <tr><td>Diário</td><td>Dia atual ou navegado</td></tr>
+      <tr><td>Semanal</td><td>Últimos 7 dias</td></tr>
+      <tr><td>Mensal</td><td>Mês atual completo</td></tr>
+      <tr><td>Personalizado</td><td>Qualquer intervalo nos últimos 45 dias</td></tr>
+    </tbody>
+  </table>
+
+  <div class="hm-section-title">6. Arquivos mensais</div>
+  <ul>
+    <li>Gerados automaticamente nos 3 primeiros dias de cada mês.</li>
+    <li>Podem ser gerados ou regenerados manualmente a qualquer momento.</li>
+    <li>São mantidos os 6 arquivos mais recentes.</li>
+    <li>Disponíveis para download em Excel ou CSV.</li>
+  </ul>
+
+  <div class="hm-section-title">7. Notificações</div>
+  <p>O ícone 🔔 na barra superior exibe notificações do sistema. Um ponto vermelho indica novas notificações.</p>
+  <ul>
+    <li>Cada envio de disponibilidade por um transportador gera uma notificação.</li>
+    <li>Clique em <b>Limpar</b> para arquivar todas as notificações.</li>
+  </ul>
+
+  <div class="hm-section-title">8. O que o operacional NÃO pode fazer</div>
+  <table class="hm-table">
+    <thead><tr><th>Funcionalidade</th><th>Situação</th></tr></thead>
+    <tbody>
+      <tr><td>Cadastro de placas, motoristas e operações</td><td>❌ Exclusivo do admin</td></tr>
+      <tr><td>Gestão de usuários e transportadores</td><td>❌ Exclusivo do admin</td></tr>
+      <tr><td>Desbloquear lançamentos</td><td>❌ Exclusivo do admin</td></tr>
+      <tr><td>Dashboard, painel, histórico, exportação</td><td>✅ Disponível</td></tr>
+    </tbody>
+  </table>
+</div>`;
+
+function openHelpModal(role){
+  if(!role){ return; }
   const existing=document.getElementById('help-modal');
   if(existing) existing.remove();
+  const isOper = role==='operacional';
+  const title = isOper ? 'Manual do Operacional' : 'Manual do Transportador';
+  const content = isOper ? MANUAL_OPERACIONAL_HTML : MANUAL_TRANSPORTADOR_HTML;
   const modal=document.createElement('div');
   modal.id='help-modal';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.88);display:flex;align-items:stretch;justify-content:center;z-index:9999;';
-  const title=file.includes('OPERACIONAL')?'Manual operacional':'Manual transportador';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1.5rem;';
   modal.innerHTML=`
     <div class="help-modal-shell">
       <div class="help-modal-header">
         <div>
-          <div class="help-modal-title">${title}</div>
-          <div class="help-modal-sub">Consulte as instruções no modo tela cheia ou abra em uma nova aba.</div>
+          <div class="help-modal-title">❓ ${title}</div>
+          <div class="help-modal-sub">Use a rolagem para navegar pelas seções.</div>
         </div>
         <div class="help-modal-actions">
-          <button class="btn btn-outline btn-sm" onclick="window.openHelpInTab('${file}')">Abrir em nova aba</button>
-          <button class="btn btn-lime btn-sm" onclick="document.getElementById('help-modal').remove()">Fechar</button>
+          <button class="btn btn-lime btn-sm" onclick="document.getElementById('help-modal').remove()">✕ Fechar</button>
         </div>
       </div>
-      <iframe src="${file}" class="help-modal-iframe" title="${title}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"></iframe>
-      <div class="help-modal-fallback" style="display:none;align-items:center;justify-content:center;flex:1;background:#fff;color:#222;font-size:15px;font-weight:500;text-align:center;padding:2rem;flex-direction:column;gap:18px;">
-        <span>Não foi possível exibir o manual.<br>Toque em <b>Abrir em nova aba</b> para visualizar o PDF.</span>
-        <button class="btn btn-outline btn-sm" onclick="window.openHelpInTab('${file}')">Abrir em nova aba</button>
-      </div>
+      <div class="help-modal-content">${content}</div>
     </div>`;
   modal.addEventListener('click', (e)=>{ if(e.target===modal) modal.remove(); });
   document.body.appendChild(modal);
-}
-
-function openHelpInTab(file){
-  if(!file){ return; }
-  window.open(file, '_blank', 'noopener,noreferrer');
-  const existing=document.getElementById('help-modal');
-  if(existing) existing.remove();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -520,10 +723,12 @@ async function renderCarrier(carrier){
   const plates=[];
   try {
     allP = await withTimeout(dbGetPlates(), 15000, "Falha ao carregar placas");
-    const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false);
+    const userOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
+    const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
     if(loadedPlates.length===0){
+      const opLabel=userOps?` para a operação ${userOps.join(' / ')}`:'';
       mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
-        <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada.<br>Aguarde o administrador.</div>`;
+        <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada${opLabel}.<br>Aguarde o administrador.</div>`;
       return;
     }
     plates.push(...loadedPlates);
@@ -586,9 +791,10 @@ async function renderCarrier(carrier){
       <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">💾 Salvar disponibilidade</button>
     </div>`;
 
+  const userOpsLabel2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?` — ${USERS_DB[S.user].operacoes.join(' / ')}`:'';
   mc.innerHTML=`
     <p class="sec-title">Disponibilidade da frota</p>
-    <p class="sec-sub">${carrier} — Informe o status de cada veículo</p>
+    <p class="sec-sub">${carrier}${userOpsLabel2} — Informe o status de cada veículo</p>
     <div class="date-nav">
       <button onclick="chDate(-1)">‹</button>
       <span class="date-label">${fmtDate(S.dateOffset)}</span>
@@ -779,7 +985,8 @@ async function renderDashboard(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando dashboard...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
-  const pendingAlerts=await buildPendingAlerts(allP);
+  const _uOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
+  const pendingAlerts=await buildPendingAlerts(allP,_uOps);
   // Build all pairs for today
   const allPairs=[];
   for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
@@ -1003,7 +1210,8 @@ async function renderToday(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
-  const pendingAlerts=await buildPendingAlerts(allP);
+  const _uOps2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
+  const pendingAlerts=await buildPendingAlerts(allP,_uOps2);
   const opFilter=S.todayOp||"";
   const placaFilter=(S.todayPlaca||"").toUpperCase();
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
@@ -1609,6 +1817,7 @@ async function renderUsers(body){
       <td style="font-size:12px">${u.name}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${u.carrier||'—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${(u.operacoes&&u.operacoes.length)?u.operacoes.join(', '):'Todas'}</td>
       <td style="display:flex;gap:6px">
         <button class="btn-edit" onclick="openEditUser('${uid}')" title="Editar">✏️</button>
         ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${uid}')" title="Remover">🗑</button>`:''}
@@ -1653,7 +1862,11 @@ async function renderUsers(body){
           </select>
         </div>
         <div class="form-field" id="new-carrier-field"><label>TRANSPORTADOR</label>
-          <select id="new-ucarrier">${CARRIERS.map(c=>`<option>${c}</option>`).join('')}</select>
+          <select id="new-ucarrier" onchange="renderOpCheckboxes('new-op-checks','new-ucarrier')">${CARRIERS.map(c=>`<option>${c}</option>`).join('')}</select>
+        </div>
+        <div class="form-field" id="new-op-field" style="display:none;grid-column:1/-1">
+          <label>OPERAÇÕES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
+          <div id="new-op-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px"></div>
         </div>
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -1666,7 +1879,7 @@ async function renderUsers(body){
     <p class="sec-title" style="margin-bottom:.75rem">Usuários cadastrados</p>
     <div class="tscroll">
       <table class="table" style="min-width:520px">
-        <thead><tr><th style="width:14%">LOGIN</th><th style="width:26%">NOME</th><th style="width:12%">PERFIL</th><th style="width:30%">TRANSPORTADOR</th><th style="width:18%">AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:12%">LOGIN</th><th style="width:22%">NOME</th><th style="width:10%">PERFIL</th><th style="width:20%">TRANSPORTADOR</th><th style="width:20%">OPERAÇÕES</th><th style="width:16%">AÇÕES</th></tr></thead>
         <tbody>${userRows}</tbody>
       </table>
     </div>`;
@@ -1675,7 +1888,26 @@ async function renderUsers(body){
 function toggleCarrierField(){
   const role=document.getElementById('new-urole')?.value;
   const field=document.getElementById('new-carrier-field');
-  if(field) field.style.display=(role==='admin'||role==='operacional')?'none':'';
+  const opField=document.getElementById('new-op-field');
+  const isCarrier=!(role==='admin'||role==='operacional');
+  if(field) field.style.display=isCarrier?'':'none';
+  if(opField) opField.style.display=isCarrier?'':'none';
+  if(isCarrier) renderOpCheckboxes('new-op-checks','new-ucarrier');
+}
+
+function renderOpCheckboxes(containerId, carrierSelId){
+  const container=document.getElementById(containerId);
+  if(!container) return;
+  container.innerHTML=OPERACOES.map(op=>`
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none">
+      <input type="checkbox" value="${op}" style="accent-color:var(--lime);cursor:pointer"> ${op}
+    </label>`).join('');
+}
+
+function getCheckedOps(containerId){
+  const container=document.getElementById(containerId);
+  if(!container) return [];
+  return Array.from(container.querySelectorAll('input[type=checkbox]:checked')).map(cb=>cb.value);
 }
 
 async function addCarrier(){
@@ -1708,13 +1940,14 @@ async function addUser(){
   const pwd=document.getElementById('new-upwd').value.trim();
   const role=document.getElementById('new-urole').value;
   const carrier=(role==='carrier')?document.getElementById('new-ucarrier').value:'';
+  const operacoes=(role==='carrier')?getCheckedOps('new-op-checks'):[];
   const msg=document.getElementById('user-msg');
   if(!uid){msg.textContent='Informe o login.';msg.style.color='var(--red)';return;}
   if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
   if(!pwd||pwd.length<6){msg.textContent='Senha deve ter mín. 6 caracteres.';msg.style.color='var(--red)';return;}
   if(USERS_DB[uid]){msg.textContent='Login já existe.';msg.style.color='var(--red)';return;}
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-  USERS_DB[uid]={name, role, initials, password:pwd, ...(carrier?{carrier}:{})};
+  USERS_DB[uid]={name, role, initials, password:pwd, ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
   await dbSaveUsers(USERS_DB);
   ['new-uid','new-uname','new-upwd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   msg.textContent=`Usuário ${uid} criado!`;msg.style.color='var(--green)';
@@ -1756,6 +1989,12 @@ function openEditUser(uid){
           <label>TRANSPORTADOR</label>
           <select id="eu-carrier">${carrierOpts}</select>
         </div>
+        <div class="form-field" id="eu-op-field" style="display:${u.role==='carrier'?'block':'none'};grid-column:1/-1">
+          <label>OPERAÇÕES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
+          <div id="eu-op-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
+            ${OPERACOES.map(op=>`<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none"><input type="checkbox" value="${op}"${(u.operacoes&&u.operacoes.includes(op))?' checked':''} style="accent-color:var(--lime);cursor:pointer"> ${op}</label>`).join('')}
+          </div>
+        </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('edit-user-modal').remove()">Cancelar</button>
@@ -1768,7 +2007,9 @@ function openEditUser(uid){
 function onEditRoleChange(){
   const role=document.getElementById('eu-role')?.value;
   const field=document.getElementById('eu-carrier-field');
+  const opField=document.getElementById('eu-op-field');
   if(field) field.style.display=role==='carrier'?'block':'none';
+  if(opField) opField.style.display=role==='carrier'?'block':'none';
 }
 
 async function saveEditUser(uid){
@@ -1781,13 +2022,15 @@ async function saveEditUser(uid){
   if(!name){showToast('Informe o nome.',false);return;}
   if(pwd&&pwd.length<6){showToast('Senha deve ter mín. 6 caracteres.',false);return;}
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  const newOps=newRole==='carrier'?getCheckedOps('eu-op-checks'):[];
   USERS_DB[uid]={
     ...USERS_DB[uid],
     name,
     initials,
     role: newRole,
     ...(pwd?{password:pwd}:{}),
-    ...(newCarrier?{carrier:newCarrier}:{carrier:''})
+    ...(newCarrier?{carrier:newCarrier}:{carrier:''}),
+    operacoes: newOps
   };
   await dbSaveUsers(USERS_DB);
   document.getElementById('edit-user-modal').remove();
@@ -2214,7 +2457,7 @@ window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.openHelpModal=openHelpModal; window.openHelpInTab=openHelpInTab;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
 window.renderTabBody=renderTabBody; window.S=S;
 
@@ -2257,12 +2500,35 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .btn-logout:hover{border-color:var(--lime);color:var(--lime);}
 .help-btn{background:linear-gradient(180deg, rgba(200,240,50,.13), rgba(200,240,50,.07));border:1px solid var(--border2);border-radius:999px;color:var(--lime);padding:7px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;letter-spacing:.02em;transition:all .15s;}
 .help-btn:hover{border-color:var(--lime);background:linear-gradient(180deg, rgba(200,240,50,.2), rgba(200,240,50,.12));transform:translateY(-1px);}
-.help-modal-shell{background:var(--mid);border:1px solid var(--border2);width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.45);}
-.help-modal-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px;align-items:center;background:rgba(17,29,10,.9);}
+.help-modal-shell{background:var(--mid);border:1px solid var(--border2);width:100%;max-width:760px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.45);border-radius:var(--radius-lg);}
+.help-modal-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:12px;align-items:center;background:rgba(17,29,10,.9);flex-shrink:0;}
 .help-modal-title{font-size:14px;color:var(--lime);font-weight:700;}
 .help-modal-sub{font-size:12px;color:var(--muted);margin-top:4px;}
 .help-modal-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;}
-.help-modal-iframe{flex:1;min-height:0;width:100%;border:0;background:#fff;}
+.help-modal-content{flex:1;min-height:0;overflow-y:auto;padding:1.5rem 1.75rem;background:var(--dark);}
+.hm-body{color:var(--text);font-size:13px;line-height:1.7;}
+.hm-body p{margin-bottom:.75rem;color:var(--dim);}
+.hm-body ul{margin:0 0 .75rem 1.25rem;color:var(--dim);}
+.hm-body ul li{margin-bottom:.35rem;}
+.hm-section-title{font-size:14px;font-weight:700;color:var(--lime);margin:1.5rem 0 .6rem;padding-bottom:.4rem;border-bottom:1px solid var(--border);letter-spacing:.03em;}
+.hm-section-title:first-child{margin-top:0;}
+.hm-sub{font-size:12px;font-weight:600;color:var(--dim);margin:.75rem 0 .4rem;letter-spacing:.04em;text-transform:uppercase;}
+.hm-table{width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:12px;}
+.hm-table th{padding:7px 12px;background:var(--card);color:var(--lime);font-size:10px;font-weight:600;letter-spacing:.05em;text-align:left;border-bottom:1px solid var(--border2);}
+.hm-table td{padding:7px 12px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:middle;}
+.hm-table tr:last-child td{border-bottom:none;}
+.hm-table tbody tr:nth-child(odd){background:var(--card);}
+.hm-table tbody tr:nth-child(even){background:var(--mid);}
+.hm-badge{display:inline-flex;align-items:center;font-size:10.5px;padding:2px 8px;border-radius:99px;border:1px solid transparent;white-space:nowrap;}
+.hm-badge.green{background:rgba(110,224,74,.12);color:#6ee04a;border-color:rgba(110,224,74,.28);}
+.hm-badge.red{background:rgba(240,96,96,.12);color:#f06060;border-color:rgba(240,96,96,.28);}
+.hm-badge.amber{background:rgba(240,190,64,.12);color:#f0be40;border-color:rgba(240,190,64,.28);}
+.hm-badge.blue{background:rgba(112,168,240,.12);color:#70a8f0;border-color:rgba(112,168,240,.28);}
+.hm-badge.purple{background:rgba(176,126,240,.12);color:#b07ef0;border-color:rgba(176,126,240,.28);}
+.hm-callout{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);padding:10px 14px;font-size:12px;color:var(--dim);margin-bottom:1rem;line-height:1.6;}
+.hm-steps{display:grid;gap:8px;margin-bottom:.75rem;}
+.hm-step{display:flex;gap:12px;align-items:flex-start;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:12px;color:var(--dim);}
+.hm-step-n{width:22px;height:22px;border-radius:50%;background:var(--lime);color:var(--dark);font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;}
 .main{flex:1;padding:1.75rem;max-width:1180px;margin:0 auto;width:100%;}
 .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;}
 .login-card{background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2.5rem;width:100%;max-width:400px;}
