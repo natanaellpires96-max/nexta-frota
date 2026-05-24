@@ -68,6 +68,26 @@ async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiur
   });
 }
 
+async function dbGetPreviousHodometro(plate, currentDateStr) {
+  try {
+    const q = query(collection(db, "availability"), where("plate", "==", plate));
+    const snap = await getDocs(q);
+    const rows = snap.docs
+      .map(docSnap => docSnap.data())
+      .filter(d => d && d.hodometro !== undefined && d.hodometro !== null && d.hodometro !== "")
+      .sort((a, b) => String(b.dateStr || "").localeCompare(String(a.dateStr || "")));
+
+    for (const row of rows) {
+      if (row.dateStr === currentDateStr) continue;
+      const val = Number(row.hodometro);
+      if (Number.isFinite(val)) return val;
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  return null;
+}
+
 async function dbGetNotifs() {
   try {
     const snap = await getDoc(doc(db, "config", "notifications"));
@@ -605,6 +625,34 @@ async function saveAll(carrier,ds){
     });
     return;
   }
+
+  const invalidOdoRows=[];
+  if(isCarrierUser){
+    for (const row of rows){
+      const plate=row.cells[0].textContent.trim();
+      const odoInput=row.querySelector('.odo-input');
+      if(!odoInput) continue;
+      const currentOdo=Number(odoInput.value);
+      if(!Number.isFinite(currentOdo)) continue;
+      const previousOdo=await dbGetPreviousHodometro(plate, ds);
+      if(previousOdo !== null && currentOdo < previousOdo){
+        invalidOdoRows.push(plate);
+        row.style.background="rgba(240,96,96,.08)";
+      } else {
+        row.style.background="";
+      }
+    }
+  }
+
+  if(invalidOdoRows.length>0){
+    const detalhes = await Promise.all(invalidOdoRows.map(async (plate) => {
+      const previousOdo = await dbGetPreviousHodometro(plate, ds);
+      return `${plate} (último registrado: ${previousOdo ?? "não encontrado"})`;
+    }));
+    showToast(`Hodômetro inválido para: ${detalhes.join(", ")}. O valor informado não pode ser menor que o último registrado.`, false);
+    return;
+  }
+
   if(btn){btn.disabled=true;btn.textContent="Salvando...";}
   const allP=await dbGetPlates();
   const proms=[];
