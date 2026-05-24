@@ -400,7 +400,7 @@ async function render(){
   const u=USERS_DB[S.user];
   const notifs=await dbGetNotifs();
   const hasNotif=notifs.length>0;
-  const helpManual = u.role==="operacional" ? "pdfs/MANUAL_OPERACIONAL.pdf" : u.role==="carrier" ? "pdfs/MANUAL_TRANSPORTADOR.pdf" : "";
+  const helpManual = u.role==="operacional" ? "http://127.0.0.1:8000/pdfs/MANUAL_OPERACIONAL.pdf" : u.role==="carrier" ? "http://127.0.0.1:8000/pdfs/MANUAL_TRANSPORTADOR.pdf" : "";
   const helpLabel = u.role==="operacional" ? "Ajuda operacional" : u.role==="carrier" ? "Ajuda transportador" : "";
   const helpTitle = u.role==="operacional" ? "Abrir manual operacional" : u.role==="carrier" ? "Abrir manual transportador" : "";
   app.innerHTML=`
