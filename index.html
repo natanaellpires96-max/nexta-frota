@@ -445,7 +445,11 @@ function openHelpModal(file){
           <button class="btn btn-lime btn-sm" onclick="document.getElementById('help-modal').remove()">Fechar</button>
         </div>
       </div>
-      <iframe src="${file}" class="help-modal-iframe" title="${title}"></iframe>
+      <iframe src="${file}" class="help-modal-iframe" title="${title}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"></iframe>
+      <div class="help-modal-fallback" style="display:none;align-items:center;justify-content:center;flex:1;background:#fff;color:#222;font-size:15px;font-weight:500;text-align:center;padding:2rem;flex-direction:column;gap:18px;">
+        <span>Não foi possível exibir o manual.<br>Toque em <b>Abrir em nova aba</b> para visualizar o PDF.</span>
+        <button class="btn btn-outline btn-sm" onclick="window.openHelpInTab('${file}')">Abrir em nova aba</button>
+      </div>
     </div>`;
   modal.addEventListener('click', (e)=>{ if(e.target===modal) modal.remove(); });
   document.body.appendChild(modal);
