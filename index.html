@@ -70,20 +70,40 @@ async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiur
 
 async function dbGetPreviousHodometro(plate, currentDateStr) {
   try {
-    const q = query(collection(db, "availability"), where("plate", "==", plate));
+    // Query all availability records for this plate that have a hodometro value
+    // and a dateStr strictly before currentDateStr, ordered descending to get the most recent.
+    const q = query(
+      collection(db, "availability"),
+      where("plate", "==", plate),
+      where("dateStr", "<", currentDateStr),
+      orderBy("dateStr", "desc"),
+      limit(10)
+    );
     const snap = await getDocs(q);
-    const rows = snap.docs
-      .map(docSnap => docSnap.data())
-      .filter(d => d && d.hodometro !== undefined && d.hodometro !== null && d.hodometro !== "")
-      .sort((a, b) => String(b.dateStr || "").localeCompare(String(a.dateStr || "")));
-
-    for (const row of rows) {
-      if (row.dateStr === currentDateStr) continue;
-      const val = Number(row.hodometro);
+    for (const docSnap of snap.docs) {
+      const d = docSnap.data();
+      if (d.hodometro === undefined || d.hodometro === null || d.hodometro === "") continue;
+      const val = Number(d.hodometro);
       if (Number.isFinite(val)) return val;
     }
   } catch (e) {
-    console.error(e);
+    // Fallback: if the composite index doesn't exist yet, scan all records for this plate
+    console.warn("dbGetPreviousHodometro: falling back to full scan", e.message);
+    try {
+      const qFallback = query(collection(db, "availability"), where("plate", "==", plate));
+      const snap = await getDocs(qFallback);
+      const rows = snap.docs
+        .map(docSnap => docSnap.data())
+        .filter(d => d && d.dateStr && d.dateStr < currentDateStr &&
+                     d.hodometro !== undefined && d.hodometro !== null && d.hodometro !== "")
+        .sort((a, b) => String(b.dateStr).localeCompare(String(a.dateStr)));
+      for (const row of rows) {
+        const val = Number(row.hodometro);
+        if (Number.isFinite(val)) return val;
+      }
+    } catch (e2) {
+      console.error("dbGetPreviousHodometro fallback failed", e2);
+    }
   }
   return null;
 }
@@ -721,8 +741,12 @@ async function renderCarrier(carrier){
   let statusMap={};
   let lock=null;
   const plates=[];
+  let allDrivers = {};
   try {
-    allP = await withTimeout(dbGetPlates(), 15000, "Falha ao carregar placas");
+    [allP, allDrivers] = await Promise.all([
+      withTimeout(dbGetPlates(), 15000, "Falha ao carregar placas"),
+      withTimeout(dbGetDrivers(), 15000, "Falha ao carregar motoristas").catch(()=>({}))
+    ]);
     const userOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
     const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
     if(loadedPlates.length===0){
@@ -769,8 +793,39 @@ async function renderCarrier(carrier){
     const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
     const timeCls=isIndisp?`time-sel time-na`:curTime?`time-sel time-filled`:`time-sel time-blank`;
     const timeDisabled=(!cur||isIndisp)?'disabled':'';
-    const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'—';
-    const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'—';
+    // Build driver select options for this plate's carrier+operation
+    // Include both active and inactive drivers for this carrier+operation
+    const opDriversAtivos   = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false&&d.operacao===p.operacao);
+    const opDriversInativos = (allDrivers[carrier]||[]).filter(d=>d.ativo===false&&d.operacao===p.operacao);
+    const savedMotD = (rec&&rec.motoristaDiurno) || p.motoristaDiurno || '';
+    const savedMotN = (rec&&rec.motoristaNoturno) || p.motoristaNoturno || '';
+    function buildDriverOpts(savedVal, turno){
+      const ativos   = opDriversAtivos.filter(d=>d.turno===turno);
+      const inativos = opDriversInativos.filter(d=>d.turno===turno);
+      let opts = `<option value="">— Sem motorista —</option>`;
+      // Motoristas removidos não aparecem como opção — o dado histórico já está salvo no Firestore
+      // Active drivers — normal style
+      opts += ativos.map(d=>`<option value="${d.nome}"${d.nome===savedVal?' selected':''}>${d.nome}</option>`).join('');
+      // Inactive drivers — dimmed via optgroup label trick + unicode prefix
+      if(inativos.length){
+        opts += `<optgroup label="──────────────" style="color:rgba(228,242,200,.2);font-size:9px"></optgroup>`;
+        opts += inativos.map(d=>`<option value="${d.nome}"${d.nome===savedVal?' selected':''} style="color:rgba(228,242,200,.35)">▪ ${d.nome} (inativo)</option>`).join('');
+      }
+      return opts;
+    }
+    const driverSelStyle = 'width:100%;box-sizing:border-box;font-size:11px;padding:4px 6px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);outline:none;font-family:inherit';
+    const driverCell = isCarrierUser
+      ? `<div style="display:grid;gap:4px;min-width:120px">
+           <div style="display:grid;grid-template-columns:16px 1fr;align-items:center;gap:3px">
+             <span style="color:var(--amber);font-size:12px;text-align:center">☀</span>
+             <select class="driver-sel-d" style="${driverSelStyle}">${buildDriverOpts(savedMotD,'Diurno')}</select>
+           </div>
+           <div style="display:grid;grid-template-columns:16px 1fr;align-items:center;gap:3px">
+             <span style="color:var(--blue);font-size:12px;text-align:center">🌙</span>
+             <select class="driver-sel-n" style="${driverSelStyle}">${buildDriverOpts(savedMotN,'Noturno')}</select>
+           </div>
+         </div>`
+      : renderDriverCell(savedMotD, savedMotN);
     return `<tr>
       <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${p.placa}</td>
       <td style="font-size:11px;color:var(--muted)">${p.operacao}</td>
@@ -778,7 +833,7 @@ async function renderCarrier(carrier){
       <td><select class="${selCls}" style="width:128px;box-sizing:border-box;font-size:11px" onchange="onStChange(this)">${sOpts}</select></td>
       <td>${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Ex: 251000" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:96px;box-sizing:border-box;font-size:11px;padding:5px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace">`:`<span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--muted)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</span>`}</td>
       <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)" style="width:96px;box-sizing:border-box;font-size:11px">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select></td>
-      <td>${renderDriverCell(motD,motN)}</td>
+      <td>${driverCell}</td>
     </tr>`;
   }).join("");
 
@@ -873,6 +928,8 @@ async function saveAll(carrier,ds){
     return;
   }
 
+  // Cache previous hodometro values to avoid double Firebase fetches
+  const prevOdoCache = {};
   const invalidOdoRows=[];
   if(isCarrierUser){
     for (const row of rows){
@@ -882,6 +939,7 @@ async function saveAll(carrier,ds){
       const currentOdo=Number(odoInput.value);
       if(!Number.isFinite(currentOdo)) continue;
       const previousOdo=await dbGetPreviousHodometro(plate, ds);
+      prevOdoCache[plate]=previousOdo;
       if(previousOdo !== null && currentOdo < previousOdo){
         invalidOdoRows.push(plate);
         row.style.background="rgba(240,96,96,.08)";
@@ -892,10 +950,10 @@ async function saveAll(carrier,ds){
   }
 
   if(invalidOdoRows.length>0){
-    const detalhes = await Promise.all(invalidOdoRows.map(async (plate) => {
-      const previousOdo = await dbGetPreviousHodometro(plate, ds);
+    const detalhes = invalidOdoRows.map(plate => {
+      const previousOdo = prevOdoCache[plate];
       return `${plate} (último registrado: ${previousOdo ?? "não encontrado"})`;
-    }));
+    });
     showToast(`Hodômetro inválido para: ${detalhes.join(", ")}. O valor informado não pode ser menor que o último registrado.`, false);
     return;
   }
@@ -907,11 +965,15 @@ async function saveAll(carrier,ds){
     const plate=row.cells[0].textContent.trim();
     const statusSel=row.querySelector(".st-sel");
     const timeSel=row.querySelector(".time-sel");
-    // Snapshot current drivers from plate record
+    // Read drivers from the selects rendered in the row (falls back to plate record if not a carrier user)
     const pRecord=(allP[carrier]||[]).find(p=>p.placa===plate)||{};
+    const dSelD = row.querySelector('.driver-sel-d');
+    const dSelN = row.querySelector('.driver-sel-n');
+    const motDiurno  = dSelD ? dSelD.value  : (pRecord.motoristaDiurno||'');
+    const motNoturno = dSelN ? dSelN.value  : (pRecord.motoristaNoturno||'');
     const odoInput=row.querySelector('.odo-input');
     const hodometro = odoInput && odoInput.value!==''? Number(odoInput.value) : null;
-    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,pRecord.motoristaDiurno||'',pRecord.motoristaNoturno||'', hodometro));
+    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,motDiurno,motNoturno, hodometro));
   });
   await Promise.all(proms);
   const u=USERS_DB[S.user];
@@ -1437,7 +1499,6 @@ async function exportCustom(fmt){
   const from=document.getElementById('exp-date-from')?.value;
   const to=document.getElementById('exp-date-to')?.value;
   if(!from||!to){ showToast('Selecione as datas.',false); return; }
-  // Build date array between from and to
   const dates=[];
   const cur=new Date(from+'T12:00:00');
   const end=new Date(to+'T12:00:00');
@@ -1445,46 +1506,134 @@ async function exportCustom(fmt){
     dates.push(localDateStr(cur));
     cur.setDate(cur.getDate()+1);
   }
-  if(dates.length===0){ showToast('Nenhuma data no intervalo.',false); return; }
-  showToast('Gerando relatório...',true);
-  const rows=await buildRows(dates);
+  if(dates.length===0){ showToast('N\u00ednhuma data no intervalo.',false); return; }
+  const totalDays = dates.length;
+  // Show progress bar for larger ranges (>3 days)
+  const showProg = totalDays > 3;
+  if(showProg) showExportProgress(0, totalDays);
+  else showToast('Gerando relat\u00f3rio...',true);
+  const rows=await buildRows(dates, showProg ? pct => showExportProgress(pct, totalDays) : null);
   const fn=`NEXTA_Personalizado_${from}_a_${to}`;
+  if(showProg) hideExportProgress();
   fmt==='xlsx'?exportXlsx(rows,fn):exportCsv(rows,fn);
 }
-async function buildRows(dates){
-  const allP=await dbGetPlates();
-  const allPairs=[];
-  const prevMap={};
-  const neededDates=new Set();
-  for(const ds of dates){
-    neededDates.add(ds);
-    const [y,m,day]=ds.split('-').map(Number);
-    const dobj=new Date(y,m-1,day); dobj.setDate(dobj.getDate()-1);
-    const prevDs=localDateStr(dobj);
-    prevMap[ds]=prevDs;
-    neededDates.add(prevDs);
+
+function showExportProgress(pct, totalDays){
+  let bar = document.getElementById('export-progress-bar');
+  if(!bar){
+    const card = document.querySelector('.card');
+    if(!card) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'export-progress-wrap';
+    wrap.style.cssText = 'margin-top:1rem;display:flex;flex-direction:column;gap:6px';
+    wrap.innerHTML = `
+      <div style="font-size:12px;color:var(--muted)" id="export-progress-label">Buscando dados...</div>
+      <div style="height:6px;background:rgba(228,242,200,.1);border-radius:99px;overflow:hidden;border:1px solid rgba(228,242,200,.1)">
+        <div id="export-progress-bar" style="height:100%;background:var(--lime);border-radius:99px;transition:width .25s ease;width:0%"></div>
+      </div>`;
+    // Insert after the export buttons
+    const btnArea = document.querySelector('#export-progress-wrap');
+    if(btnArea) btnArea.replaceWith(wrap);
+    else card.appendChild(wrap);
+    bar = document.getElementById('export-progress-bar');
   }
-  for(const ds of neededDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
-  const statusMap=await dbLoadStatusBulk(allPairs);
+  const label = document.getElementById('export-progress-label');
+  if(bar) bar.style.width = pct + '%';
+  if(label){
+    if(pct < 95) label.textContent = `Buscando dados\u2026 ${pct}%`;
+    else if(pct < 100) label.textContent = 'Montando planilha\u2026';
+    else label.textContent = 'Conclu\u00eddo!';
+  }
+}
+function hideExportProgress(){
+  const wrap = document.getElementById('export-progress-wrap');
+  if(wrap) setTimeout(()=>wrap.remove(), 800);
+}
+async function buildRows(dates, onProgress){
+  const allP = await dbGetPlates();
+
+  // Collect all active plates across all carriers
+  const allActivePlates = [];
+  for(const carrier of CARRIERS)
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false))
+      allActivePlates.push({carrier, plate:p.placa, meta:p});
+
+  // Fetch all records for the requested dates in parallel (batched by date)
+  const statusMap = {};
+  const totalBatches = dates.length;
+  let doneBatches = 0;
+  await Promise.all(dates.map(async ds => {
+    const pairs = allActivePlates.map(({carrier,plate}) => ({carrier,plate,dateStr:ds}));
+    const batchResult = await dbLoadStatusBulk(pairs);
+    Object.assign(statusMap, batchResult);
+    doneBatches++;
+    if(onProgress) onProgress(Math.round((doneBatches/totalBatches)*85));
+  }));
+
+  // Pre-fetch anchor date (day before the first date in range) so the first date
+  // can also have km calculated without extra calls.
+  const anchorPairs = allActivePlates.map(({carrier,plate}) => ({carrier,plate,dateStr:_prevDateStr(dates[0])}));
+  const anchorMap = await dbLoadStatusBulk(anchorPairs);
+  Object.assign(statusMap, anchorMap);
+  if(onProgress) onProgress(95);
+
+  // Build per-plate sorted hodometro history from everything fetched so far.
+  // This lets us find the last known value before any date in O(n) without
+  // extra Firestore calls, correctly handling gaps in the data.
+  const plateHodoHistory = {}; // plate -> [{dateStr, hod}] sorted asc
+  for(const key of Object.keys(statusMap)){
+    const rec = statusMap[key];
+    if(!rec || rec.hodometro===undefined || rec.hodometro===null || rec.hodometro==='') continue;
+    const val = Number(rec.hodometro);
+    if(!Number.isFinite(val)) continue;
+    const parts = key.split('||');
+    if(parts.length < 3) continue;
+    const plate = parts[1];
+    if(!plateHodoHistory[plate]) plateHodoHistory[plate] = [];
+    plateHodoHistory[plate].push({dateStr: parts[2], hod: val});
+  }
+  for(const plate of Object.keys(plateHodoHistory))
+    plateHodoHistory[plate].sort((a,b) => a.dateStr.localeCompare(b.dateStr));
+
+  // Returns the most recent hodometro registered strictly before targetDate.
+  function lastKnownHodoBefore(plate, targetDate){
+    const hist = plateHodoHistory[plate];
+    if(!hist) return null;
+    let best = null;
+    for(const entry of hist){
+      if(entry.dateStr < targetDate) best = entry.hod;
+      else break;
+    }
+    return best;
+  }
+
   const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status","Horário","Hodômetro","Km percorrido (km)","Motorista Diurno","Motorista Noturno"]];
   for(const ds of dates)
-    for(const carrier of CARRIERS)
-      for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
-        const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
-        const prevRec=statusMap[`${carrier}||${p.placa}||${prevMap[ds]}`];
-        const statusLabel=rec?getSt(rec.status).label:"Não preenchido";
-        const timeLabel=rec?(statusSemHorario(rec.status)?"N/A":fmtTimeValue(rec.time)):"—";
-        const hod = rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:"Não preenchido";
-        let km="";
-        if(hod!=="Não preenchido" && prevRec && prevRec.hodometro!==undefined && prevRec.hodometro!==null){
-          const numCur=Number(hod); const numPrev=Number(prevRec.hodometro);
-          if(!isNaN(numCur) && !isNaN(numPrev)) km=(numCur - numPrev);
-        }
-        const motDLabel=rec?((rec.motoristaDiurno)||p.motoristaDiurno||"—"):"—";
-        const motNLabel=rec?((rec.motoristaNoturno)||p.motoristaNoturno||"—"):"—";
-        rows.push([fmtDateExport(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,hod,km,motDLabel,motNLabel]);
+    for(const {carrier, plate, meta:p} of allActivePlates){
+      const rec = statusMap[`${carrier}||${plate}||${ds}`];
+      const statusLabel = rec ? getSt(rec.status).label : "Não preenchido";
+      const timeLabel   = rec ? (statusSemHorario(rec.status) ? "N/A" : fmtTimeValue(rec.time)) : "—";
+      const hod = rec && rec.hodometro!==undefined && rec.hodometro!==null ? rec.hodometro : "Não preenchido";
+      let km = "";
+      if(hod !== "Não preenchido"){
+        const numCur  = Number(hod);
+        const numPrev = lastKnownHodoBefore(plate, ds);
+        if(Number.isFinite(numCur) && numPrev !== null) km = numCur - numPrev;
       }
+      const motDLabel = rec ? ((rec.motoristaDiurno)||p.motoristaDiurno||"—") : "—";
+      const motNLabel = rec ? ((rec.motoristaNoturno)||p.motoristaNoturno||"—") : "—";
+      rows.push([fmtDateExport(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,hod,km,motDLabel,motNLabel]);
+    }
+  if(onProgress) onProgress(100);
   return rows;
+}
+
+// Returns the dateStr for the day immediately before ds
+function _prevDateStr(ds){
+  const [y,m,day] = ds.split('-').map(Number);
+  const d = new Date(y, m-1, day);
+  d.setDate(d.getDate()-1);
+  return localDateStr(d);
 }
 function exportXlsx(rows,filename){
   const ws=XLSX.utils.aoa_to_sheet(rows);
@@ -1499,20 +1648,20 @@ function exportCsv(rows,filename){
   showToast("CSV exportado!");
 }
 async function exportDay(fmt){
-  showToast("Gerando relatório...",true);
+  showToast("Gerando relat\u00f3rio...",true);
   const rows=await buildRows([dateStr(S.dateOffset)]);
   const fn=`NEXTA_Diario_${dateStr(S.dateOffset)}`;
   fmt==="xlsx"?exportXlsx(rows,fn):exportCsv(rows,fn);
 }
 async function exportWeek(fmt){
-  showToast("Gerando relatório...",true);
+  showToast("Gerando relat\u00f3rio...",true);
   const dates=getDates(7);
   const rows=await buildRows(dates);
   const fn=`NEXTA_Semanal_${dates[0]}_a_${dates[6]}`;
   fmt==="xlsx"?exportXlsx(rows,fn):exportCsv(rows,fn);
 }
 async function exportMonth(fmt){
-  showToast("Gerando relatório...",true);
+  showToast("Gerando relat\u00f3rio...",true);
   const now=new Date();
   const dates=getMonthDates(now.getFullYear(),now.getMonth());
   const rows=await buildRows(dates);
@@ -1563,10 +1712,12 @@ async function renderRegister(body){
         <td><span class="cap-tag">${p.capacidade}m³</span></td>
         <td>${statusBadge}</td>
         <td>${renderDriverCell(p.motoristaDiurno,p.motoristaNoturno)}</td>
-        <td style="display:flex;gap:6px;align-items:center">
-          ${toggleBtn}
-          <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">✏️</button>
-          <button class="btn-danger" onclick="delPlate('${carrier}',${idx})" title="Remover">🗑</button>
+        <td style="white-space:nowrap;vertical-align:middle">
+          <div style="display:inline-flex;gap:5px;align-items:center">
+            ${toggleBtn}
+            <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">✏️</button>
+            <button class="btn-danger" onclick="delPlate('${carrier}',${idx})" title="Remover">🗑</button>
+          </div>
         </td>
       </tr>`;
     }).join("");
@@ -1818,9 +1969,11 @@ async function renderUsers(body){
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${u.carrier||'—'}</td>
       <td style="font-size:11px;color:var(--muted)">${(u.operacoes&&u.operacoes.length)?u.operacoes.join(', '):'Todas'}</td>
-      <td style="display:flex;gap:6px">
-        <button class="btn-edit" onclick="openEditUser('${uid}')" title="Editar">✏️</button>
-        ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${uid}')" title="Remover">🗑</button>`:''}
+      <td style="white-space:nowrap;vertical-align:middle">
+        <div style="display:inline-flex;gap:5px;align-items:center">
+          <button class="btn-edit" onclick="openEditUser('${uid}')" title="Editar">✏️</button>
+          ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${uid}')" title="Remover">🗑</button>`:''}
+        </div>
       </td>
     </tr>`).join("");
 
@@ -2251,9 +2404,11 @@ async function renderRegisterOps(body, subTabs=''){
   const opRows=OPERACOES.map((o,i)=>`
     <tr>
       <td style="font-size:13px">${o}</td>
-      <td style="display:flex;gap:6px;align-items:center">
-        <button class="btn-edit" onclick="openEditOp(${i})" title="Editar">✏️</button>
-        <button class="btn-danger" onclick="deleteOp(${i})" title="Remover">🗑</button>
+      <td style="white-space:nowrap;vertical-align:middle">
+        <div style="display:inline-flex;gap:5px;align-items:center">
+          <button class="btn-edit" onclick="openEditOp(${i})" title="Editar">✏️</button>
+          <button class="btn-danger" onclick="deleteOp(${i})" title="Remover">🗑</button>
+        </div>
       </td>
     </tr>`).join('');
 
