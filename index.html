@@ -1,15 +1,15 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NEXTA — Gestão de Frota</title>
+<title>NEXTA â€” GestÃ£o de Frota</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CiAgPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzE3MjQxMCIvPgogIDxyZWN0IHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgcng9IjciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2M4ZjAzMiIgc3Ryb2tlLXdpZHRoPSIxLjUiIG9wYWNpdHk9IjAuNSIvPgogIDx0ZXh0IHg9IjE2IiB5PSIyMiIgZm9udC1mYW1pbHk9IkRNIFNhbnMsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjE0IiBmb250LXdlaWdodD0iNzAwIgogICAgdGV4dC1hbmNob3I9Im1pZGRsZSIgbGV0dGVyLXNwYWNpbmc9IjEiIGZpbGw9IiNjOGYwMzIiPk5YPC90ZXh0Pgo8L3N2Zz4=">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // FIREBASE
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
   getFirestore, doc, getDoc, setDoc, collection,
@@ -28,9 +28,9 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // DB HELPERS
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function dbGetPlates() {
   try {
     const snap = await getDoc(doc(db, "config", "plates"));
@@ -124,6 +124,28 @@ async function dbAddNotif(msg) {
 async function dbClearNotifs() {
   await setDoc(doc(db, "config", "notifications"), { items: [] });
 }
+async function dbGetAudit(limitN=120) {
+  try {
+    const snap = await getDoc(doc(db, "config", "audit_log"));
+    const items = snap.exists() ? (snap.data().items || []) : [];
+    return items.slice(0, limitN);
+  } catch { return []; }
+}
+async function dbAddAudit(action, details={}) {
+  try {
+    const items = await dbGetAudit(300);
+    const actor = (S && S.user && USERS_DB[S.user]) ? USERS_DB[S.user].name : "Sistema";
+    items.unshift({
+      action,
+      actor,
+      details,
+      at: new Date().toISOString(),
+      atBR: new Date().toLocaleString("pt-BR")
+    });
+    if(items.length > 300) items.length = 300;
+    await setDoc(doc(db, "config", "audit_log"), { items });
+  } catch(e) { console.error("audit error", e); }
+}
 
 // Users config
 async function dbGetUsers() {
@@ -154,6 +176,17 @@ async function dbGetOperacoes() {
 async function dbSaveOperacoes(list) {
   await setDoc(doc(db, "config", "operacoes"), { list });
 }
+async function dbGetAlertCutoffHour() {
+  try {
+    const snap = await getDoc(doc(db, "config", "alert_cutoff"));
+    if(!snap.exists()) return null;
+    const h = Number(snap.data().hour);
+    return Number.isFinite(h) ? h : null;
+  } catch(e) { return null; }
+}
+async function dbSaveAlertCutoffHour(hour) {
+  await setDoc(doc(db, "config", "alert_cutoff"), { hour: Number(hour) });
+}
 async function dbGetDrivers() {
   try {
     const snap = await getDoc(doc(db, "config", "drivers"));
@@ -169,15 +202,17 @@ async function loadConfig() {
   const loaders = [
     withTimeout(dbGetUsers(), 10000, "Timeout dbGetUsers").catch(e=>{console.error(e); return null}),
     withTimeout(dbGetCarriers(), 10000, "Timeout dbGetCarriers").catch(e=>{console.error(e); return null}),
-    withTimeout(dbGetOperacoes(), 10000, "Timeout dbGetOperacoes").catch(e=>{console.error(e); return null})
+    withTimeout(dbGetOperacoes(), 10000, "Timeout dbGetOperacoes").catch(e=>{console.error(e); return null}),
+    withTimeout(dbGetAlertCutoffHour(), 10000, "Timeout dbGetAlertCutoffHour").catch(e=>{console.error(e); return null})
   ];
-  const [fbUsers, fbCarriers, fbOps] = await Promise.all(loaders);
+  const [fbUsers, fbCarriers, fbOps, fbCutoff] = await Promise.all(loaders);
   if(fbUsers) USERS_DB = fbUsers;
   if(fbCarriers) CARRIERS = fbCarriers;
   if(fbOps) OPERACOES = fbOps;
+  if(Number.isFinite(fbCutoff)) ALERT_CUTOFF_HOUR = fbCutoff;
 }
 
-// ── Monthly archive helpers ──
+// â”€â”€ Monthly archive helpers â”€â”€
 async function dbGetArchives() {
   try {
     const snap = await getDoc(doc(db, "config", "monthly_archives"));
@@ -237,9 +272,9 @@ async function dbLoadStatusBulk(pairs) {
   return result;
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // DATA & CONFIG
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // USERS_DB and CARRIERS are loaded dynamically from Firebase
 let USERS_DB = {
   admin: { name:"Administrador", role:"admin", initials:"AD", password:"trocar_admin_2026" },
@@ -250,27 +285,28 @@ let USERS_DB = {
   garbuio:   { name:"Garbuio Transportes",    role:"carrier", initials:"GT", carrier:"Garbuio Transportes",    password:"trocar_garbuio_2026" },
 };
 let CARRIERS = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transportes","Simeira Transportes","Garbuio Transportes"];
-let OPERACOES = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de Caxias","Brasília","Cubatão","Uberaba"];
-const TIPOS_VEIC = ["Truck","Bi-Truck","Cavalo Mecânico"];
+let OPERACOES = ["PaulÃ­nia","SÃ£o Caetano do Sul","RibeirÃ£o Preto","Duque de Caxias","BrasÃ­lia","CubatÃ£o","Uberaba"];
+const TIPOS_VEIC = ["Truck","Bi-Truck","Cavalo MecÃ¢nico"];
 const IDENTS     = ["Petronas","Branco"];
 const CONTRATOS  = ["Dedicado","Spot"];
 const STATUS_OPTS = [
-  {val:"disponivel",  label:"Disponível",        cls:"st-disp",  badge:"b-green",  color:"#6ee04a"},
-  {val:"indisponivel",label:"Indisponível",       cls:"st-indisp",badge:"b-red",    color:"#f06060"},
-  {val:"manutencao",  label:"Manutenção",         cls:"st-manut", badge:"b-amber",  color:"#f0be40"},
+  {val:"disponivel",  label:"DisponÃ­vel",        cls:"st-disp",  badge:"b-green",  color:"#6ee04a"},
+  {val:"indisponivel",label:"IndisponÃ­vel",       cls:"st-indisp",badge:"b-red",    color:"#f06060"},
+  {val:"manutencao",  label:"ManutenÃ§Ã£o",         cls:"st-manut", badge:"b-amber",  color:"#f0be40"},
   {val:"folga",       label:"Folga",              cls:"st-folga", badge:"b-blue",   color:"#70a8f0"},
   {val:"programado",  label:"Programado/Em viagem",cls:"st-prog", badge:"b-purple", color:"#b07ef0"},
 ];
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // STATE
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 let S = {
   user: null, dateOffset: 0, adminTab: "dashboard",
   notifOpen: false, histDays: 45,
   histCarrier:"", histStatus:"", histOp:"", histPlaca:"", todayOp:"", todayPlaca:"",
   registerSubTab: "plates",
 };
+let ALERT_CUTOFF_HOUR = 16;
 const SESSION_KEY = "nexta_frota_user";
 const AUTH_LOCK_KEY = "nexta_frota_auth_lock_until";
 const AUTH_ATTEMPTS_KEY = "nexta_frota_auth_attempts";
@@ -282,9 +318,9 @@ const MEM = {
   status: new Map(),
 };
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // HELPERS
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 function nowMs(){ return Date.now(); }
 function isWeakPassword(pwd){ return !pwd || pwd.length < MIN_PASSWORD_LEN; }
 function isValidPlate(placa){
@@ -353,18 +389,18 @@ function clearLoginFailures(){
 }
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
 function statusSemHorario(v){ return v==='indisponivel'||v==='programado'||v==='folga'; }
-function fmtTimeValue(v){ return v==='sem_previsao'?'Sem previsão':(v||'—'); }
+function fmtTimeValue(v){ return v==='sem_previsao'?'Sem previsÃ£o':(v||'â€”'); }
 function renderDriverCell(diurno='', noturno=''){
-  const motD=diurno||'—';
-  const motN=noturno||'—';
+  const motD=diurno||'â€”';
+  const motN=noturno||'â€”';
   return `<div class="driver-cell">
-    <div class="driver-line"><span class="driver-icon">☀</span><span class="driver-name" title="${motD}">${motD}</span></div>
-    <div class="driver-line"><span class="driver-icon">🌙</span><span class="driver-name" title="${motN}">${motN}</span></div>
+    <div class="driver-line"><span class="driver-icon">â˜€</span><span class="driver-name" title="${motD}">${motD}</span></div>
+    <div class="driver-line"><span class="driver-icon">ðŸŒ™</span><span class="driver-name" title="${motN}">${motN}</span></div>
   </div>`;
 }
 function buildTimeOpts(selected="", allowNoForecast=false){
-  let opts=`<option value="" ${!selected?'selected':''} disabled>— Horário —</option>`;
-  if(allowNoForecast) opts+=`<option value="sem_previsao"${selected==='sem_previsao'?' selected':''}>Sem previsão</option>`;
+  let opts=`<option value="" ${!selected?'selected':''} disabled>â€” HorÃ¡rio â€”</option>`;
+  if(allowNoForecast) opts+=`<option value="sem_previsao"${selected==='sem_previsao'?' selected':''}>Sem previsÃ£o</option>`;
   for(let h=0;h<24;h++){
     for(let m=0;m<60;m+=15){
       const hh=String(h).padStart(2,'0');
@@ -377,7 +413,7 @@ function buildTimeOpts(selected="", allowNoForecast=false){
   opts+=`<option value="23:59"${'23:59'===selected?' selected':''}>23:59</option>`;
   return opts;
 }
-// ── Date helpers using LOCAL time (avoids UTC offset issues for BR timezone) ──
+// â”€â”€ Date helpers using LOCAL time (avoids UTC offset issues for BR timezone) â”€â”€
 function localDateStr(d){
   // Returns YYYY-MM-DD using local timezone, not UTC
   const y=d.getFullYear();
@@ -392,21 +428,21 @@ function dateStr(off=0){
 }
 function fmtDate(off=0){
   const d=new Date(); d.setDate(d.getDate()+off);
-  const days=["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  const days=["Dom","Seg","Ter","Qua","Qui","Sex","SÃ¡b"];
   const mons=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
-  const tag=off===0?" — Hoje":off===1?" — Amanhã":off===-1?" — Ontem":"";
+  const tag=off===0?" â€” Hoje":off===1?" â€” AmanhÃ£":off===-1?" â€” Ontem":"";
   return `${days[d.getDay()]}, ${d.getDate()} ${mons[d.getMonth()]}${tag}`;
 }
 function fmtDateStr(ds){
   // Parse YYYY-MM-DD as local date (not UTC)
   const [y,m,day]=ds.split('-').map(Number);
   const d=new Date(y,m-1,day);
-  const days=["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  const days=["Dom","Seg","Ter","Qua","Qui","Sex","SÃ¡b"];
   const mons=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
   return `${days[d.getDay()]}, ${d.getDate()} ${mons[d.getMonth()]}`;
 }
 function fmtDateExport(ds){
-  // Retorna DD/MM/YYYY para uso nos relatórios exportados
+  // Retorna DD/MM/YYYY para uso nos relatÃ³rios exportados
   const [y,m,day]=ds.split('-').map(Number);
   return `${String(day).padStart(2,'0')}/${String(m).padStart(2,'0')}/${y}`;
 }
@@ -432,15 +468,16 @@ function getMonthDates(year,month){
   return arr;
 }
 async function buildPendingAlerts(allP, filterOps){
-  // filterOps: array de operações para filtrar (usuário restrito), ou null para todas
+  // filterOps: array de operacoes para filtrar (usuario restrito), ou null para todas
   if(S.dateOffset !== 0) return "";
   const targets=[
     {label:"Hoje", ds:dateStr(0)},
-    {label:"Amanhã", ds:dateStr(1)}
+    {label:"Amanha", ds:dateStr(1)}
   ];
+  const CUTOFF_HOUR = ALERT_CUTOFF_HOUR;
+  const cutoffReached = (new Date()).getHours() >= CUTOFF_HOUR;
 
   if(filterOps&&filterOps.length){
-    // Modo restrito: verifica por operação se todas as placas daquela operação foram preenchidas
     const groups=await Promise.all(targets.map(async t=>{
       const pendingItems=[];
       for(const carrier of CARRIERS){
@@ -461,23 +498,30 @@ async function buildPendingAlerts(allP, filterOps){
       return {...t, pending: pendingItems};
     }));
     const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
+    const todayPending=(groups.find(g=>g.label==="Hoje")?.pending)||[];
+    const cutoffAlert=(cutoffReached&&todayPending.length)
+      ? `<div class="pa-sub" style="color:var(--red);margin-top:8px">Alerta de corte (${CUTOFF_HOUR}:00): pendente hoje: ${todayPending.slice(0,6).join(", ")}${todayPending.length>6?"...":""}</div>`
+      : "";
+    const cutoffInfo = `<div class="pa-sub" style="margin-top:6px">Horário de corte configurado: ${String(CUTOFF_HOUR).padStart(2,'0')}:00</div>`;
     if(total===0){
       return `<div class="pending-alert ok">
-        <div class="pa-icon">✓</div>
-        <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todas as operações preencheram hoje e amanhã.</div></div>
+        <div class="pa-icon">OK</div>
+        <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todas as operacoes preencheram hoje e amanha.</div>${cutoffInfo}</div>
       </div>`;
     }
     return `<div class="pending-alert warn">
       <div class="pa-icon">!</div>
       <div class="pa-content">
-        <div class="pa-title">Pendências de preenchimento</div>
-        <div class="pa-sub">Operações sem envio concluído.</div>
+        <div class="pa-title">Pendencias de preenchimento</div>
+        <div class="pa-sub">Operacoes sem envio concluido.</div>
+        ${cutoffInfo}
+        ${cutoffAlert}
         <div class="pa-groups">
           ${groups.map(g=>`
             <div class="pa-group">
               <div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div>
               <div class="pa-list">
-                ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendências</span>`}
+                ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}
               </div>
             </div>`).join("")}
         </div>
@@ -485,7 +529,6 @@ async function buildPendingAlerts(allP, filterOps){
     </div>`;
   }
 
-  // Modo normal: por transportador com lock
   const activeCarriers=CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
   if(!activeCarriers.length) return "";
   const groups=await Promise.all(targets.map(async t=>{
@@ -499,23 +542,30 @@ async function buildPendingAlerts(allP, filterOps){
     };
   }));
   const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
+  const todayPending=(groups.find(g=>g.label==="Hoje")?.pending)||[];
+  const cutoffAlert=(cutoffReached&&todayPending.length)
+    ? `<div class="pa-sub" style="color:var(--red);margin-top:8px">Alerta de corte (${CUTOFF_HOUR}:00): pendentes hoje: ${todayPending.slice(0,6).join(", ")}${todayPending.length>6?"...":""}</div>`
+    : "";
+  const cutoffInfo = `<div class="pa-sub" style="margin-top:6px">Horário de corte configurado: ${String(CUTOFF_HOUR).padStart(2,'0')}:00</div>`;
   if(total===0){
     return `<div class="pending-alert ok">
-      <div class="pa-icon">✓</div>
-      <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todos os transportadores preencheram hoje e amanhã.</div></div>
+      <div class="pa-icon">OK</div>
+      <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todos os transportadores preencheram hoje e amanha.</div>${cutoffInfo}</div>
     </div>`;
   }
   return `<div class="pending-alert warn">
     <div class="pa-icon">!</div>
     <div class="pa-content">
-      <div class="pa-title">Pendências de preenchimento</div>
-      <div class="pa-sub">Transportadores sem envio concluído para o dia atual e seguinte.</div>
+      <div class="pa-title">Pendencias de preenchimento</div>
+      <div class="pa-sub">Transportadores sem envio concluido para o dia atual e seguinte.</div>
+      ${cutoffInfo}
+      ${cutoffAlert}
       <div class="pa-groups">
         ${groups.map(g=>`
           <div class="pa-group">
             <div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div>
             <div class="pa-list">
-              ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendências</span>`}
+              ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}
             </div>
           </div>`).join("")}
       </div>
@@ -536,9 +586,9 @@ function restoreSession(){
   } catch(e) {}
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // RENDER ROOT
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function render(){
   const app=document.getElementById("app");
   if(!S.user){ app.innerHTML=renderLogin(); return; }
@@ -553,14 +603,14 @@ async function render(){
       <div class="topbar-left">
         <span class="wordmark">NEXTA</span>
         <div class="topbar-div"></div>
-        <span class="topbar-sub">Gestão de Frota</span>
+        <span class="topbar-sub">GestÃ£o de Frota</span>
       </div>
       <div class="topbar-right">
-        ${(u.role==="admin"||u.role==="operacional")?`<button class="notif-btn" onclick="toggleNotif()" title="Notificações">🔔${hasNotif?'<span class="notif-dot"></span>':''}</button>`:""}
-        ${helpRole?`<button class="help-btn" onclick="openHelpModal('${helpRole}')" title="${helpTitle}">❓ ${helpLabel}</button>`:""}
+        ${(u.role==="admin"||u.role==="operacional")?`<button class="notif-btn" onclick="toggleNotif()" title="NotificaÃ§Ãµes">ðŸ””${hasNotif?'<span class="notif-dot"></span>':''}</button>`:""}
+        ${helpRole?`<button class="help-btn" onclick="openHelpModal('${helpRole}')" title="${helpTitle}">â“ ${helpLabel}</button>`:""}
         <div class="avatar ${u.role==="admin"||u.role==="operacional"?"admin":""}">${u.initials}</div>
         <span class="user-name">${u.role==="admin"?"Administrador":u.role==="operacional"?u.name:u.carrier}</span>
-        <button class="btn-logout" onclick="logout()">↩ Sair</button>
+        <button class="btn-logout" onclick="logout()">â†© Sair</button>
       </div>
     </div>
     ${S.notifOpen&&(u.role==="admin"||u.role==="operacional")?await renderNotifPanel(notifs):""}
@@ -570,167 +620,167 @@ async function render(){
   else await renderCarrier(u.carrier);
 }
 
-// ── Conteúdo dos manuais embutidos ──────────────────────────
+// â”€â”€ ConteÃºdo dos manuais embutidos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const MANUAL_TRANSPORTADOR_HTML = `
 <div class="hm-body">
   <div class="hm-section-title">1. Acesso ao sistema</div>
-  <p>O NEXTA é acessado pelo navegador, no endereço fornecido pelo administrador. Não é necessário instalar nenhum aplicativo.</p>
+  <p>O NEXTA Ã© acessado pelo navegador, no endereÃ§o fornecido pelo administrador. NÃ£o Ã© necessÃ¡rio instalar nenhum aplicativo.</p>
   <div class="hm-sub">Como fazer login:</div>
   <ul>
-    <li>No campo <b>USUÁRIO</b>, digite seu login (fornecido pelo administrador).</li>
+    <li>No campo <b>USUÃRIO</b>, digite seu login (fornecido pelo administrador).</li>
     <li>No campo <b>SENHA</b>, digite sua senha e clique em <b>Entrar</b>.</li>
-    <li>Sua sessão é salva automaticamente — se fechar e reabrir o navegador, você continuará logado.</li>
+    <li>Sua sessÃ£o Ã© salva automaticamente â€” se fechar e reabrir o navegador, vocÃª continuarÃ¡ logado.</li>
   </ul>
 
   <div class="hm-section-title">2. Tela de disponibilidade</div>
-  <p>Após o login, você verá a lista de placas da sua frota para o dia selecionado. É nessa tela que você informa o status de cada veículo.</p>
+  <p>ApÃ³s o login, vocÃª verÃ¡ a lista de placas da sua frota para o dia selecionado. Ã‰ nessa tela que vocÃª informa o status de cada veÃ­culo.</p>
   <table class="hm-table">
-    <thead><tr><th>Elemento</th><th>Função</th></tr></thead>
+    <thead><tr><th>Elemento</th><th>FunÃ§Ã£o</th></tr></thead>
     <tbody>
-      <tr><td>Setas ‹ ›</td><td>Navegar entre os dias</td></tr>
+      <tr><td>Setas â€¹ â€º</td><td>Navegar entre os dias</td></tr>
       <tr><td>Tabela de frota</td><td>Lista de placas com campos para preenchimento</td></tr>
-      <tr><td>Botão Salvar</td><td>Confirma e envia o preenchimento</td></tr>
+      <tr><td>BotÃ£o Salvar</td><td>Confirma e envia o preenchimento</td></tr>
       <tr><td>Banner verde</td><td>Confirma que os dados foram enviados e bloqueados</td></tr>
     </tbody>
   </table>
 
-  <div class="hm-section-title">3. Preenchendo cada veículo</div>
-  <p>Para cada placa, preencha os três campos obrigatórios antes de salvar:</p>
+  <div class="hm-section-title">3. Preenchendo cada veÃ­culo</div>
+  <p>Para cada placa, preencha os trÃªs campos obrigatÃ³rios antes de salvar:</p>
   <div class="hm-steps">
-    <div class="hm-step"><span class="hm-step-n">1</span><div><b>Status</b> — selecione a situação do veículo no dia.</div></div>
-    <div class="hm-step"><span class="hm-step-n">2</span><div><b>Hodômetro</b> — informe a leitura atual do odômetro (só números, sem ponto ou vírgula). O valor não pode ser menor que o do dia anterior.</div></div>
-    <div class="hm-step"><span class="hm-step-n">3</span><div><b>Disponível às</b> — selecione o horário de disponibilidade. Obrigatório apenas para status <b>Disponível</b>.</div></div>
+    <div class="hm-step"><span class="hm-step-n">1</span><div><b>Status</b> â€” selecione a situaÃ§Ã£o do veÃ­culo no dia.</div></div>
+    <div class="hm-step"><span class="hm-step-n">2</span><div><b>HodÃ´metro</b> â€” informe a leitura atual do odÃ´metro (sÃ³ nÃºmeros, sem ponto ou vÃ­rgula). O valor nÃ£o pode ser menor que o do dia anterior.</div></div>
+    <div class="hm-step"><span class="hm-step-n">3</span><div><b>DisponÃ­vel Ã s</b> â€” selecione o horÃ¡rio de disponibilidade. ObrigatÃ³rio apenas para status <b>DisponÃ­vel</b>.</div></div>
   </div>
-  <div class="hm-callout">⚠️ Se algum campo estiver faltando, a linha ficará destacada em vermelho ao tentar salvar.</div>
+  <div class="hm-callout">âš ï¸ Se algum campo estiver faltando, a linha ficarÃ¡ destacada em vermelho ao tentar salvar.</div>
 
   <div class="hm-section-title">4. Status e seus significados</div>
   <table class="hm-table">
-    <thead><tr><th>Status</th><th>Significado</th><th>Horário?</th></tr></thead>
+    <thead><tr><th>Status</th><th>Significado</th><th>HorÃ¡rio?</th></tr></thead>
     <tbody>
-      <tr><td><span class="hm-badge green">Disponível</span></td><td>Veículo pronto para operar</td><td>✅ Obrigatório</td></tr>
-      <tr><td><span class="hm-badge red">Indisponível</span></td><td>Veículo fora de operação</td><td>❌ N/A</td></tr>
-      <tr><td><span class="hm-badge amber">Manutenção</span></td><td>Em manutenção preventiva ou corretiva</td><td>Opcional</td></tr>
-      <tr><td><span class="hm-badge blue">Folga</span></td><td>Motorista em folga / veículo parado</td><td>❌ N/A</td></tr>
-      <tr><td><span class="hm-badge purple">Prog./Viagem</span></td><td>Programado ou em viagem</td><td>❌ N/A</td></tr>
+      <tr><td><span class="hm-badge green">DisponÃ­vel</span></td><td>VeÃ­culo pronto para operar</td><td>âœ… ObrigatÃ³rio</td></tr>
+      <tr><td><span class="hm-badge red">IndisponÃ­vel</span></td><td>VeÃ­culo fora de operaÃ§Ã£o</td><td>âŒ N/A</td></tr>
+      <tr><td><span class="hm-badge amber">ManutenÃ§Ã£o</span></td><td>Em manutenÃ§Ã£o preventiva ou corretiva</td><td>Opcional</td></tr>
+      <tr><td><span class="hm-badge blue">Folga</span></td><td>Motorista em folga / veÃ­culo parado</td><td>âŒ N/A</td></tr>
+      <tr><td><span class="hm-badge purple">Prog./Viagem</span></td><td>Programado ou em viagem</td><td>âŒ N/A</td></tr>
     </tbody>
   </table>
 
   <div class="hm-section-title">5. Salvando e enviando</div>
-  <p>Após preencher todas as placas, clique em <b>💾 Salvar disponibilidade</b>. Após o envio:</p>
+  <p>ApÃ³s preencher todas as placas, clique em <b>ðŸ’¾ Salvar disponibilidade</b>. ApÃ³s o envio:</p>
   <ul>
     <li>Um banner verde confirma o envio com data e hora do registro.</li>
-    <li>A tabela passa para modo somente leitura — não é mais possível editar.</li>
-    <li>O administrador é notificado automaticamente.</li>
-    <li>Para corrigir algo após o envio, solicite o desbloqueio ao administrador.</li>
+    <li>A tabela passa para modo somente leitura â€” nÃ£o Ã© mais possÃ­vel editar.</li>
+    <li>O administrador Ã© notificado automaticamente.</li>
+    <li>Para corrigir algo apÃ³s o envio, solicite o desbloqueio ao administrador.</li>
   </ul>
 
-  <div class="hm-section-title">6. Navegação por datas</div>
-  <p>Use as setas <b>‹</b> e <b>›</b> para navegar entre os dias. É possível preencher a disponibilidade de amanhã com antecedência — recomendamos preencher sempre o dia atual e o seguinte.</p>
+  <div class="hm-section-title">6. NavegaÃ§Ã£o por datas</div>
+  <p>Use as setas <b>â€¹</b> e <b>â€º</b> para navegar entre os dias. Ã‰ possÃ­vel preencher a disponibilidade de amanhÃ£ com antecedÃªncia â€” recomendamos preencher sempre o dia atual e o seguinte.</p>
 
   <div class="hm-section-title">7. Perguntas frequentes</div>
   <table class="hm-table">
-    <thead><tr><th>Dúvida</th><th>Resposta</th></tr></thead>
+    <thead><tr><th>DÃºvida</th><th>Resposta</th></tr></thead>
     <tbody>
       <tr><td>Enviei errado. Como corrigir?</td><td>Solicite o desbloqueio ao administrador e preencha novamente.</td></tr>
       <tr><td>Posso usar pelo celular?</td><td>Sim, funciona em qualquer navegador.</td></tr>
-      <tr><td>O sistema salva automaticamente?</td><td>Não. Você precisa clicar em "Salvar disponibilidade".</td></tr>
+      <tr><td>O sistema salva automaticamente?</td><td>NÃ£o. VocÃª precisa clicar em "Salvar disponibilidade".</td></tr>
       <tr><td>Esqueci minha senha.</td><td>Entre em contato com o administrador para redefinir.</td></tr>
-      <tr><td>O hodômetro pode ser menor que ontem?</td><td>Não. O sistema bloqueia valores menores que o último registrado.</td></tr>
+      <tr><td>O hodÃ´metro pode ser menor que ontem?</td><td>NÃ£o. O sistema bloqueia valores menores que o Ãºltimo registrado.</td></tr>
     </tbody>
   </table>
 </div>`;
 
 const MANUAL_OPERACIONAL_HTML = `
 <div class="hm-body">
-  <div class="hm-section-title">1. Visão geral do painel</div>
-  <p>O perfil operacional tem acesso de acompanhamento e leitura. Após o login, você verá as seguintes abas:</p>
+  <div class="hm-section-title">1. VisÃ£o geral do painel</div>
+  <p>O perfil operacional tem acesso de acompanhamento e leitura. ApÃ³s o login, vocÃª verÃ¡ as seguintes abas:</p>
   <table class="hm-table">
     <thead><tr><th>Aba</th><th>O que encontrar</th></tr></thead>
     <tbody>
-      <tr><td><b>Dashboard</b></td><td>Resumo executivo com indicadores do dia e gráficos de tendência</td></tr>
-      <tr><td><b>Painel de Disponibilidade</b></td><td>Tabela completa com status de todos os veículos por transportador</td></tr>
-      <tr><td><b>Histórico</b></td><td>Registros dos últimos 7 a 45 dias com filtros avançados</td></tr>
-      <tr><td><b>Exportar</b></td><td>Geração de relatórios em Excel ou CSV</td></tr>
-      <tr><td><b>Arquivos Mensais</b></td><td>Relatórios mensais gerados automaticamente</td></tr>
+      <tr><td><b>Dashboard</b></td><td>Resumo executivo com indicadores do dia e grÃ¡ficos de tendÃªncia</td></tr>
+      <tr><td><b>Painel de Disponibilidade</b></td><td>Tabela completa com status de todos os veÃ­culos por transportador</td></tr>
+      <tr><td><b>HistÃ³rico</b></td><td>Registros dos Ãºltimos 7 a 45 dias com filtros avanÃ§ados</td></tr>
+      <tr><td><b>Exportar</b></td><td>GeraÃ§Ã£o de relatÃ³rios em Excel ou CSV</td></tr>
+      <tr><td><b>Arquivos Mensais</b></td><td>RelatÃ³rios mensais gerados automaticamente</td></tr>
     </tbody>
   </table>
 
   <div class="hm-section-title">2. Dashboard</div>
-  <p>Exibe indicadores consolidados para o dia selecionado. Use as setas <b>‹ ›</b> para navegar entre datas.</p>
+  <p>Exibe indicadores consolidados para o dia selecionado. Use as setas <b>â€¹ â€º</b> para navegar entre datas.</p>
   <ul>
-    <li><b>Cards de resumo:</b> Disponíveis, Indisponíveis, Manutenção, Folga, Prog./Viagem e Total.</li>
-    <li><b>Alerta de pendências:</b> mostra quais transportadores ainda não enviaram para hoje e amanhã.</li>
-    <li><b>Gráfico de pizza:</b> distribuição percentual dos status no dia.</li>
-    <li><b>Linha de tendência:</b> evolução da disponibilidade nos últimos 14 dias.</li>
+    <li><b>Cards de resumo:</b> DisponÃ­veis, IndisponÃ­veis, ManutenÃ§Ã£o, Folga, Prog./Viagem e Total.</li>
+    <li><b>Alerta de pendÃªncias:</b> mostra quais transportadores ainda nÃ£o enviaram para hoje e amanhÃ£.</li>
+    <li><b>GrÃ¡fico de pizza:</b> distribuiÃ§Ã£o percentual dos status no dia.</li>
+    <li><b>Linha de tendÃªncia:</b> evoluÃ§Ã£o da disponibilidade nos Ãºltimos 14 dias.</li>
     <li><b>Barras por transportador:</b> comparativo entre as empresas.</li>
-    <li><b>Tabela por operação:</b> resumo por unidade operacional com barra de disponibilidade.</li>
+    <li><b>Tabela por operaÃ§Ã£o:</b> resumo por unidade operacional com barra de disponibilidade.</li>
   </ul>
 
   <div class="hm-section-title">3. Painel de disponibilidade</div>
-  <p>Tabela detalhada de todos os veículos agrupados por transportador. Para cada veículo são exibidos:</p>
+  <p>Tabela detalhada de todos os veÃ­culos agrupados por transportador. Para cada veÃ­culo sÃ£o exibidos:</p>
   <table class="hm-table">
-    <thead><tr><th>Coluna</th><th>Informação</th></tr></thead>
+    <thead><tr><th>Coluna</th><th>InformaÃ§Ã£o</th></tr></thead>
     <tbody>
-      <tr><td>PLACA</td><td>Identificação do veículo</td></tr>
-      <tr><td>OPERAÇÃO</td><td>Unidade operacional</td></tr>
-      <tr><td>TIPO</td><td>Truck, Bi-Truck ou Cavalo Mecânico</td></tr>
-      <tr><td>IDENTIFICAÇÃO</td><td>Petronas ou Branco</td></tr>
+      <tr><td>PLACA</td><td>IdentificaÃ§Ã£o do veÃ­culo</td></tr>
+      <tr><td>OPERAÃ‡ÃƒO</td><td>Unidade operacional</td></tr>
+      <tr><td>TIPO</td><td>Truck, Bi-Truck ou Cavalo MecÃ¢nico</td></tr>
+      <tr><td>IDENTIFICAÃ‡ÃƒO</td><td>Petronas ou Branco</td></tr>
       <tr><td>CONTRATO</td><td>Dedicado ou Spot</td></tr>
       <tr><td>STATUS</td><td>Status informado pelo transportador</td></tr>
-      <tr><td>HODÔMETRO</td><td>Quilometragem registrada no dia</td></tr>
-      <tr><td>HORÁRIO</td><td>Horário de disponibilidade</td></tr>
-      <tr><td>MOTORISTAS</td><td>Diurno ☀ e noturno 🌙</td></tr>
+      <tr><td>HODÃ”METRO</td><td>Quilometragem registrada no dia</td></tr>
+      <tr><td>HORÃRIO</td><td>HorÃ¡rio de disponibilidade</td></tr>
+      <tr><td>MOTORISTAS</td><td>Diurno â˜€ e noturno ðŸŒ™</td></tr>
     </tbody>
   </table>
-  <div class="hm-callout">💡 O badge <b>🔒 Enviado</b> indica que o transportador concluiu o preenchimento. <b>Pendente</b> indica que ainda não enviou.</div>
+  <div class="hm-callout">ðŸ’¡ O badge <b>ðŸ”’ Enviado</b> indica que o transportador concluiu o preenchimento. <b>Pendente</b> indica que ainda nÃ£o enviou.</div>
 
   <div class="hm-section-title">4. Filtros e busca</div>
   <table class="hm-table">
-    <thead><tr><th>Filtro</th><th>Função</th></tr></thead>
+    <thead><tr><th>Filtro</th><th>FunÃ§Ã£o</th></tr></thead>
     <tbody>
-      <tr><td>Operação</td><td>Filtra veículos de uma unidade específica</td></tr>
+      <tr><td>OperaÃ§Ã£o</td><td>Filtra veÃ­culos de uma unidade especÃ­fica</td></tr>
       <tr><td>Busca livre</td><td>Filtra por placa ou nome do transportador</td></tr>
-      <tr><td>Transportador</td><td>Filtra por empresa (no Histórico)</td></tr>
-      <tr><td>Status</td><td>Filtra por um status específico (no Histórico)</td></tr>
-      <tr><td>Período</td><td>7, 15, 30 ou 45 dias (no Histórico)</td></tr>
+      <tr><td>Transportador</td><td>Filtra por empresa (no HistÃ³rico)</td></tr>
+      <tr><td>Status</td><td>Filtra por um status especÃ­fico (no HistÃ³rico)</td></tr>
+      <tr><td>PerÃ­odo</td><td>7, 15, 30 ou 45 dias (no HistÃ³rico)</td></tr>
     </tbody>
   </table>
 
-  <div class="hm-section-title">5. Exportação de relatórios</div>
-  <p>Na aba <b>Exportar</b>, gere relatórios em Excel (.xlsx) ou CSV. Os relatórios incluem km percorrido calculado automaticamente.</p>
+  <div class="hm-section-title">5. ExportaÃ§Ã£o de relatÃ³rios</div>
+  <p>Na aba <b>Exportar</b>, gere relatÃ³rios em Excel (.xlsx) ou CSV. Os relatÃ³rios incluem km percorrido calculado automaticamente.</p>
   <table class="hm-table">
-    <thead><tr><th>Tipo</th><th>Período</th></tr></thead>
+    <thead><tr><th>Tipo</th><th>PerÃ­odo</th></tr></thead>
     <tbody>
-      <tr><td>Diário</td><td>Dia atual ou navegado</td></tr>
-      <tr><td>Semanal</td><td>Últimos 7 dias</td></tr>
-      <tr><td>Mensal</td><td>Mês atual completo</td></tr>
-      <tr><td>Personalizado</td><td>Qualquer intervalo nos últimos 45 dias</td></tr>
+      <tr><td>DiÃ¡rio</td><td>Dia atual ou navegado</td></tr>
+      <tr><td>Semanal</td><td>Ãšltimos 7 dias</td></tr>
+      <tr><td>Mensal</td><td>MÃªs atual completo</td></tr>
+      <tr><td>Personalizado</td><td>Qualquer intervalo nos Ãºltimos 45 dias</td></tr>
     </tbody>
   </table>
 
   <div class="hm-section-title">6. Arquivos mensais</div>
   <ul>
-    <li>Gerados automaticamente nos 3 primeiros dias de cada mês.</li>
+    <li>Gerados automaticamente nos 3 primeiros dias de cada mÃªs.</li>
     <li>Podem ser gerados ou regenerados manualmente a qualquer momento.</li>
-    <li>São mantidos os 6 arquivos mais recentes.</li>
-    <li>Disponíveis para download em Excel ou CSV.</li>
+    <li>SÃ£o mantidos os 6 arquivos mais recentes.</li>
+    <li>DisponÃ­veis para download em Excel ou CSV.</li>
   </ul>
 
-  <div class="hm-section-title">7. Notificações</div>
-  <p>O ícone 🔔 na barra superior exibe notificações do sistema. Um ponto vermelho indica novas notificações.</p>
+  <div class="hm-section-title">7. NotificaÃ§Ãµes</div>
+  <p>O Ã­cone ðŸ”” na barra superior exibe notificaÃ§Ãµes do sistema. Um ponto vermelho indica novas notificaÃ§Ãµes.</p>
   <ul>
-    <li>Cada envio de disponibilidade por um transportador gera uma notificação.</li>
-    <li>Clique em <b>Limpar</b> para arquivar todas as notificações.</li>
+    <li>Cada envio de disponibilidade por um transportador gera uma notificaÃ§Ã£o.</li>
+    <li>Clique em <b>Limpar</b> para arquivar todas as notificaÃ§Ãµes.</li>
   </ul>
 
-  <div class="hm-section-title">8. O que o operacional NÃO pode fazer</div>
+  <div class="hm-section-title">8. O que o operacional NÃƒO pode fazer</div>
   <table class="hm-table">
-    <thead><tr><th>Funcionalidade</th><th>Situação</th></tr></thead>
+    <thead><tr><th>Funcionalidade</th><th>SituaÃ§Ã£o</th></tr></thead>
     <tbody>
-      <tr><td>Cadastro de placas, motoristas e operações</td><td>❌ Exclusivo do admin</td></tr>
-      <tr><td>Gestão de usuários e transportadores</td><td>❌ Exclusivo do admin</td></tr>
-      <tr><td>Desbloquear lançamentos</td><td>❌ Exclusivo do admin</td></tr>
-      <tr><td>Dashboard, painel, histórico, exportação</td><td>✅ Disponível</td></tr>
+      <tr><td>Cadastro de placas, motoristas e operaÃ§Ãµes</td><td>âŒ Exclusivo do admin</td></tr>
+      <tr><td>GestÃ£o de usuÃ¡rios e transportadores</td><td>âŒ Exclusivo do admin</td></tr>
+      <tr><td>Desbloquear lanÃ§amentos</td><td>âŒ Exclusivo do admin</td></tr>
+      <tr><td>Dashboard, painel, histÃ³rico, exportaÃ§Ã£o</td><td>âœ… DisponÃ­vel</td></tr>
     </tbody>
   </table>
 </div>`;
@@ -749,11 +799,11 @@ function openHelpModal(role){
     <div class="help-modal-shell">
       <div class="help-modal-header">
         <div>
-          <div class="help-modal-title">❓ ${title}</div>
-          <div class="help-modal-sub">Use a rolagem para navegar pelas seções.</div>
+          <div class="help-modal-title">â“ ${title}</div>
+          <div class="help-modal-sub">Use a rolagem para navegar pelas seÃ§Ãµes.</div>
         </div>
         <div class="help-modal-actions">
-          <button class="btn btn-lime btn-sm" onclick="document.getElementById('help-modal').remove()">✕ Fechar</button>
+          <button class="btn btn-lime btn-sm" onclick="document.getElementById('help-modal').remove()">âœ• Fechar</button>
         </div>
       </div>
       <div class="help-modal-content">${content}</div>
@@ -762,18 +812,18 @@ function openHelpModal(role){
   document.body.appendChild(modal);
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // LOGIN
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 function renderLogin(){
   return `
     <div class="login-wrap">
       <div class="login-card">
         <div class="login-logo"><span class="wordmark">NEXTA</span></div>
-        <p class="login-title">Gestão de Frota</p>
-        <p class="login-sub">Acesse com seu usuário e senha</p>
-        <div class="field"><label>USUÁRIO</label><input type="text" id="user-input" placeholder="Digite seu usuário" onkeydown="if(event.key==='Enter')document.getElementById('pwd').focus()"></div>
-        <div class="field"><label>SENHA</label><input type="password" id="pwd" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
+        <p class="login-title">GestÃ£o de Frota</p>
+        <p class="login-sub">Acesse com seu usuÃ¡rio e senha</p>
+        <div class="field"><label>USUÃRIO</label><input type="text" id="user-input" placeholder="Digite seu usuÃ¡rio" onkeydown="if(event.key==='Enter')document.getElementById('pwd').focus()"></div>
+        <div class="field"><label>SENHA</label><input type="password" id="pwd" placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" onkeydown="if(event.key==='Enter')doLogin()"></div>
         <div class="login-err" id="login-err"></div>
         <button class="btn btn-lime btn-full" onclick="doLogin()">Entrar</button>
       </div>
@@ -789,33 +839,33 @@ function doLogin(){
     err.textContent=`Muitas tentativas. Tente novamente em ~${min} min.`;
     return;
   }
-  if(!uid){err.textContent="Informe o usuário.";return;}
+  if(!uid){err.textContent="Informe o usuÃ¡rio.";return;}
   if(!pwd){err.textContent="Informe a senha.";return;}
-  if(!USERS_DB[uid]){registerLoginFailure();err.textContent="Usuário não encontrado.";return;}
+  if(!USERS_DB[uid]){registerLoginFailure();err.textContent="UsuÃ¡rio nÃ£o encontrado.";return;}
   if(USERS_DB[uid].password!==pwd){registerLoginFailure();err.textContent="Senha incorreta.";return;}
   clearLoginFailures();
   S.user=uid; S.dateOffset=0; saveSession(uid); render();
 }function logout(){ S.user=null; S.notifOpen=false; clearSession(); render(); }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // NOTIFICATIONS
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function toggleNotif(){ S.notifOpen=!S.notifOpen; await render(); }
 async function renderNotifPanel(notifs){
   const items=notifs.length===0
-    ?`<div class="notif-empty">Nenhuma notificação</div>`
+    ?`<div class="notif-empty">Nenhuma notificaÃ§Ã£o</div>`
     :notifs.map(n=>`<div class="notif-item"><div>${safeText(n.msg)}</div><div class="ni-time">${safeText(n.time)}</div></div>`).join("");
   return `<div class="notif-panel">
     <div class="notif-header">
-      <span>Notificações</span>
+      <span>NotificaÃ§Ãµes</span>
       <button class="btn btn-sm btn-outline" onclick="clearNotifsAndRender()">Limpar</button>
     </div>${items}</div>`;
 }
 async function clearNotifsAndRender(){ await dbClearNotifs(); S.notifOpen=false; await render(); }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // CARRIER VIEW
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderCarrier(carrier){
   const ds=dateStr(S.dateOffset);
   const mc=document.getElementById("main-content");
@@ -833,9 +883,9 @@ async function renderCarrier(carrier){
     const userOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
     const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
     if(loadedPlates.length===0){
-      const opLabel=userOps?` para a operação ${userOps.join(' / ')}`:'';
+      const opLabel=userOps?` para a operaÃ§Ã£o ${userOps.join(' / ')}`:'';
       mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
-        <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada${opLabel}.<br>Aguarde o administrador.</div>`;
+        <div class="empty"><span class="ei">ðŸš«</span>Nenhuma placa cadastrada${opLabel}.<br>Aguarde o administrador.</div>`;
       return;
     }
     plates.push(...loadedPlates);
@@ -845,7 +895,7 @@ async function renderCarrier(carrier){
   } catch(e){
     console.error(e);
     mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
-      <div class="empty"><span class="ei">⚠</span>Erro ao carregar a disponibilidade.<br>Atualize a página ou tente novamente.</div>`;
+      <div class="empty"><span class="ei">âš </span>Erro ao carregar a disponibilidade.<br>Atualize a pÃ¡gina ou tente novamente.</div>`;
     return;
   }
   const isCarrierUser = USERS_DB[S.user] && USERS_DB[S.user].role==='carrier';
@@ -856,22 +906,22 @@ async function renderCarrier(carrier){
     const st=cur?getSt(cur):null;
     const isIndisp=statusSemHorario(cur);
       if(lock){
-      // LOCKED — read-only view
-      const stBadge=cur?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">—</span>`;
-      const timeBadge=isIndisp?`<span style="font-size:11px;color:var(--muted)">N/A</span>`:curTime?`<span style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(curTime)}</span>`:`<span style="color:var(--muted)">—</span>`;
-      const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'—';
-      const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'—';
+      // LOCKED â€” read-only view
+      const stBadge=cur?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">â€”</span>`;
+      const timeBadge=isIndisp?`<span style="font-size:11px;color:var(--muted)">N/A</span>`:curTime?`<span style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(curTime)}</span>`:`<span style="color:var(--muted)">â€”</span>`;
+      const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'â€”';
+      const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'â€”';
       return `<tr>
         <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${p.placa}</td>
         <td style="font-size:11px;color:var(--muted)">${p.operacao}</td>
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td>${stBadge}</td>
-        <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--dim)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</td>
+        <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--dim)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'â€”'}</td>
         <td style="font-size:11px;font-family:'DM Mono',monospace">${timeBadge}</td>
         <td>${renderDriverCell(motD,motN)}</td>
       </tr>`;
     }
-    const blankOpt=cur===null?`<option value="" selected disabled>— Selecione —</option>`:"";
+    const blankOpt=cur===null?`<option value="" selected disabled>â€” Selecione â€”</option>`:"";
     const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
     const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
     const timeCls=isIndisp?`time-sel time-na`:curTime?`time-sel time-filled`:`time-sel time-blank`;
@@ -885,14 +935,14 @@ async function renderCarrier(carrier){
     function buildDriverOpts(savedVal, turno){
       const ativos   = opDriversAtivos.filter(d=>d.turno===turno);
       const inativos = opDriversInativos.filter(d=>d.turno===turno);
-      let opts = `<option value="">— Sem motorista —</option>`;
-      // Motoristas removidos não aparecem como opção — o dado histórico já está salvo no Firestore
-      // Active drivers — normal style
+      let opts = `<option value="">â€” Sem motorista â€”</option>`;
+      // Motoristas removidos nÃ£o aparecem como opÃ§Ã£o â€” o dado histÃ³rico jÃ¡ estÃ¡ salvo no Firestore
+      // Active drivers â€” normal style
       opts += ativos.map(d=>`<option value="${d.nome}"${d.nome===savedVal?' selected':''}>${d.nome}</option>`).join('');
-      // Inactive drivers — dimmed via optgroup label trick + unicode prefix
+      // Inactive drivers â€” dimmed via optgroup label trick + unicode prefix
       if(inativos.length){
-        opts += `<optgroup label="──────────────" style="color:rgba(228,242,200,.2);font-size:9px"></optgroup>`;
-        opts += inativos.map(d=>`<option value="${d.nome}"${d.nome===savedVal?' selected':''} style="color:rgba(228,242,200,.35)">▪ ${d.nome} (inativo)</option>`).join('');
+        opts += `<optgroup label="â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€" style="color:rgba(228,242,200,.2);font-size:9px"></optgroup>`;
+        opts += inativos.map(d=>`<option value="${d.nome}"${d.nome===savedVal?' selected':''} style="color:rgba(228,242,200,.35)">â–ª ${d.nome} (inativo)</option>`).join('');
       }
       return opts;
     }
@@ -900,11 +950,11 @@ async function renderCarrier(carrier){
     const driverCell = isCarrierUser
       ? `<div style="display:grid;gap:4px;min-width:120px">
            <div style="display:grid;grid-template-columns:16px 1fr;align-items:center;gap:3px">
-             <span style="color:var(--amber);font-size:12px;text-align:center">☀</span>
+             <span style="color:var(--amber);font-size:12px;text-align:center">â˜€</span>
              <select class="driver-sel-d" style="${driverSelStyle}">${buildDriverOpts(savedMotD,'Diurno')}</select>
            </div>
            <div style="display:grid;grid-template-columns:16px 1fr;align-items:center;gap:3px">
-             <span style="color:var(--blue);font-size:12px;text-align:center">🌙</span>
+             <span style="color:var(--blue);font-size:12px;text-align:center">ðŸŒ™</span>
              <select class="driver-sel-n" style="${driverSelStyle}">${buildDriverOpts(savedMotN,'Noturno')}</select>
            </div>
          </div>`
@@ -914,7 +964,7 @@ async function renderCarrier(carrier){
       <td style="font-size:11px;color:var(--muted)">${p.operacao}</td>
       <td><span class="badge b-lime">${p.tipo}</span></td>
       <td><select class="${selCls}" style="width:128px;box-sizing:border-box;font-size:11px" onchange="onStChange(this)">${sOpts}</select></td>
-      <td>${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Ex: 251000" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:96px;box-sizing:border-box;font-size:11px;padding:5px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace">`:`<span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--muted)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</span>`}</td>
+      <td>${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Ex: 251000" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:96px;box-sizing:border-box;font-size:11px;padding:5px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace">`:`<span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--muted)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'â€”'}</span>`}</td>
       <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)" style="width:96px;box-sizing:border-box;font-size:11px">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select></td>
       <td>${driverCell}</td>
     </tr>`;
@@ -922,26 +972,26 @@ async function renderCarrier(carrier){
 
   const lockedBanner=lock?`
     <div class="locked-banner">
-      🔒 Disponibilidade enviada em ${lock.lockedAt} — não é possível editar.
+      ðŸ”’ Disponibilidade enviada em ${lock.lockedAt} â€” nÃ£o Ã© possÃ­vel editar.
     </div>`:'';
   const actionBar=lock?'':`
     <div style="display:flex;gap:10px;margin-top:1rem;">
-      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">💾 Salvar disponibilidade</button>
+      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">ðŸ’¾ Salvar disponibilidade</button>
     </div>`;
 
-  const userOpsLabel2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?` — ${USERS_DB[S.user].operacoes.join(' / ')}`:'';
+  const userOpsLabel2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?` â€” ${USERS_DB[S.user].operacoes.join(' / ')}`:'';
   mc.innerHTML=`
     <p class="sec-title">Disponibilidade da frota</p>
-    <p class="sec-sub">${carrier}${userOpsLabel2} — Informe o status de cada veículo</p>
+    <p class="sec-sub">${carrier}${userOpsLabel2} â€” Informe o status de cada veÃ­culo</p>
     <div class="date-nav">
-      <button onclick="chDate(-1)">‹</button>
+      <button onclick="chDate(-1)">â€¹</button>
       <span class="date-label">${fmtDate(S.dateOffset)}</span>
-      <button onclick="chDate(1)">›</button>
+      <button onclick="chDate(1)">â€º</button>
     </div>
     ${lockedBanner}
     <div class="tscroll">
       <table class="table" style="min-width:800px">
-        <thead><tr><th style="width:11%">PLACA</th><th style="width:19%">OPERAÇÃO</th><th style="width:10%">TIPO</th><th style="width:15%">STATUS</th><th style="width:12%">HODÔMETRO</th><th style="width:12%">DISPONÍVEL ÀS</th><th style="width:21%">MOTORISTAS</th></tr></thead>
+        <thead><tr><th style="width:11%">PLACA</th><th style="width:19%">OPERAÃ‡ÃƒO</th><th style="width:10%">TIPO</th><th style="width:15%">STATUS</th><th style="width:12%">HODÃ”METRO</th><th style="width:12%">DISPONÃVEL Ã€S</th><th style="width:21%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -963,14 +1013,14 @@ function onStChange(sel){
   sel.className=`st-sel ${st.cls}`;
   if(timeSel){
     if(statusSemHorario(sel.value)){
-      // Horário não se aplica — desabilita e limpa
+      // HorÃ¡rio nÃ£o se aplica â€” desabilita e limpa
       timeSel.disabled=true;
       timeSel.value='';
       timeSel.className='time-sel time-na';
       // Replace options with N/A
       timeSel.innerHTML='<option value="">N/A</option>';
     } else {
-      // Habilita e restaura as opções de horário
+      // Habilita e restaura as opÃ§Ãµes de horÃ¡rio
       timeSel.disabled=false;
       const allowNoForecast=sel.value==='manutencao';
       const keepValue=timeSel.value==='sem_previsao'&&!allowNoForecast?'':timeSel.value;
@@ -1000,7 +1050,7 @@ async function saveAll(carrier,ds){
     if(!hasStatus||(!isIndisp&&!hasTime) || !hasOdo) missing.push(plate);
   });
   if(missing.length>0){
-    showToast(`Preencha status e horário quando aplicável antes de salvar.`,false);
+    showToast(`Preencha status e horÃ¡rio quando aplicÃ¡vel antes de salvar.`,false);
     rows.forEach(row=>{
       const plate=row.cells[0].textContent.trim();
       row.style.background=missing.includes(plate)?"rgba(240,96,96,.08)":"";
@@ -1035,9 +1085,9 @@ async function saveAll(carrier,ds){
   if(invalidOdoRows.length>0){
     const detalhes = invalidOdoRows.map(plate => {
       const previousOdo = prevOdoCache[plate];
-      return `${plate} (último registrado: ${previousOdo ?? "não encontrado"})`;
+      return `${plate} (Ãºltimo registrado: ${previousOdo ?? "nÃ£o encontrado"})`;
     });
-    showToast(`Hodômetro inválido para: ${detalhes.join(", ")}.`, false);
+    showToast(`HodÃ´metro invÃ¡lido para: ${detalhes.join(", ")}.`, false);
     return;
   }
 
@@ -1062,21 +1112,22 @@ async function saveAll(carrier,ds){
     const u=USERS_DB[S.user];
     await dbSetLock(carrier, ds, u.name);
     await dbAddNotif(`${u.name} enviou a disponibilidade — ${fmtDateStr(ds)}`);
+    await dbAddAudit("status_submit", { carrier, date: ds, rows: rows.length });
     invalidateDataCache();
-    showToast("Disponibilidade salva e bloqueada! ✓");
+    showToast("Disponibilidade salva e bloqueada! âœ“");
     await renderCarrier(carrier);
   } catch(e){
     console.error(e);
     showToast("Erro ao salvar disponibilidade no Firebase.", false);
   } finally {
-    if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
+    if(btn){btn.disabled=false;btn.innerHTML="ðŸ’¾ Salvar disponibilidade";}
   }
 }
 async function chDate(d){ S.dateOffset+=d; await render(); }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // ADMIN SHELL
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderOperacional(){
   // Operacional sees same admin panel minus register, users tabs and unlock button
   await renderAdmin();
@@ -1090,11 +1141,11 @@ async function renderAdmin(){
   const allTabs=[
     {id:"dashboard",label:"Dashboard"},
     {id:"today",label:"Painel de Disponibilidade"},
-    {id:"history",label:"Histórico"},
+    {id:"history",label:"HistÃ³rico"},
     {id:"export",label:"Exportar"},
     {id:"archives",label:"Arquivos Mensais"},
     {id:"register",label:"Cadastros"},
-    {id:"users",label:"Usuários"},
+    {id:"users",label:"UsuÃ¡rios"},
   ];
   // Operacional cannot access register or users tabs
   const tabs=isOper?allTabs.filter(t=>t.id!=="register"&&t.id!=="users"):allTabs;
@@ -1111,7 +1162,7 @@ async function renderAdmin(){
 async function setTab(t){
   S.adminTab=t;
   document.querySelectorAll(".tab").forEach(el=>{
-    const map={dashboard:"Dashboard",today:"Painel de Disponibilidade",history:"Histórico",export:"Exportar",archives:"Arquivos Mensais",register:"Cadastros",users:"Usuários"}; const u2=USERS_DB[S.user]; if(u2&&u2.role==="operacional"&&(t==="register"||t==="users")){showToast("Acesso restrito.",false);return;}
+    const map={dashboard:"Dashboard",today:"Painel de Disponibilidade",history:"HistÃ³rico",export:"Exportar",archives:"Arquivos Mensais",register:"Cadastros",users:"UsuÃ¡rios"}; const u2=USERS_DB[S.user]; if(u2&&u2.role==="operacional"&&(t==="register"||t==="users")){showToast("Acesso restrito.",false);return;}
     el.classList.toggle("active",el.textContent.trim()===map[t]);
   });
   await renderTabBody();
@@ -1128,15 +1179,16 @@ async function renderTabBody(){
   else await renderUsers(body);
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // DASHBOARD
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderDashboard(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando dashboard...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlatesCached();
   const _uOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
   const pendingAlerts=await buildPendingAlerts(allP,_uOps);
+  const auditItems=await dbGetAudit(8);
   // Build all pairs for today
   const allPairs=[];
   for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
@@ -1147,9 +1199,9 @@ async function renderDashboard(body){
   for(const carrier of CARRIERS){
     byCarrier[carrier]={disponivel:0,indisponivel:0,manutencao:0,folga:0};
     for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
-      const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+      const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = nÃ£o preenchido
       const v=rec?rec.status:null;
-      const op=p.operacao||"Sem operação";
+      const op=p.operacao||"Sem operaÃ§Ã£o";
       if(!byOp[op]) byOp[op]={disponivel:0,indisponivel:0,manutencao:0,folga:0,programado:0,pendente:0,total:0};
       if(v){ counts[v]=(counts[v]||0)+1; byCarrier[carrier][v]=(byCarrier[carrier][v]||0)+1; }
       if(v) byOp[op][v]=(byOp[op][v]||0)+1;
@@ -1159,6 +1211,25 @@ async function renderDashboard(body){
     }
   }
   const opOrder=[...OPERACOES,...Object.keys(byOp).filter(o=>!OPERACOES.includes(o)).sort()];
+  // KPI: SLA de envio por transportador (lock) + ranking de pendencias de hoje
+  const todayLocks = await Promise.all(
+    CARRIERS.map(async carrier => ({ carrier, lock: await dbGetLock(carrier, ds) }))
+  );
+  const activeCarrierList = CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
+  const lockedToday = todayLocks.filter(x=>x.lock && activeCarrierList.includes(x.carrier)).length;
+  const pendingToday = Math.max(0, activeCarrierList.length - lockedToday);
+  const slaToday = activeCarrierList.length ? Math.round((lockedToday/activeCarrierList.length)*100) : 100;
+  const pendingRanking = activeCarrierList.map(carrier=>{
+    const opSet = new Set((allP[carrier]||[]).filter(p=>p.ativo!==false).map(p=>p.operacao||"Sem operaÃ§Ã£o"));
+    let pendOps = 0;
+    for(const op of opSet){
+      const opPlates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(p.operacao||"Sem operaÃ§Ã£o")===op);
+      const opFilled=opPlates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
+      if(!opFilled) pendOps++;
+    }
+    return { carrier, pendOps };
+  }).sort((a,b)=>b.pendOps-a.pendOps).slice(0,5);
+
   const opRows=opOrder.filter(op=>byOp[op]).map(op=>{
     const r=byOp[op];
     const dispPct=r.total?Math.round((r.disponivel/r.total)*100):0;
@@ -1173,7 +1244,7 @@ async function renderDashboard(body){
       <td><span class="cap-tag">${r.total}</span></td>
       <td>
         <div class="op-meter"><span style="width:${dispPct}%"></span></div>
-        <div class="op-meter-label">${dispPct}% disponível</div>
+        <div class="op-meter-label">${dispPct}% disponÃ­vel</div>
       </td>
     </tr>`;
   }).join("");
@@ -1188,35 +1259,66 @@ async function renderDashboard(body){
     return c;
   });
 
+  const currentUser = USERS_DB[S.user] || {};
+  const cutoffSel = Array.from({length:24},(_,h)=>`<option value="${h}"${h===ALERT_CUTOFF_HOUR?' selected':''}>${String(h).padStart(2,'0')}:00</option>`).join("");
+
   body.innerHTML=`
     <div class="date-nav">
-      <button onclick="chDate(-1)">‹</button>
+      <button onclick="chDate(-1)">â€¹</button>
       <span class="date-label">${fmtDate(S.dateOffset)}</span>
-      <button onclick="chDate(1)">›</button>
+      <button onclick="chDate(1)">â€º</button>
     </div>
     ${pendingAlerts}
     <div class="summary-grid">
-      <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">Manutenção</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">DisponÃ­veis</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">IndisponÃ­veis</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">ManutenÃ§Ã£o</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--blue)">${counts.folga}</div><div class="sum-label">Folga</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--purple)">${counts.programado||0}</div><div class="sum-label">Prog./Viagem</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
     </div>
+    <div class="card" style="margin-bottom:1.25rem">
+      <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between">
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+          <span class="badge b-green">SLA hoje: ${slaToday}%</span>
+          <span class="badge b-amber">Enviados: ${lockedToday}/${activeCarrierList.length}</span>
+          <span class="badge b-red">Pendentes: ${pendingToday}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted)">Meta sugerida: SLA >= 95%</div>
+      </div>
+      ${currentUser.role==="admin" ? `
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--muted)">Horário de corte do alerta:</span>
+        <select id="cutoff-hour-sel" style="background:var(--dark);border:1px solid var(--border2);border-radius:7px;color:var(--text);padding:6px 9px;font-size:12px">${cutoffSel}</select>
+        <button class="btn btn-outline btn-sm" onclick="saveCutoffHour()">Salvar corte</button>
+      </div>` : ``}
+      <div style="margin-top:12px">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:8px">Ranking de pendencias por transportador (hoje)</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${pendingRanking.map((r,i)=>`<span class="pa-chip ${r.pendOps===0?'ok':''}">${i+1}. ${r.carrier}: ${r.pendOps} op pendente(s)</span>`).join("") || '<span class="pa-chip ok">Sem pendencias</span>'}
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:1.25rem">
+      <div style="font-size:13px;color:var(--dim);margin-bottom:8px">Últimas ações (auditoria)</div>
+      <div style="display:grid;gap:6px">
+        ${auditItems.length ? auditItems.map(a=>`<div style="font-size:12px;color:var(--text);background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:7px 10px"><span style="color:var(--lime)">${a.action}</span> • ${safeText(a.actor||"Sistema")} • <span style="color:var(--muted)">${safeText(a.atBR||"")}</span></div>`).join("") : `<div style="font-size:12px;color:var(--muted)">Sem eventos recentes.</div>`}
+      </div>
+    </div>
     <div class="dash-grid">
-      <div class="chart-card"><div class="chart-title">Distribuição de status — hoje</div><canvas id="pie-chart" height="180"></canvas></div>
-      <div class="chart-card"><div class="chart-title">Tendência de disponibilidade — 14 dias</div><canvas id="line-chart" height="180"></canvas></div>
+      <div class="chart-card"><div class="chart-title">DistribuiÃ§Ã£o de status â€” hoje</div><canvas id="pie-chart" height="180"></canvas></div>
+      <div class="chart-card"><div class="chart-title">TendÃªncia de disponibilidade â€” 14 dias</div><canvas id="line-chart" height="180"></canvas></div>
     </div>
     <div class="chart-card" style="margin-bottom:1.5rem">
-      <div class="chart-title">Disponibilidade por transportador — hoje</div>
+      <div class="chart-title">Disponibilidade por transportador â€” hoje</div>
       <canvas id="bar-chart" height="160"></canvas>
     </div>
     <div class="chart-card" style="margin-bottom:1.5rem">
-      <div class="chart-title">Resumo por operação — ${fmtDate(S.dateOffset)}</div>
+      <div class="chart-title">Resumo por operaÃ§Ã£o â€” ${fmtDate(S.dateOffset)}</div>
       <div class="tscroll">
         <table class="table op-summary-table" style="min-width:860px">
-          <thead><tr><th style="width:22%">OPERAÇÃO</th><th>DISP.</th><th>INDISP.</th><th>MANUT.</th><th>FOLGA</th><th>PROG.</th><th>PEND.</th><th>TOTAL</th><th style="width:18%">DISPONIBILIDADE</th></tr></thead>
-          <tbody>${opRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px">Nenhuma operação com placas ativas.</td></tr>'}</tbody>
+          <thead><tr><th style="width:22%">OPERAÃ‡ÃƒO</th><th>DISP.</th><th>INDISP.</th><th>MANUT.</th><th>FOLGA</th><th>PROG.</th><th>PEND.</th><th>TOTAL</th><th style="width:18%">DISPONIBILIDADE</th></tr></thead>
+          <tbody>${opRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px">Nenhuma operaÃ§Ã£o com placas ativas.</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -1233,7 +1335,7 @@ function drawPie(counts){
   const {ctx,W,H}=setupHiDpiCanvas(canvas,180,350);
   const data=[counts.disponivel,counts.indisponivel,counts.manutencao,counts.folga,counts.programado||0];
   const colors=["#6ee04a","#f06060","#f0be40","#70a8f0","#b07ef0"];
-  const labels=["Disponível","Indisponível","Manutenção","Folga","Prog./Viagem"];
+  const labels=["DisponÃ­vel","IndisponÃ­vel","ManutenÃ§Ã£o","Folga","Prog./Viagem"];
   const total=data.reduce((a,b)=>a+b,0)||1;
   const cx=92,cy=H/2,r=68;
   let start=-Math.PI/2;
@@ -1330,7 +1432,7 @@ function drawBar(byCarrier){
         ctx.textAlign="left";
       }
     });
-    // Full carrier name — split into words, max 2 lines
+    // Full carrier name â€” split into words, max 2 lines
     const words=carrier.split(" ");
     const mid=gx+grpW/2;
     const lineY=pad.t+H2+14;
@@ -1363,10 +1465,31 @@ function setupHiDpiCanvas(canvas,cssHeight,fallbackWidth){
   ctx.imageSmoothingQuality="high";
   return {ctx,W,H,dpr};
 }
+async function saveCutoffHour(){
+  const u = USERS_DB[S.user];
+  if(!u || u.role!=="admin"){ showToast("Acesso restrito.", false); return; }
+  const sel = document.getElementById("cutoff-hour-sel");
+  if(!sel){ showToast("Campo de corte não encontrado.", false); return; }
+  const hour = Number(sel.value);
+  if(!Number.isFinite(hour) || hour < 0 || hour > 23){
+    showToast("Hora inválida.", false);
+    return;
+  }
+  try {
+    await dbSaveAlertCutoffHour(hour);
+    ALERT_CUTOFF_HOUR = hour;
+    await dbAddAudit("alert_cutoff_update", { hour });
+    showToast(`Horário de corte atualizado para ${String(hour).padStart(2,'0')}:00`);
+    await renderTabBody();
+  } catch(e){
+    console.error(e);
+    showToast("Erro ao salvar horário de corte.", false);
+  }
+}
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // TODAY
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderToday(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   const ds=dateStr(S.dateOffset);
@@ -1385,7 +1508,7 @@ async function renderToday(body){
   for(const carrier of CARRIERS){
     const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)));
     if(!plates.length&&!(allP[carrier]||[]).length){
-      sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
+      sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">ðŸš›</span>${carrier}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
       continue;
     }
     if(!plates.length) continue;
@@ -1403,60 +1526,60 @@ async function renderToday(body){
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
-        <td><span class="cap-tag">${p.capacidade}m³</span></td>
-        <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
-        <td style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;white-space:nowrap">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?`<span style="color:var(--dim)">${rec.hodometro}</span>`:'—'}</td>
-        <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?fmtTimeValue(rec.time):'—'}</td>
+        <td><span class="cap-tag">${p.capacidade}mÂ³</span></td>
+        <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">NÃ£o preenchido</span>`}</td>
+        <td style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;white-space:nowrap">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?`<span style="color:var(--dim)">${rec.hodometro}</span>`:'â€”'}</td>
+        <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?fmtTimeValue(rec.time):'â€”'}</td>
         <td>${renderDriverCell(motDToday,motNToday)}</td>
       </tr>`;
     }).join("");
     const lock=await dbGetLock(carrier,ds);
     const lockBadge=lock
-      ?`<span style="font-size:11px;color:var(--lime);margin-left:8px;background:var(--lime-bg);border:1px solid var(--border2);padding:2px 8px;border-radius:99px;">🔒 Enviado ${lock.lockedAt}</span>`
+      ?`<span style="font-size:11px;color:var(--lime);margin-left:8px;background:var(--lime-bg);border:1px solid var(--border2);padding:2px 8px;border-radius:99px;">ðŸ”’ Enviado ${lock.lockedAt}</span>`
       :`<span style="font-size:11px;color:var(--muted);margin-left:8px;">Pendente</span>`;
     const isAdmin2=USERS_DB[S.user]&&USERS_DB[S.user].role==="admin";
     const unlockBtn=(lock&&isAdmin2)
-      ?`<button class="btn-unlock" onclick="adminUnlock('${carrier}','${ds}')" title="Desfazer lançamento">🔓 Desbloquear</button>`
+      ?`<button class="btn-unlock" onclick="adminUnlock('${carrier}','${ds}')" title="Desfazer lanÃ§amento">ðŸ”“ Desbloquear</button>`
       :'';
     sections+=`<div class="carrier-block">
-      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
+      <div class="carrier-head"><span class="ch-icon">ðŸš›</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1160px">
-        <thead><tr><th style="width:8%">PLACA</th><th style="width:12%">OPERAÇÃO</th><th style="width:8%">TIPO</th><th style="width:8%">IDENTIFICAÇÃO</th><th style="width:7%">CONTRATO</th><th style="width:6%">CAPACIDADE</th><th style="width:13%">STATUS</th><th style="width:7%"><span style="font-size:9px">HODÔMETRO</span></th><th style="width:6%">HORÁRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
+        <thead><tr><th style="width:8%">PLACA</th><th style="width:12%">OPERAÃ‡ÃƒO</th><th style="width:8%">TIPO</th><th style="width:8%">IDENTIFICAÃ‡ÃƒO</th><th style="width:7%">CONTRATO</th><th style="width:6%">CAPACIDADE</th><th style="width:13%">STATUS</th><th style="width:7%"><span style="font-size:9px">HODÃ”METRO</span></th><th style="width:6%">HORÃRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
-  const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>`<option${o===opFilter?" selected":""}>${o}</option>`).join("")}`;
+  const opOpts=`<option value="">Todas as operaÃ§Ãµes</option>${OPERACOES.map(o=>`<option${o===opFilter?" selected":""}>${o}</option>`).join("")}`;
   body.innerHTML=`
     <div class="date-nav">
-      <button onclick="chDate(-1)">‹</button>
+      <button onclick="chDate(-1)">â€¹</button>
       <span class="date-label">${fmtDate(S.dateOffset)}</span>
-      <button onclick="chDate(1)">›</button>
+      <button onclick="chDate(1)">â€º</button>
     </div>
     <div class="filters-bar">
       <select onchange="S.todayOp=this.value;renderTabBody()">${opOpts}</select>
-      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.todayPlaca||""}" onchange="S.todayPlaca=this.value;renderTabBody()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;" onkeyup="this.onchange()">
+      <input type="text" placeholder="ðŸ” Buscar placa ou transportador..." value="${S.todayPlaca||""}" onchange="S.todayPlaca=this.value;renderTabBody()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;" onkeyup="this.onchange()">
     </div>
     ${pendingAlerts}
     <div class="summary-grid">
-      <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">Manutenção</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">DisponÃ­veis</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">IndisponÃ­veis</div></div>
+      <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">ManutenÃ§Ã£o</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--blue)">${counts.folga}</div><div class="sum-label">Folga</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--purple)">${counts.programado||0}</div><div class="sum-label">Prog./Viagem</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
     </div>
-    ${sections||'<div class="empty"><span class="ei">🔍</span>Nenhuma placa com esse filtro.</div>'}`;
+    ${sections||'<div class="empty"><span class="ei">ðŸ”</span>Nenhuma placa com esse filtro.</div>'}`;
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // HISTORY
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderHistory(body){
   const cf=S.histCarrier, sf=S.histStatus, of=S.histOp;
   const placaFilter=(S.histPlaca||"").toUpperCase();
   const carrierOpts=`<option value="">Todos transportadores</option>${CARRIERS.map(c=>`<option${c===cf?" selected":""}>${c}</option>`).join("")}`;
-  const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${s.val}"${s.val===sf?" selected":""}>${s.label}</option>`).join("")}<option value="nao_preenchido"${"nao_preenchido"===sf?" selected":""}>Não preenchido</option>`;
-  const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>`<option${o===of?" selected":""}>${o}</option>`).join("")}`;
+  const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${s.val}"${s.val===sf?" selected":""}>${s.label}</option>`).join("")}<option value="nao_preenchido"${"nao_preenchido"===sf?" selected":""}>NÃ£o preenchido</option>`;
+  const opOpts=`<option value="">Todas as operaÃ§Ãµes</option>${OPERACOES.map(o=>`<option${o===of?" selected":""}>${o}</option>`).join("")}`;
   const daysOpts=[7,15,30,45].map(d=>`<option value="${d}"${d===S.histDays?" selected":""}>${d} dias</option>`).join("");
   body.innerHTML=`
     <div class="filters-bar">
@@ -1464,7 +1587,7 @@ async function renderHistory(body){
       <select onchange="S.histStatus=this.value;renderTabBody()">${statusOpts}</select>
       <select onchange="S.histOp=this.value;renderTabBody()">${opOpts}</select>
       <select onchange="S.histDays=+this.value;renderTabBody()">${daysOpts}</select>
-      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.histPlaca||""}" onchange="S.histPlaca=this.value;renderTabBody()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;" onkeyup="this.onchange()">
+      <input type="text" placeholder="ðŸ” Buscar placa ou transportador..." value="${S.histPlaca||""}" onchange="S.histPlaca=this.value;renderTabBody()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;" onkeyup="this.onchange()">
     </div>
     <div id="hist-result"><div class="loading"><span class="spin"></span>Buscando registros...</div></div>`;
 
@@ -1489,7 +1612,7 @@ async function renderHistory(body){
         const isBlank=v===null;
         const st=isBlank?null:getSt(v);
         const statusBadge=isBlank
-          ?`<span class="badge b-blank">Não preenchido</span>`
+          ?`<span class="badge b-blank">NÃ£o preenchido</span>`
           :`<span class="badge ${st.badge}">${st.label}</span>`;
         rows+=`<tr>
           <td style="font-size:12px;white-space:nowrap">${fmtDateStr(ds)}</td>
@@ -1499,28 +1622,28 @@ async function renderHistory(body){
           <td><span class="badge b-lime">${p.tipo}</span></td>
           <td>${statusBadge}</td>
           <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(t)}</td>
-        <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'Não preenchido'}</td>
+        <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'NÃ£o preenchido'}</td>
         <td>${renderDriverCell(!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?((rec&&rec.motoristaDiurno)||p.motoristaDiurno):'',!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?((rec&&rec.motoristaNoturno)||p.motoristaNoturno):'')}</td>
         </tr>`;
       }
     }
   }
   const result=document.getElementById("hist-result");
-  if(!rows){result.innerHTML=`<div class="empty"><span class="ei">🔍</span>Nenhum registro encontrado.</div>`;return;}
+  if(!rows){result.innerHTML=`<div class="empty"><span class="ei">ðŸ”</span>Nenhum registro encontrado.</div>`;return;}
   result.innerHTML=`
     <div class="tscroll"><table class="table">
-      <thead><tr><th style="width:11%">DATA</th><th style="width:18%">TRANSPORTADOR</th><th style="width:9%">PLACA</th><th style="width:12%">OPERAÇÃO</th><th style="width:8%">TIPO</th><th style="width:11%">STATUS</th><th style="width:8%">HORÁRIO</th><th style="width:11%">HODÔMETRO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
+      <thead><tr><th style="width:11%">DATA</th><th style="width:18%">TRANSPORTADOR</th><th style="width:9%">PLACA</th><th style="width:12%">OPERAÃ‡ÃƒO</th><th style="width:8%">TIPO</th><th style="width:11%">STATUS</th><th style="width:8%">HORÃRIO</th><th style="width:11%">HODÃ”METRO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    <p style="font-size:11px;color:var(--muted);margin-top:10px">Últimos ${S.histDays} dias</p>`;
+    <p style="font-size:11px;color:var(--muted);margin-top:10px">Ãšltimos ${S.histDays} dias</p>`;
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // EXPORT
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderExport(body){
   const now=new Date();
-  const mons=["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+  const mons=["Janeiro","Fevereiro","MarÃ§o","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
   // Min date = 45 days ago (history limit), max = today
   const maxDate=localDateStr(now);
   const minD=new Date(); minD.setDate(minD.getDate()-45);
@@ -1529,23 +1652,23 @@ async function renderExport(body){
   body.innerHTML=`
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-bottom:1.5rem">
       <div class="card">
-        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">📅 Relatório do dia</p>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Disponibilidade de todos os veículos no dia atual</p>
+        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">ðŸ“… RelatÃ³rio do dia</p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Disponibilidade de todos os veÃ­culos no dia atual</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-lime btn-sm" onclick="exportDay('xlsx')">Excel (.xlsx)</button>
           <button class="btn btn-outline btn-sm" onclick="exportDay('csv')">CSV</button>
         </div>
       </div>
       <div class="card">
-        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">📆 Relatório semanal</p>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Últimos 7 dias de disponibilidade</p>
+        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">ðŸ“† RelatÃ³rio semanal</p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Ãšltimos 7 dias de disponibilidade</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-lime btn-sm" onclick="exportWeek('xlsx')">Excel (.xlsx)</button>
           <button class="btn btn-outline btn-sm" onclick="exportWeek('csv')">CSV</button>
         </div>
       </div>
       <div class="card">
-        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">🗓 Relatório mensal</p>
+        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">ðŸ—“ RelatÃ³rio mensal</p>
         <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">${mons[now.getMonth()]} ${now.getFullYear()}</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-lime btn-sm" onclick="exportMonth('xlsx')">Excel (.xlsx)</button>
@@ -1556,8 +1679,8 @@ async function renderExport(body){
 
     <!-- CUSTOM DATE RANGE -->
     <div class="card">
-      <p style="font-size:13px;font-weight:500;margin-bottom:.25rem">📋 Relatório por período personalizado</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">Selecione um intervalo dentro dos últimos 45 dias</p>
+      <p style="font-size:13px;font-weight:500;margin-bottom:.25rem">ðŸ“‹ RelatÃ³rio por perÃ­odo personalizado</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">Selecione um intervalo dentro dos Ãºltimos 45 dias</p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.25rem">
         <div class="form-field" style="min-width:160px">
           <label>DATA INICIAL</label>
@@ -1586,7 +1709,7 @@ function validateCustomDates(){
   const msg=document.getElementById('custom-date-msg');
   if(!msg) return true;
   if(from&&to&&from>to){
-    msg.textContent='A data inicial deve ser anterior à data final.';
+    msg.textContent='A data inicial deve ser anterior Ã  data final.';
     return false;
   }
   msg.textContent='';
@@ -1706,21 +1829,21 @@ async function buildRows(dates, onProgress){
     return best;
   }
 
-  const rows=[["Data","Transportador","Placa","Operação","Tipo de Veículo","Identificação","Contrato","Capacidade (m³)","Status","Horário","Hodômetro","Km percorrido (km)","Motorista Diurno","Motorista Noturno"]];
+  const rows=[["Data","Transportador","Placa","OperaÃ§Ã£o","Tipo de VeÃ­culo","IdentificaÃ§Ã£o","Contrato","Capacidade (mÂ³)","Status","HorÃ¡rio","HodÃ´metro","Km percorrido (km)","Motorista Diurno","Motorista Noturno"]];
   for(const ds of dates)
     for(const {carrier, plate, meta:p} of allActivePlates){
       const rec = statusMap[`${carrier}||${plate}||${ds}`];
-      const statusLabel = rec ? getSt(rec.status).label : "Não preenchido";
-      const timeLabel   = rec ? (statusSemHorario(rec.status) ? "N/A" : fmtTimeValue(rec.time)) : "—";
-      const hod = rec && rec.hodometro!==undefined && rec.hodometro!==null ? rec.hodometro : "Não preenchido";
+      const statusLabel = rec ? getSt(rec.status).label : "NÃ£o preenchido";
+      const timeLabel   = rec ? (statusSemHorario(rec.status) ? "N/A" : fmtTimeValue(rec.time)) : "â€”";
+      const hod = rec && rec.hodometro!==undefined && rec.hodometro!==null ? rec.hodometro : "NÃ£o preenchido";
       let km = "";
-      if(hod !== "Não preenchido"){
+      if(hod !== "NÃ£o preenchido"){
         const numCur  = Number(hod);
         const numPrev = lastKnownHodoBefore(plate, ds);
         if(Number.isFinite(numCur) && numPrev !== null) km = numCur - numPrev;
       }
-      const motDLabel = rec ? ((rec.motoristaDiurno)||p.motoristaDiurno||"—") : "—";
-      const motNLabel = rec ? ((rec.motoristaNoturno)||p.motoristaNoturno||"—") : "—";
+      const motDLabel = rec ? ((rec.motoristaDiurno)||p.motoristaDiurno||"â€”") : "â€”";
+      const motNLabel = rec ? ((rec.motoristaNoturno)||p.motoristaNoturno||"â€”") : "â€”";
       rows.push([fmtDateExport(ds),carrier,p.placa,p.operacao,p.tipo,p.identificacao,p.contrato,p.capacidade,statusLabel,timeLabel,hod,km,motDLabel,motNLabel]);
     }
   if(onProgress) onProgress(100);
@@ -1737,7 +1860,7 @@ function _prevDateStr(ds){
 function exportXlsx(rows,filename){
   const ws=XLSX.utils.aoa_to_sheet(rows);
   ws["!cols"]=[{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14},{wch:10},{wch:12},{wch:14},{wch:22},{wch:22}];
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Relatório");
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"RelatÃ³rio");
   XLSX.writeFile(wb,filename+".xlsx"); showToast("Excel exportado!");
 }
 function exportCsv(rows,filename){
@@ -1768,18 +1891,18 @@ async function exportMonth(fmt){
   fmt==="xlsx"?exportXlsx(rows,fn):exportCsv(rows,fn);
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // REGISTER
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderRegister(body){
   const u=USERS_DB[S.user];
   const isAdmin=u&&u.role==='admin';
   if(!S.registerSubTab) S.registerSubTab='plates';
   const subTabs=`
     <div style="display:flex;gap:4px;background:var(--mid);border:1px solid var(--border);border-radius:var(--radius);padding:4px;width:fit-content;margin-bottom:1.5rem">
-      <button class="tab ${S.registerSubTab==='plates'?'active':''}" onclick="setRegSubTab('plates')">🚛 Placas</button>
-      <button class="tab ${S.registerSubTab==='drivers'?'active':''}" onclick="setRegSubTab('drivers')">👤 Motoristas</button>
-      ${isAdmin?`<button class="tab ${S.registerSubTab==='ops'?'active':''}" onclick="setRegSubTab('ops')">📍 Operações</button>`:''}
+      <button class="tab ${S.registerSubTab==='plates'?'active':''}" onclick="setRegSubTab('plates')">ðŸš› Placas</button>
+      <button class="tab ${S.registerSubTab==='drivers'?'active':''}" onclick="setRegSubTab('drivers')">ðŸ‘¤ Motoristas</button>
+      ${isAdmin?`<button class="tab ${S.registerSubTab==='ops'?'active':''}" onclick="setRegSubTab('ops')">ðŸ“ OperaÃ§Ãµes</button>`:''}
     </div>`;
   if(S.registerSubTab==='ops'&&isAdmin){ await renderRegisterOps(body, subTabs); return; }
   if(S.registerSubTab==='drivers'){ await renderRegisterDrivers(body, subTabs); return; }
@@ -1800,22 +1923,22 @@ async function renderRegister(body){
         ?`<span class="badge b-green" style="font-size:10px">Ativo</span>`
         :`<span class="badge b-red" style="font-size:10px">Inativo</span>`;
       const toggleBtn=ativo
-        ?`<button class="btn-toggle-off" onclick="togglePlate('${carrier}',${idx},false)" title="Desativar">⏸</button>`
-        :`<button class="btn-toggle-on" onclick="togglePlate('${carrier}',${idx},true)" title="Ativar">▶</button>`;
+        ?`<button class="btn-toggle-off" onclick="togglePlate('${carrier}',${idx},false)" title="Desativar">â¸</button>`
+        :`<button class="btn-toggle-on" onclick="togglePlate('${carrier}',${idx},true)" title="Ativar">â–¶</button>`;
       return `<tr id="row-${carrier.replace(/ /g,'_')}-${idx}" style="${ativo?'':'opacity:.55;background:rgba(240,96,96,.04)'}">
         <td style="font-family:'DM Mono',monospace;font-weight:500">${p.placa}</td>
         <td style="font-size:12px">${p.operacao}</td>
         <td><span class="badge b-lime">${p.tipo}</span></td>
         <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
-        <td><span class="cap-tag">${p.capacidade}m³</span></td>
+        <td><span class="cap-tag">${p.capacidade}mÂ³</span></td>
         <td>${statusBadge}</td>
         <td>${renderDriverCell(p.motoristaDiurno,p.motoristaNoturno)}</td>
         <td style="white-space:nowrap;vertical-align:middle">
           <div style="display:inline-flex;gap:5px;align-items:center">
             ${toggleBtn}
-            <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">✏️</button>
-            <button class="btn-danger" onclick="delPlate('${carrier}',${idx})" title="Remover">🗑</button>
+            <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">âœï¸</button>
+            <button class="btn-danger" onclick="delPlate('${carrier}',${idx})" title="Remover">ðŸ—‘</button>
           </div>
         </td>
       </tr>`;
@@ -1823,27 +1946,27 @@ async function renderRegister(body){
     const activeCount=plates.filter(p=>p.ativo!==false).length;
     const inactiveCount=plates.length-activeCount;
     listHTML+=`<div class="carrier-block">
-      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${activeCount} ativo(s)</span>${inactiveCount>0?`<span class="ch-count" style="color:var(--red)">${inactiveCount} inativo(s)</span>`:''}</div>
+      <div class="carrier-head"><span class="ch-icon">ðŸš›</span>${carrier}<span class="ch-count">${activeCount} ativo(s)</span>${inactiveCount>0?`<span class="ch-count" style="color:var(--red)">${inactiveCount} inativo(s)</span>`:''}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:620px">
-        <thead><tr><th style="width:10%">PLACA</th><th style="width:16%">OPERAÇÃO</th><th style="width:10%">TIPO</th><th style="width:12%">IDENTIFICAÇÃO</th><th style="width:10%">CONTRATO</th><th style="width:9%">CAPACIDADE</th><th style="width:8%">STATUS</th><th style="width:15%">MOTORISTAS</th><th style="width:10%">AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:10%">PLACA</th><th style="width:16%">OPERAÃ‡ÃƒO</th><th style="width:10%">TIPO</th><th style="width:12%">IDENTIFICAÃ‡ÃƒO</th><th style="width:10%">CONTRATO</th><th style="width:9%">CAPACIDADE</th><th style="width:8%">STATUS</th><th style="width:15%">MOTORISTAS</th><th style="width:10%">AÃ‡Ã•ES</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
-  if(!listHTML) listHTML=`<div class="empty"><span class="ei">📋</span>Nenhuma placa cadastrada ainda.<br>Use o formulário acima para começar.</div>`;
+  if(!listHTML) listHTML=`<div class="empty"><span class="ei">ðŸ“‹</span>Nenhuma placa cadastrada ainda.<br>Use o formulÃ¡rio acima para comeÃ§ar.</div>`;
   // After render, populate driver dropdowns and add listeners
   body.innerHTML=subTabs+`
     <div class="card" style="margin-bottom:1.5rem">
       <p class="reg-heading">+ Nova placa</p>
       <div class="form-grid">
         <div class="form-field"><label>TRANSPORTADOR</label><select id="r-carrier" onchange="populateDriverSelects()">${carrierOpts}</select></div>
-        <div class="form-field"><label>OPERAÇÃO</label><select id="r-op" onchange="populateDriverSelects()">${opOpts}</select></div>
+        <div class="form-field"><label>OPERAÃ‡ÃƒO</label><select id="r-op" onchange="populateDriverSelects()">${opOpts}</select></div>
         <div class="form-field"><label>PLACA</label><input id="r-placa" type="text" placeholder="Ex: ABC-1234" style="text-transform:uppercase"></div>
-        <div class="form-field"><label>TIPO DE VEÍCULO</label><select id="r-tipo">${tvOpts}</select></div>
-        <div class="form-field"><label>IDENTIFICAÇÃO</label><select id="r-id">${idOpts}</select></div>
+        <div class="form-field"><label>TIPO DE VEÃCULO</label><select id="r-tipo">${tvOpts}</select></div>
+        <div class="form-field"><label>IDENTIFICAÃ‡ÃƒO</label><select id="r-id">${idOpts}</select></div>
         <div class="form-field"><label>TIPO DE CONTRATO</label><select id="r-contrato">${ctOpts}</select></div>
-        <div class="form-field"><label>CAPACIDADE (m³)</label><input id="r-cap" type="number" placeholder="Ex: 25" min="1" max="999"></div>
-        <div class="form-field"><label>MOTORISTA DIURNO</label><select id="r-mot-d"><option value="">— Sem motorista —</option></select></div>
-        <div class="form-field"><label>MOTORISTA NOTURNO</label><select id="r-mot-n"><option value="">— Sem motorista —</option></select></div>
+        <div class="form-field"><label>CAPACIDADE (mÂ³)</label><input id="r-cap" type="number" placeholder="Ex: 25" min="1" max="999"></div>
+        <div class="form-field"><label>MOTORISTA DIURNO</label><select id="r-mot-d"><option value="">â€” Sem motorista â€”</option></select></div>
+        <div class="form-field"><label>MOTORISTA NOTURNO</label><select id="r-mot-n"><option value="">â€” Sem motorista â€”</option></select></div>
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-lime" id="add-btn" onclick="addPlate()">+ Cadastrar placa</button>
@@ -1867,13 +1990,13 @@ async function addPlate(){
   const msg=document.getElementById("reg-msg");
   const btn=document.getElementById("add-btn");
   if(!placa){msg.textContent="Informe a placa.";msg.style.color="var(--red)";return;}
-  if(!isValidPlate(placa)){msg.textContent="Placa inválida. Use padrão ABC-1234 ou ABC1D23.";msg.style.color="var(--red)";return;}
+  if(!isValidPlate(placa)){msg.textContent="Placa invÃ¡lida. Use padrÃ£o ABC-1234 ou ABC1D23.";msg.style.color="var(--red)";return;}
   if(!capacidade||isNaN(capacidade)||+capacidade<=0){msg.textContent="Informe a capacidade.";msg.style.color="var(--red)";return;}
   btn.disabled=true; btn.textContent="Salvando...";
   const allP=await dbGetPlatesCached();
   if(!allP[carrier]) allP[carrier]=[];
   if(CARRIERS.some(c=>(allP[c]||[]).some(p=>p.placa===placa))){
-    msg.textContent="Placa já cadastrada.";msg.style.color="var(--red)";
+    msg.textContent="Placa jÃ¡ cadastrada.";msg.style.color="var(--red)";
     btn.disabled=false;btn.textContent="+ Cadastrar placa";return;
   }
   const motDiurno=document.getElementById('r-mot-d')?.value||'';
@@ -1886,6 +2009,7 @@ async function addPlate(){
     document.getElementById("r-cap").value="";
     msg.textContent=`Placa ${placa} cadastrada!`;msg.style.color="var(--green)";
     showToast(`Placa ${placa} cadastrada!`);
+    await dbAddAudit("plate_add", { carrier, placa, operacao, tipo, contrato });
     setTimeout(()=>{msg.textContent="";},3000);
     await renderTabBody();
   } catch(e){
@@ -1902,17 +2026,18 @@ async function delPlate(carrier,idx){
   if(!allP[carrier]) return;
   const removed=allP[carrier].splice(idx,1);
   await dbSavePlates(allP);
+  await dbAddAudit("plate_remove", { carrier, placa: removed[0]?.placa || "" });
   showToast(`Placa ${removed[0]?.placa} removida.`);
   await renderTabBody();
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // MONTHLY ARCHIVES
-// ═══════════════════════════════════════════════════════════
-const MONTH_NAMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+const MONTH_NAMES = ["Janeiro","Fevereiro","MarÃ§o","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 
 async function checkAndGenerateMonthlyArchive() {
-  // Runs on login — if today is day 1-3 of a new month, auto-generate last month's archive
+  // Runs on login â€” if today is day 1-3 of a new month, auto-generate last month's archive
   const now = new Date();
   const dayOfMonth = now.getDate();
   if(dayOfMonth > 3) return; // Only trigger in first 3 days of month
@@ -1934,7 +2059,7 @@ async function generateMonthlyArchive(year, month, silent=false) {
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws["!cols"] = [{wch:18},{wch:28},{wch:12},{wch:20},{wch:16},{wch:14},{wch:12},{wch:14},{wch:14},{wch:10}];
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Relatório");
+  XLSX.utils.book_append_sheet(wb, ws, "RelatÃ³rio");
   const xlsxData = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
   const now = new Date();
   await dbSaveArchive({
@@ -1965,35 +2090,35 @@ async function renderArchives(body) {
   ).join('');
 
   const archiveCards = archives.length === 0
-    ? `<div class="empty"><span class="ei">📁</span>Nenhum arquivo gerado ainda.<br>Os relatórios mensais são gerados automaticamente no início de cada mês,<br>ou manualmente pelo botão abaixo.</div>`
+    ? `<div class="empty"><span class="ei">ðŸ“</span>Nenhum arquivo gerado ainda.<br>Os relatÃ³rios mensais sÃ£o gerados automaticamente no inÃ­cio de cada mÃªs,<br>ou manualmente pelo botÃ£o abaixo.</div>`
     : archives.map(a => `
       <div class="archive-card">
-        <div class="archive-icon">📄</div>
+        <div class="archive-icon">ðŸ“„</div>
         <div class="archive-info">
           <div class="archive-label">${a.label}</div>
-          <div class="archive-meta">${a.rows} registros · Gerado em ${a.generatedAt}</div>
+          <div class="archive-meta">${a.rows} registros Â· Gerado em ${a.generatedAt}</div>
         </div>
         <div class="archive-actions">
-          <button class="btn btn-lime btn-sm" onclick="downloadArchive('${a.key}')">⬇ Excel</button>
-          <button class="btn btn-outline btn-sm" onclick="downloadArchiveCsv('${a.key}')">⬇ CSV</button>
-          <button class="btn btn-outline btn-sm" onclick="regenArchive('${a.key}')">🔄</button>
+          <button class="btn btn-lime btn-sm" onclick="downloadArchive('${a.key}')">â¬‡ Excel</button>
+          <button class="btn btn-outline btn-sm" onclick="downloadArchiveCsv('${a.key}')">â¬‡ CSV</button>
+          <button class="btn btn-outline btn-sm" onclick="regenArchive('${a.key}')">ðŸ”„</button>
         </div>
       </div>`).join('');
 
   body.innerHTML = `
     <div class="card" style="margin-bottom:1.5rem">
-      <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">⚡ Gerar arquivo manualmente</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Selecione o mês e gere ou atualize o arquivo a qualquer momento</p>
+      <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">âš¡ Gerar arquivo manualmente</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Selecione o mÃªs e gere ou atualize o arquivo a qualquer momento</p>
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
         <div class="form-field" style="min-width:200px">
-          <label>MÊS DE REFERÊNCIA</label>
+          <label>MÃŠS DE REFERÃŠNCIA</label>
           <select id="archive-month-sel">${monthSelOpts}</select>
         </div>
-        <button class="btn btn-lime" onclick="manualGenArchive()">📊 Gerar arquivo</button>
+        <button class="btn btn-lime" onclick="manualGenArchive()">ðŸ“Š Gerar arquivo</button>
       </div>
     </div>
     <p class="sec-title" style="margin-bottom:1rem">
-      Últimos arquivos gerados
+      Ãšltimos arquivos gerados
       <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Armazenados os 6 mais recentes</span>
     </p>
     <div id="archive-list">${archiveCards}</div>`;
@@ -2018,7 +2143,7 @@ async function regenArchive(key) {
 function downloadArchive(key) {
   dbGetArchives().then(archives => {
     const a = archives.find(x => x.key === key);
-    if(!a || !a.data) { showToast('Arquivo não encontrado.', false); return; }
+    if(!a || !a.data) { showToast('Arquivo nÃ£o encontrado.', false); return; }
     const bin = atob(a.data);
     const bytes = new Uint8Array(bin.length);
     for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -2034,7 +2159,7 @@ function downloadArchive(key) {
 async function downloadArchiveCsv(key) {
   const archives = await dbGetArchives();
   const arch = archives.find(x => x.key === key);
-  if(!arch) { showToast('Arquivo não encontrado.', false); return; }
+  if(!arch) { showToast('Arquivo nÃ£o encontrado.', false); return; }
   // Re-generate CSV from stored data by rebuilding rows
   const [year, month] = key.split('-').map(Number);
   const dates = getMonthDates(year, month - 1);
@@ -2042,24 +2167,25 @@ async function downloadArchiveCsv(key) {
   exportCsv(rows, arch.filename);
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // ADMIN UNLOCK
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function adminUnlock(carrier, ds){
-  if(!confirm(`Desbloquear o lançamento de "${carrier}" em ${fmtDateStr(ds)}?\n\nOs status serão apagados e o transportador deverá preencher novamente.`)) return;
+  if(!confirm(`Desbloquear o lanÃ§amento de "${carrier}" em ${fmtDateStr(ds)}?\n\nOs status serÃ£o apagados e o transportador deverÃ¡ preencher novamente.`)) return;
   // Remove lock AND clear all status records so carrier starts fresh
   await Promise.all([
     dbRemoveLock(carrier, ds),
     dbClearStatusForDate(carrier, ds)
   ]);
-  await dbAddNotif(`Admin desbloqueou e resetou o lançamento de ${carrier} — ${fmtDateStr(ds)}`);
-  showToast(`Lançamento de ${carrier} desbloqueado e resetado!`);
+  await dbAddNotif(`Admin desbloqueou e resetou o lanÃ§amento de ${carrier} â€” ${fmtDateStr(ds)}`);
+  await dbAddAudit("admin_unlock", { carrier, date: ds });
+  showToast(`LanÃ§amento de ${carrier} desbloqueado e resetado!`);
   await renderTabBody();
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // USERS MANAGEMENT
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderUsers(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
 
@@ -2067,7 +2193,7 @@ async function renderUsers(body){
   const carrierRows = CARRIERS.map((c,i)=>`
     <tr>
       <td style="font-size:13px">${c}</td>
-      <td><button class="btn-danger" onclick="deleteCarrier(${i})">🗑</button></td>
+      <td><button class="btn-danger" onclick="deleteCarrier(${i})">ðŸ—‘</button></td>
     </tr>`).join("");
 
   // Users section (exclude admin from edit/delete)
@@ -2076,12 +2202,12 @@ async function renderUsers(body){
       <td style="font-family:'DM Mono',monospace;font-weight:500">${uid}</td>
       <td style="font-size:12px">${u.name}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
-      <td style="font-size:12px;color:var(--muted)">${u.carrier||'—'}</td>
+      <td style="font-size:12px;color:var(--muted)">${u.carrier||'â€”'}</td>
       <td style="font-size:11px;color:var(--muted)">${(u.operacoes&&u.operacoes.length)?u.operacoes.join(', '):'Todas'}</td>
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
-          <button class="btn-edit" onclick="openEditUser('${uid}')" title="Editar">✏️</button>
-          ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${uid}')" title="Remover">🗑</button>`:''}
+          <button class="btn-edit" onclick="openEditUser('${uid}')" title="Editar">âœï¸</button>
+          ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${uid}')" title="Remover">ðŸ—‘</button>`:''}
         </div>
       </td>
     </tr>`).join("");
@@ -2104,18 +2230,18 @@ async function renderUsers(body){
     <p class="sec-title" style="margin-bottom:.75rem">Transportadores cadastrados</p>
     <div class="tscroll" style="margin-bottom:2rem">
       <table class="table" style="min-width:360px">
-        <thead><tr><th style="width:85%">TRANSPORTADOR</th><th style="width:15%">AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:85%">TRANSPORTADOR</th><th style="width:15%">AÃ‡Ã•ES</th></tr></thead>
         <tbody>${carrierRows||'<tr><td colspan="2" style="color:var(--muted);font-size:13px">Nenhum transportador</td></tr>'}</tbody>
       </table>
     </div>
 
     <!-- NEW USER -->
     <div class="card" style="margin-bottom:1.5rem">
-      <p class="reg-heading">+ Novo usuário</p>
+      <p class="reg-heading">+ Novo usuÃ¡rio</p>
       <div class="form-grid">
-        <div class="form-field"><label>LOGIN (usuário)</label><input id="new-uid" type="text" placeholder="Ex: souza"></div>
-        <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="new-uname" type="text" placeholder="Ex: Souza Transportes"></div>
-        <div class="form-field"><label>SENHA</label><input id="new-upwd" type="text" placeholder="Mín. 6 caracteres"></div>
+        <div class="form-field"><label>LOGIN (usuÃ¡rio)</label><input id="new-uid" type="text" placeholder="Ex: souza"></div>
+        <div class="form-field"><label>NOME DE EXIBIÃ‡ÃƒO</label><input id="new-uname" type="text" placeholder="Ex: Souza Transportes"></div>
+        <div class="form-field"><label>SENHA</label><input id="new-upwd" type="text" placeholder="MÃ­n. 6 caracteres"></div>
         <div class="form-field"><label>PERFIL</label>
           <select id="new-urole" onchange="toggleCarrierField()">
             <option value="carrier">Transportador</option>
@@ -2127,21 +2253,21 @@ async function renderUsers(body){
           <select id="new-ucarrier" onchange="renderOpCheckboxes('new-op-checks','new-ucarrier')">${CARRIERS.map(c=>`<option>${c}</option>`).join('')}</select>
         </div>
         <div class="form-field" id="new-op-field" style="display:none;grid-column:1/-1">
-          <label>OPERAÇÕES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
+          <label>OPERAÃ‡Ã•ES VISÃVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
           <div id="new-op-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px"></div>
         </div>
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-lime" onclick="addUser()">+ Criar usuário</button>
+        <button class="btn btn-lime" onclick="addUser()">+ Criar usuÃ¡rio</button>
         <span id="user-msg" style="font-size:12px"></span>
       </div>
     </div>
 
     <!-- USERS LIST -->
-    <p class="sec-title" style="margin-bottom:.75rem">Usuários cadastrados</p>
+    <p class="sec-title" style="margin-bottom:.75rem">UsuÃ¡rios cadastrados</p>
     <div class="tscroll">
       <table class="table" style="min-width:520px">
-        <thead><tr><th style="width:12%">LOGIN</th><th style="width:22%">NOME</th><th style="width:10%">PERFIL</th><th style="width:20%">TRANSPORTADOR</th><th style="width:20%">OPERAÇÕES</th><th style="width:16%">AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:12%">LOGIN</th><th style="width:22%">NOME</th><th style="width:10%">PERFIL</th><th style="width:20%">TRANSPORTADOR</th><th style="width:20%">OPERAÃ‡Ã•ES</th><th style="width:16%">AÃ‡Ã•ES</th></tr></thead>
         <tbody>${userRows}</tbody>
       </table>
     </div>`;
@@ -2176,7 +2302,7 @@ async function addCarrier(){
   const name=document.getElementById('new-carrier-name').value.trim();
   const msg=document.getElementById('carrier-msg');
   if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
-  if(CARRIERS.includes(name)){msg.textContent='Transportador já existe.';msg.style.color='var(--red)';return;}
+  if(CARRIERS.includes(name)){msg.textContent='Transportador jÃ¡ existe.';msg.style.color='var(--red)';return;}
   CARRIERS.push(name);
   await dbSaveCarriers(CARRIERS);
   document.getElementById('new-carrier-name').value='';
@@ -2189,7 +2315,7 @@ async function addCarrier(){
 async function deleteCarrier(idx){
   const name=CARRIERS[idx];
   if(!confirm(`Remover o transportador "${name}"?
-Isso não remove as placas já cadastradas.`)) return;
+Isso nÃ£o remove as placas jÃ¡ cadastradas.`)) return;
   CARRIERS.splice(idx,1);
   await dbSaveCarriers(CARRIERS);
   showToast(`${name} removido.`);
@@ -2206,23 +2332,25 @@ async function addUser(){
   const msg=document.getElementById('user-msg');
   if(!uid){msg.textContent='Informe o login.';msg.style.color='var(--red)';return;}
   if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
-  if(isWeakPassword(pwd)){msg.textContent=`Senha deve ter mín. ${MIN_PASSWORD_LEN} caracteres.`;msg.style.color='var(--red)';return;}
-  if(USERS_DB[uid]){msg.textContent='Login já existe.';msg.style.color='var(--red)';return;}
+  if(isWeakPassword(pwd)){msg.textContent=`Senha deve ter mÃ­n. ${MIN_PASSWORD_LEN} caracteres.`;msg.style.color='var(--red)';return;}
+  if(USERS_DB[uid]){msg.textContent='Login jÃ¡ existe.';msg.style.color='var(--red)';return;}
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   USERS_DB[uid]={name, role, initials, password:pwd, ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
   await dbSaveUsers(USERS_DB);
+  await dbAddAudit("user_add", { uid, role, carrier: carrier || "" });
   ['new-uid','new-uname','new-upwd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
-  msg.textContent=`Usuário ${uid} criado!`;msg.style.color='var(--green)';
-  showToast(`Usuário ${uid} criado com sucesso!`);
+  msg.textContent=`UsuÃ¡rio ${uid} criado!`;msg.style.color='var(--green)';
+  showToast(`UsuÃ¡rio ${uid} criado com sucesso!`);
   setTimeout(()=>{msg.textContent='';},3000);
   await renderTabBody();
 }
 
 async function deleteUser(uid){
-  if(!confirm(`Remover o usuário "${uid}"?`)) return;
+  if(!confirm(`Remover o usuÃ¡rio "${uid}"?`)) return;
   delete USERS_DB[uid];
   await dbSaveUsers(USERS_DB);
-  showToast(`Usuário ${uid} removido.`);
+  await dbAddAudit("user_remove", { uid });
+  showToast(`UsuÃ¡rio ${uid} removido.`);
   await renderTabBody();
 }
 
@@ -2242,9 +2370,9 @@ function openEditUser(uid){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
   modal.innerHTML=`
     <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:480px">
-      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar usuário — ${uid}</p>
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">âœï¸ Editar usuÃ¡rio â€” ${uid}</p>
       <div class="form-grid">
-        <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="eu-name" type="text" value="${u.name}"></div>
+        <div class="form-field"><label>NOME DE EXIBIÃ‡ÃƒO</label><input id="eu-name" type="text" value="${u.name}"></div>
         <div class="form-field"><label>NOVA SENHA</label><input id="eu-pwd" type="text" placeholder="Deixe em branco para manter" value="${u.password}"></div>
         ${isAdmin?'':`<div class="form-field"><label>PERFIL</label><select id="eu-role" onchange="onEditRoleChange()">${roleOpts}</select></div>`}
         <div class="form-field" id="eu-carrier-field" style="display:${u.role==='carrier'?'block':'none'}">
@@ -2252,7 +2380,7 @@ function openEditUser(uid){
           <select id="eu-carrier">${carrierOpts}</select>
         </div>
         <div class="form-field" id="eu-op-field" style="display:${u.role==='carrier'?'block':'none'};grid-column:1/-1">
-          <label>OPERAÇÕES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
+          <label>OPERAÃ‡Ã•ES VISÃVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
           <div id="eu-op-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
             ${OPERACOES.map(op=>`<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none"><input type="checkbox" value="${op}"${(u.operacoes&&u.operacoes.includes(op))?' checked':''} style="accent-color:var(--lime);cursor:pointer"> ${op}</label>`).join('')}
           </div>
@@ -2260,7 +2388,7 @@ function openEditUser(uid){
       </div>
       <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('edit-user-modal').remove()">Cancelar</button>
-        <button class="btn btn-lime" onclick="saveEditUser('${uid}')">💾 Salvar</button>
+        <button class="btn btn-lime" onclick="saveEditUser('${uid}')">ðŸ’¾ Salvar</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -2282,7 +2410,7 @@ async function saveEditUser(uid){
   const newRole=roleEl?roleEl.value:USERS_DB[uid].role;
   const newCarrier=(newRole==='carrier'&&carrierEl)?carrierEl.value:'';
   if(!name){showToast('Informe o nome.',false);return;}
-  if(pwd&&isWeakPassword(pwd)){showToast(`Senha deve ter mín. ${MIN_PASSWORD_LEN} caracteres.`,false);return;}
+  if(pwd&&isWeakPassword(pwd)){showToast(`Senha deve ter mÃ­n. ${MIN_PASSWORD_LEN} caracteres.`,false);return;}
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   const newOps=newRole==='carrier'?getCheckedOps('eu-op-checks'):[];
   USERS_DB[uid]={
@@ -2295,20 +2423,21 @@ async function saveEditUser(uid){
     operacoes: newOps
   };
   await dbSaveUsers(USERS_DB);
+  await dbAddAudit("user_edit", { uid, role: newRole, carrier: newCarrier || "" });
   document.getElementById('edit-user-modal').remove();
-  showToast(`Usuário ${uid} atualizado!`);
+  showToast(`UsuÃ¡rio ${uid} atualizado!`);
   await renderTabBody();
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // REGISTER SUB-TAB CONTROLLER
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 function setRegSubTab(tab){
   S.registerSubTab=tab;
   renderTabBody();
 }
 
-// ── Populate driver selects in plate form ──
+// â”€â”€ Populate driver selects in plate form â”€â”€
 async function populateDriverSelects(selDiurno='', selNoturno=''){
   const carrier=document.getElementById('r-carrier')?.value;
   const op=document.getElementById('r-op')?.value;
@@ -2316,7 +2445,7 @@ async function populateDriverSelects(selDiurno='', selNoturno=''){
   const selN=document.getElementById('r-mot-n');
   if(!selD||!selN) return;
   const allDrivers=await dbGetDriversCached();
-  const blank='<option value="">— Sem motorista —</option>';
+  const blank='<option value="">â€” Sem motorista â€”</option>';
   let opts=blank;
   if(carrier&&op){
     const list=(allDrivers[carrier]||[]).filter(d=>d.ativo!==false&&d.operacao===op);
@@ -2327,9 +2456,9 @@ async function populateDriverSelects(selDiurno='', selNoturno=''){
   if(selNoturno) selN.value=selNoturno;
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // DRIVERS MANAGEMENT
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderRegisterDrivers(body, subTabs=''){
   const u=USERS_DB[S.user];
   const isAdmin=u&&u.role==='admin';
@@ -2356,32 +2485,32 @@ async function renderRegisterDrivers(body, subTabs=''){
         const ativo=d.ativo!==false;
         return `<tr style="${ativo?'':'opacity:.5;background:rgba(240,96,96,.04)'}">
           <td style="font-weight:500">${d.nome}</td>
-          <td><span class="badge ${d.turno==='Diurno'?'b-amber':'b-blue'}">${d.turno==='Diurno'?'☀ Diurno':'🌙 Noturno'}</span></td>
+          <td><span class="badge ${d.turno==='Diurno'?'b-amber':'b-blue'}">${d.turno==='Diurno'?'â˜€ Diurno':'ðŸŒ™ Noturno'}</span></td>
           <td><span class="badge ${ativo?'b-green':'b-red'}" style="font-size:10px">${ativo?'Ativo':'Inativo'}</span></td>
           <td style="white-space:nowrap">
-            <button class="btn-toggle-${ativo?'off':'on'}" onclick="toggleDriver('${carrier}',${realIdx},${!ativo})" title="${ativo?'Desativar':'Ativar'}">${ativo?'⏸':'▶'}</button>
-            <button class="btn-edit" onclick="openEditDriver('${carrier}',${realIdx})" title="Editar">✏️</button>
-            <button class="btn-danger" onclick="deleteDriver('${carrier}',${realIdx})" title="Remover">🗑</button>
+            <button class="btn-toggle-${ativo?'off':'on'}" onclick="toggleDriver('${carrier}',${realIdx},${!ativo})" title="${ativo?'Desativar':'Ativar'}">${ativo?'â¸':'â–¶'}</button>
+            <button class="btn-edit" onclick="openEditDriver('${carrier}',${realIdx})" title="Editar">âœï¸</button>
+            <button class="btn-danger" onclick="deleteDriver('${carrier}',${realIdx})" title="Remover">ðŸ—‘</button>
           </td>
         </tr>`;
       }).join('');
       opSections+=`<div style="margin-bottom:1rem">
-        <p style="font-size:11px;color:var(--muted);letter-spacing:.06em;margin-bottom:.5rem;padding:0 2px">📍 ${op}</p>
+        <p style="font-size:11px;color:var(--muted);letter-spacing:.06em;margin-bottom:.5rem;padding:0 2px">ðŸ“ ${op}</p>
         <table class="table" style="min-width:420px;table-layout:fixed;width:100%">
-          <thead><tr><th style="width:55%">NOME</th><th style="width:15%">TURNO</th><th style="width:12%">STATUS</th><th style="width:18%">AÇÕES</th></tr></thead>
+          <thead><tr><th style="width:55%">NOME</th><th style="width:15%">TURNO</th><th style="width:12%">STATUS</th><th style="width:18%">AÃ‡Ã•ES</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
     }
     if(!opSections) opSections=`<p style="font-size:13px;color:var(--muted);padding:.75rem 0">Nenhum motorista cadastrado.</p>`;
     listHTML+=`<div class="carrier-block" style="margin-bottom:1.5rem">
-      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${drivers.filter(d=>d.ativo!==false).length} ativo(s)</span></div>
+      <div class="carrier-head"><span class="ch-icon">ðŸš›</span>${carrier}<span class="ch-count">${drivers.filter(d=>d.ativo!==false).length} ativo(s)</span></div>
       <div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem">
         <div class="tscroll">${opSections}</div>
       </div>
     </div>`;
   }
-  if(!listHTML) listHTML=`<div class="empty"><span class="ei">👤</span>Nenhum motorista cadastrado.</div>`;
+  if(!listHTML) listHTML=`<div class="empty"><span class="ei">ðŸ‘¤</span>Nenhum motorista cadastrado.</div>`;
 
   const carrierOpts=carriersToShow.map(c=>`<option>${c}</option>`).join('');
   const opOpts=OPERACOES.map(o=>`<option>${o}</option>`).join('');
@@ -2392,12 +2521,12 @@ async function renderRegisterDrivers(body, subTabs=''){
       <p class="reg-heading">+ Novo motorista</p>
       <div class="form-grid">
         <div class="form-field"><label>TRANSPORTADOR</label><select id="drv-carrier">${carrierOpts}</select></div>
-        <div class="form-field"><label>OPERAÇÃO</label><select id="drv-op">${opOpts}</select></div>
-        <div class="form-field"><label>NOME COMPLETO</label><input id="drv-nome" type="text" placeholder="Ex: João da Silva"></div>
+        <div class="form-field"><label>OPERAÃ‡ÃƒO</label><select id="drv-op">${opOpts}</select></div>
+        <div class="form-field"><label>NOME COMPLETO</label><input id="drv-nome" type="text" placeholder="Ex: JoÃ£o da Silva"></div>
         <div class="form-field"><label>TURNO</label>
           <select id="drv-turno">
-            <option value="Diurno">☀ Diurno</option>
-            <option value="Noturno">🌙 Noturno</option>
+            <option value="Diurno">â˜€ Diurno</option>
+            <option value="Noturno">ðŸŒ™ Noturno</option>
           </select>
         </div>
       </div>
@@ -2407,7 +2536,7 @@ async function renderRegisterDrivers(body, subTabs=''){
       </div>
     </div>`:
     `<div class="card" style="margin-bottom:1.5rem;padding:.75rem 1rem;font-size:13px;color:var(--muted)">
-      ℹ️ Somente administradores e operacionais podem cadastrar novos motoristas.
+      â„¹ï¸ Somente administradores e operacionais podem cadastrar novos motoristas.
     </div>`;
 
   body.innerHTML=subTabs+addForm+`
@@ -2425,9 +2554,10 @@ async function addDriver(){
   const allDrivers=await dbGetDriversCached();
   if(!allDrivers[carrier]) allDrivers[carrier]=[];
   const dup=allDrivers[carrier].find(d=>d.nome===nome&&d.operacao===op&&d.turno===turno);
-  if(dup){msg.textContent='Motorista já cadastrado com esse turno e operação.';msg.style.color='var(--red)';return;}
+  if(dup){msg.textContent='Motorista jÃ¡ cadastrado com esse turno e operaÃ§Ã£o.';msg.style.color='var(--red)';return;}
   allDrivers[carrier].push({nome,operacao:op,turno,ativo:true});
   await dbSaveDrivers(allDrivers);
+  await dbAddAudit("driver_add", { carrier, nome, operacao: op, turno });
   document.getElementById('drv-nome').value='';
   msg.textContent=`${nome} cadastrado!`;msg.style.color='var(--green)';
   showToast(`Motorista ${nome} cadastrado!`);
@@ -2453,6 +2583,7 @@ async function deleteDriver(carrier,idx){
   if(!confirm(`Remover motorista ${nome}?`)) return;
   allDrivers[carrier].splice(idx,1);
   await dbSaveDrivers(allDrivers);
+  await dbAddAudit("driver_remove", { carrier, nome });
   showToast(`${nome} removido.`);
   await renderTabBody();
 }
@@ -2470,20 +2601,20 @@ function openEditDriver(carrier,idx){
     modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
     modal.innerHTML=`
       <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:460px">
-        <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar motorista — ${d.nome}</p>
+        <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">âœï¸ Editar motorista â€” ${d.nome}</p>
         <div class="form-grid">
           <div class="form-field"><label>NOME COMPLETO</label><input id="ed-nome" type="text" value="${d.nome}"></div>
-          <div class="form-field"><label>OPERAÇÃO</label><select id="ed-op">${opOpts}</select></div>
+          <div class="form-field"><label>OPERAÃ‡ÃƒO</label><select id="ed-op">${opOpts}</select></div>
           <div class="form-field"><label>TURNO</label>
             <select id="ed-turno">
-              <option value="Diurno"${d.turno==='Diurno'?' selected':''}>☀ Diurno</option>
-              <option value="Noturno"${d.turno==='Noturno'?' selected':''}>🌙 Noturno</option>
+              <option value="Diurno"${d.turno==='Diurno'?' selected':''}>â˜€ Diurno</option>
+              <option value="Noturno"${d.turno==='Noturno'?' selected':''}>ðŸŒ™ Noturno</option>
             </select>
           </div>
         </div>
         <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
           <button class="btn btn-outline" onclick="document.getElementById('edit-driver-modal').remove()">Cancelar</button>
-          <button class="btn btn-lime" onclick="saveEditDriver()">💾 Salvar</button>
+          <button class="btn btn-lime" onclick="saveEditDriver()">ðŸ’¾ Salvar</button>
         </div>
       </div>`;
     document.body.appendChild(modal);
@@ -2500,44 +2631,45 @@ async function saveEditDriver(){
   const allDrivers=await dbGetDriversCached();
   allDrivers[carrier][idx]={...allDrivers[carrier][idx],nome,operacao:op,turno};
   await dbSaveDrivers(allDrivers);
+  await dbAddAudit("driver_edit", { carrier, nome, operacao: op, turno });
   document.getElementById('edit-driver-modal')?.remove();
   _editPending={};
   showToast('Motorista atualizado!');
   await renderTabBody();
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // OPERACOES MANAGEMENT (admin only)
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function renderRegisterOps(body, subTabs=''){
   const opRows=OPERACOES.map((o,i)=>`
     <tr>
       <td style="font-size:13px">${o}</td>
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
-          <button class="btn-edit" onclick="openEditOp(${i})" title="Editar">✏️</button>
-          <button class="btn-danger" onclick="deleteOp(${i})" title="Remover">🗑</button>
+          <button class="btn-edit" onclick="openEditOp(${i})" title="Editar">âœï¸</button>
+          <button class="btn-danger" onclick="deleteOp(${i})" title="Remover">ðŸ—‘</button>
         </div>
       </td>
     </tr>`).join('');
 
   body.innerHTML=subTabs+`
     <div class="card" style="margin-bottom:1.5rem">
-      <p class="reg-heading">+ Nova operação</p>
+      <p class="reg-heading">+ Nova operaÃ§Ã£o</p>
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
         <div class="form-field" style="flex:1;min-width:200px">
-          <label>NOME DA OPERAÇÃO</label>
-          <input id="new-op-name" type="text" placeholder="Ex: Uberlândia">
+          <label>NOME DA OPERAÃ‡ÃƒO</label>
+          <input id="new-op-name" type="text" placeholder="Ex: UberlÃ¢ndia">
         </div>
         <button class="btn btn-lime" onclick="addOp()">+ Cadastrar</button>
         <span id="op-msg" style="font-size:12px"></span>
       </div>
     </div>
-    <p class="sec-title" style="margin-bottom:.75rem">Operações cadastradas</p>
+    <p class="sec-title" style="margin-bottom:.75rem">OperaÃ§Ãµes cadastradas</p>
     <div class="tscroll">
       <table class="table" style="min-width:320px">
-        <thead><tr><th style="width:85%">OPERAÇÃO</th><th style="width:15%">AÇÕES</th></tr></thead>
-        <tbody>${opRows||'<tr><td colspan="2" style="color:var(--muted);font-size:13px">Nenhuma operação cadastrada</td></tr>'}</tbody>
+        <thead><tr><th style="width:85%">OPERAÃ‡ÃƒO</th><th style="width:15%">AÃ‡Ã•ES</th></tr></thead>
+        <tbody>${opRows||'<tr><td colspan="2" style="color:var(--muted);font-size:13px">Nenhuma operaÃ§Ã£o cadastrada</td></tr>'}</tbody>
       </table>
     </div>`;
 }
@@ -2546,24 +2678,26 @@ async function addOp(){
   const name=document.getElementById('new-op-name')?.value.trim();
   const msg=document.getElementById('op-msg');
   if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
-  if(OPERACOES.includes(name)){msg.textContent='Operação já existe.';msg.style.color='var(--red)';return;}
+  if(OPERACOES.includes(name)){msg.textContent='OperaÃ§Ã£o jÃ¡ existe.';msg.style.color='var(--red)';return;}
   OPERACOES.push(name);
   await dbSaveOperacoes(OPERACOES);
+  await dbAddAudit("operation_add", { operacao: name });
   document.getElementById('new-op-name').value='';
   msg.textContent=`"${name}" cadastrada!`;msg.style.color='var(--green)';
-  showToast(`Operação "${name}" cadastrada!`);
+  showToast(`OperaÃ§Ã£o "${name}" cadastrada!`);
   setTimeout(()=>{msg.textContent='';},3000);
   await renderTabBody();
 }
 
 async function deleteOp(idx){
   const name=OPERACOES[idx];
-  if(!confirm(`Remover a operação "${name}"?
+  if(!confirm(`Remover a operaÃ§Ã£o "${name}"?
 
-Ela continuará nas placas já cadastradas.`)) return;
+Ela continuarÃ¡ nas placas jÃ¡ cadastradas.`)) return;
   OPERACOES.splice(idx,1);
   await dbSaveOperacoes(OPERACOES);
-  showToast(`Operação "${name}" removida.`);
+  await dbAddAudit("operation_remove", { operacao: name });
+  showToast(`OperaÃ§Ã£o "${name}" removida.`);
   await renderTabBody();
 }
 
@@ -2574,33 +2708,35 @@ function openEditOp(idx){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
   modal.innerHTML=`
     <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:400px">
-      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar operação</p>
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">âœï¸ Editar operaÃ§Ã£o</p>
       <div class="form-field">
-        <label>NOME DA OPERAÇÃO</label>
+        <label>NOME DA OPERAÃ‡ÃƒO</label>
         <input id="edit-op-name" type="text" value="${name}">
       </div>
       <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('edit-op-modal').remove()">Cancelar</button>
-        <button class="btn btn-lime" onclick="saveEditOp(${idx})">💾 Salvar</button>
+        <button class="btn btn-lime" onclick="saveEditOp(${idx})">ðŸ’¾ Salvar</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 }
 
 async function saveEditOp(idx){
+  const oldName=OPERACOES[idx];
   const newName=document.getElementById('edit-op-name')?.value.trim();
   if(!newName){showToast('Informe o nome.',false);return;}
-  if(OPERACOES.includes(newName)&&OPERACOES[idx]!==newName){showToast('Já existe uma operação com esse nome.',false);return;}
+  if(OPERACOES.includes(newName)&&OPERACOES[idx]!==newName){showToast('JÃ¡ existe uma operaÃ§Ã£o com esse nome.',false);return;}
   OPERACOES[idx]=newName;
   await dbSaveOperacoes(OPERACOES);
+  await dbAddAudit("operation_edit", { before: oldName, after: newName });
   document.getElementById('edit-op-modal').remove();
-  showToast(`Operação atualizada para "${newName}"!`);
+  showToast(`OperaÃ§Ã£o atualizada para "${newName}"!`);
   await renderTabBody();
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // TOGGLE PLATE ACTIVE/INACTIVE
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 async function togglePlate(carrier, idx, activate){
   const allP=await dbGetPlatesCached();
   if(!allP[carrier]||!allP[carrier][idx]) return;
@@ -2611,19 +2747,20 @@ async function togglePlate(carrier, idx, activate){
   // Record when deactivated/activated for reporting purposes
   allP[carrier][idx].ativoUpdatedAt=localDateStr(new Date());
   await dbSavePlates(allP);
-  showToast(`Placa ${plate.placa} ${activate?'ativada':'desativada'}!`);
+  await dbAddAudit("plate_toggle", { carrier, placa: plate.placa, ativo: activate });
+  showToast(`Placa ${plate.placa} ${activate?'ativada':'desativada'}.`);
   await renderTabBody();
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // EDIT PLATE MODAL
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Store pending edit info globally to avoid inline string escaping issues
 let _editPending = {};
 async function openEditModal(carrier, idx){
   const allP = await dbGetPlatesCached();
   const p = allP[carrier] && allP[carrier][idx];
-  if(!p){ showToast('Placa não encontrada.', false); return; }
+  if(!p){ showToast('Placa nÃ£o encontrada.', false); return; }
   // Store for saveEdit to reference
   _editPending = { carrier, idx };
   const opOpts=OPERACOES.map(o=>`<option${o===p.operacao?' selected':''}>${o}</option>`).join('');
@@ -2635,12 +2772,12 @@ async function openEditModal(carrier, idx){
   const drvList = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false && d.operacao===p.operacao);
   const drvDiurnos = drvList.filter(d=>d.turno==='Diurno');
   const drvNoturnos = drvList.filter(d=>d.turno==='Noturno');
-  const blankOpt = '<option value="">— Sem motorista —</option>';
+  const blankOpt = '<option value="">â€” Sem motorista â€”</option>';
   const dOptsDiurno = blankOpt + drvDiurnos.map(d=>`<option value="${d.nome}"${d.nome===p.motoristaDiurno?' selected':''}>${d.nome}</option>`).join('');
   const dOptsNoturno = blankOpt + drvNoturnos.map(d=>`<option value="${d.nome}"${d.nome===p.motoristaNoturno?' selected':''}>${d.nome}</option>`).join('');
   // helper note if no drivers
-  const noDiurnoNote = drvDiurnos.length===0 ? `<p style="font-size:11px;color:var(--muted);margin-top:4px">Nenhum motorista diurno ativo nesta operação</p>` : '';
-  const noNoturnoNote = drvNoturnos.length===0 ? `<p style="font-size:11px;color:var(--muted);margin-top:4px">Nenhum motorista noturno ativo nesta operação</p>` : '';
+  const noDiurnoNote = drvDiurnos.length===0 ? `<p style="font-size:11px;color:var(--muted);margin-top:4px">Nenhum motorista diurno ativo nesta operaÃ§Ã£o</p>` : '';
+  const noNoturnoNote = drvNoturnos.length===0 ? `<p style="font-size:11px;color:var(--muted);margin-top:4px">Nenhum motorista noturno ativo nesta operaÃ§Ã£o</p>` : '';
   // Remove any existing modal
   const existing=document.getElementById('edit-modal');
   if(existing) existing.remove();
@@ -2649,24 +2786,24 @@ async function openEditModal(carrier, idx){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
   modal.innerHTML=`
     <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:620px;max-height:90vh;overflow-y:auto">
-      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar placa — ${p.placa}</p>
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">âœï¸ Editar placa â€” ${p.placa}</p>
       <div class="form-grid">
-        <div class="form-field"><label>OPERAÇÃO</label><select id="e-op" onchange="refreshEditDriverOpts('${carrier}')">${opOpts}</select></div>
-        <div class="form-field"><label>TIPO DE VEÍCULO</label><select id="e-tipo">${tvOpts}</select></div>
-        <div class="form-field"><label>IDENTIFICAÇÃO</label><select id="e-id">${idOpts}</select></div>
+        <div class="form-field"><label>OPERAÃ‡ÃƒO</label><select id="e-op" onchange="refreshEditDriverOpts('${carrier}')">${opOpts}</select></div>
+        <div class="form-field"><label>TIPO DE VEÃCULO</label><select id="e-tipo">${tvOpts}</select></div>
+        <div class="form-field"><label>IDENTIFICAÃ‡ÃƒO</label><select id="e-id">${idOpts}</select></div>
         <div class="form-field"><label>TIPO DE CONTRATO</label><select id="e-contrato">${ctOpts}</select></div>
-        <div class="form-field"><label>CAPACIDADE (m³)</label><input id="e-cap" type="number" value="${p.capacidade}" min="1" max="999"></div>
+        <div class="form-field"><label>CAPACIDADE (mÂ³)</label><input id="e-cap" type="number" value="${p.capacidade}" min="1" max="999"></div>
       </div>
       <div style="border-top:1px solid var(--border);margin:1.25rem 0;padding-top:1.25rem">
         <p style="font-size:12px;font-weight:500;color:var(--lime);margin-bottom:1rem;letter-spacing:.04em">MOTORISTAS VINCULADOS</p>
         <div class="form-grid">
           <div class="form-field">
-            <label>☀ MOTORISTA DIURNO</label>
+            <label>â˜€ MOTORISTA DIURNO</label>
             <select id="e-mot-d">${dOptsDiurno}</select>
             ${noDiurnoNote}
           </div>
           <div class="form-field">
-            <label>🌙 MOTORISTA NOTURNO</label>
+            <label>ðŸŒ™ MOTORISTA NOTURNO</label>
             <select id="e-mot-n">${dOptsNoturno}</select>
             ${noNoturnoNote}
           </div>
@@ -2674,7 +2811,7 @@ async function openEditModal(carrier, idx){
       </div>
       <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('edit-modal').remove()">Cancelar</button>
-        <button class="btn btn-lime" onclick="saveEdit()">💾 Salvar alterações</button>
+        <button class="btn btn-lime" onclick="saveEdit()">ðŸ’¾ Salvar alteraÃ§Ãµes</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -2688,7 +2825,7 @@ async function refreshEditDriverOpts(carrier){
   const drvList = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false && d.operacao===op);
   const drvDiurnos = drvList.filter(d=>d.turno==='Diurno');
   const drvNoturnos = drvList.filter(d=>d.turno==='Noturno');
-  const blank = '<option value="">— Sem motorista —</option>';
+  const blank = '<option value="">â€” Sem motorista â€”</option>';
   const selD = document.getElementById('e-mot-d');
   const selN = document.getElementById('e-mot-n');
   if(selD) selD.innerHTML = blank + drvDiurnos.map(d=>`<option value="${d.nome}">${d.nome}</option>`).join('');
@@ -2696,7 +2833,7 @@ async function refreshEditDriverOpts(carrier){
 }
 async function saveEdit(){
   const {carrier, idx} = _editPending;
-  if(!carrier && carrier!==0){ showToast('Erro: dados da placa não encontrados.', false); return; }
+  if(!carrier && carrier!==0){ showToast('Erro: dados da placa nÃ£o encontrados.', false); return; }
   const operacao=document.getElementById('e-op').value;
   const tipo=document.getElementById('e-tipo').value;
   const identificacao=document.getElementById('e-id').value;
@@ -2704,11 +2841,12 @@ async function saveEdit(){
   const capacidade=document.getElementById('e-cap').value.trim();
   if(!capacidade||isNaN(capacidade)||+capacidade<=0){showToast('Informe a capacidade.',false);return;}
   const allP=await dbGetPlatesCached();
-  if(!allP[carrier]||!allP[carrier][idx]){ showToast('Placa não encontrada.',false); return; }
+  if(!allP[carrier]||!allP[carrier][idx]){ showToast('Placa nÃ£o encontrada.',false); return; }
   const motD=document.getElementById('e-mot-d')?.value||'';
   const motN=document.getElementById('e-mot-n')?.value||'';
   allP[carrier][idx]={...allP[carrier][idx], operacao, tipo, identificacao, contrato, capacidade:+capacidade, motoristaDiurno:motD, motoristaNoturno:motN};
   await dbSavePlates(allP);
+  await dbAddAudit("plate_edit", { carrier, placa: allP[carrier][idx].placa, operacao, tipo, contrato });
   const modal=document.getElementById('edit-modal');
   if(modal) modal.remove();
   _editPending={};
@@ -2716,16 +2854,16 @@ async function saveEdit(){
   await renderTabBody();
 }
 
-// ── Expose to window for inline onclick handlers ──
+// â”€â”€ Expose to window for inline onclick handlers â”€â”€
 window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
-window.renderTabBody=renderTabBody; window.S=S;
+window.renderTabBody=renderTabBody; window.saveCutoffHour=saveCutoffHour; window.S=S;
 
-// ── INIT ──
+// â”€â”€ INIT â”€â”€
 loadConfig().catch(e=>{ console.error(e); }).then(()=>{
   restoreSession();
   render();
@@ -2947,17 +3085,27 @@ canvas{display:block;width:100%!important;}
 </head>
 <body>
 <div class="app" id="app"><div class="loading" style="min-height:100vh"><span class="spin"></span>Iniciando o sistema...</div></div>
-<div class="toast" id="toast">✓ <span id="toast-msg"></span></div>
+<div class="toast" id="toast">âœ“ <span id="toast-msg"></span></div>
   <div style="background:var(--mid);border-top:1px solid rgba(200,240,50,.08);padding:1.25rem 1.5rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;font-family:'DM Sans',sans-serif;">
     <div style="font-size:11px;color:rgba(228,242,200,.25);letter-spacing:.04em;">
-      Desenvolvido por <span style="color:rgba(200,240,50,.45);font-weight:500;">Natanael Lopes Pires</span> &nbsp;·&nbsp; NEXTA Gestão de Frota
+      Desenvolvido por <span style="color:rgba(200,240,50,.45);font-weight:500;">Natanael Lopes Pires</span> &nbsp;Â·&nbsp; NEXTA GestÃ£o de Frota
     </div>
     <div style="font-size:11px;color:rgba(228,242,200,.22);font-style:italic;text-align:right;max-width:420px;line-height:1.6;letter-spacing:.02em;">
-      💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
+      ðŸ’š <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
 
 
 
