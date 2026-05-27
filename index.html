@@ -1074,7 +1074,7 @@ async function renderDashboard(body){
       const opFilled=opPlates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
       if(!opFilled) pendOps++;
     }
-    return { carrier, pendOps };
+    return { carrier, pendOps, totalOps: opSet.size };
   }).sort((a,b)=>b.pendOps-a.pendOps).slice(0,5);
 
   const opOrder=[...OPERACOES,...Object.keys(byOp).filter(o=>!OPERACOES.includes(o)).sort()];
@@ -1104,17 +1104,60 @@ async function renderDashboard(body){
       <div class="sum-card"><div class="sum-num" style="color:var(--purple)">${counts.programado||0}</div><div class="sum-label">Prog./Viagem</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
     </div>
-    <div class="card" style="margin-bottom:1.25rem">
-      <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between">
-        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
-          <span class="badge b-green">SLA hoje: ${slaToday}%</span>
-          <span class="badge b-amber">Enviados: ${lockedToday}/${activeCarrierList.length}</span>
-          <span class="badge b-red">Pendentes: ${pendingToday}</span>
+    <div class="sla-panel">
+      <!-- Row 1: KPIs -->
+      <div class="sla-kpi-row">
+        <div class="sla-kpi ${slaToday>=95?'sla-kpi-ok':slaToday>=70?'sla-kpi-warn':'sla-kpi-bad'}">
+          <div class="sla-kpi-num">${slaToday}%</div>
+          <div class="sla-kpi-lbl">SLA Hoje</div>
+          <div class="sla-kpi-bar"><span style="width:${Math.min(slaToday,100)}%;background:${slaToday>=95?'var(--green)':slaToday>=70?'var(--amber)':'var(--red)'}"></span></div>
         </div>
-        <div style="font-size:11px;color:var(--muted)">Meta sugerida: SLA >= 95%</div>
+        <div class="sla-kpi">
+          <div class="sla-kpi-num" style="color:var(--lime)">${lockedToday}<span style="font-size:14px;font-weight:400;color:var(--muted)">/${activeCarrierList.length}</span></div>
+          <div class="sla-kpi-lbl">Enviados hoje</div>
+          <div class="sla-kpi-bar"><span style="width:${activeCarrierList.length?Math.round(lockedToday/activeCarrierList.length*100):0}%;background:var(--lime)"></span></div>
+        </div>
+        <div class="sla-kpi ${pendingToday===0?'sla-kpi-ok':'sla-kpi-bad'}">
+          <div class="sla-kpi-num">${pendingToday}</div>
+          <div class="sla-kpi-lbl">Pendentes</div>
+          <div class="sla-kpi-bar"><span style="width:${activeCarrierList.length?Math.round(pendingToday/activeCarrierList.length*100):0}%;background:${pendingToday===0?'var(--green)':'var(--red)'}"></span></div>
+        </div>
+        <div class="sla-kpi-meta">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px;letter-spacing:.04em">META</div>
+          <div style="font-size:22px;font-weight:600;color:var(--lime)">≥ 95%</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">SLA de preenchimento</div>
+        </div>
       </div>
-      ${currentUser.role==="admin" ? `<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">Horário de corte do alerta:</span><select id="cutoff-hour-sel" style="background:var(--dark);border:1px solid var(--border2);border-radius:7px;color:var(--text);padding:6px 9px;font-size:12px">${cutoffSel}</select><button class="btn btn-outline btn-sm" onclick="saveCutoffHour()">Salvar corte</button></div>` : ``}
-      <div style="margin-top:12px"><div style="font-size:12px;color:var(--dim);margin-bottom:8px">Ranking de pendencias por transportador (hoje)</div><div style="display:flex;gap:8px;flex-wrap:wrap">${pendingRanking.map((r,i)=>`<span class="pa-chip ${r.pendOps===0?'ok':''}">${i+1}. ${r.carrier}: ${r.pendOps} op pendente(s)</span>`).join("") || '<span class="pa-chip ok">Sem pendencias</span>'}</div></div>
+
+      <!-- Row 2: Ranking + corte -->
+      <div class="sla-bottom-row">
+        <div class="sla-ranking">
+          <div class="sla-section-title">🏆 Ranking de preenchimento — hoje</div>
+          <div class="sla-ranking-list">
+            ${pendingRanking.map((r,i)=>{
+              const pct = r.totalOps ? Math.round((1 - r.pendOps/r.totalOps)*100) : 100;
+              const ok  = r.pendOps === 0;
+              const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}.`;
+              return `<div class="sla-rank-item ${ok?'sla-rank-ok':'sla-rank-pend'}">
+                <span class="sla-rank-medal">${medal}</span>
+                <span class="sla-rank-name">${r.carrier}</span>
+                <span class="sla-rank-bar-wrap"><span class="sla-rank-bar-fill" style="width:${pct}%;background:${ok?'var(--green)':pct>=50?'var(--amber)':'var(--red)'}"></span></span>
+                <span class="sla-rank-tag ${ok?'sla-tag-ok':'sla-tag-pend'}">${ok?'✓ OK':`${r.pendOps} pend.`}</span>
+              </div>`;
+            }).join('') || '<div style="font-size:12px;color:var(--green);padding:6px 0">✓ Todos preenchidos</div>'}
+          </div>
+        </div>
+        ${currentUser.role==="admin" ? `
+        <div class="sla-cutoff">
+          <div class="sla-section-title">⏰ Horário de corte</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Alerta acende quando passa deste horário sem preenchimento</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select id="cutoff-hour-sel" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;color:var(--text);padding:8px 12px;font-size:13px;outline:none">${cutoffSel}</select>
+            <button class="btn btn-lime btn-sm" onclick="saveCutoffHour()">Salvar</button>
+          </div>
+          <div style="margin-top:10px;font-size:11px;color:var(--muted)">Corte atual: <span style="color:var(--lime);font-weight:500">${String(ALERT_CUTOFF_HOUR).padStart(2,'0')}:00</span></div>
+        </div>` : ''}
+      </div>
     </div>
     <div class="card" style="margin-bottom:1.25rem"><div style="font-size:13px;color:var(--dim);margin-bottom:8px">Últimas ações (auditoria)</div><div style="display:grid;gap:6px">${auditItems.length ? auditItems.map(a=>`<div style="font-size:12px;color:var(--text);background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:7px 10px"><span style="color:var(--lime)">${a.action}</span> - ${a.actor||"Sistema"} - <span style="color:var(--muted)">${a.atBR||""}</span></div>`).join("") : `<div style="font-size:12px;color:var(--muted)">Sem eventos recentes.</div>`}</div></div>
     <div class="dash-grid"><div class="chart-card"><div class="chart-title">Distribuição de status - hoje</div><canvas id="pie-chart" height="180"></canvas></div><div class="chart-card"><div class="chart-title">Tendência de disponibilidade - 14 dias</div><canvas id="line-chart" height="180"></canvas></div></div>
@@ -2786,6 +2829,35 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 .sum-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 12px;text-align:center;}
 .sum-num{font-size:28px;font-weight:600;line-height:1;}
 .sum-label{font-size:11px;color:var(--muted);margin-top:5px;}
+.sla-panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem 1.5rem;margin-bottom:1.5rem;}
+.sla-kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:1.25rem;padding-bottom:1.25rem;border-bottom:1px solid var(--border);}
+.sla-kpi{background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;}
+.sla-kpi-ok{border-color:rgba(110,224,74,.35);background:rgba(110,224,74,.05);}
+.sla-kpi-warn{border-color:rgba(240,190,64,.35);background:rgba(240,190,64,.05);}
+.sla-kpi-bad{border-color:rgba(240,96,96,.35);background:rgba(240,96,96,.05);}
+.sla-kpi-num{font-size:26px;font-weight:600;color:var(--text);line-height:1.1;}
+.sla-kpi-ok .sla-kpi-num{color:var(--green);}
+.sla-kpi-warn .sla-kpi-num{color:var(--amber);}
+.sla-kpi-bad .sla-kpi-num{color:var(--red);}
+.sla-kpi-lbl{font-size:11px;color:var(--muted);margin:4px 0 8px;letter-spacing:.04em;}
+.sla-kpi-bar{height:4px;background:rgba(228,242,200,.1);border-radius:99px;overflow:hidden;}
+.sla-kpi-bar span{display:block;height:100%;border-radius:99px;transition:width .4s;}
+.sla-kpi-meta{background:var(--lime-bg);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;display:flex;flex-direction:column;justify-content:center;}
+.sla-bottom-row{display:grid;grid-template-columns:1fr auto;gap:1.5rem;align-items:start;}
+@media(max-width:700px){.sla-bottom-row{grid-template-columns:1fr;}}
+.sla-section-title{font-size:12px;font-weight:600;color:var(--dim);margin-bottom:10px;letter-spacing:.04em;}
+.sla-ranking-list{display:flex;flex-direction:column;gap:7px;}
+.sla-rank-item{display:flex;align-items:center;gap:10px;background:var(--dark);border-radius:8px;padding:8px 12px;border:1px solid var(--border);}
+.sla-rank-ok{border-color:rgba(110,224,74,.2);}
+.sla-rank-pend{border-color:rgba(240,96,96,.15);}
+.sla-rank-medal{font-size:15px;width:22px;flex-shrink:0;text-align:center;}
+.sla-rank-name{font-size:12px;font-weight:500;color:var(--text);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sla-rank-bar-wrap{width:80px;height:5px;background:rgba(228,242,200,.08);border-radius:99px;overflow:hidden;flex-shrink:0;}
+.sla-rank-bar-fill{display:block;height:100%;border-radius:99px;transition:width .4s;}
+.sla-rank-tag{font-size:10px;font-weight:600;padding:2px 8px;border-radius:99px;flex-shrink:0;}
+.sla-tag-ok{color:var(--green);background:rgba(110,224,74,.12);border:1px solid rgba(110,224,74,.25);}
+.sla-tag-pend{color:var(--red);background:rgba(240,96,96,.12);border:1px solid rgba(240,96,96,.25);}
+.sla-cutoff{background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;min-width:220px;}
 .pending-alert{display:flex;align-items:flex-start;gap:14px;border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:1.5rem;border:1px solid var(--border);}
 .pending-alert.warn{background:rgba(240,190,64,.09);border-color:rgba(240,190,64,.34);}
 .pending-alert.ok{background:rgba(110,224,74,.08);border-color:rgba(110,224,74,.28);}
