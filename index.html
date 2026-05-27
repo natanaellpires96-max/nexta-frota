@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -123,6 +123,33 @@ async function dbAddNotif(msg) {
 async function dbClearNotifs() {
   await setDoc(doc(db, "config", "notifications"), { items: [] });
 }
+async function dbGetAudit(limitN=120) {
+  try {
+    const snap = await getDoc(doc(db, "config", "audit_log"));
+    const items = snap.exists() ? (snap.data().items || []) : [];
+    return items.slice(0, limitN);
+  } catch { return []; }
+}
+async function dbAddAudit(action, details={}) {
+  try {
+    const items = await dbGetAudit(300);
+    const actor = (S && S.user && USERS_DB[S.user]) ? USERS_DB[S.user].name : "Sistema";
+    items.unshift({ action, actor, details, atBR: new Date().toLocaleString("pt-BR") });
+    if(items.length > 300) items.length = 300;
+    await setDoc(doc(db, "config", "audit_log"), { items });
+  } catch(e) { console.error("audit error", e); }
+}
+async function dbGetAlertCutoffHour() {
+  try {
+    const snap = await getDoc(doc(db, "config", "alert_cutoff"));
+    if(!snap.exists()) return null;
+    const h = Number(snap.data().hour);
+    return Number.isFinite(h) ? h : null;
+  } catch { return null; }
+}
+async function dbSaveAlertCutoffHour(hour) {
+  await setDoc(doc(db, "config", "alert_cutoff"), { hour: Number(hour) });
+}
 
 // Users config
 async function dbGetUsers() {
@@ -167,12 +194,14 @@ async function loadConfig() {
   const loaders = [
     withTimeout(dbGetUsers(), 10000, "Timeout dbGetUsers").catch(e=>{console.error(e); return null}),
     withTimeout(dbGetCarriers(), 10000, "Timeout dbGetCarriers").catch(e=>{console.error(e); return null}),
-    withTimeout(dbGetOperacoes(), 10000, "Timeout dbGetOperacoes").catch(e=>{console.error(e); return null})
+    withTimeout(dbGetOperacoes(), 10000, "Timeout dbGetOperacoes").catch(e=>{console.error(e); return null}),
+    withTimeout(dbGetAlertCutoffHour(), 10000, "Timeout dbGetAlertCutoffHour").catch(e=>{console.error(e); return null})
   ];
-  const [fbUsers, fbCarriers, fbOps] = await Promise.all(loaders);
+  const [fbUsers, fbCarriers, fbOps, fbCutoff] = await Promise.all(loaders);
   if(fbUsers) USERS_DB = fbUsers;
   if(fbCarriers) CARRIERS = fbCarriers;
   if(fbOps) OPERACOES = fbOps;
+  if(Number.isFinite(fbCutoff)) ALERT_CUTOFF_HOUR = fbCutoff;
 }
 
 // ── Monthly archive helpers ──
@@ -270,6 +299,7 @@ let S = {
   registerSubTab: "plates",
 };
 const SESSION_KEY = "nexta_frota_user";
+let ALERT_CUTOFF_HOUR = 16;
 
 // ═══════════════════════════════════════════════════════════
 // HELPERS
@@ -355,15 +385,12 @@ function getMonthDates(year,month){
   return arr;
 }
 async function buildPendingAlerts(allP, filterOps){
-  // filterOps: array de operações para filtrar (usuário restrito), ou null para todas
   if(S.dateOffset !== 0) return "";
-  const targets=[
-    {label:"Hoje", ds:dateStr(0)},
-    {label:"Amanhã", ds:dateStr(1)}
-  ];
+  const targets=[{label:"Hoje", ds:dateStr(0)},{label:"Amanha", ds:dateStr(1)}];
+  const CUTOFF_HOUR = ALERT_CUTOFF_HOUR;
+  const cutoffReached = (new Date()).getHours() >= CUTOFF_HOUR;
 
   if(filterOps&&filterOps.length){
-    // Modo restrito: verifica por operação se todas as placas daquela operação foram preenchidas
     const groups=await Promise.all(targets.map(async t=>{
       const pendingItems=[];
       for(const carrier of CARRIERS){
@@ -384,66 +411,29 @@ async function buildPendingAlerts(allP, filterOps){
       return {...t, pending: pendingItems};
     }));
     const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
+    const todayPending=(groups.find(g=>g.label==="Hoje")?.pending)||[];
+    const cutoffInfo=`<div class="pa-sub" style="margin-top:6px">Horario de corte configurado: ${String(CUTOFF_HOUR).padStart(2,'0')}:00</div>`;
+    const cutoffAlert=(cutoffReached&&todayPending.length)?`<div class="pa-sub" style="color:var(--red);margin-top:8px">Alerta de corte (${CUTOFF_HOUR}:00): pendente hoje: ${todayPending.slice(0,6).join(", ")}${todayPending.length>6?"...":""}</div>`:"";
     if(total===0){
-      return `<div class="pending-alert ok">
-        <div class="pa-icon">✓</div>
-        <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todas as operações preencheram hoje e amanhã.</div></div>
-      </div>`;
+      return `<div class="pending-alert ok"><div class="pa-icon">OK</div><div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todas as operacoes preencheram hoje e amanha.</div>${cutoffInfo}</div></div>`;
     }
-    return `<div class="pending-alert warn">
-      <div class="pa-icon">!</div>
-      <div class="pa-content">
-        <div class="pa-title">Pendências de preenchimento</div>
-        <div class="pa-sub">Operações sem envio concluído.</div>
-        <div class="pa-groups">
-          ${groups.map(g=>`
-            <div class="pa-group">
-              <div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div>
-              <div class="pa-list">
-                ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendências</span>`}
-              </div>
-            </div>`).join("")}
-        </div>
-      </div>
-    </div>`;
+    return `<div class="pending-alert warn"><div class="pa-icon">!</div><div class="pa-content"><div class="pa-title">Pendencias de preenchimento</div><div class="pa-sub">Operacoes sem envio concluido.</div>${cutoffInfo}${cutoffAlert}<div class="pa-groups">${groups.map(g=>`<div class="pa-group"><div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div><div class="pa-list">${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}</div></div>`).join("")}</div></div></div>`;
   }
 
-  // Modo normal: por transportador com lock
   const activeCarriers=CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
   if(!activeCarriers.length) return "";
   const groups=await Promise.all(targets.map(async t=>{
-    const checks=await Promise.all(activeCarriers.map(async carrier=>({
-      carrier,
-      lock: await dbGetLock(carrier,t.ds)
-    })));
-    return {
-      ...t,
-      pending: checks.filter(x=>!x.lock).map(x=>x.carrier)
-    };
+    const checks=await Promise.all(activeCarriers.map(async carrier=>({ carrier, lock: await dbGetLock(carrier,t.ds) })));
+    return {...t, pending: checks.filter(x=>!x.lock).map(x=>x.carrier)};
   }));
   const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
+  const todayPending=(groups.find(g=>g.label==="Hoje")?.pending)||[];
+  const cutoffInfo=`<div class="pa-sub" style="margin-top:6px">Horario de corte configurado: ${String(CUTOFF_HOUR).padStart(2,'0')}:00</div>`;
+  const cutoffAlert=(cutoffReached&&todayPending.length)?`<div class="pa-sub" style="color:var(--red);margin-top:8px">Alerta de corte (${CUTOFF_HOUR}:00): pendentes hoje: ${todayPending.slice(0,6).join(", ")}${todayPending.length>6?"...":""}</div>`:"";
   if(total===0){
-    return `<div class="pending-alert ok">
-      <div class="pa-icon">✓</div>
-      <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todos os transportadores preencheram hoje e amanhã.</div></div>
-    </div>`;
+    return `<div class="pending-alert ok"><div class="pa-icon">OK</div><div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todos os transportadores preencheram hoje e amanha.</div>${cutoffInfo}</div></div>`;
   }
-  return `<div class="pending-alert warn">
-    <div class="pa-icon">!</div>
-    <div class="pa-content">
-      <div class="pa-title">Pendências de preenchimento</div>
-      <div class="pa-sub">Transportadores sem envio concluído para o dia atual e seguinte.</div>
-      <div class="pa-groups">
-        ${groups.map(g=>`
-          <div class="pa-group">
-            <div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div>
-            <div class="pa-list">
-              ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendências</span>`}
-            </div>
-          </div>`).join("")}
-      </div>
-    </div>
-  </div>`;
+  return `<div class="pending-alert warn"><div class="pa-icon">!</div><div class="pa-content"><div class="pa-title">Pendencias de preenchimento</div><div class="pa-sub">Transportadores sem envio concluido para o dia atual e seguinte.</div>${cutoffInfo}${cutoffAlert}<div class="pa-groups">${groups.map(g=>`<div class="pa-group"><div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div><div class="pa-list">${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}</div></div>`).join("")}</div></div></div>`;
 }
 function saveSession(uid){
   try { localStorage.setItem(SESSION_KEY, uid); } catch(e) {}
@@ -980,6 +970,7 @@ async function saveAll(carrier,ds){
   // Lock this carrier/date so it can't be edited again
   await dbSetLock(carrier, ds, u.name);
   await dbAddNotif(`${u.name} enviou a disponibilidade — ${fmtDateStr(ds)}`);
+  await dbAddAudit("status_submit", { carrier, date: ds, rows: rows.length });
   showToast("Disponibilidade salva e bloqueada! ✓");
   if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
   await renderCarrier(carrier);
@@ -1049,7 +1040,8 @@ async function renderDashboard(body){
   const allP=await dbGetPlates();
   const _uOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
   const pendingAlerts=await buildPendingAlerts(allP,_uOps);
-  // Build all pairs for today
+  const auditItems=await dbGetAudit(8);
+
   const allPairs=[];
   for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
@@ -1059,53 +1051,50 @@ async function renderDashboard(body){
   for(const carrier of CARRIERS){
     byCarrier[carrier]={disponivel:0,indisponivel:0,manutencao:0,folga:0};
     for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
-      const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
+      const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
       const v=rec?rec.status:null;
       const op=p.operacao||"Sem operação";
       if(!byOp[op]) byOp[op]={disponivel:0,indisponivel:0,manutencao:0,folga:0,programado:0,pendente:0,total:0};
       if(v){ counts[v]=(counts[v]||0)+1; byCarrier[carrier][v]=(byCarrier[carrier][v]||0)+1; }
-      if(v) byOp[op][v]=(byOp[op][v]||0)+1;
-      else byOp[op].pendente++;
-      byOp[op].total++;
-      counts.total++;
+      if(v) byOp[op][v]=(byOp[op][v]||0)+1; else byOp[op].pendente++;
+      byOp[op].total++; counts.total++;
     }
   }
+
+  const todayLocks = await Promise.all(CARRIERS.map(async carrier => ({ carrier, lock: await dbGetLock(carrier, ds) })));
+  const activeCarrierList = CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
+  const lockedToday = todayLocks.filter(x=>x.lock && activeCarrierList.includes(x.carrier)).length;
+  const pendingToday = Math.max(0, activeCarrierList.length - lockedToday);
+  const slaToday = activeCarrierList.length ? Math.round((lockedToday/activeCarrierList.length)*100) : 100;
+  const pendingRanking = activeCarrierList.map(carrier=>{
+    const opSet = new Set((allP[carrier]||[]).filter(p=>p.ativo!==false).map(p=>p.operacao||"Sem operação"));
+    let pendOps = 0;
+    for(const op of opSet){
+      const opPlates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(p.operacao||"Sem operação")===op);
+      const opFilled=opPlates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
+      if(!opFilled) pendOps++;
+    }
+    return { carrier, pendOps };
+  }).sort((a,b)=>b.pendOps-a.pendOps).slice(0,5);
+
   const opOrder=[...OPERACOES,...Object.keys(byOp).filter(o=>!OPERACOES.includes(o)).sort()];
   const opRows=opOrder.filter(op=>byOp[op]).map(op=>{
     const r=byOp[op];
     const dispPct=r.total?Math.round((r.disponivel/r.total)*100):0;
-    return `<tr>
-      <td style="font-weight:500">${op}</td>
-      <td><span class="badge b-green">${r.disponivel}</span></td>
-      <td><span class="badge b-red">${r.indisponivel}</span></td>
-      <td><span class="badge b-amber">${r.manutencao}</span></td>
-      <td><span class="badge b-blue">${r.folga}</span></td>
-      <td><span class="badge b-purple">${r.programado||0}</span></td>
-      <td><span class="badge b-blank">${r.pendente}</span></td>
-      <td><span class="cap-tag">${r.total}</span></td>
-      <td>
-        <div class="op-meter"><span style="width:${dispPct}%"></span></div>
-        <div class="op-meter-label">${dispPct}% disponível</div>
-      </td>
-    </tr>`;
+    return `<tr><td style="font-weight:500">${op}</td><td><span class="badge b-green">${r.disponivel}</span></td><td><span class="badge b-red">${r.indisponivel}</span></td><td><span class="badge b-amber">${r.manutencao}</span></td><td><span class="badge b-blue">${r.folga}</span></td><td><span class="badge b-purple">${r.programado||0}</span></td><td><span class="badge b-blank">${r.pendente}</span></td><td><span class="cap-tag">${r.total}</span></td><td><div class="op-meter"><span style="width:${dispPct}%"></span></div><div class="op-meter-label">${dispPct}% disponível</div></td></tr>`;
   }).join("");
-  // 14 days trend
+
   const tDates=getDates(14);
   const tPairs=[];
   for(const d of tDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) tPairs.push({carrier,plate:p.placa,dateStr:d});
   const tMap=await dbLoadStatusBulk(tPairs);
-  const tDisp=tDates.map(d=>{
-    let c=0;
-    for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) if(tMap[`${carrier}||${p.placa}||${d}`]?.status==="disponivel") c++;
-    return c;
-  });
+  const tDisp=tDates.map(d=>{ let c=0; for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) if(tMap[`${carrier}||${p.placa}||${d}`]?.status==="disponivel") c++; return c; });
+
+  const cutoffSel = Array.from({length:24},(_,h)=>`<option value="${h}"${h===ALERT_CUTOFF_HOUR?' selected':''}>${String(h).padStart(2,'0')}:00</option>`).join("");
+  const currentUser=USERS_DB[S.user]||{};
 
   body.innerHTML=`
-    <div class="date-nav">
-      <button onclick="chDate(-1)">‹</button>
-      <span class="date-label">${fmtDate(S.dateOffset)}</span>
-      <button onclick="chDate(1)">›</button>
-    </div>
+    <div class="date-nav"><button onclick="chDate(-1)">&lsaquo;</button><span class="date-label">${fmtDate(S.dateOffset)}</span><button onclick="chDate(1)">&rsaquo;</button></div>
     ${pendingAlerts}
     <div class="summary-grid">
       <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
@@ -1115,74 +1104,67 @@ async function renderDashboard(body){
       <div class="sum-card"><div class="sum-num" style="color:var(--purple)">${counts.programado||0}</div><div class="sum-label">Prog./Viagem</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
     </div>
-    <div class="dash-grid">
-      <div class="chart-card"><div class="chart-title">Distribuição de status — hoje</div><canvas id="pie-chart" height="180"></canvas></div>
-      <div class="chart-card"><div class="chart-title">Tendência de disponibilidade — 14 dias</div><canvas id="line-chart" height="180"></canvas></div>
-    </div>
-    <div class="chart-card" style="margin-bottom:1.5rem">
-      <div class="chart-title">Disponibilidade por transportador — hoje</div>
-      <canvas id="bar-chart" height="160"></canvas>
-    </div>
-    <div class="chart-card" style="margin-bottom:1.5rem">
-      <div class="chart-title">Resumo por operação — ${fmtDate(S.dateOffset)}</div>
-      <div class="tscroll">
-        <table class="table op-summary-table" style="min-width:860px">
-          <thead><tr><th style="width:22%">OPERAÇÃO</th><th>DISP.</th><th>INDISP.</th><th>MANUT.</th><th>FOLGA</th><th>PROG.</th><th>PEND.</th><th>TOTAL</th><th style="width:18%">DISPONIBILIDADE</th></tr></thead>
-          <tbody>${opRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px">Nenhuma operação com placas ativas.</td></tr>'}</tbody>
-        </table>
+    <div class="card" style="margin-bottom:1.25rem">
+      <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between">
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+          <span class="badge b-green">SLA hoje: ${slaToday}%</span>
+          <span class="badge b-amber">Enviados: ${lockedToday}/${activeCarrierList.length}</span>
+          <span class="badge b-red">Pendentes: ${pendingToday}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted)">Meta sugerida: SLA >= 95%</div>
       </div>
-    </div>`;
+      ${currentUser.role==="admin" ? `<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">Horário de corte do alerta:</span><select id="cutoff-hour-sel" style="background:var(--dark);border:1px solid var(--border2);border-radius:7px;color:var(--text);padding:6px 9px;font-size:12px">${cutoffSel}</select><button class="btn btn-outline btn-sm" onclick="saveCutoffHour()">Salvar corte</button></div>` : ``}
+      <div style="margin-top:12px"><div style="font-size:12px;color:var(--dim);margin-bottom:8px">Ranking de pendencias por transportador (hoje)</div><div style="display:flex;gap:8px;flex-wrap:wrap">${pendingRanking.map((r,i)=>`<span class="pa-chip ${r.pendOps===0?'ok':''}">${i+1}. ${r.carrier}: ${r.pendOps} op pendente(s)</span>`).join("") || '<span class="pa-chip ok">Sem pendencias</span>'}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:1.25rem"><div style="font-size:13px;color:var(--dim);margin-bottom:8px">Últimas ações (auditoria)</div><div style="display:grid;gap:6px">${auditItems.length ? auditItems.map(a=>`<div style="font-size:12px;color:var(--text);background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:7px 10px"><span style="color:var(--lime)">${a.action}</span> - ${a.actor||"Sistema"} - <span style="color:var(--muted)">${a.atBR||""}</span></div>`).join("") : `<div style="font-size:12px;color:var(--muted)">Sem eventos recentes.</div>`}</div></div>
+    <div class="dash-grid"><div class="chart-card"><div class="chart-title">Distribuição de status - hoje</div><canvas id="pie-chart" height="180"></canvas></div><div class="chart-card"><div class="chart-title">Tendência de disponibilidade - 14 dias</div><canvas id="line-chart" height="180"></canvas></div></div>
+    <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Disponibilidade por transportador - hoje</div><canvas id="bar-chart" height="160"></canvas></div>
+    <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Resumo por operação - ${fmtDate(S.dateOffset)}</div><div class="tscroll"><table class="table op-summary-table" style="min-width:860px"><thead><tr><th style="width:22%">OPERAÇÃO</th><th>DISP.</th><th>INDISP.</th><th>MANUT.</th><th>FOLGA</th><th>PROG.</th><th>PEND.</th><th>TOTAL</th><th style="width:18%">DISPONIBILIDADE</th></tr></thead><tbody>${opRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px">Nenhuma operação com placas ativas.</td></tr>'}</tbody></table></div></div>`;
 
-  requestAnimationFrame(()=>{
-    drawPie(counts);
-    drawLine(tDates,tDisp);
-    drawBar(byCarrier);
-  });
+  requestAnimationFrame(()=>{ drawPie(counts); drawLine(tDates,tDisp); drawBar(byCarrier); });
 }
-
 function drawPie(counts){
   const canvas=document.getElementById("pie-chart"); if(!canvas) return;
-  const ctx=canvas.getContext("2d");
-  const W=canvas.offsetWidth||350; canvas.width=W; canvas.height=180;
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,180,350);
   const data=[counts.disponivel,counts.indisponivel,counts.manutencao,counts.folga,counts.programado||0];
   const colors=["#6ee04a","#f06060","#f0be40","#70a8f0","#b07ef0"];
   const labels=["Disponível","Indisponível","Manutenção","Folga","Prog./Viagem"];
   const total=data.reduce((a,b)=>a+b,0)||1;
-  const cx=90,cy=90,r=72;
+  const cx=92,cy=H/2,r=68;
   let start=-Math.PI/2;
   data.forEach((v,i)=>{
     const angle=(v/total)*2*Math.PI;
     ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,r,start,start+angle);
     ctx.fillStyle=colors[i]; ctx.fill(); start+=angle;
   });
-  ctx.beginPath(); ctx.arc(cx,cy,38,0,2*Math.PI); ctx.fillStyle="#1c2d12"; ctx.fill();
-  ctx.fillStyle="#e4f2c8"; ctx.font="bold 18px DM Sans,sans-serif"; ctx.textAlign="center";
+  ctx.beginPath(); ctx.arc(cx,cy,36,0,2*Math.PI); ctx.fillStyle="#1c2d12"; ctx.fill();
+  ctx.beginPath(); ctx.arc(cx,cy,36.5,0,2*Math.PI); ctx.strokeStyle="rgba(200,240,50,.18)"; ctx.lineWidth=1; ctx.stroke();
+  ctx.fillStyle="#e4f2c8"; ctx.font="600 18px DM Sans,sans-serif"; ctx.textAlign="center";
   ctx.fillText(total,cx,cy+6); ctx.font="10px DM Sans,sans-serif"; ctx.fillStyle="rgba(228,242,200,.5)";
   ctx.fillText("total",cx,cy+20); ctx.textAlign="left";
-  const lx=195,ly=24;
+  const lx=186,ly=22;
   labels.forEach((l,i)=>{
-    ctx.fillStyle=colors[i]; ctx.beginPath(); ctx.arc(lx+6,ly+i*33+6,6,0,2*Math.PI); ctx.fill();
-    ctx.fillStyle="#e4f2c8"; ctx.font="12px DM Sans,sans-serif";
-    ctx.fillText(`${l}: ${data[i]}`,lx+17,ly+i*33+11);
+    ctx.fillStyle=colors[i]; ctx.beginPath(); ctx.arc(lx+6,ly+i*30+6,5,0,2*Math.PI); ctx.fill();
+    ctx.fillStyle="#e4f2c8"; ctx.font="500 11px DM Sans,sans-serif";
+    ctx.fillText(`${l}: ${data[i]}`,lx+16,ly+i*30+10);
   });
 }
 function drawLine(dates,disp){
   const canvas=document.getElementById("line-chart"); if(!canvas) return;
-  const W=canvas.offsetWidth||350; canvas.width=W; canvas.height=180;
-  const ctx=canvas.getContext("2d");
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,180,350);
   const pad={t:20,r:20,b:40,l:35};
-  const W2=W-pad.l-pad.r, H2=180-pad.t-pad.b;
+  const W2=W-pad.l-pad.r, H2=H-pad.t-pad.b;
   const maxV=Math.max(...disp,1);
-  ctx.strokeStyle="rgba(200,240,50,.12)"; ctx.lineWidth=1;
+  ctx.strokeStyle="rgba(200,240,50,.14)"; ctx.lineWidth=1;
   for(let i=0;i<=4;i++){
     const y=pad.t+H2-i*(H2/4);
     ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
-    ctx.fillStyle="rgba(228,242,200,.35)"; ctx.font="10px DM Mono,monospace";
+    ctx.fillStyle="rgba(228,242,200,.4)"; ctx.font="500 10px DM Mono,monospace";
     ctx.fillText(Math.round(i*(maxV/4)),4,y+3);
   }
   // gradient fill
   const grad=ctx.createLinearGradient(0,pad.t,0,pad.t+H2);
-  grad.addColorStop(0,"rgba(200,240,50,.18)"); grad.addColorStop(1,"rgba(200,240,50,0)");
+  grad.addColorStop(0,"rgba(200,240,50,.24)"); grad.addColorStop(1,"rgba(200,240,50,0)");
   ctx.beginPath();
   disp.forEach((v,i)=>{
     const x=pad.l+i*(W2/(disp.length-1));
@@ -1191,7 +1173,7 @@ function drawLine(dates,disp){
   });
   ctx.lineTo(pad.l+W2,pad.t+H2); ctx.lineTo(pad.l,pad.t+H2);
   ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
-  ctx.strokeStyle="var(--lime)"; ctx.lineWidth=2; ctx.beginPath();
+  ctx.strokeStyle="var(--lime)"; ctx.lineWidth=2.4; ctx.beginPath();
   disp.forEach((v,i)=>{
     const x=pad.l+i*(W2/(disp.length-1));
     const y=pad.t+H2-(v/maxV)*H2;
@@ -1202,28 +1184,26 @@ function drawLine(dates,disp){
   disp.forEach((v,i)=>{
     const x=pad.l+i*(W2/(disp.length-1));
     const y=pad.t+H2-(v/maxV)*H2;
-    ctx.beginPath(); ctx.arc(x,y,3,0,2*Math.PI); ctx.fill();
+    ctx.beginPath(); ctx.arc(x,y,3.2,0,2*Math.PI); ctx.fill();
   });
-  ctx.fillStyle="rgba(228,242,200,.35)"; ctx.font="9px DM Mono,monospace";
-  dates.forEach((d,i)=>{ if(i%2===0){ const x=pad.l+i*(W2/(dates.length-1)); ctx.fillText(d.slice(5),x-10,178); } });
+  ctx.fillStyle="rgba(228,242,200,.45)"; ctx.font="500 9px DM Mono,monospace";
+  dates.forEach((d,i)=>{ if(i%2===0){ const x=pad.l+i*(W2/(dates.length-1)); ctx.fillText(d.slice(5),x-10,H-2); } });
 }
 function drawBar(byCarrier){
   const canvas=document.getElementById("bar-chart"); if(!canvas) return;
-  // Increase height to fit full carrier names (two lines)
-  const W=canvas.offsetWidth||700; canvas.width=W; canvas.height=200;
-  const ctx=canvas.getContext("2d");
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,200,700);
   const colors=["#6ee04a","#f06060","#f0be40","#70a8f0","#b07ef0"];
   const statKeys=["disponivel","indisponivel","manutencao","folga","programado"];
-  const pad={t:20,r:20,b:55,l:35};
-  const W2=W-pad.l-pad.r, H2=200-pad.t-pad.b;
+  const pad={t:18,r:20,b:55,l:35};
+  const W2=W-pad.l-pad.r, H2=H-pad.t-pad.b;
   const grpW=W2/CARRIERS.length, barW=grpW/(statKeys.length+1);
   const maxV=Math.max(...CARRIERS.map(c=>Object.values(byCarrier[c]||{}).reduce((a,b)=>a+b,0)),4);
   // Grid lines
-  ctx.strokeStyle="rgba(200,240,50,.1)"; ctx.lineWidth=1;
+  ctx.strokeStyle="rgba(200,240,50,.14)"; ctx.lineWidth=1;
   for(let i=0;i<=4;i++){
     const y=pad.t+H2-i*(H2/4);
     ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
-    ctx.fillStyle="rgba(228,242,200,.35)"; ctx.font="10px DM Mono,monospace";
+    ctx.fillStyle="rgba(228,242,200,.4)"; ctx.font="500 10px DM Mono,monospace";
     ctx.fillText(Math.round(i*(maxV/4)),4,y+3);
   }
   CARRIERS.forEach((carrier,ci)=>{
@@ -1234,11 +1214,11 @@ function drawBar(byCarrier){
       const h=(v/maxV)*H2||0;
       const barTop=pad.t+H2-h;
       // Draw bar
-      ctx.fillStyle=colors[si]; ctx.fillRect(x,barTop,barW*.8,h);
+      ctx.fillStyle=colors[si]; ctx.fillRect(x,barTop,barW*.78,h);
       // Data label on top of bar (only if value > 0)
       if(v>0){
         ctx.fillStyle="#e4f2c8";
-        ctx.font="bold 10px DM Sans,sans-serif";
+        ctx.font="600 10px DM Sans,sans-serif";
         ctx.textAlign="center";
         ctx.fillText(v, x+barW*.4, barTop-4);
         ctx.textAlign="left";
@@ -1248,21 +1228,52 @@ function drawBar(byCarrier){
     const words=carrier.split(" ");
     const mid=gx+grpW/2;
     const lineY=pad.t+H2+14;
-    ctx.fillStyle="rgba(228,242,200,.6)";
+    ctx.fillStyle="rgba(228,242,200,.68)";
     ctx.textAlign="center";
     if(words.length<=2){
-      ctx.font="10px DM Sans,sans-serif";
+      ctx.font="500 10px DM Sans,sans-serif";
       ctx.fillText(carrier, mid, lineY);
     } else {
       // Split into two lines: first word on line1, rest on line2
       const line1=words[0];
       const line2=words.slice(1).join(" ");
-      ctx.font="10px DM Sans,sans-serif";
+      ctx.font="500 10px DM Sans,sans-serif";
       ctx.fillText(line1, mid, lineY);
       ctx.fillText(line2, mid, lineY+13);
     }
     ctx.textAlign="left";
   });
+}
+function setupHiDpiCanvas(canvas,cssHeight,fallbackWidth){
+  const dpr=Math.max(1,window.devicePixelRatio||1);
+  const W=canvas.offsetWidth||fallbackWidth;
+  const H=cssHeight;
+  canvas.style.height=`${H}px`;
+  canvas.width=Math.round(W*dpr);
+  canvas.height=Math.round(H*dpr);
+  const ctx=canvas.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.imageSmoothingEnabled=true;
+  ctx.imageSmoothingQuality="high";
+  return {ctx,W,H,dpr};
+}
+async function saveCutoffHour(){
+  const u = USERS_DB[S.user];
+  if(!u || u.role!=="admin"){ showToast("Acesso restrito.", false); return; }
+  const sel=document.getElementById("cutoff-hour-sel");
+  if(!sel){ showToast("Campo de corte nao encontrado.", false); return; }
+  const hour=Number(sel.value);
+  if(!Number.isFinite(hour) || hour<0 || hour>23){ showToast("Hora invalida.", false); return; }
+  try{
+    await dbSaveAlertCutoffHour(hour);
+    ALERT_CUTOFF_HOUR = hour;
+    await dbAddAudit("alert_cutoff_update", { hour });
+    showToast(`Horario de corte atualizado para ${String(hour).padStart(2,'0')}:00`);
+    await renderTabBody();
+  } catch(e){
+    console.error(e);
+    showToast("Erro ao salvar horario de corte.", false);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1779,6 +1790,7 @@ async function addPlate(){
   const motNoturno=document.getElementById('r-mot-n')?.value||'';
   allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade,motoristaDiurno:motDiurno,motoristaNoturno:motNoturno});
   await dbSavePlates(allP);
+  await dbAddAudit("plate_add", { carrier, placa, operacao, tipo, contrato });
   document.getElementById("r-placa").value="";
   document.getElementById("r-cap").value="";
   msg.textContent=`Placa ${placa} cadastrada!`;msg.style.color="var(--green)";
@@ -1793,6 +1805,7 @@ async function delPlate(carrier,idx){
   if(!allP[carrier]) return;
   const removed=allP[carrier].splice(idx,1);
   await dbSavePlates(allP);
+  await dbAddAudit("plate_remove", { carrier, placa: removed[0]?.placa || "" });
   showToast(`Placa ${removed[0]?.placa} removida.`);
   await renderTabBody();
 }
@@ -1944,6 +1957,7 @@ async function adminUnlock(carrier, ds){
     dbClearStatusForDate(carrier, ds)
   ]);
   await dbAddNotif(`Admin desbloqueou e resetou o lançamento de ${carrier} — ${fmtDateStr(ds)}`);
+  await dbAddAudit("admin_unlock", { carrier, date: ds });
   showToast(`Lançamento de ${carrier} desbloqueado e resetado!`);
   await renderTabBody();
 }
@@ -2614,7 +2628,7 @@ window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
-window.renderTabBody=renderTabBody; window.S=S;
+window.renderTabBody=renderTabBody; window.saveCutoffHour=saveCutoffHour; window.S=S;
 
 // ── INIT ──
 loadConfig().catch(e=>{ console.error(e); }).then(()=>{
@@ -2703,8 +2717,8 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .btn-outline{background:none;border:1px solid var(--border2);color:var(--dim);}
 .btn-outline:hover{border-color:var(--lime);color:var(--lime);}
 .btn-sm{padding:6px 14px;font-size:12px;}
-.btn-danger{background:none;border:1px solid transparent;color:rgba(240,96,96,.55);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
-.btn-edit{background:none;border:1px solid transparent;color:rgba(200,240,50,.5);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-danger{background:none;border:1px solid transparent;color:rgba(240,96,96,.55);padding:4px 6px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-edit{background:none;border:1px solid transparent;color:rgba(200,240,50,.5);padding:4px 6px;border-radius:7px;font-size:13px;cursor:pointer;}
 .btn-toggle-off{background:none;border:1px solid rgba(240,190,64,.3);color:rgba(240,190,64,.7);padding:4px 8px;border-radius:7px;font-size:12px;cursor:pointer;}
 .btn-toggle-off:hover{background:rgba(240,190,64,.1);color:var(--amber);border-color:var(--amber);}
 .btn-toggle-on{background:none;border:1px solid rgba(110,224,74,.3);color:rgba(110,224,74,.7);padding:4px 8px;border-radius:7px;font-size:12px;cursor:pointer;}
@@ -2753,7 +2767,8 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .tscroll{overflow-x:auto;}
 .table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;table-layout:fixed;}
 .table th{padding:10px 14px;font-size:10px;font-weight:500;color:var(--muted);text-align:left;background:rgba(200,240,50,.04);border-bottom:1px solid var(--border);letter-spacing:.04em;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.15;}
-.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;word-break:normal;overflow:hidden;}
+.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;word-break:normal;overflow:visible;}
+.table th:last-child,.table td:last-child{padding-right:20px;}
 .table .badge,.table .cap-tag{max-width:100%;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.15;text-align:center;justify-content:center;padding:3px 7px;font-size:10.5px;}
 .table tr:last-child td{border-bottom:none;}
 .table tbody tr:hover{background:var(--lime-bg);}
@@ -2848,3 +2863,6 @@ canvas{display:block;width:100%!important;}
   </div>
 </body>
 </html>
+
+
+
