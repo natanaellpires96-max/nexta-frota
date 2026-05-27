@@ -39,6 +39,7 @@ async function dbGetPlates() {
 }
 async function dbSavePlates(plates) {
   await setDoc(doc(db, "config", "plates"), { data: plates });
+  if(typeof invalidateDataCache==="function") invalidateDataCache();
 }
 
 async function withTimeout(promise, ms, message){
@@ -161,6 +162,7 @@ async function dbGetDrivers() {
 }
 async function dbSaveDrivers(data) {
   await setDoc(doc(db, "config", "drivers"), { data });
+  if(typeof invalidateDataCache==="function") invalidateDataCache();
 }
 // Load users and carriers from Firebase, fall back to defaults
 async function loadConfig() {
@@ -215,7 +217,7 @@ async function dbRemoveLock(carrier, dateStr) {
 }
 async function dbClearStatusForDate(carrier, dateStr) {
   // Remove all availability records for this carrier+date so status returns to "not filled"
-  const allP = await dbGetPlates();
+  const allP = await dbGetPlatesCached();
   const plates = (allP[carrier] || []).filter(p => p.ativo !== false);
   await Promise.all(plates.map(async p => {
     const id = `${carrier}__${p.placa}__${dateStr}`;
@@ -240,12 +242,12 @@ async function dbLoadStatusBulk(pairs) {
 // ═══════════════════════════════════════════════════════════
 // USERS_DB and CARRIERS are loaded dynamically from Firebase
 let USERS_DB = {
-  admin: { name:"Administrador", role:"admin", initials:"AD", password:"admin123" },
-  transac:   { name:"Transac Transportes",    role:"carrier", initials:"TT", carrier:"Transac Transportes",    password:"transac123" },
-  cavalinho: { name:"Transportes Cavalinho",  role:"carrier", initials:"TC", carrier:"Transportes Cavalinho",  password:"cavalinho123" },
-  jdcocenzo: { name:"JD Cocenzo Transportes", role:"carrier", initials:"JD", carrier:"JD Cocenzo Transportes", password:"jdcocenzo123" },
-  simeira:   { name:"Simeira Transportes",    role:"carrier", initials:"ST", carrier:"Simeira Transportes",    password:"simeira123" },
-  garbuio:   { name:"Garbuio Transportes",    role:"carrier", initials:"GT", carrier:"Garbuio Transportes",    password:"garbuio123" },
+  admin: { name:"Administrador", role:"admin", initials:"AD", password:"trocar_admin_2026" },
+  transac:   { name:"Transac Transportes",    role:"carrier", initials:"TT", carrier:"Transac Transportes",    password:"trocar_transac_2026" },
+  cavalinho: { name:"Transportes Cavalinho",  role:"carrier", initials:"TC", carrier:"Transportes Cavalinho",  password:"trocar_cavalinho_2026" },
+  jdcocenzo: { name:"JD Cocenzo Transportes", role:"carrier", initials:"JD", carrier:"JD Cocenzo Transportes", password:"trocar_jdcocenzo_2026" },
+  simeira:   { name:"Simeira Transportes",    role:"carrier", initials:"ST", carrier:"Simeira Transportes",    password:"trocar_simeira_2026" },
+  garbuio:   { name:"Garbuio Transportes",    role:"carrier", initials:"GT", carrier:"Garbuio Transportes",    password:"trocar_garbuio_2026" },
 };
 let CARRIERS = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transportes","Simeira Transportes","Garbuio Transportes"];
 let OPERACOES = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de Caxias","Brasília","Cubatão","Uberaba"];
@@ -270,10 +272,85 @@ let S = {
   registerSubTab: "plates",
 };
 const SESSION_KEY = "nexta_frota_user";
+const AUTH_LOCK_KEY = "nexta_frota_auth_lock_until";
+const AUTH_ATTEMPTS_KEY = "nexta_frota_auth_attempts";
+const MIN_PASSWORD_LEN = 8;
+const CACHE_TTL_MS = 30000;
+const MEM = {
+  plates: { ts: 0, data: null },
+  drivers: { ts: 0, data: null },
+  status: new Map(),
+};
 
 // ═══════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════
+function nowMs(){ return Date.now(); }
+function isWeakPassword(pwd){ return !pwd || pwd.length < MIN_PASSWORD_LEN; }
+function isValidPlate(placa){
+  const clean=(placa||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+  return /^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(clean) || /^[A-Z]{3}[0-9]{4}$/.test(clean);
+}
+function normalizePlate(placa){
+  const clean=(placa||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+  if(clean.length===7) return `${clean.slice(0,3)}-${clean.slice(3)}`;
+  return (placa||"").toUpperCase();
+}
+function safeText(txt){
+  return String(txt ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#39;");
+}
+function invalidateDataCache(){
+  MEM.plates={ ts:0, data:null };
+  MEM.drivers={ ts:0, data:null };
+  MEM.status.clear();
+}
+async function dbGetPlatesCached(force=false){
+  if(!force && MEM.plates.data && (nowMs()-MEM.plates.ts)<CACHE_TTL_MS) return MEM.plates.data;
+  const data=await dbGetPlates();
+  MEM.plates={ ts:nowMs(), data };
+  return data;
+}
+async function dbGetDriversCached(force=false){
+  if(!force && MEM.drivers.data && (nowMs()-MEM.drivers.ts)<CACHE_TTL_MS) return MEM.drivers.data;
+  const data=await dbGetDrivers();
+  MEM.drivers={ ts:nowMs(), data };
+  return data;
+}
+async function dbLoadStatusBulkCached(pairs, force=false){
+  const key=JSON.stringify(pairs);
+  const cached=MEM.status.get(key);
+  if(!force && cached && (nowMs()-cached.ts)<CACHE_TTL_MS) return cached.data;
+  const data=await dbLoadStatusBulk(pairs);
+  MEM.status.set(key, { ts:nowMs(), data });
+  return data;
+}
+function getAuthLockRemainingMs(){
+  try {
+    const until=Number(localStorage.getItem(AUTH_LOCK_KEY)||0);
+    return Math.max(0, until-nowMs());
+  } catch { return 0; }
+}
+function registerLoginFailure(){
+  try {
+    const attempts=Number(localStorage.getItem(AUTH_ATTEMPTS_KEY)||0)+1;
+    localStorage.setItem(AUTH_ATTEMPTS_KEY, String(attempts));
+    if(attempts>=5){
+      localStorage.setItem(AUTH_LOCK_KEY, String(nowMs()+3*60*1000));
+      localStorage.setItem(AUTH_ATTEMPTS_KEY, "0");
+    }
+  } catch {}
+}
+function clearLoginFailures(){
+  try {
+    localStorage.setItem(AUTH_ATTEMPTS_KEY, "0");
+    localStorage.removeItem(AUTH_LOCK_KEY);
+  } catch {}
+}
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
 function statusSemHorario(v){ return v==='indisponivel'||v==='programado'||v==='folga'; }
 function fmtTimeValue(v){ return v==='sem_previsao'?'Sem previsão':(v||'—'); }
@@ -370,7 +447,7 @@ async function buildPendingAlerts(allP, filterOps){
         const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&filterOps.includes(p.operacao));
         if(!plates.length) continue;
         const pairs=plates.map(p=>({carrier,plate:p.placa,dateStr:t.ds}));
-        const sm=await dbLoadStatusBulk(pairs);
+        const sm=await dbLoadStatusBulkCached(pairs);
         const allFilled=plates.every(p=>sm[`${carrier}||${p.placa}||${t.ds}`]);
         if(!allFilled){
           for(const op of filterOps){
@@ -706,13 +783,19 @@ function doLogin(){
   const uid=document.getElementById("user-input").value.trim().toLowerCase();
   const pwd=document.getElementById("pwd").value;
   const err=document.getElementById("login-err");
+  const lockMs=getAuthLockRemainingMs();
+  if(lockMs>0){
+    const min=Math.ceil(lockMs/60000);
+    err.textContent=`Muitas tentativas. Tente novamente em ~${min} min.`;
+    return;
+  }
   if(!uid){err.textContent="Informe o usuário.";return;}
   if(!pwd){err.textContent="Informe a senha.";return;}
-  if(!USERS_DB[uid]){err.textContent="Usuário não encontrado.";return;}
-  if(USERS_DB[uid].password!==pwd){err.textContent="Senha incorreta.";return;}
+  if(!USERS_DB[uid]){registerLoginFailure();err.textContent="Usuário não encontrado.";return;}
+  if(USERS_DB[uid].password!==pwd){registerLoginFailure();err.textContent="Senha incorreta.";return;}
+  clearLoginFailures();
   S.user=uid; S.dateOffset=0; saveSession(uid); render();
-}
-function logout(){ S.user=null; S.notifOpen=false; clearSession(); render(); }
+}function logout(){ S.user=null; S.notifOpen=false; clearSession(); render(); }
 
 // ═══════════════════════════════════════════════════════════
 // NOTIFICATIONS
@@ -721,7 +804,7 @@ async function toggleNotif(){ S.notifOpen=!S.notifOpen; await render(); }
 async function renderNotifPanel(notifs){
   const items=notifs.length===0
     ?`<div class="notif-empty">Nenhuma notificação</div>`
-    :notifs.map(n=>`<div class="notif-item"><div>${n.msg}</div><div class="ni-time">${n.time}</div></div>`).join("");
+    :notifs.map(n=>`<div class="notif-item"><div>${safeText(n.msg)}</div><div class="ni-time">${safeText(n.time)}</div></div>`).join("");
   return `<div class="notif-panel">
     <div class="notif-header">
       <span>Notificações</span>
@@ -903,7 +986,6 @@ function onTimeChange(sel){
 async function saveAll(carrier,ds){
   const btn=document.getElementById("save-btn");
   const rows=document.querySelectorAll(".table tbody tr");
-  // Validate: all rows must have status AND time filled
   const isCarrierUser = USERS_DB[S.user] && USERS_DB[S.user].role==='carrier';
   let missing=[];
   rows.forEach(row=>{
@@ -915,20 +997,17 @@ async function saveAll(carrier,ds){
     const isIndisp=statusSel&&statusSemHorario(statusSel.value);
     const hasTime=timeSel&&timeSel.value;
     const hasOdo = !isCarrierUser || (odoInput && odoInput.value!=='');
-    if(!hasStatus||(! isIndisp&&!hasTime) || !hasOdo) missing.push(plate);
+    if(!hasStatus||(!isIndisp&&!hasTime) || !hasOdo) missing.push(plate);
   });
   if(missing.length>0){
     showToast(`Preencha status e horário quando aplicável antes de salvar.`,false);
-    // Highlight missing rows
     rows.forEach(row=>{
       const plate=row.cells[0].textContent.trim();
-      if(missing.includes(plate)) row.style.background="rgba(240,96,96,.08)";
-      else row.style.background="";
+      row.style.background=missing.includes(plate)?"rgba(240,96,96,.08)":"";
     });
     return;
   }
 
-  // Cache previous hodometro values to avoid double Firebase fetches
   const prevOdoCache = {};
   const invalidOdoRows=[];
   if(isCarrierUser){
@@ -937,7 +1016,11 @@ async function saveAll(carrier,ds){
       const odoInput=row.querySelector('.odo-input');
       if(!odoInput) continue;
       const currentOdo=Number(odoInput.value);
-      if(!Number.isFinite(currentOdo)) continue;
+      if(!Number.isFinite(currentOdo) || currentOdo<0){
+        invalidOdoRows.push(plate);
+        row.style.background="rgba(240,96,96,.08)";
+        continue;
+      }
       const previousOdo=await dbGetPreviousHodometro(plate, ds);
       prevOdoCache[plate]=previousOdo;
       if(previousOdo !== null && currentOdo < previousOdo){
@@ -954,35 +1037,40 @@ async function saveAll(carrier,ds){
       const previousOdo = prevOdoCache[plate];
       return `${plate} (último registrado: ${previousOdo ?? "não encontrado"})`;
     });
-    showToast(`Hodômetro inválido para: ${detalhes.join(", ")}. O valor informado não pode ser menor que o último registrado.`, false);
+    showToast(`Hodômetro inválido para: ${detalhes.join(", ")}.`, false);
     return;
   }
 
   if(btn){btn.disabled=true;btn.textContent="Salvando...";}
-  const allP=await dbGetPlates();
-  const proms=[];
-  rows.forEach(row=>{
-    const plate=row.cells[0].textContent.trim();
-    const statusSel=row.querySelector(".st-sel");
-    const timeSel=row.querySelector(".time-sel");
-    // Read drivers from the selects rendered in the row (falls back to plate record if not a carrier user)
-    const pRecord=(allP[carrier]||[]).find(p=>p.placa===plate)||{};
-    const dSelD = row.querySelector('.driver-sel-d');
-    const dSelN = row.querySelector('.driver-sel-n');
-    const motDiurno  = dSelD ? dSelD.value  : (pRecord.motoristaDiurno||'');
-    const motNoturno = dSelN ? dSelN.value  : (pRecord.motoristaNoturno||'');
-    const odoInput=row.querySelector('.odo-input');
-    const hodometro = odoInput && odoInput.value!==''? Number(odoInput.value) : null;
-    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,motDiurno,motNoturno, hodometro));
-  });
-  await Promise.all(proms);
-  const u=USERS_DB[S.user];
-  // Lock this carrier/date so it can't be edited again
-  await dbSetLock(carrier, ds, u.name);
-  await dbAddNotif(`${u.name} enviou a disponibilidade — ${fmtDateStr(ds)}`);
-  showToast("Disponibilidade salva e bloqueada! ✓");
-  if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
-  await renderCarrier(carrier);
+  try {
+    const allP=await dbGetPlatesCached();
+    const proms=[];
+    rows.forEach(row=>{
+      const plate=row.cells[0].textContent.trim();
+      const statusSel=row.querySelector(".st-sel");
+      const timeSel=row.querySelector(".time-sel");
+      const pRecord=(allP[carrier]||[]).find(p=>p.placa===plate)||{};
+      const dSelD = row.querySelector('.driver-sel-d');
+      const dSelN = row.querySelector('.driver-sel-n');
+      const motDiurno  = dSelD ? dSelD.value  : (pRecord.motoristaDiurno||'');
+      const motNoturno = dSelN ? dSelN.value  : (pRecord.motoristaNoturno||'');
+      const odoInput=row.querySelector('.odo-input');
+      const hodometro = odoInput && odoInput.value!==''? Number(odoInput.value) : null;
+      proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,motDiurno,motNoturno, hodometro));
+    });
+    await Promise.all(proms);
+    const u=USERS_DB[S.user];
+    await dbSetLock(carrier, ds, u.name);
+    await dbAddNotif(`${u.name} enviou a disponibilidade — ${fmtDateStr(ds)}`);
+    invalidateDataCache();
+    showToast("Disponibilidade salva e bloqueada! ✓");
+    await renderCarrier(carrier);
+  } catch(e){
+    console.error(e);
+    showToast("Erro ao salvar disponibilidade no Firebase.", false);
+  } finally {
+    if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
+  }
 }
 async function chDate(d){ S.dateOffset+=d; await render(); }
 
@@ -1046,13 +1134,13 @@ async function renderTabBody(){
 async function renderDashboard(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando dashboard...</div>`;
   const ds=dateStr(S.dateOffset);
-  const allP=await dbGetPlates();
+  const allP=await dbGetPlatesCached();
   const _uOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
   const pendingAlerts=await buildPendingAlerts(allP,_uOps);
   // Build all pairs for today
   const allPairs=[];
   for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
-  const statusMap=await dbLoadStatusBulk(allPairs);
+  const statusMap=await dbLoadStatusBulkCached(allPairs);
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   let byCarrier={};
   let byOp={};
@@ -1093,7 +1181,7 @@ async function renderDashboard(body){
   const tDates=getDates(14);
   const tPairs=[];
   for(const d of tDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) tPairs.push({carrier,plate:p.placa,dateStr:d});
-  const tMap=await dbLoadStatusBulk(tPairs);
+  const tMap=await dbLoadStatusBulkCached(tPairs);
   const tDisp=tDates.map(d=>{
     let c=0;
     for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) if(tMap[`${carrier}||${p.placa}||${d}`]?.status==="disponivel") c++;
@@ -1271,7 +1359,7 @@ function drawBar(byCarrier){
 async function renderToday(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   const ds=dateStr(S.dateOffset);
-  const allP=await dbGetPlates();
+  const allP=await dbGetPlatesCached();
   const _uOps2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
   const pendingAlerts=await buildPendingAlerts(allP,_uOps2);
   const opFilter=S.todayOp||"";
@@ -1281,7 +1369,7 @@ async function renderToday(body){
   for(const carrier of CARRIERS)
     for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter))))
       allPairs.push({carrier,plate:p.placa,dateStr:ds});
-  const statusMap=await dbLoadStatusBulk(allPairs);
+  const statusMap=await dbLoadStatusBulkCached(allPairs);
   let sections="";
   for(const carrier of CARRIERS){
     const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)));
@@ -1370,14 +1458,14 @@ async function renderHistory(body){
     <div id="hist-result"><div class="loading"><span class="spin"></span>Buscando registros...</div></div>`;
 
   const dates=getDates(S.histDays);
-  const allP=await dbGetPlates();
+  const allP=await dbGetPlatesCached();
   const carriersToShow=cf?[cf]:CARRIERS;
   const allPairs=[];
   for(const carrier of carriersToShow)
     for(const p of (allP[carrier]||[]).filter(p=>(!of||p.operacao===of)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter))))
       for(const ds of dates)
         allPairs.push({carrier,plate:p.placa,dateStr:ds});
-  const statusMap=await dbLoadStatusBulk(allPairs);
+  const statusMap=await dbLoadStatusBulkCached(allPairs);
   let rows="";
   for(const carrier of carriersToShow){
     for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!of||p.operacao===of)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)))){
@@ -1550,7 +1638,7 @@ function hideExportProgress(){
   if(wrap) setTimeout(()=>wrap.remove(), 800);
 }
 async function buildRows(dates, onProgress){
-  const allP = await dbGetPlates();
+  const allP = await dbGetPlatesCached();
 
   // Collect all active plates across all carriers
   const allActivePlates = [];
@@ -1564,7 +1652,7 @@ async function buildRows(dates, onProgress){
   let doneBatches = 0;
   await Promise.all(dates.map(async ds => {
     const pairs = allActivePlates.map(({carrier,plate}) => ({carrier,plate,dateStr:ds}));
-    const batchResult = await dbLoadStatusBulk(pairs);
+    const batchResult = await dbLoadStatusBulkCached(pairs);
     Object.assign(statusMap, batchResult);
     doneBatches++;
     if(onProgress) onProgress(Math.round((doneBatches/totalBatches)*85));
@@ -1573,7 +1661,7 @@ async function buildRows(dates, onProgress){
   // Pre-fetch anchor date (day before the first date in range) so the first date
   // can also have km calculated without extra calls.
   const anchorPairs = allActivePlates.map(({carrier,plate}) => ({carrier,plate,dateStr:_prevDateStr(dates[0])}));
-  const anchorMap = await dbLoadStatusBulk(anchorPairs);
+  const anchorMap = await dbLoadStatusBulkCached(anchorPairs);
   Object.assign(statusMap, anchorMap);
   if(onProgress) onProgress(95);
 
@@ -1685,7 +1773,7 @@ async function renderRegister(body){
   if(S.registerSubTab==='ops'&&isAdmin){ await renderRegisterOps(body, subTabs); return; }
   if(S.registerSubTab==='drivers'){ await renderRegisterDrivers(body, subTabs); return; }
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando placas...</div>`;
-  const allP=await dbGetPlates();
+  const allP=await dbGetPlatesCached();
   const carrierOpts=CARRIERS.map(c=>`<option>${c}</option>`).join("");
   const opOpts=OPERACOES.map(o=>`<option>${o}</option>`).join("");
   const tvOpts=TIPOS_VEIC.map(o=>`<option>${o}</option>`).join("");
@@ -1759,7 +1847,8 @@ async function renderRegister(body){
 async function addPlate(){
   const carrier=document.getElementById("r-carrier").value;
   const operacao=document.getElementById("r-op").value;
-  const placa=document.getElementById("r-placa").value.trim().toUpperCase();
+  const placaRaw=document.getElementById("r-placa").value.trim().toUpperCase();
+  const placa=normalizePlate(placaRaw);
   const tipo=document.getElementById("r-tipo").value;
   const identificacao=document.getElementById("r-id").value;
   const contrato=document.getElementById("r-contrato").value;
@@ -1767,9 +1856,10 @@ async function addPlate(){
   const msg=document.getElementById("reg-msg");
   const btn=document.getElementById("add-btn");
   if(!placa){msg.textContent="Informe a placa.";msg.style.color="var(--red)";return;}
+  if(!isValidPlate(placa)){msg.textContent="Placa inválida. Use padrão ABC-1234 ou ABC1D23.";msg.style.color="var(--red)";return;}
   if(!capacidade||isNaN(capacidade)||+capacidade<=0){msg.textContent="Informe a capacidade.";msg.style.color="var(--red)";return;}
   btn.disabled=true; btn.textContent="Salvando...";
-  const allP=await dbGetPlates();
+  const allP=await dbGetPlatesCached();
   if(!allP[carrier]) allP[carrier]=[];
   if(CARRIERS.some(c=>(allP[c]||[]).some(p=>p.placa===placa))){
     msg.textContent="Placa já cadastrada.";msg.style.color="var(--red)";
@@ -1778,18 +1868,26 @@ async function addPlate(){
   const motDiurno=document.getElementById('r-mot-d')?.value||'';
   const motNoturno=document.getElementById('r-mot-n')?.value||'';
   allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade,motoristaDiurno:motDiurno,motoristaNoturno:motNoturno});
-  await dbSavePlates(allP);
-  document.getElementById("r-placa").value="";
-  document.getElementById("r-cap").value="";
-  msg.textContent=`Placa ${placa} cadastrada!`;msg.style.color="var(--green)";
-  showToast(`Placa ${placa} cadastrada!`);
-  setTimeout(()=>{msg.textContent="";},3000);
-  btn.disabled=false;btn.textContent="+ Cadastrar placa";
-  await renderTabBody();
+  try {
+    await dbSavePlates(allP);
+    invalidateDataCache();
+    document.getElementById("r-placa").value="";
+    document.getElementById("r-cap").value="";
+    msg.textContent=`Placa ${placa} cadastrada!`;msg.style.color="var(--green)";
+    showToast(`Placa ${placa} cadastrada!`);
+    setTimeout(()=>{msg.textContent="";},3000);
+    await renderTabBody();
+  } catch(e){
+    console.error(e);
+    msg.textContent="Erro ao salvar placa no Firebase.";msg.style.color="var(--red)";
+    showToast("Erro ao salvar placa.", false);
+  } finally {
+    btn.disabled=false;btn.textContent="+ Cadastrar placa";
+  }
 }
 async function delPlate(carrier,idx){
   if(!confirm("Remover esta placa?")) return;
-  const allP=await dbGetPlates();
+  const allP=await dbGetPlatesCached();
   if(!allP[carrier]) return;
   const removed=allP[carrier].splice(idx,1);
   await dbSavePlates(allP);
@@ -2097,7 +2195,7 @@ async function addUser(){
   const msg=document.getElementById('user-msg');
   if(!uid){msg.textContent='Informe o login.';msg.style.color='var(--red)';return;}
   if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
-  if(!pwd||pwd.length<6){msg.textContent='Senha deve ter mín. 6 caracteres.';msg.style.color='var(--red)';return;}
+  if(isWeakPassword(pwd)){msg.textContent=`Senha deve ter mín. ${MIN_PASSWORD_LEN} caracteres.`;msg.style.color='var(--red)';return;}
   if(USERS_DB[uid]){msg.textContent='Login já existe.';msg.style.color='var(--red)';return;}
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   USERS_DB[uid]={name, role, initials, password:pwd, ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
@@ -2173,7 +2271,7 @@ async function saveEditUser(uid){
   const newRole=roleEl?roleEl.value:USERS_DB[uid].role;
   const newCarrier=(newRole==='carrier'&&carrierEl)?carrierEl.value:'';
   if(!name){showToast('Informe o nome.',false);return;}
-  if(pwd&&pwd.length<6){showToast('Senha deve ter mín. 6 caracteres.',false);return;}
+  if(pwd&&isWeakPassword(pwd)){showToast(`Senha deve ter mín. ${MIN_PASSWORD_LEN} caracteres.`,false);return;}
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   const newOps=newRole==='carrier'?getCheckedOps('eu-op-checks'):[];
   USERS_DB[uid]={
@@ -2206,7 +2304,7 @@ async function populateDriverSelects(selDiurno='', selNoturno=''){
   const selD=document.getElementById('r-mot-d');
   const selN=document.getElementById('r-mot-n');
   if(!selD||!selN) return;
-  const allDrivers=await dbGetDrivers();
+  const allDrivers=await dbGetDriversCached();
   const blank='<option value="">— Sem motorista —</option>';
   let opts=blank;
   if(carrier&&op){
@@ -2224,7 +2322,7 @@ async function populateDriverSelects(selDiurno='', selNoturno=''){
 async function renderRegisterDrivers(body, subTabs=''){
   const u=USERS_DB[S.user];
   const isAdmin=u&&u.role==='admin';
-  const allDrivers=await dbGetDrivers();
+  const allDrivers=await dbGetDriversCached();
 
   // Filter by carrier for non-admin
   const carriersToShow=isAdmin?CARRIERS:[u.carrier].filter(Boolean);
@@ -2313,7 +2411,7 @@ async function addDriver(){
   const turno=document.getElementById('drv-turno')?.value;
   const msg=document.getElementById('drv-msg');
   if(!nome){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
-  const allDrivers=await dbGetDrivers();
+  const allDrivers=await dbGetDriversCached();
   if(!allDrivers[carrier]) allDrivers[carrier]=[];
   const dup=allDrivers[carrier].find(d=>d.nome===nome&&d.operacao===op&&d.turno===turno);
   if(dup){msg.textContent='Motorista já cadastrado com esse turno e operação.';msg.style.color='var(--red)';return;}
@@ -2327,7 +2425,7 @@ async function addDriver(){
 }
 
 async function toggleDriver(carrier,idx,activate){
-  const allDrivers=await dbGetDrivers();
+  const allDrivers=await dbGetDriversCached();
   if(!allDrivers[carrier]||!allDrivers[carrier][idx]) return;
   const nome=allDrivers[carrier][idx].nome;
   if(!confirm(`${activate?'Ativar':'Desativar'} motorista ${nome}?`)) return;
@@ -2338,7 +2436,7 @@ async function toggleDriver(carrier,idx,activate){
 }
 
 async function deleteDriver(carrier,idx){
-  const allDrivers=await dbGetDrivers();
+  const allDrivers=await dbGetDriversCached();
   if(!allDrivers[carrier]||!allDrivers[carrier][idx]) return;
   const nome=allDrivers[carrier][idx].nome;
   if(!confirm(`Remover motorista ${nome}?`)) return;
@@ -2388,7 +2486,7 @@ async function saveEditDriver(){
   const op=document.getElementById('ed-op')?.value;
   const turno=document.getElementById('ed-turno')?.value;
   if(!nome){showToast('Informe o nome.',false);return;}
-  const allDrivers=await dbGetDrivers();
+  const allDrivers=await dbGetDriversCached();
   allDrivers[carrier][idx]={...allDrivers[carrier][idx],nome,operacao:op,turno};
   await dbSaveDrivers(allDrivers);
   document.getElementById('edit-driver-modal')?.remove();
@@ -2493,7 +2591,7 @@ async function saveEditOp(idx){
 // TOGGLE PLATE ACTIVE/INACTIVE
 // ═══════════════════════════════════════════════════════════
 async function togglePlate(carrier, idx, activate){
-  const allP=await dbGetPlates();
+  const allP=await dbGetPlatesCached();
   if(!allP[carrier]||!allP[carrier][idx]) return;
   const plate=allP[carrier][idx];
   const action=activate?'ativar':'desativar';
@@ -2512,7 +2610,7 @@ async function togglePlate(carrier, idx, activate){
 // Store pending edit info globally to avoid inline string escaping issues
 let _editPending = {};
 async function openEditModal(carrier, idx){
-  const allP = await dbGetPlates();
+  const allP = await dbGetPlatesCached();
   const p = allP[carrier] && allP[carrier][idx];
   if(!p){ showToast('Placa não encontrada.', false); return; }
   // Store for saveEdit to reference
@@ -2522,7 +2620,7 @@ async function openEditModal(carrier, idx){
   const idOpts=IDENTS.map(o=>`<option${o===p.identificacao?' selected':''}>${o}</option>`).join('');
   const ctOpts=CONTRATOS.map(o=>`<option${o===p.contrato?' selected':''}>${o}</option>`).join('');
   // Load drivers for this carrier + operation
-  const allDrivers = await dbGetDrivers();
+  const allDrivers = await dbGetDriversCached();
   const drvList = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false && d.operacao===p.operacao);
   const drvDiurnos = drvList.filter(d=>d.turno==='Diurno');
   const drvNoturnos = drvList.filter(d=>d.turno==='Noturno');
@@ -2575,7 +2673,7 @@ async function openEditModal(carrier, idx){
 async function refreshEditDriverOpts(carrier){
   const op = document.getElementById('e-op')?.value;
   if(!op) return;
-  const allDrivers = await dbGetDrivers();
+  const allDrivers = await dbGetDriversCached();
   const drvList = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false && d.operacao===op);
   const drvDiurnos = drvList.filter(d=>d.turno==='Diurno');
   const drvNoturnos = drvList.filter(d=>d.turno==='Noturno');
@@ -2594,7 +2692,7 @@ async function saveEdit(){
   const contrato=document.getElementById('e-contrato').value;
   const capacidade=document.getElementById('e-cap').value.trim();
   if(!capacidade||isNaN(capacidade)||+capacidade<=0){showToast('Informe a capacidade.',false);return;}
-  const allP=await dbGetPlates();
+  const allP=await dbGetPlatesCached();
   if(!allP[carrier]||!allP[carrier][idx]){ showToast('Placa não encontrada.',false); return; }
   const motD=document.getElementById('e-mot-d')?.value||'';
   const motN=document.getElementById('e-mot-n')?.value||'';
@@ -2703,8 +2801,8 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .btn-outline{background:none;border:1px solid var(--border2);color:var(--dim);}
 .btn-outline:hover{border-color:var(--lime);color:var(--lime);}
 .btn-sm{padding:6px 14px;font-size:12px;}
-.btn-danger{background:none;border:1px solid transparent;color:rgba(240,96,96,.55);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
-.btn-edit{background:none;border:1px solid transparent;color:rgba(200,240,50,.5);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-danger{background:none;border:1px solid transparent;color:rgba(240,96,96,.55);padding:4px 6px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-edit{background:none;border:1px solid transparent;color:rgba(200,240,50,.5);padding:4px 6px;border-radius:7px;font-size:13px;cursor:pointer;}
 .btn-toggle-off{background:none;border:1px solid rgba(240,190,64,.3);color:rgba(240,190,64,.7);padding:4px 8px;border-radius:7px;font-size:12px;cursor:pointer;}
 .btn-toggle-off:hover{background:rgba(240,190,64,.1);color:var(--amber);border-color:var(--amber);}
 .btn-toggle-on{background:none;border:1px solid rgba(110,224,74,.3);color:rgba(110,224,74,.7);padding:4px 8px;border-radius:7px;font-size:12px;cursor:pointer;}
@@ -2753,7 +2851,8 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .tscroll{overflow-x:auto;}
 .table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;table-layout:fixed;}
 .table th{padding:10px 14px;font-size:10px;font-weight:500;color:var(--muted);text-align:left;background:rgba(200,240,50,.04);border-bottom:1px solid var(--border);letter-spacing:.04em;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.15;}
-.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;word-break:normal;overflow:hidden;}
+.table td{padding:10px 14px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);vertical-align:middle;word-break:normal;overflow:visible;}
+.table th:last-child,.table td:last-child{padding-right:20px;}
 .table .badge,.table .cap-tag{max-width:100%;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.15;text-align:center;justify-content:center;padding:3px 7px;font-size:10.5px;}
 .table tr:last-child td{border-bottom:none;}
 .table tbody tr:hover{background:var(--lime-bg);}
@@ -2848,3 +2947,8 @@ canvas{display:block;width:100%!important;}
   </div>
 </body>
 </html>
+
+
+
+
+
