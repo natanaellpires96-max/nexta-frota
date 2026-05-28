@@ -139,6 +139,22 @@ async function dbAddAudit(action, details={}) {
     await setDoc(doc(db, "config", "audit_log"), { items });
   } catch(e) { console.error("audit error", e); }
 }
+function fmtAuditAction(action, details={}) {
+  switch(action) {
+    case "status_submit":
+      return `✅ Disponibilidade enviada${details.carrier ? ` — ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
+    case "alert_cutoff_update":
+      return `🔔 Horário de corte de alerta atualizado${details.hour !== undefined ? ` para ${String(details.hour).padStart(2,'0')}:00` : ""}`;
+    case "plate_add":
+      return `🚛 Placa cadastrada${details.placa ? ` — ${details.placa}` : ""}${details.carrier ? ` (${details.carrier})` : ""}`;
+    case "plate_remove":
+      return `🗑 Placa removida${details.placa ? ` — ${details.placa}` : ""}${details.carrier ? ` (${details.carrier})` : ""}`;
+    case "admin_unlock":
+      return `🔓 Lançamento desbloqueado${details.carrier ? ` — ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
+    default:
+      return action;
+  }
+}
 async function dbGetAlertCutoffHour() {
   try {
     const snap = await getDoc(doc(db, "config", "alert_cutoff"));
@@ -1159,7 +1175,7 @@ async function renderDashboard(body){
         </div>` : ''}
       </div>
     </div>
-    <div class="card" style="margin-bottom:1.25rem"><div style="font-size:13px;color:var(--dim);margin-bottom:8px">Últimas ações (auditoria)</div><div style="display:grid;gap:6px">${auditItems.length ? auditItems.map(a=>`<div style="font-size:12px;color:var(--text);background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:7px 10px"><span style="color:var(--lime)">${a.action}</span> - ${a.actor||"Sistema"} - <span style="color:var(--muted)">${a.atBR||""}</span></div>`).join("") : `<div style="font-size:12px;color:var(--muted)">Sem eventos recentes.</div>`}</div></div>
+    <div class="card" style="margin-bottom:1.25rem"><div style="font-size:13px;color:var(--dim);margin-bottom:8px">Últimas ações (auditoria)</div><div style="display:grid;gap:6px">${auditItems.length ? auditItems.map(a=>`<div style="font-size:12px;color:var(--text);background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span style="color:var(--lime)">${fmtAuditAction(a.action, a.details||{})}</span><span style="color:var(--muted);white-space:nowrap;font-size:11px">${a.actor||"Sistema"} · ${a.atBR||""}</span></div>`).join("") : `<div style="font-size:12px;color:var(--muted)">Sem eventos recentes.</div>`}</div></div>
     <div class="dash-grid"><div class="chart-card"><div class="chart-title">Distribuição de status - hoje</div><canvas id="pie-chart" height="180"></canvas></div><div class="chart-card"><div class="chart-title">Tendência de disponibilidade - 14 dias</div><canvas id="line-chart" height="180"></canvas></div></div>
     <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Disponibilidade por transportador - hoje</div><canvas id="bar-chart" height="160"></canvas></div>
     <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Resumo por operação - ${fmtDate(S.dateOffset)}</div><div class="tscroll"><table class="table op-summary-table" style="min-width:860px"><thead><tr><th style="width:22%">OPERAÇÃO</th><th>DISP.</th><th>INDISP.</th><th>MANUT.</th><th>FOLGA</th><th>PROG.</th><th>PEND.</th><th>TOTAL</th><th style="width:18%">DISPONIBILIDADE</th></tr></thead><tbody>${opRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px">Nenhuma operação com placas ativas.</td></tr>'}</tbody></table></div></div>`;
