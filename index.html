@@ -15,6 +15,11 @@ import {
   getFirestore, doc, getDoc, setDoc, collection,
   getDocs, query, where, orderBy, limit, writeBatch, deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import {
+  getAuth, signInWithEmailAndPassword, signOut,
+  onAuthStateChanged, updatePassword, createUserWithEmailAndPassword,
+  deleteUser as fbDeleteUser
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBZ9J25d3IjULPv9A7pax4H8_RAtZWJiwU",
@@ -27,18 +32,50 @@ const firebaseConfig = {
 
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
+const auth  = getAuth(fbApp);
+
+// UID Firebase Auth → dados de perfil (carregado após login)
+// Convenção de email: uid@nexta-frota.app
+function uidToEmail(uid){ return `${uid}@nexta-frota.app`; }
+
+// ═══════════════════════════════════════════════════════════
+// CACHE EM MEMÓRIA (TTL 60s para leituras, invalida em escrita)
+// ═══════════════════════════════════════════════════════════
+const _cache = new Map(); // key → { value, expiresAt }
+const CACHE_TTL = 60_000; // 60 segundos
+
+function cacheGet(key) {
+  const entry = _cache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) { _cache.delete(key); return undefined; }
+  return entry.value;
+}
+function cacheSet(key, value, ttl = CACHE_TTL) {
+  _cache.set(key, { value, expiresAt: Date.now() + ttl });
+}
+function cacheInvalidate(...keys) {
+  keys.forEach(k => _cache.delete(k));
+}
+function cacheInvalidatePrefix(prefix) {
+  for (const k of _cache.keys()) { if (k.startsWith(prefix)) _cache.delete(k); }
+}
 
 // ═══════════════════════════════════════════════════════════
 // DB HELPERS
 // ═══════════════════════════════════════════════════════════
 async function dbGetPlates() {
+  const cached = cacheGet("plates");
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", "plates"));
-    return snap.exists() ? snap.data().data : {};
+    const value = snap.exists() ? snap.data().data : {};
+    cacheSet("plates", value);
+    return value;
   } catch(e) { console.error(e); return {}; }
 }
 async function dbSavePlates(plates) {
   await setDoc(doc(db, "config", "plates"), { data: plates });
+  cacheSet("plates", plates); // atualiza cache imediatamente após salvar
 }
 
 async function withTimeout(promise, ms, message){
@@ -49,23 +86,32 @@ async function withTimeout(promise, ms, message){
 }
 
 async function dbGetStatus(carrier, plate, dateStr) {
+  const cKey = `status||${carrier}||${plate}||${dateStr}`;
+  const cached = cacheGet(cKey);
+  if (cached !== undefined) return cached;
   try {
     const id = `${carrier}__${plate}__${dateStr}`;
     const snap = await getDoc(doc(db, "availability", id));
-    if(!snap.exists()) return null;
-    const d = snap.data();
-    return { status: d.status, time: d.time||"", motoristaDiurno: d.motoristaDiurno||"", motoristaNoturno: d.motoristaNoturno||"", hodometro: d.hodometro!==undefined?d.hodometro:null };
+    const value = snap.exists()
+      ? { status: snap.data().status, time: snap.data().time||"", motoristaDiurno: snap.data().motoristaDiurno||"", motoristaNoturno: snap.data().motoristaNoturno||"", hodometro: snap.data().hodometro!==undefined?snap.data().hodometro:null }
+      : null;
+    cacheSet(cKey, value);
+    return value;
   } catch { return null; }
 }
 async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodometro) {
   const id = `${carrier}__${plate}__${dateStr}`;
-  await setDoc(doc(db, "availability", id), {
+  const data = {
     carrier, plate, dateStr, status, time: time||"", filled: true,
     motoristaDiurno: motoristaDiurno||"",
     motoristaNoturno: motoristaNoturno||"",
     hodometro: hodometro!==undefined?hodometro:null,
     updatedAt: new Date().toISOString()
-  });
+  };
+  await setDoc(doc(db, "availability", id), data);
+  // Atualiza cache imediatamente após salvar
+  const cKey = `status||${carrier}||${plate}||${dateStr}`;
+  cacheSet(cKey, { status, time: time||"", motoristaDiurno: motoristaDiurno||"", motoristaNoturno: motoristaNoturno||"", hodometro: hodometro!==undefined?hodometro:null });
 }
 
 async function dbGetPreviousHodometro(plate, currentDateStr) {
@@ -175,7 +221,13 @@ async function dbGetUsers() {
   } catch(e) { return null; }
 }
 async function dbSaveUsers(users) {
-  await setDoc(doc(db, "config", "users"), { data: users });
+  // Nunca persiste o campo "password" no Firestore — autenticação é gerenciada pelo Firebase Auth
+  const safe = {};
+  for(const [uid, u] of Object.entries(users)){
+    const { password: _pw, ...rest } = u;
+    safe[uid] = rest;
+  }
+  await setDoc(doc(db, "config", "users"), { data: safe });
 }
 // Carriers config
 async function dbGetCarriers() {
@@ -284,13 +336,15 @@ async function dbLoadStatusBulk(pairs) {
 // DATA & CONFIG
 // ═══════════════════════════════════════════════════════════
 // USERS_DB and CARRIERS are loaded dynamically from Firebase
+// USERS_DB contém apenas dados de perfil — senhas são gerenciadas exclusivamente
+// pelo Firebase Authentication e jamais ficam armazenadas aqui ou no Firestore.
 let USERS_DB = {
-  admin: { name:"Administrador", role:"admin", initials:"AD", password:"admin123" },
-  transac:   { name:"Transac Transportes",    role:"carrier", initials:"TT", carrier:"Transac Transportes",    password:"transac123" },
-  cavalinho: { name:"Transportes Cavalinho",  role:"carrier", initials:"TC", carrier:"Transportes Cavalinho",  password:"cavalinho123" },
-  jdcocenzo: { name:"JD Cocenzo Transportes", role:"carrier", initials:"JD", carrier:"JD Cocenzo Transportes", password:"jdcocenzo123" },
-  simeira:   { name:"Simeira Transportes",    role:"carrier", initials:"ST", carrier:"Simeira Transportes",    password:"simeira123" },
-  garbuio:   { name:"Garbuio Transportes",    role:"carrier", initials:"GT", carrier:"Garbuio Transportes",    password:"garbuio123" },
+  admin:     { name:"Administrador",           role:"admin",       initials:"AD" },
+  transac:   { name:"Transac Transportes",     role:"carrier",     initials:"TT", carrier:"Transac Transportes" },
+  cavalinho: { name:"Transportes Cavalinho",   role:"carrier",     initials:"TC", carrier:"Transportes Cavalinho" },
+  jdcocenzo: { name:"JD Cocenzo Transportes",  role:"carrier",     initials:"JD", carrier:"JD Cocenzo Transportes" },
+  simeira:   { name:"Simeira Transportes",     role:"carrier",     initials:"ST", carrier:"Simeira Transportes" },
+  garbuio:   { name:"Garbuio Transportes",     role:"carrier",     initials:"GT", carrier:"Garbuio Transportes" },
 };
 let CARRIERS = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transportes","Simeira Transportes","Garbuio Transportes"];
 let OPERACOES = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de Caxias","Brasília","Cubatão","Uberaba"];
@@ -451,6 +505,8 @@ async function buildPendingAlerts(allP, filterOps){
   }
   return `<div class="pending-alert warn"><div class="pa-icon">!</div><div class="pa-content"><div class="pa-title">Pendencias de preenchimento</div><div class="pa-sub">Transportadores sem envio concluido para o dia atual e seguinte.</div>${cutoffInfo}${cutoffAlert}<div class="pa-groups">${groups.map(g=>`<div class="pa-group"><div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div><div class="pa-list">${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}</div></div>`).join("")}</div></div></div>`;
 }
+// saveSession / clearSession / restoreSession são mantidos apenas como
+// fallback local — a fonte de verdade da sessão é o Firebase Auth (onAuthStateChanged).
 function saveSession(uid){
   try { localStorage.setItem(SESSION_KEY, uid); } catch(e) {}
 }
@@ -458,11 +514,7 @@ function clearSession(){
   try { localStorage.removeItem(SESSION_KEY); } catch(e) {}
 }
 function restoreSession(){
-  try {
-    const uid=localStorage.getItem(SESSION_KEY);
-    if(uid&&USERS_DB[uid]){ S.user=uid; S.dateOffset=0; return; }
-    if(uid) clearSession();
-  } catch(e) {}
+  // Não faz nada aqui — a sessão é restaurada via onAuthStateChanged no init
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -708,17 +760,38 @@ function renderLogin(){
       </div>
     </div>`;
 }
-function doLogin(){
+async function doLogin(){
   const uid=document.getElementById("user-input").value.trim().toLowerCase();
   const pwd=document.getElementById("pwd").value;
   const err=document.getElementById("login-err");
+  const btn=document.querySelector(".btn-lime.btn-full");
   if(!uid){err.textContent="Informe o usuário.";return;}
   if(!pwd){err.textContent="Informe a senha.";return;}
+  // Verifica se o uid existe no perfil local (carregado do Firestore)
   if(!USERS_DB[uid]){err.textContent="Usuário não encontrado.";return;}
-  if(USERS_DB[uid].password!==pwd){err.textContent="Senha incorreta.";return;}
-  S.user=uid; S.dateOffset=0; saveSession(uid); render();
+  if(btn){btn.disabled=true;btn.textContent="Entrando...";}
+  try {
+    await signInWithEmailAndPassword(auth, uidToEmail(uid), pwd);
+    // onAuthStateChanged cuida do resto
+  } catch(e) {
+    const code = e.code||"";
+    if(code==="auth/wrong-password"||code==="auth/invalid-credential"){
+      err.textContent="Senha incorreta.";
+    } else if(code==="auth/too-many-requests"){
+      err.textContent="Muitas tentativas. Aguarde alguns minutos.";
+    } else if(code==="auth/user-not-found"){
+      err.textContent="Usuário não encontrado no sistema de autenticação.";
+    } else {
+      err.textContent="Erro ao entrar: "+code;
+    }
+    if(btn){btn.disabled=false;btn.textContent="Entrar";}
+  }
 }
-function logout(){ S.user=null; S.notifOpen=false; clearSession(); render(); }
+async function logout(){
+  S.user=null; S.notifOpen=false; clearSession();
+  try { await signOut(auth); } catch(e) {}
+  render();
+}
 
 // ═══════════════════════════════════════════════════════════
 // NOTIFICATIONS
@@ -2172,8 +2245,24 @@ async function addUser(){
   if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
   if(!pwd||pwd.length<6){msg.textContent='Senha deve ter mín. 6 caracteres.';msg.style.color='var(--red)';return;}
   if(USERS_DB[uid]){msg.textContent='Login já existe.';msg.style.color='var(--red)';return;}
+  const btn=document.querySelector('#user-msg')?.previousElementSibling;
+  // Cria o usuário no Firebase Auth (email fictício: uid@nexta-frota.app)
+  try {
+    await createUserWithEmailAndPassword(auth, uidToEmail(uid), pwd);
+  } catch(e) {
+    const code=e.code||"";
+    if(code==='auth/email-already-in-use'){
+      msg.textContent='Login já existe no sistema de autenticação.';
+    } else if(code==='auth/weak-password'){
+      msg.textContent='Senha muito fraca. Use pelo menos 6 caracteres.';
+    } else {
+      msg.textContent='Erro ao criar: '+code;
+    }
+    msg.style.color='var(--red)'; return;
+  }
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-  USERS_DB[uid]={name, role, initials, password:pwd, ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
+  // Salva perfil no Firestore SEM a senha
+  USERS_DB[uid]={name, role, initials, ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
   await dbSaveUsers(USERS_DB);
   ['new-uid','new-uname','new-upwd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   msg.textContent=`Usuário ${uid} criado!`;msg.style.color='var(--green)';
@@ -2209,7 +2298,7 @@ function openEditUser(uid){
       <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar usuário — ${uid}</p>
       <div class="form-grid">
         <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="eu-name" type="text" value="${u.name}"></div>
-        <div class="form-field"><label>NOVA SENHA</label><input id="eu-pwd" type="text" placeholder="Deixe em branco para manter" value="${u.password}"></div>
+        <div class="form-field"><label>NOVA SENHA <span style="font-weight:400;color:var(--muted)">(opcional)</span></label><input id="eu-pwd" type="password" placeholder="Deixe em branco para manter"></div>
         ${isAdmin?'':`<div class="form-field"><label>PERFIL</label><select id="eu-role" onchange="onEditRoleChange()">${roleOpts}</select></div>`}
         <div class="form-field" id="eu-carrier-field" style="display:${u.role==='carrier'?'block':'none'}">
           <label>TRANSPORTADOR</label>
@@ -2247,17 +2336,31 @@ async function saveEditUser(uid){
   const newCarrier=(newRole==='carrier'&&carrierEl)?carrierEl.value:'';
   if(!name){showToast('Informe o nome.',false);return;}
   if(pwd&&pwd.length<6){showToast('Senha deve ter mín. 6 caracteres.',false);return;}
+  // Se senha foi informada e o usuário editado é o próprio logado, atualiza no Firebase Auth
+  if(pwd && auth.currentUser && auth.currentUser.email===uidToEmail(uid)){
+    try {
+      await updatePassword(auth.currentUser, pwd);
+    } catch(e) {
+      showToast('Erro ao atualizar senha: '+( e.code||e.message),false);
+      return;
+    }
+  } else if(pwd) {
+    // Senha de outro usuário — não é possível alterar via client SDK sem re-autenticar como ele
+    showToast('Só é possível alterar a própria senha. Para redefinir a de outro usuário, use o Console do Firebase.',false);
+    return;
+  }
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   const newOps=newRole==='carrier'?getCheckedOps('eu-op-checks'):[];
+  // Salva perfil no Firestore SEM a senha
   USERS_DB[uid]={
     ...USERS_DB[uid],
     name,
     initials,
     role: newRole,
-    ...(pwd?{password:pwd}:{}),
     ...(newCarrier?{carrier:newCarrier}:{carrier:''}),
     operacoes: newOps
   };
+  delete USERS_DB[uid].password; // garante remoção caso ainda exista localmente
   await dbSaveUsers(USERS_DB);
   document.getElementById('edit-user-modal').remove();
   showToast(`Usuário ${uid} atualizado!`);
@@ -2690,9 +2793,29 @@ window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exp
 window.renderTabBody=renderTabBody; window.saveCutoffHour=saveCutoffHour; window.S=S;
 
 // ── INIT ──
+// 1. Carrega config pública (carriers, operações) sem precisar estar logado
 loadConfig().catch(e=>{ console.error(e); }).then(()=>{
-  restoreSession();
-  render();
+  // 2. Firebase Auth mantém a sessão automaticamente entre recarregamentos.
+  //    onAuthStateChanged é chamado assim que o SDK determina o estado de auth.
+  onAuthStateChanged(auth, async (firebaseUser) => {
+    if(firebaseUser){
+      // Extrai o uid da convenção email: uid@nexta-frota.app
+      const uid = firebaseUser.email.replace(/@nexta-frota\.app$/, "");
+      if(USERS_DB[uid]){
+        S.user = uid;
+        saveSession(uid);
+      } else {
+        // Usuário existe no Auth mas não tem perfil no Firestore → logout
+        await signOut(auth);
+        S.user = null;
+        clearSession();
+      }
+    } else {
+      S.user = null;
+      clearSession();
+    }
+    render();
+  });
 });
 </script>
 
