@@ -195,6 +195,8 @@ function fmtAuditAction(action, details={}) {
       return `🚛 Placa cadastrada${details.placa ? ` — ${details.placa}` : ""}${details.carrier ? ` (${details.carrier})` : ""}`;
     case "plate_remove":
       return `🗑 Placa removida${details.placa ? ` — ${details.placa}` : ""}${details.carrier ? ` (${details.carrier})` : ""}`;
+    case "admin_reset_pwd":
+      return `🔑 Senha redefinida pelo admin${details.target ? ` — usuário ${details.target}` : ""}`;
     case "admin_unlock":
       return `🔓 Lançamento desbloqueado${details.carrier ? ` — ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
     default:
@@ -541,6 +543,7 @@ async function render(){
         ${helpRole?`<button class="help-btn" onclick="openHelpModal('${helpRole}')" title="${helpTitle}">❓ ${helpLabel}</button>`:""}
         <div class="avatar ${u.role==="admin"||u.role==="operacional"?"admin":""}">${u.initials}</div>
         <span class="user-name">${u.role==="admin"?"Administrador":u.role==="operacional"?u.name:u.carrier}</span>
+        <button class="btn-logout" onclick="openChangePwd()" title="Alterar minha senha">🔑 Senha</button>
         <button class="btn-logout" onclick="logout()">↩ Sair</button>
       </div>
     </div>
@@ -560,8 +563,10 @@ const MANUAL_TRANSPORTADOR_HTML = `
   <ul>
     <li>No campo <b>USUÁRIO</b>, digite seu login (fornecido pelo administrador).</li>
     <li>No campo <b>SENHA</b>, digite sua senha e clique em <b>Entrar</b>.</li>
-    <li>Sua sessão é salva automaticamente — se fechar e reabrir o navegador, você continuará logado.</li>
+    <li>Sua sessão é salva automaticamente pelo sistema — se fechar e reabrir o navegador, você continuará logado sem precisar digitar a senha novamente.</li>
+    <li>As senhas são protegidas pelo Firebase Authentication e <b>nunca ficam visíveis</b> para o administrador.</li>
   </ul>
+  <div class="hm-callout">🔒 Se errar a senha muitas vezes seguidas, o sistema bloqueia temporariamente o acesso por segurança. Aguarde alguns minutos antes de tentar novamente.</div>
 
   <div class="hm-section-title">2. Tela de disponibilidade</div>
   <p>Após o login, você verá a lista de placas da sua frota para o dia selecionado. É nessa tela que você informa o status de cada veículo.</p>
@@ -571,7 +576,7 @@ const MANUAL_TRANSPORTADOR_HTML = `
       <tr><td>Setas ‹ ›</td><td>Navegar entre os dias</td></tr>
       <tr><td>Tabela de frota</td><td>Lista de placas com campos para preenchimento</td></tr>
       <tr><td>Botão Salvar</td><td>Confirma e envia o preenchimento</td></tr>
-      <tr><td>Banner verde</td><td>Confirma que os dados foram enviados e bloqueados</td></tr>
+      <tr><td>Banner verde 🔒</td><td>Confirma que os dados foram enviados e bloqueados</td></tr>
     </tbody>
   </table>
 
@@ -580,7 +585,7 @@ const MANUAL_TRANSPORTADOR_HTML = `
   <div class="hm-steps">
     <div class="hm-step"><span class="hm-step-n">1</span><div><b>Status</b> — selecione a situação do veículo no dia.</div></div>
     <div class="hm-step"><span class="hm-step-n">2</span><div><b>Hodômetro</b> — informe a leitura atual do odômetro (só números, sem ponto ou vírgula). O valor não pode ser menor que o do dia anterior.</div></div>
-    <div class="hm-step"><span class="hm-step-n">3</span><div><b>Disponível às</b> — selecione o horário de disponibilidade. Obrigatório apenas para status <b>Disponível</b>.</div></div>
+    <div class="hm-step"><span class="hm-step-n">3</span><div><b>Disponível às</b> — selecione o horário de disponibilidade. Obrigatório apenas para status <b>Disponível</b> e <b>Manutenção</b>.</div></div>
   </div>
   <div class="hm-callout">⚠️ Se algum campo estiver faltando, a linha ficará destacada em vermelho ao tentar salvar.</div>
 
@@ -599,7 +604,7 @@ const MANUAL_TRANSPORTADOR_HTML = `
   <div class="hm-section-title">5. Salvando e enviando</div>
   <p>Após preencher todas as placas, clique em <b>💾 Salvar disponibilidade</b>. Após o envio:</p>
   <ul>
-    <li>Um banner verde confirma o envio com data e hora do registro.</li>
+    <li>Um banner verde 🔒 confirma o envio com data e hora do registro.</li>
     <li>A tabela passa para modo somente leitura — não é mais possível editar.</li>
     <li>O administrador é notificado automaticamente.</li>
     <li>Para corrigir algo após o envio, solicite o desbloqueio ao administrador.</li>
@@ -608,18 +613,32 @@ const MANUAL_TRANSPORTADOR_HTML = `
   <div class="hm-section-title">6. Navegação por datas</div>
   <p>Use as setas <b>‹</b> e <b>›</b> para navegar entre os dias. É possível preencher a disponibilidade de amanhã com antecedência — recomendamos preencher sempre o dia atual e o seguinte.</p>
 
-  <div class="hm-section-title">7. Perguntas frequentes</div>
+  <div class="hm-section-title">7. Alterando sua senha</div>
+  <p>Você pode alterar sua própria senha a qualquer momento diretamente pelo sistema:</p>
+  <div class="hm-steps">
+    <div class="hm-step"><span class="hm-step-n">1</span><div>Clique no botão <b>🔑 Senha</b> na barra superior, ao lado do botão "Sair".</div></div>
+    <div class="hm-step"><span class="hm-step-n">2</span><div>Digite a <b>nova senha</b> (mínimo 6 caracteres) e confirme.</div></div>
+    <div class="hm-step"><span class="hm-step-n">3</span><div>Clique em <b>💾 Salvar senha</b>. A mudança entra em vigor imediatamente.</div></div>
+  </div>
+  <div class="hm-callout">🔒 Sua senha é protegida pelo Firebase Authentication. O administrador <b>não consegue ver</b> sua senha — apenas redefini-la caso necessário.</div>
+
+  <div class="hm-section-title">8. Esqueci minha senha</div>
+  <p>Se você esquecer a senha, <b>entre em contato com o administrador</b>. Ele pode definir uma senha temporária para você acessar o sistema. Após entrar, vá em <b>🔑 Senha</b> na barra superior e defina uma nova senha de sua preferência.</p>
+
+  <div class="hm-section-title">9. Perguntas frequentes</div>
   <table class="hm-table">
     <thead><tr><th>Dúvida</th><th>Resposta</th></tr></thead>
     <tbody>
       <tr><td>Enviei errado. Como corrigir?</td><td>Solicite o desbloqueio ao administrador e preencha novamente.</td></tr>
       <tr><td>Posso usar pelo celular?</td><td>Sim, funciona em qualquer navegador.</td></tr>
       <tr><td>O sistema salva automaticamente?</td><td>Não. Você precisa clicar em "Salvar disponibilidade".</td></tr>
-      <tr><td>Esqueci minha senha.</td><td>Entre em contato com o administrador para redefinir.</td></tr>
+      <tr><td>Esqueci minha senha.</td><td>Contate o administrador para receber uma senha temporária.</td></tr>
       <tr><td>O hodômetro pode ser menor que ontem?</td><td>Não. O sistema bloqueia valores menores que o último registrado.</td></tr>
+      <tr><td>O sistema ficou lento, o que fazer?</td><td>Recarregue a página. O sistema usa cache local para melhorar a velocidade — a primeira carga pode ser um pouco mais demorada.</td></tr>
     </tbody>
   </table>
 </div>`;
+
 
 const MANUAL_OPERACIONAL_HTML = `
 <div class="hm-body">
@@ -636,7 +655,15 @@ const MANUAL_OPERACIONAL_HTML = `
     </tbody>
   </table>
 
-  <div class="hm-section-title">2. Dashboard</div>
+  <div class="hm-section-title">2. Acesso e sessão</div>
+  <ul>
+    <li>O login é feito com usuário e senha fornecidos pelo administrador.</li>
+    <li>A sessão é mantida automaticamente pelo Firebase Authentication — não é necessário logar novamente ao reabrir o navegador.</li>
+    <li>Para alterar sua senha, clique em <b>🔑 Senha</b> na barra superior a qualquer momento.</li>
+    <li>Se esquecer a senha, solicite ao administrador que redefina uma senha temporária para você.</li>
+  </ul>
+
+  <div class="hm-section-title">3. Dashboard</div>
   <p>Exibe indicadores consolidados para o dia selecionado. Use as setas <b>‹ ›</b> para navegar entre datas.</p>
   <ul>
     <li><b>Cards de resumo:</b> Disponíveis, Indisponíveis, Manutenção, Folga, Prog./Viagem e Total.</li>
@@ -645,9 +672,10 @@ const MANUAL_OPERACIONAL_HTML = `
     <li><b>Linha de tendência:</b> evolução da disponibilidade nos últimos 14 dias.</li>
     <li><b>Barras por transportador:</b> comparativo entre as empresas.</li>
     <li><b>Tabela por operação:</b> resumo por unidade operacional com barra de disponibilidade.</li>
+    <li><b>Últimas ações (auditoria):</b> registro das ações recentes no sistema com descrição legível, autor e horário.</li>
   </ul>
 
-  <div class="hm-section-title">3. Painel de disponibilidade</div>
+  <div class="hm-section-title">4. Painel de disponibilidade</div>
   <p>Tabela detalhada de todos os veículos agrupados por transportador. Para cada veículo são exibidos:</p>
   <table class="hm-table">
     <thead><tr><th>Coluna</th><th>Informação</th></tr></thead>
@@ -665,7 +693,7 @@ const MANUAL_OPERACIONAL_HTML = `
   </table>
   <div class="hm-callout">💡 O badge <b>🔒 Enviado</b> indica que o transportador concluiu o preenchimento. <b>Pendente</b> indica que ainda não enviou.</div>
 
-  <div class="hm-section-title">4. Filtros e busca</div>
+  <div class="hm-section-title">5. Filtros e busca</div>
   <table class="hm-table">
     <thead><tr><th>Filtro</th><th>Função</th></tr></thead>
     <tbody>
@@ -677,7 +705,7 @@ const MANUAL_OPERACIONAL_HTML = `
     </tbody>
   </table>
 
-  <div class="hm-section-title">5. Exportação de relatórios</div>
+  <div class="hm-section-title">6. Exportação de relatórios</div>
   <p>Na aba <b>Exportar</b>, gere relatórios em Excel (.xlsx) ou CSV. Os relatórios incluem km percorrido calculado automaticamente.</p>
   <table class="hm-table">
     <thead><tr><th>Tipo</th><th>Período</th></tr></thead>
@@ -689,7 +717,7 @@ const MANUAL_OPERACIONAL_HTML = `
     </tbody>
   </table>
 
-  <div class="hm-section-title">6. Arquivos mensais</div>
+  <div class="hm-section-title">7. Arquivos mensais</div>
   <ul>
     <li>Gerados automaticamente nos 3 primeiros dias de cada mês.</li>
     <li>Podem ser gerados ou regenerados manualmente a qualquer momento.</li>
@@ -697,24 +725,41 @@ const MANUAL_OPERACIONAL_HTML = `
     <li>Disponíveis para download em Excel ou CSV.</li>
   </ul>
 
-  <div class="hm-section-title">7. Notificações</div>
+  <div class="hm-section-title">8. Notificações</div>
   <p>O ícone 🔔 na barra superior exibe notificações do sistema. Um ponto vermelho indica novas notificações.</p>
   <ul>
     <li>Cada envio de disponibilidade por um transportador gera uma notificação.</li>
     <li>Clique em <b>Limpar</b> para arquivar todas as notificações.</li>
   </ul>
 
-  <div class="hm-section-title">8. O que o operacional NÃO pode fazer</div>
+  <div class="hm-section-title">9. Log de auditoria</div>
+  <p>No Dashboard, o card <b>Últimas ações (auditoria)</b> exibe as ações recentes no sistema em linguagem clara. Exemplos do que é registrado:</p>
+  <table class="hm-table">
+    <thead><tr><th>Ação</th><th>Descrição exibida</th></tr></thead>
+    <tbody>
+      <tr><td>Envio de disponibilidade</td><td>✅ Disponibilidade enviada — Transportador X</td></tr>
+      <tr><td>Desbloqueio de lançamento</td><td>🔓 Lançamento desbloqueado — Transportador X</td></tr>
+      <tr><td>Nova placa cadastrada</td><td>🚛 Placa cadastrada — ABC-1234</td></tr>
+      <tr><td>Placa removida</td><td>🗑 Placa removida — ABC-1234</td></tr>
+      <tr><td>Reset de senha pelo admin</td><td>🔑 Senha redefinida pelo admin — usuário X</td></tr>
+      <tr><td>Horário de corte atualizado</td><td>🔔 Horário de corte de alerta atualizado para HH:00</td></tr>
+    </tbody>
+  </table>
+
+  <div class="hm-section-title">10. O que o operacional NÃO pode fazer</div>
   <table class="hm-table">
     <thead><tr><th>Funcionalidade</th><th>Situação</th></tr></thead>
     <tbody>
       <tr><td>Cadastro de placas, motoristas e operações</td><td>❌ Exclusivo do admin</td></tr>
       <tr><td>Gestão de usuários e transportadores</td><td>❌ Exclusivo do admin</td></tr>
       <tr><td>Desbloquear lançamentos</td><td>❌ Exclusivo do admin</td></tr>
+      <tr><td>Resetar senha de outros usuários</td><td>❌ Exclusivo do admin</td></tr>
       <tr><td>Dashboard, painel, histórico, exportação</td><td>✅ Disponível</td></tr>
+      <tr><td>Alterar a própria senha (botão 🔑 Senha)</td><td>✅ Disponível</td></tr>
     </tbody>
   </table>
 </div>`;
+
 
 function openHelpModal(role){
   if(!role){ return; }
@@ -2118,6 +2163,7 @@ async function renderUsers(body){
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
           <button class="btn-edit" onclick="openEditUser('${uid}')" title="Editar">✏️</button>
+          ${uid!==S.user?`<button class="btn-reset-pwd" onclick="openResetPwd('${uid}')" title="Resetar senha">🔑</button>`:''}
           ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${uid}')" title="Remover">🗑</button>`:''}
         </div>
       </td>
@@ -2784,6 +2830,152 @@ async function saveEdit(){
 }
 
 // ── Expose to window for inline onclick handlers ──
+// ═══════════════════════════════════════════════════════════
+// ALTERAR SENHA (usuário logado)
+// ═══════════════════════════════════════════════════════════
+function openChangePwd(){
+  const existing=document.getElementById('change-pwd-modal');
+  if(existing) existing.remove();
+  const modal=document.createElement('div');
+  modal.id='change-pwd-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
+  modal.innerHTML=`
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:400px">
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">🔑 Alterar senha</p>
+      <div class="form-grid" style="grid-template-columns:1fr">
+        <div class="form-field">
+          <label>NOVA SENHA</label>
+          <input id="cp-new" type="password" placeholder="Mín. 6 caracteres" autocomplete="new-password">
+        </div>
+        <div class="form-field">
+          <label>CONFIRMAR NOVA SENHA</label>
+          <input id="cp-confirm" type="password" placeholder="Repita a nova senha" autocomplete="new-password">
+        </div>
+      </div>
+      <div id="cp-msg" style="font-size:12px;color:var(--red);min-height:18px;margin-bottom:.75rem"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('change-pwd-modal').remove()">Cancelar</button>
+        <button class="btn btn-lime" id="cp-btn" onclick="saveChangePwd()">💾 Salvar senha</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(()=>document.getElementById('cp-new')?.focus(), 80);
+}
+async function saveChangePwd(){
+  const newPwd=document.getElementById('cp-new')?.value||'';
+  const confirmPwd=document.getElementById('cp-confirm')?.value||'';
+  const msg=document.getElementById('cp-msg');
+  const btn=document.getElementById('cp-btn');
+  if(newPwd.length<6){ msg.textContent='A senha deve ter pelo menos 6 caracteres.'; return; }
+  if(newPwd!==confirmPwd){ msg.textContent='As senhas não coincidem.'; return; }
+  btn.disabled=true; btn.textContent='Salvando...';
+  try {
+    await updatePassword(auth.currentUser, newPwd);
+    document.getElementById('change-pwd-modal').remove();
+    showToast('Senha alterada com sucesso! ✓');
+  } catch(e){
+    const code=e.code||'';
+    if(code==='auth/requires-recent-login'){
+      msg.textContent='Por segurança, faça logout e login novamente antes de alterar a senha.';
+    } else {
+      msg.textContent='Erro: '+(code||e.message);
+    }
+    btn.disabled=false; btn.textContent='💾 Salvar senha';
+  }
+}
+// ═══════════════════════════════════════════════════════════
+// RESET DE SENHA PELO ADMIN (via Identity Toolkit REST API)
+// ═══════════════════════════════════════════════════════════
+function openResetPwd(uid){
+  const u = USERS_DB[uid];
+  if(!u){ showToast('Usuário não encontrado.', false); return; }
+  const existing = document.getElementById('reset-pwd-modal');
+  if(existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'reset-pwd-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
+  modal.innerHTML = `
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">🔑 Resetar senha</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">Definindo uma senha temporária para <b style="color:var(--text)">${u.name}</b>. O usuário deve trocá-la após o próximo login.</p>
+      <div class="form-grid" style="grid-template-columns:1fr">
+        <div class="form-field">
+          <label>SENHA TEMPORÁRIA</label>
+          <input id="rp-pwd" type="text" placeholder="Mín. 6 caracteres" autocomplete="off">
+        </div>
+        <div class="form-field">
+          <label>CONFIRMAR SENHA</label>
+          <input id="rp-confirm" type="text" placeholder="Repita a senha" autocomplete="off">
+        </div>
+      </div>
+      <div id="rp-msg" style="font-size:12px;color:var(--red);min-height:18px;margin-bottom:.75rem"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('reset-pwd-modal').remove()">Cancelar</button>
+        <button class="btn btn-lime" id="rp-btn" onclick="saveResetPwd('${uid}')">🔑 Resetar senha</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(()=>document.getElementById('rp-pwd')?.focus(), 80);
+}
+
+async function saveResetPwd(uid){
+  const pwd     = document.getElementById('rp-pwd')?.value.trim()||'';
+  const confirm = document.getElementById('rp-confirm')?.value.trim()||'';
+  const msg     = document.getElementById('rp-msg');
+  const btn     = document.getElementById('rp-btn');
+  if(pwd.length < 6){ msg.textContent = 'A senha deve ter pelo menos 6 caracteres.'; return; }
+  if(pwd !== confirm){ msg.textContent = 'As senhas não coincidem.'; return; }
+  btn.disabled = true; btn.textContent = 'Resetando...';
+
+  // Usa a Identity Toolkit REST API para atualizar a senha de qualquer conta
+  // sem precisar estar autenticado como ela. Requer a apiKey pública do projeto.
+  try {
+    // 1. Busca o UID do Firebase Auth via lookup pelo email fictício
+    const lookupRes = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseConfig.apiKey}`,
+      { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ idToken: await auth.currentUser.getIdToken() }) }
+    );
+    // 2. Atualiza a senha usando o token do admin logado
+    const updateRes = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:update?key=${firebaseConfig.apiKey}`,
+      { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          email: uidToEmail(uid),
+          password: pwd,
+          returnSecureToken: false
+        })
+      }
+    );
+    if(!updateRes.ok){
+      const err = await updateRes.json();
+      // Se não encontrou, provavelmente o usuário ainda não foi criado no Firebase Auth
+      const code = err?.error?.message||'';
+      if(code === 'EMAIL_NOT_FOUND'){
+        // Cria a conta no Firebase Auth agora
+        const createRes = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`,
+          { method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ email: uidToEmail(uid), password: pwd, returnSecureToken: false }) }
+        );
+        if(!createRes.ok){
+          const cerr = await createRes.json();
+          throw new Error(cerr?.error?.message||'Erro ao criar conta');
+        }
+      } else {
+        throw new Error(code||'Erro ao resetar');
+      }
+    }
+    document.getElementById('reset-pwd-modal').remove();
+    await dbAddAudit('admin_reset_pwd', { target: uid });
+    showToast(`Senha de ${USERS_DB[uid]?.name||uid} redefinida! ✓`);
+  } catch(e){
+    msg.textContent = 'Erro: ' + (e.message||String(e));
+    btn.disabled = false; btn.textContent = '🔑 Resetar senha';
+  }
+}
+window.openResetPwd=openResetPwd; window.saveResetPwd=saveResetPwd;
+window.openChangePwd=openChangePwd; window.saveChangePwd=saveChangePwd;
 window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
@@ -2905,6 +3097,8 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .btn-toggle-off:hover{background:rgba(240,190,64,.1);color:var(--amber);border-color:var(--amber);}
 .btn-toggle-on{background:none;border:1px solid rgba(110,224,74,.3);color:rgba(110,224,74,.7);padding:4px 8px;border-radius:7px;font-size:12px;cursor:pointer;}
 .btn-toggle-on:hover{background:rgba(110,224,74,.1);color:var(--green);border-color:var(--green);}
+.btn-reset-pwd{background:none;border:1px solid transparent;color:rgba(240,190,64,.55);padding:4px 8px;border-radius:7px;font-size:13px;cursor:pointer;}
+.btn-reset-pwd:hover{color:var(--amber);border-color:rgba(240,190,64,.3);background:var(--amber-bg);}
 .btn-edit:hover{color:var(--lime);border-color:var(--border2);background:var(--lime-bg);}
 .btn-danger:hover{color:var(--red);border-color:rgba(240,96,96,.3);background:var(--red-bg);}
 .btn-full{width:100%;justify-content:center;}
