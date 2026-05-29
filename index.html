@@ -33,6 +33,9 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
 const auth  = getAuth(fbApp);
+// Auth secundário para criar usuários sem trocar a sessão do admin logado.
+const userCreateApp  = initializeApp(firebaseConfig, "nexta-frota-user-create");
+const userCreateAuth = getAuth(userCreateApp);
 
 // UID Firebase Auth → dados de perfil (carregado após login)
 // Convenção de email: uid@nexta-frota.app
@@ -498,6 +501,7 @@ let S = {
   user: null, dateOffset: 0, adminTab: "dashboard",
   notifOpen: false, histDays: 45,
   histCarrier:"", histStatus:"", histOp:"", histPlaca:"", todayOp:"", todayPlaca:"",
+  histOpenDays: {},
   registerSubTab: "plates",
   kpiYear: new Date().getFullYear(), kpiMonth: new Date().getMonth(),
 };
@@ -507,15 +511,32 @@ let ALERT_CUTOFF_HOUR = 16;
 // ═══════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════
+function esc(v){
+  return String(v ?? "").replace(/[&<>"']/g, ch => ({
+    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+  }[ch]));
+}
+function attr(v){ return esc(v).replace(/`/g, "&#96;"); }
+function jsArg(v){
+  return String(v ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/[\r\n]/g, " ");
+}
+function optHtml(v, selected=false){
+  return `<option value="${attr(v)}"${selected?' selected':''}>${esc(v)}</option>`;
+}
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
 function statusSemHorario(v){ return v==='indisponivel'||v==='programado'||v==='folga'; }
 function fmtTimeValue(v){ return v==='sem_previsao'?'Sem previsão':(v||'—'); }
 function renderDriverCell(diurno='', noturno=''){
   const motD=diurno||'—';
   const motN=noturno||'—';
+  const motDHtml=esc(motD);
+  const motNHtml=esc(motN);
   return `<div class="driver-cell">
-    <div class="driver-line"><span class="driver-icon">☀</span><span class="driver-name" title="${motD}">${motD}</span></div>
-    <div class="driver-line"><span class="driver-icon">🌙</span><span class="driver-name" title="${motN}">${motN}</span></div>
+    <div class="driver-line"><span class="driver-icon">☀</span><span class="driver-name" title="${attr(motD)}">${motDHtml}</span></div>
+    <div class="driver-line"><span class="driver-icon">🌙</span><span class="driver-name" title="${attr(motN)}">${motNHtml}</span></div>
   </div>`;
 }
 function buildTimeOpts(selected="", allowNoForecast=false){
@@ -579,10 +600,16 @@ function debounce(fn, delay=350){
 // Debounced search handlers — evitam re-render a cada tecla
 const _debouncedTodaySearch  = debounce(()=>renderTabBody(), 350);
 const _debouncedHistSearch   = debounce(()=>renderTabBody(), 350);
+const _debouncedViewportQualityRefresh = debounce(async ()=>{
+  if(!S.user) return;
+  const u=USERS_DB[S.user];
+  if(!u || (u.role!=="admin" && u.role!=="operacional")) return;
+  if(S.adminTab==="dashboard" || S.adminTab==="kpis") await renderTabBody();
+}, 220);
 
 function setLoading(msg="Carregando..."){
   const mc=document.getElementById("main-content")||document.getElementById("tab-body");
-  if(mc) mc.innerHTML=`<div class="loading"><span class="spin"></span>${msg}</div>`;
+  if(mc) mc.innerHTML=`<div class="loading"><span class="spin"></span>${esc(msg)}</div>`;
 }
 function getDates(days,fromOff=0){
   const arr=[];
@@ -593,6 +620,42 @@ function getMonthDates(year,month){
   const arr=[]; const d=new Date(year,month,1);
   while(d.getMonth()===month){ arr.push(localDateStr(d)); d.setDate(d.getDate()+1); }
   return arr;
+}
+function renderPendingAlert(groups, {title, subtitle, okSubtitle, cutoffHour, cutoffReached}){
+  const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
+  const todayPending=(groups.find(g=>g.label==="Hoje")?.pending)||[];
+  const metricCards=groups.map(g=>`
+    <div class="pa-metric ${g.pending.length?'warn':'ok'}">
+      <span class="pa-metric-num">${g.pending.length}</span>
+      <span class="pa-metric-label">${esc(g.label)}</span>
+    </div>`).join("");
+  const groupsHtml=groups.map(g=>`
+    <div class="pa-group ${g.pending.length?'':'ok'}">
+      <div class="pa-day"><span>${esc(g.label)}</span><small>${fmtDateStr(g.ds)}</small></div>
+      <div class="pa-list">
+        ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${esc(c)}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}
+      </div>
+    </div>`).join("");
+  const cutoffCard=(cutoffReached&&todayPending.length)
+    ? `<div class="pa-cutoff-alert"><strong>Corte ${String(cutoffHour).padStart(2,'0')}:00 atingido</strong><span>${todayPending.length} pendencia(s) para hoje</span></div>`
+    : `<div class="pa-cutoff-note">Corte configurado: <strong>${String(cutoffHour).padStart(2,'0')}:00</strong></div>`;
+  if(total===0){
+    return `<div class="pending-alert ok">
+      <div class="pa-icon">✓</div>
+      <div class="pa-content">
+        <div class="pa-head"><div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">${okSubtitle}</div></div>${metricCards}</div>
+        ${cutoffCard}
+      </div>
+    </div>`;
+  }
+  return `<div class="pending-alert warn">
+    <div class="pa-icon">!</div>
+    <div class="pa-content">
+      <div class="pa-head"><div><div class="pa-title">${title}</div><div class="pa-sub">${subtitle}</div></div><div class="pa-metrics">${metricCards}</div></div>
+      ${cutoffCard}
+      <div class="pa-groups">${groupsHtml}</div>
+    </div>
+  </div>`;
 }
 async function buildPendingAlerts(allP, filterOps){
   if(S.dateOffset !== 0) return "";
@@ -620,14 +683,13 @@ async function buildPendingAlerts(allP, filterOps){
       }
       return {...t, pending: pendingItems};
     }));
-    const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
-    const todayPending=(groups.find(g=>g.label==="Hoje")?.pending)||[];
-    const cutoffInfo=`<div class="pa-sub" style="margin-top:6px">Horario de corte configurado: ${String(CUTOFF_HOUR).padStart(2,'0')}:00</div>`;
-    const cutoffAlert=(cutoffReached&&todayPending.length)?`<div class="pa-sub" style="color:var(--red);margin-top:8px">Alerta de corte (${CUTOFF_HOUR}:00): pendente hoje: ${todayPending.slice(0,6).join(", ")}${todayPending.length>6?"...":""}</div>`:"";
-    if(total===0){
-      return `<div class="pending-alert ok"><div class="pa-icon">OK</div><div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todas as operacoes preencheram hoje e amanha.</div>${cutoffInfo}</div></div>`;
-    }
-    return `<div class="pending-alert warn"><div class="pa-icon">!</div><div class="pa-content"><div class="pa-title">Pendencias de preenchimento</div><div class="pa-sub">Operacoes sem envio concluido.</div>${cutoffInfo}${cutoffAlert}<div class="pa-groups">${groups.map(g=>`<div class="pa-group"><div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div><div class="pa-list">${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}</div></div>`).join("")}</div></div></div>`;
+    return renderPendingAlert(groups, {
+      title:"Pendencias de preenchimento",
+      subtitle:"Operacoes sem envio concluido para o periodo monitorado.",
+      okSubtitle:"Todas as operacoes preencheram hoje e amanha.",
+      cutoffHour:CUTOFF_HOUR,
+      cutoffReached
+    });
   }
 
   const activeCarriers=CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
@@ -636,14 +698,13 @@ async function buildPendingAlerts(allP, filterOps){
     const checks=await Promise.all(activeCarriers.map(async carrier=>({ carrier, lock: await dbGetLock(carrier,t.ds) })));
     return {...t, pending: checks.filter(x=>!x.lock).map(x=>x.carrier)};
   }));
-  const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
-  const todayPending=(groups.find(g=>g.label==="Hoje")?.pending)||[];
-  const cutoffInfo=`<div class="pa-sub" style="margin-top:6px">Horario de corte configurado: ${String(CUTOFF_HOUR).padStart(2,'0')}:00</div>`;
-  const cutoffAlert=(cutoffReached&&todayPending.length)?`<div class="pa-sub" style="color:var(--red);margin-top:8px">Alerta de corte (${CUTOFF_HOUR}:00): pendentes hoje: ${todayPending.slice(0,6).join(", ")}${todayPending.length>6?"...":""}</div>`:"";
-  if(total===0){
-    return `<div class="pending-alert ok"><div class="pa-icon">OK</div><div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">Todos os transportadores preencheram hoje e amanha.</div>${cutoffInfo}</div></div>`;
-  }
-  return `<div class="pending-alert warn"><div class="pa-icon">!</div><div class="pa-content"><div class="pa-title">Pendencias de preenchimento</div><div class="pa-sub">Transportadores sem envio concluido para o dia atual e seguinte.</div>${cutoffInfo}${cutoffAlert}<div class="pa-groups">${groups.map(g=>`<div class="pa-group"><div class="pa-day">${g.label} <span>${fmtDateStr(g.ds)}</span></div><div class="pa-list">${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${c}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}</div></div>`).join("")}</div></div></div>`;
+  return renderPendingAlert(groups, {
+    title:"Pendencias de preenchimento",
+    subtitle:"Transportadores sem envio concluido para hoje e amanha.",
+    okSubtitle:"Todos os transportadores preencheram hoje e amanha.",
+    cutoffHour:CUTOFF_HOUR,
+    cutoffReached
+  });
 }
 // saveSession / clearSession / restoreSession são mantidos apenas como
 // fallback local — a fonte de verdade da sessão é o Firebase Auth (onAuthStateChanged).
@@ -679,8 +740,8 @@ async function render(){
       <div class="topbar-right">
         ${(u.role==="admin"||u.role==="operacional")?`<button class="notif-btn" onclick="toggleNotif()" title="Notificações">🔔${hasNotif?'<span class="notif-dot"></span>':''}</button>`:""}
         ${helpRole?`<button class="help-btn" onclick="openHelpModal('${helpRole}')" title="${helpTitle}">❓ ${helpLabel}</button>`:""}
-        <div class="avatar ${u.role==="admin"||u.role==="operacional"?"admin":""}">${u.initials}</div>
-        <span class="user-name">${u.role==="admin"?"Administrador":u.role==="operacional"?u.name:u.carrier}</span>
+        <div class="avatar ${u.role==="admin"||u.role==="operacional"?"admin":""}">${esc(u.initials)}</div>
+        <span class="user-name">${u.role==="admin"?"Administrador":u.role==="operacional"?esc(u.name):esc(u.carrier)}</span>
         <button class="btn-logout" onclick="openChangePwd()" title="Alterar minha senha">🔑 Senha</button>
         <button class="btn-logout" onclick="logout()">↩ Sair</button>
       </div>
@@ -983,7 +1044,7 @@ async function toggleNotif(){ S.notifOpen=!S.notifOpen; await render(); }
 async function renderNotifPanel(notifs){
   const items=notifs.length===0
     ?`<div class="notif-empty">Nenhuma notificação</div>`
-    :notifs.map(n=>`<div class="notif-item"><div>${n.msg}</div><div class="ni-time">${n.time}</div></div>`).join("");
+    :notifs.map(n=>`<div class="notif-item"><div>${esc(n.msg)}</div><div class="ni-time">${esc(n.time)}</div></div>`).join("");
   return `<div class="notif-panel">
     <div class="notif-header">
       <span>Notificações</span>
@@ -998,7 +1059,7 @@ async function clearNotifsAndRender(){ await dbClearNotifs(); S.notifOpen=false;
 async function renderCarrier(carrier){
   const ds=dateStr(S.dateOffset);
   const mc=document.getElementById("main-content");
-  mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p><div class="loading"><span class="spin"></span>Carregando placas...</div>`;
+  mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${esc(carrier)}</p><div class="loading"><span class="spin"></span>Carregando placas...</div>`;
   let allP={};
   let statusMap={};
   let lock=null;
@@ -1013,7 +1074,7 @@ async function renderCarrier(carrier){
     const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
     if(loadedPlates.length===0){
       const opLabel=userOps?` para a operação ${userOps.join(' / ')}`:'';
-      mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
+      mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${esc(carrier)}</p>
         <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada${opLabel}.<br>Aguarde o administrador.</div>`;
       return;
     }
@@ -1023,7 +1084,7 @@ async function renderCarrier(carrier){
     statusMap = await withTimeout(dbLoadStatusBulk(pairsTemp),15000,"Falha ao carregar status");
   } catch(e){
     console.error(e);
-    mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${carrier}</p>
+    mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${esc(carrier)}</p>
       <div class="empty"><span class="ei">⚠</span>Erro ao carregar a disponibilidade.<br>Atualize a página ou tente novamente.</div>`;
     return;
   }
@@ -1036,14 +1097,14 @@ async function renderCarrier(carrier){
     const isIndisp=statusSemHorario(cur);
       if(lock){
       // LOCKED — read-only view
-      const stBadge=cur?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">—</span>`;
+      const stBadge=cur?`<span class="badge ${st.badge}">${esc(st.label)}</span>`:`<span class="badge b-blank">—</span>`;
       const timeBadge=isIndisp?`<span style="font-size:11px;color:var(--muted)">N/A</span>`:curTime?`<span style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(curTime)}</span>`:`<span style="color:var(--muted)">—</span>`;
       const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'—';
       const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'—';
       return `<tr>
-        <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${p.placa}</td>
-        <td style="font-size:11px;color:var(--muted)">${p.operacao}</td>
-        <td><span class="badge b-lime">${p.tipo}</span></td>
+        <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${esc(p.placa)}</td>
+        <td style="font-size:11px;color:var(--muted)">${esc(p.operacao)}</td>
+        <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
         <td>${stBadge}</td>
         <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--dim)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</td>
         <td style="font-size:11px;font-family:'DM Mono',monospace">${timeBadge}</td>
@@ -1051,7 +1112,7 @@ async function renderCarrier(carrier){
       </tr>`;
     }
     const blankOpt=cur===null?`<option value="" selected disabled>— Selecione —</option>`:"";
-    const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${s.val}"${cur===s.val?" selected":""}>${s.label}</option>`).join("");
+    const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${attr(s.val)}"${cur===s.val?" selected":""}>${esc(s.label)}</option>`).join("");
     const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
     const timeCls=isIndisp?`time-sel time-na`:curTime?`time-sel time-filled`:`time-sel time-blank`;
     const timeDisabled=(!cur||isIndisp)?'disabled':'';
@@ -1067,11 +1128,11 @@ async function renderCarrier(carrier){
       let opts = `<option value="">— Sem motorista —</option>`;
       // Motoristas removidos não aparecem como opção — o dado histórico já está salvo no Firestore
       // Active drivers — normal style
-      opts += ativos.map(d=>`<option value="${d.nome}"${d.nome===savedVal?' selected':''}>${d.nome}</option>`).join('');
+      opts += ativos.map(d=>optHtml(d.nome, d.nome===savedVal)).join('');
       // Inactive drivers — dimmed via optgroup label trick + unicode prefix
       if(inativos.length){
         opts += `<optgroup label="──────────────" style="color:rgba(228,242,200,.2);font-size:9px"></optgroup>`;
-        opts += inativos.map(d=>`<option value="${d.nome}"${d.nome===savedVal?' selected':''} style="color:rgba(228,242,200,.35)">▪ ${d.nome} (inativo)</option>`).join('');
+        opts += inativos.map(d=>`<option value="${attr(d.nome)}"${d.nome===savedVal?' selected':''} style="color:rgba(228,242,200,.35)">▪ ${esc(d.nome)} (inativo)</option>`).join('');
       }
       return opts;
     }
@@ -1089,9 +1150,9 @@ async function renderCarrier(carrier){
          </div>`
       : renderDriverCell(savedMotD, savedMotN);
     return `<tr>
-      <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${p.placa}</td>
-      <td style="font-size:11px;color:var(--muted)">${p.operacao}</td>
-      <td><span class="badge b-lime">${p.tipo}</span></td>
+      <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${esc(p.placa)}</td>
+      <td style="font-size:11px;color:var(--muted)">${esc(p.operacao)}</td>
+      <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
       <td><select class="${selCls}" style="width:128px;box-sizing:border-box;font-size:11px" onchange="onStChange(this)">${sOpts}</select></td>
       <td>${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Ex: 251000" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:96px;box-sizing:border-box;font-size:11px;padding:5px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace">`:`<span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--muted)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</span>`}</td>
       <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)" style="width:96px;box-sizing:border-box;font-size:11px">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select></td>
@@ -1101,17 +1162,17 @@ async function renderCarrier(carrier){
 
   const lockedBanner=lock?`
     <div class="locked-banner">
-      🔒 Disponibilidade enviada em ${lock.lockedAt} — não é possível editar.
+      🔒 Disponibilidade enviada em ${esc(lock.lockedAt)} — não é possível editar.
     </div>`:'';
   const actionBar=lock?'':`
     <div style="display:flex;gap:10px;margin-top:1rem;">
-      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${carrier}','${ds}')">💾 Salvar disponibilidade</button>
+      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${attr(jsArg(carrier))}','${attr(jsArg(ds))}')">💾 Salvar disponibilidade</button>
     </div>`;
 
   const userOpsLabel2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?` — ${USERS_DB[S.user].operacoes.join(' / ')}`:'';
   mc.innerHTML=`
     <p class="sec-title">Disponibilidade da frota</p>
-    <p class="sec-sub">${carrier}${userOpsLabel2} — Informe o status de cada veículo</p>
+    <p class="sec-sub">${esc(carrier)}${esc(userOpsLabel2)} — Informe o status de cada veículo</p>
     <div class="date-nav">
       <button onclick="chDate(-1)">‹</button>
       <span class="date-label">${fmtDate(S.dateOffset)}</span>
@@ -1349,13 +1410,13 @@ async function renderDashboard(body){
       if(!opFilled) pendOps++;
     }
     return { carrier, pendOps, totalOps: opSet.size };
-  }).sort((a,b)=>b.pendOps-a.pendOps).slice(0,5);
+  }).filter(r=>r.pendOps>0).sort((a,b)=>b.pendOps-a.pendOps||a.carrier.localeCompare(b.carrier)).slice(0,5);
 
   const opOrder=[...OPERACOES,...Object.keys(byOp).filter(o=>!OPERACOES.includes(o)).sort()];
   const opRows=opOrder.filter(op=>byOp[op]).map(op=>{
     const r=byOp[op];
     const dispPct=r.total?Math.round((r.disponivel/r.total)*100):0;
-    return `<tr><td style="font-weight:500">${op}</td><td><span class="badge b-green">${r.disponivel}</span></td><td><span class="badge b-red">${r.indisponivel}</span></td><td><span class="badge b-amber">${r.manutencao}</span></td><td><span class="badge b-blue">${r.folga}</span></td><td><span class="badge b-purple">${r.programado||0}</span></td><td><span class="badge b-blank">${r.pendente}</span></td><td><span class="cap-tag">${r.total}</span></td><td><div class="op-meter"><span style="width:${dispPct}%"></span></div><div class="op-meter-label">${dispPct}% disponível</div></td></tr>`;
+    return `<tr><td style="font-weight:500">${esc(op)}</td><td><span class="badge b-green">${r.disponivel}</span></td><td><span class="badge b-red">${r.indisponivel}</span></td><td><span class="badge b-amber">${r.manutencao}</span></td><td><span class="badge b-blue">${r.folga}</span></td><td><span class="badge b-purple">${r.programado||0}</span></td><td><span class="badge b-blank">${r.pendente}</span></td><td><span class="cap-tag">${r.total}</span></td><td><div class="op-meter"><span style="width:${dispPct}%"></span></div><div class="op-meter-label">${dispPct}% disponível</div></td></tr>`;
   }).join("");
 
   const tDates=getDates(14);
@@ -1406,19 +1467,18 @@ async function renderDashboard(body){
       <!-- Row 2: Ranking + corte -->
       <div class="sla-bottom-row">
         <div class="sla-ranking">
-          <div class="sla-section-title">🏆 Ranking de preenchimento — hoje</div>
+          <div class="sla-section-title">⚠ Maiores pendências de preenchimento — hoje</div>
           <div class="sla-ranking-list">
             ${pendingRanking.map((r,i)=>{
-              const pct = r.totalOps ? Math.round((1 - r.pendOps/r.totalOps)*100) : 100;
-              const ok  = r.pendOps === 0;
-              const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}.`;
-              return `<div class="sla-rank-item ${ok?'sla-rank-ok':'sla-rank-pend'}">
-                <span class="sla-rank-medal">${medal}</span>
-                <span class="sla-rank-name">${r.carrier}</span>
-                <span class="sla-rank-bar-wrap"><span class="sla-rank-bar-fill" style="width:${pct}%;background:${ok?'var(--green)':pct>=50?'var(--amber)':'var(--red)'}"></span></span>
-                <span class="sla-rank-tag ${ok?'sla-tag-ok':'sla-tag-pend'}">${ok?'✓ OK':`${r.pendOps} pend.`}</span>
+              const pendPct = r.totalOps ? Math.round((r.pendOps/r.totalOps)*100) : 0;
+              const severity = i===0?'sla-rank-critical':i<=2?'sla-rank-high':'sla-rank-pend';
+              return `<div class="sla-rank-item ${severity}">
+                <span class="sla-rank-medal">${i+1}.</span>
+                <span class="sla-rank-name">${esc(r.carrier)}</span>
+                <span class="sla-rank-bar-wrap"><span class="sla-rank-bar-fill" style="width:${pendPct}%;background:${i===0?'var(--red)':'var(--amber)'}"></span></span>
+                <span class="sla-rank-tag sla-tag-pend">${r.pendOps}/${r.totalOps} pend.</span>
               </div>`;
-            }).join('') || '<div style="font-size:12px;color:var(--green);padding:6px 0">✓ Todos preenchidos</div>'}
+            }).join('') || '<div style="font-size:12px;color:var(--green);padding:6px 0">✓ Nenhuma pendência de preenchimento hoje</div>'}
           </div>
         </div>
         ${currentUser.role==="admin" ? `
@@ -1434,8 +1494,8 @@ async function renderDashboard(body){
       </div>
     </div>
     <div class="card" style="margin-bottom:1.25rem"><div style="font-size:13px;color:var(--dim);margin-bottom:8px">Últimas ações (auditoria)</div><div style="display:grid;gap:6px">${auditItems.length ? auditItems.map(a=>`<div style="font-size:12px;color:var(--text);background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span style="color:var(--lime)">${fmtAuditAction(a.action, a.details||{})}</span><span style="color:var(--muted);white-space:nowrap;font-size:11px">${a.actor||"Sistema"} · ${a.atBR||""}</span></div>`).join("") : `<div style="font-size:12px;color:var(--muted)">Sem eventos recentes.</div>`}</div></div>
-    <div class="dash-grid"><div class="chart-card"><div class="chart-title">Distribuição de status - hoje</div><canvas id="pie-chart" height="180"></canvas></div><div class="chart-card"><div class="chart-title">Tendência de disponibilidade - 14 dias</div><canvas id="line-chart" height="180"></canvas></div></div>
-    <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Disponibilidade por transportador - hoje</div><canvas id="bar-chart" height="160"></canvas></div>
+    <div class="dash-grid"><div class="chart-card"><div class="chart-title">Distribuição de status - hoje</div><canvas id="pie-chart" height="260"></canvas></div><div class="chart-card"><div class="chart-title">Tendência de disponibilidade - 14 dias</div><canvas id="line-chart" height="260"></canvas></div></div>
+    <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Disponibilidade por transportador - hoje</div><canvas id="bar-chart" height="300"></canvas></div>
     <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Resumo por operação - ${fmtDate(S.dateOffset)}</div><div class="tscroll"><table class="table op-summary-table" style="min-width:860px"><thead><tr><th style="width:22%">OPERAÇÃO</th><th>DISP.</th><th>INDISP.</th><th>MANUT.</th><th>FOLGA</th><th>PROG.</th><th>PEND.</th><th>TOTAL</th><th style="width:18%">DISPONIBILIDADE</th></tr></thead><tbody>${opRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px">Nenhuma operação com placas ativas.</td></tr>'}</tbody></table></div></div>`;
 
   requestAnimationFrame(()=>{ drawPie(counts); drawLine(tDates,tDisp); drawBar(byCarrier); });
@@ -1549,7 +1609,7 @@ async function renderKpisMensais(body){
     const slaColor=m.slaEnvio>=95?'var(--green)':m.slaEnvio>=70?'var(--amber)':'var(--red)';
     return `<tr class="kpi-rank-row">
       <td style="font-size:15px;text-align:center;width:36px">${medal}</td>
-      <td style="font-weight:500;font-size:13px">${m.carrier}</td>
+      <td style="font-weight:500;font-size:13px">${esc(m.carrier)}</td>
       <td style="text-align:center"><span class="cap-tag">${m.plates}</span></td>
       <td>
         <div style="display:flex;align-items:center;gap:8px">
@@ -1616,7 +1676,7 @@ async function renderKpisMensais(body){
     <!-- Gráfico de tendência 6 meses -->
     <div class="chart-card" style="margin-bottom:1.5rem">
       <div class="chart-title">Evolução da disponibilidade — últimos 6 meses</div>
-      <canvas id="kpi-trend-chart" height="160"></canvas>
+      <canvas id="kpi-trend-chart" height="280"></canvas>
     </div>
 
     <!-- Ranking por transportador -->
@@ -1648,7 +1708,7 @@ async function renderKpisMensais(body){
     <!-- Gráfico de barras comparativo -->
     <div class="chart-card" style="margin-bottom:1.5rem">
       <div class="chart-title">Disponibilidade por transportador — ${monthLabel}</div>
-      <canvas id="kpi-bar-chart" height="160"></canvas>
+      <canvas id="kpi-bar-chart" height="300"></canvas>
     </div>`;
 
   // Draw charts after DOM is ready
@@ -1660,8 +1720,9 @@ async function renderKpisMensais(body){
 
 function drawKpiTrend(trendData){
   const canvas=document.getElementById("kpi-trend-chart"); if(!canvas) return;
-  const {ctx,W,H}=setupHiDpiCanvas(canvas,160,700);
-  const pad={t:18,r:24,b:36,l:38};
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,280,900);
+  const C=chartColors();
+  const pad={t:28,r:34,b:46,l:46};
   const W2=W-pad.l-pad.r, H2=H-pad.t-pad.b;
   const valid=trendData.filter(d=>d.pct!==null);
   if(!valid.length) return;
@@ -1671,7 +1732,7 @@ function drawKpiTrend(trendData){
   [0,25,50,75,100].forEach(v=>{
     const y=pad.t+H2-(v/maxV)*H2;
     ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
-    ctx.fillStyle="rgba(228,242,200,.35)"; ctx.font="500 10px DM Mono,monospace";
+    ctx.fillStyle="rgba(228,242,200,.48)"; ctx.font="500 11px DM Mono,monospace";
     ctx.textAlign="right"; ctx.fillText(v+"%",pad.l-4,y+3); ctx.textAlign="left";
   });
   // Meta line
@@ -1680,7 +1741,7 @@ function drawKpiTrend(trendData){
   ctx.setLineDash([5,4]);
   ctx.beginPath(); ctx.moveTo(pad.l,metaY); ctx.lineTo(pad.l+W2,metaY); ctx.stroke();
   ctx.setLineDash([]);
-  ctx.fillStyle="rgba(200,240,50,.55)"; ctx.font="500 10px DM Sans,sans-serif";
+  ctx.fillStyle="rgba(200,240,50,.7)"; ctx.font="600 11px DM Sans,sans-serif";
   ctx.fillText("meta 95%",pad.l+W2-60,metaY-5);
   // Gradient fill
   const grad=ctx.createLinearGradient(0,pad.t,0,pad.t+H2);
@@ -1700,7 +1761,7 @@ function drawKpiTrend(trendData){
     ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
   }
   // Line
-  ctx.strokeStyle="var(--green)"; ctx.lineWidth=2.5;
+  ctx.strokeStyle=C.green; ctx.lineWidth=3;
   ctx.beginPath(); started=false;
   pts.forEach(p=>{ if(p.y===null){started=false;return;} if(!started){ctx.moveTo(p.x,p.y);started=true;}else ctx.lineTo(p.x,p.y); });
   ctx.stroke();
@@ -1709,11 +1770,11 @@ function drawKpiTrend(trendData){
     if(p.y===null) return;
     const v=trendData[i].pct;
     ctx.beginPath(); ctx.arc(p.x,p.y,4,0,2*Math.PI);
-    ctx.fillStyle=v>=95?"var(--green)":v>=75?"var(--amber)":"var(--red)"; ctx.fill();
-    ctx.strokeStyle="var(--dark)"; ctx.lineWidth=1.5; ctx.stroke();
-    ctx.fillStyle="#e4f2c8"; ctx.font="600 11px DM Sans,sans-serif";
+    ctx.fillStyle=v>=95?C.green:v>=75?C.amber:C.red; ctx.fill();
+    ctx.strokeStyle=C.dark; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle=C.text; ctx.font="700 12px DM Sans,sans-serif";
     ctx.textAlign="center"; ctx.fillText(v+"%",p.x,p.y-10); ctx.textAlign="left";
-    ctx.fillStyle="rgba(228,242,200,.45)"; ctx.font="500 10px DM Sans,sans-serif";
+    ctx.fillStyle="rgba(228,242,200,.62)"; ctx.font="600 11px DM Sans,sans-serif";
     ctx.textAlign="center"; ctx.fillText(trendData[i].label,p.x,pad.t+H2+15); ctx.textAlign="left";
   });
 }
@@ -1721,8 +1782,9 @@ function drawKpiTrend(trendData){
 function drawKpiBar(ranked, meta){
   const canvas=document.getElementById("kpi-bar-chart"); if(!canvas) return;
   if(!ranked.length) return;
-  const {ctx,W,H}=setupHiDpiCanvas(canvas,160,700);
-  const pad={t:18,r:20,b:52,l:38};
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,300,900);
+  const C=chartColors();
+  const pad={t:28,r:30,b:76,l:46};
   const W2=W-pad.l-pad.r, H2=H-pad.t-pad.b;
   const maxV=100;
   // Grid
@@ -1730,7 +1792,7 @@ function drawKpiBar(ranked, meta){
   [0,25,50,75,100].forEach(v=>{
     const y=pad.t+H2-(v/maxV)*H2;
     ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
-    ctx.fillStyle="rgba(228,242,200,.38)"; ctx.font="500 10px DM Mono,monospace";
+    ctx.fillStyle="rgba(228,242,200,.48)"; ctx.font="500 11px DM Mono,monospace";
     ctx.textAlign="right"; ctx.fillText(v+"%",pad.l-4,y+3); ctx.textAlign="left";
   });
   // Meta line
@@ -1745,7 +1807,7 @@ function drawKpiBar(ranked, meta){
     const x=pad.l+i*step+(step-barW)/2;
     const h=(m.dispPct/maxV)*H2||0;
     const barTop=pad.t+H2-h;
-    const color=m.dispPct>=meta?"var(--green)":m.dispPct>=75?"var(--amber)":"var(--red)";
+    const color=m.dispPct>=meta?C.green:m.dispPct>=75?C.amber:C.red;
     // Bar with rounded top
     ctx.fillStyle=color;
     const r=Math.min(5,barW/2,h/2);
@@ -1756,12 +1818,12 @@ function drawKpiBar(ranked, meta){
     ctx.lineTo(x,barTop+r); ctx.quadraticCurveTo(x,barTop,x+r,barTop);
     ctx.closePath(); ctx.fill();
     // Value label
-    ctx.fillStyle="#e4f2c8"; ctx.font="600 11px DM Sans,sans-serif";
+    ctx.fillStyle=C.text; ctx.font="700 12px DM Sans,sans-serif";
     ctx.textAlign="center"; ctx.fillText(m.dispPct+"%",x+barW/2,barTop-6);
     // Carrier name
     const words=m.carrier.split(" ");
     const cx=x+barW/2; const lineY=pad.t+H2+14;
-    ctx.fillStyle="rgba(228,242,200,.65)"; ctx.font="500 10px DM Sans,sans-serif";
+    ctx.fillStyle="rgba(228,242,200,.72)"; ctx.font="600 11px DM Sans,sans-serif";
     if(words.length<=2){ ctx.fillText(m.carrier,cx,lineY); }
     else { ctx.fillText(words[0],cx,lineY); ctx.fillText(words.slice(1).join(" "),cx,lineY+12); }
     ctx.textAlign="left";
@@ -1770,41 +1832,45 @@ function drawKpiBar(ranked, meta){
 
 function drawPie(counts){
   const canvas=document.getElementById("pie-chart"); if(!canvas) return;
-  const {ctx,W,H}=setupHiDpiCanvas(canvas,180,350);
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,260,520);
+  const C=chartColors();
   const data=[counts.disponivel,counts.indisponivel,counts.manutencao,counts.folga,counts.programado||0];
   const colors=["#6ee04a","#f06060","#f0be40","#70a8f0","#b07ef0"];
   const labels=["Disponível","Indisponível","Manutenção","Folga","Prog./Viagem"];
   const total=data.reduce((a,b)=>a+b,0)||1;
-  const cx=92,cy=H/2,r=68;
+  const r=Math.min(94,Math.max(70,H*.36));
+  const cx=Math.min(Math.max(r+28,W*.28),W*.42);
+  const cy=H/2;
   let start=-Math.PI/2;
   data.forEach((v,i)=>{
     const angle=(v/total)*2*Math.PI;
     ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,r,start,start+angle);
     ctx.fillStyle=colors[i]; ctx.fill(); start+=angle;
   });
-  ctx.beginPath(); ctx.arc(cx,cy,36,0,2*Math.PI); ctx.fillStyle="#1c2d12"; ctx.fill();
-  ctx.beginPath(); ctx.arc(cx,cy,36.5,0,2*Math.PI); ctx.strokeStyle="rgba(200,240,50,.18)"; ctx.lineWidth=1; ctx.stroke();
-  ctx.fillStyle="#e4f2c8"; ctx.font="600 18px DM Sans,sans-serif"; ctx.textAlign="center";
-  ctx.fillText(total,cx,cy+6); ctx.font="10px DM Sans,sans-serif"; ctx.fillStyle="rgba(228,242,200,.5)";
-  ctx.fillText("total",cx,cy+20); ctx.textAlign="left";
-  const lx=186,ly=22;
+  ctx.beginPath(); ctx.arc(cx,cy,r*.52,0,2*Math.PI); ctx.fillStyle=C.card; ctx.fill();
+  ctx.beginPath(); ctx.arc(cx,cy,r*.525,0,2*Math.PI); ctx.strokeStyle="rgba(200,240,50,.22)"; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.fillStyle=C.text; ctx.font="700 24px DM Sans,sans-serif"; ctx.textAlign="center";
+  ctx.fillText(total,cx,cy+8); ctx.font="600 11px DM Sans,sans-serif"; ctx.fillStyle="rgba(228,242,200,.58)";
+  ctx.fillText("total",cx,cy+26); ctx.textAlign="left";
+  const lx=Math.min(cx+r+44,W-180),ly=Math.max(24,cy-76);
   labels.forEach((l,i)=>{
-    ctx.fillStyle=colors[i]; ctx.beginPath(); ctx.arc(lx+6,ly+i*30+6,5,0,2*Math.PI); ctx.fill();
-    ctx.fillStyle="#e4f2c8"; ctx.font="500 11px DM Sans,sans-serif";
-    ctx.fillText(`${l}: ${data[i]}`,lx+16,ly+i*30+10);
+    ctx.fillStyle=colors[i]; ctx.beginPath(); ctx.arc(lx+7,ly+i*34+7,6,0,2*Math.PI); ctx.fill();
+    ctx.fillStyle=C.text; ctx.font="600 12px DM Sans,sans-serif";
+    ctx.fillText(`${l}: ${data[i]}`,lx+20,ly+i*34+11);
   });
 }
 function drawLine(dates,disp){
   const canvas=document.getElementById("line-chart"); if(!canvas) return;
-  const {ctx,W,H}=setupHiDpiCanvas(canvas,180,350);
-  const pad={t:20,r:20,b:40,l:35};
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,260,520);
+  const C=chartColors();
+  const pad={t:28,r:28,b:48,l:44};
   const W2=W-pad.l-pad.r, H2=H-pad.t-pad.b;
   const maxV=Math.max(...disp,1);
   ctx.strokeStyle="rgba(200,240,50,.14)"; ctx.lineWidth=1;
   for(let i=0;i<=4;i++){
     const y=pad.t+H2-i*(H2/4);
     ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
-    ctx.fillStyle="rgba(228,242,200,.4)"; ctx.font="500 10px DM Mono,monospace";
+    ctx.fillStyle="rgba(228,242,200,.48)"; ctx.font="500 11px DM Mono,monospace";
     ctx.fillText(Math.round(i*(maxV/4)),4,y+3);
   }
   // gradient fill
@@ -1818,28 +1884,30 @@ function drawLine(dates,disp){
   });
   ctx.lineTo(pad.l+W2,pad.t+H2); ctx.lineTo(pad.l,pad.t+H2);
   ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
-  ctx.strokeStyle="var(--lime)"; ctx.lineWidth=2.4; ctx.beginPath();
+  ctx.strokeStyle=C.lime; ctx.lineWidth=3; ctx.beginPath();
   disp.forEach((v,i)=>{
     const x=pad.l+i*(W2/(disp.length-1));
     const y=pad.t+H2-(v/maxV)*H2;
     i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
   });
   ctx.stroke();
-  ctx.fillStyle="var(--lime)";
+  ctx.fillStyle=C.lime;
   disp.forEach((v,i)=>{
     const x=pad.l+i*(W2/(disp.length-1));
     const y=pad.t+H2-(v/maxV)*H2;
-    ctx.beginPath(); ctx.arc(x,y,3.2,0,2*Math.PI); ctx.fill();
+    ctx.beginPath(); ctx.arc(x,y,4,0,2*Math.PI); ctx.fill();
+    ctx.strokeStyle=C.dark; ctx.lineWidth=1.5; ctx.stroke();
   });
-  ctx.fillStyle="rgba(228,242,200,.45)"; ctx.font="500 9px DM Mono,monospace";
+  ctx.fillStyle="rgba(228,242,200,.6)"; ctx.font="600 10px DM Mono,monospace";
   dates.forEach((d,i)=>{ if(i%2===0){ const x=pad.l+i*(W2/(dates.length-1)); ctx.fillText(d.slice(5),x-10,H-2); } });
 }
 function drawBar(byCarrier){
   const canvas=document.getElementById("bar-chart"); if(!canvas) return;
-  const {ctx,W,H}=setupHiDpiCanvas(canvas,200,700);
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,300,900);
+  const C=chartColors();
   const colors=["#6ee04a","#f06060","#f0be40","#70a8f0","#b07ef0"];
   const statKeys=["disponivel","indisponivel","manutencao","folga","programado"];
-  const pad={t:18,r:20,b:55,l:35};
+  const pad={t:30,r:30,b:78,l:44};
   const W2=W-pad.l-pad.r, H2=H-pad.t-pad.b;
   const grpW=W2/CARRIERS.length, barW=grpW/(statKeys.length+1);
   const maxV=Math.max(...CARRIERS.map(c=>Object.values(byCarrier[c]||{}).reduce((a,b)=>a+b,0)),4);
@@ -1848,7 +1916,7 @@ function drawBar(byCarrier){
   for(let i=0;i<=4;i++){
     const y=pad.t+H2-i*(H2/4);
     ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
-    ctx.fillStyle="rgba(228,242,200,.4)"; ctx.font="500 10px DM Mono,monospace";
+    ctx.fillStyle="rgba(228,242,200,.48)"; ctx.font="500 11px DM Mono,monospace";
     ctx.fillText(Math.round(i*(maxV/4)),4,y+3);
   }
   CARRIERS.forEach((carrier,ci)=>{
@@ -1862,8 +1930,8 @@ function drawBar(byCarrier){
       ctx.fillStyle=colors[si]; ctx.fillRect(x,barTop,barW*.78,h);
       // Data label on top of bar (only if value > 0)
       if(v>0){
-        ctx.fillStyle="#e4f2c8";
-        ctx.font="600 10px DM Sans,sans-serif";
+        ctx.fillStyle=C.text;
+        ctx.font="700 11px DM Sans,sans-serif";
         ctx.textAlign="center";
         ctx.fillText(v, x+barW*.4, barTop-4);
         ctx.textAlign="left";
@@ -1873,16 +1941,16 @@ function drawBar(byCarrier){
     const words=carrier.split(" ");
     const mid=gx+grpW/2;
     const lineY=pad.t+H2+14;
-    ctx.fillStyle="rgba(228,242,200,.68)";
+    ctx.fillStyle="rgba(228,242,200,.72)";
     ctx.textAlign="center";
     if(words.length<=2){
-      ctx.font="500 10px DM Sans,sans-serif";
+      ctx.font="600 11px DM Sans,sans-serif";
       ctx.fillText(carrier, mid, lineY);
     } else {
       // Split into two lines: first word on line1, rest on line2
       const line1=words[0];
       const line2=words.slice(1).join(" ");
-      ctx.font="500 10px DM Sans,sans-serif";
+      ctx.font="600 11px DM Sans,sans-serif";
       ctx.fillText(line1, mid, lineY);
       ctx.fillText(line2, mid, lineY+13);
     }
@@ -1890,17 +1958,34 @@ function drawBar(byCarrier){
   });
 }
 function setupHiDpiCanvas(canvas,cssHeight,fallbackWidth){
-  const dpr=Math.max(1,window.devicePixelRatio||1);
-  const W=canvas.offsetWidth||fallbackWidth;
+  const dpr=Math.min(4,Math.max(1,window.devicePixelRatio||1));
+  canvas.style.width="100%";
+  canvas.style.height=`${cssHeight}px`;
+  const rect=canvas.getBoundingClientRect();
+  const parentW=canvas.parentElement ? canvas.parentElement.getBoundingClientRect().width : 0;
+  const W=Math.max(280,Math.round(rect.width||parentW||fallbackWidth));
   const H=cssHeight;
-  canvas.style.height=`${H}px`;
   canvas.width=Math.round(W*dpr);
   canvas.height=Math.round(H*dpr);
   const ctx=canvas.getContext("2d");
   ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
   ctx.imageSmoothingEnabled=true;
   ctx.imageSmoothingQuality="high";
   return {ctx,W,H,dpr};
+}
+function chartColors(){
+  const css=getComputedStyle(document.documentElement);
+  const get=(name,fallback)=>css.getPropertyValue(name).trim()||fallback;
+  return {
+    lime:get("--lime","#c8f032"),
+    green:get("--green","#6ee04a"),
+    amber:get("--amber","#f0be40"),
+    red:get("--red","#f06060"),
+    dark:get("--dark","#0b1607"),
+    card:get("--card","#14240d"),
+    text:get("--text","#e4f2c8")
+  };
 }
 async function saveCutoffHour(){
   const u = USERS_DB[S.user];
@@ -1942,7 +2027,7 @@ async function renderToday(body){
   for(const carrier of CARRIERS){
     const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)));
     if(!plates.length&&!(allP[carrier]||[]).length){
-      sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
+      sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">🚛</span>${esc(carrier)}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
       continue;
     }
     if(!plates.length) continue;
@@ -1955,13 +2040,13 @@ async function renderToday(body){
       const motDToday=v?((rec&&rec.motoristaDiurno)||p.motoristaDiurno||''):'';
       const motNToday=v?((rec&&rec.motoristaNoturno)||p.motoristaNoturno||''):'';
       return `<tr>
-        <td style="font-weight:500;font-family:'DM Mono',monospace">${p.placa}</td>
-        <td style="font-size:12px">${p.operacao}</td>
-        <td><span class="badge b-lime">${p.tipo}</span></td>
-        <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
-        <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
-        <td><span class="cap-tag">${p.capacidade}m³</span></td>
-        <td>${v?`<span class="badge ${st.badge}">${st.label}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
+        <td style="font-weight:500;font-family:'DM Mono',monospace">${esc(p.placa)}</td>
+        <td style="font-size:12px">${esc(p.operacao)}</td>
+        <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
+        <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${esc(p.identificacao)}</span></td>
+        <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${esc(p.contrato)}</span></td>
+        <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
+        <td>${v?`<span class="badge ${st.badge}">${esc(st.label)}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
         <td style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;white-space:nowrap">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?`<span style="color:var(--dim)">${rec.hodometro}</span>`:'—'}</td>
         <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?fmtTimeValue(rec.time):'—'}</td>
         <td>${renderDriverCell(motDToday,motNToday)}</td>
@@ -1973,16 +2058,16 @@ async function renderToday(body){
       :`<span style="font-size:11px;color:var(--muted);margin-left:8px;">Pendente</span>`;
     const isAdmin2=USERS_DB[S.user]&&USERS_DB[S.user].role==="admin";
     const unlockBtn=(lock&&isAdmin2)
-      ?`<button class="btn-unlock" onclick="adminUnlock('${carrier}','${ds}')" title="Desfazer lançamento">🔓 Desbloquear</button>`
+      ?`<button class="btn-unlock" onclick="adminUnlock('${attr(jsArg(carrier))}','${attr(jsArg(ds))}')" title="Desfazer lançamento">🔓 Desbloquear</button>`
       :'';
     sections+=`<div class="carrier-block">
-      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
+      <div class="carrier-head"><span class="ch-icon">🚛</span>${esc(carrier)}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1160px">
         <thead><tr><th style="width:8%">PLACA</th><th style="width:12%">OPERAÇÃO</th><th style="width:8%">TIPO</th><th style="width:8%">IDENTIFICAÇÃO</th><th style="width:7%">CONTRATO</th><th style="width:6%">CAPACIDADE</th><th style="width:13%">STATUS</th><th style="width:7%"><span style="font-size:9px">HODÔMETRO</span></th><th style="width:6%">HORÁRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
-  const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>`<option${o===opFilter?" selected":""}>${o}</option>`).join("")}`;
+  const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>optHtml(o, o===opFilter)).join("")}`;
   body.innerHTML=`
     <div class="date-nav">
       <button onclick="chDate(-1)">‹</button>
@@ -1991,7 +2076,7 @@ async function renderToday(body){
     </div>
     <div class="filters-bar">
       <select onchange="S.todayOp=this.value;renderTabBody()">${opOpts}</select>
-      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.todayPlaca||""}" id="today-search-input" oninput="S.todayPlaca=this.value;_debouncedTodaySearch()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;">
+      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${attr(S.todayPlaca||"")}" id="today-search-input" oninput="S.todayPlaca=this.value;_debouncedTodaySearch()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;">
     </div>
     ${pendingAlerts}
     <div class="summary-grid">
@@ -2011,9 +2096,9 @@ async function renderToday(body){
 async function renderHistory(body){
   const cf=S.histCarrier, sf=S.histStatus, of=S.histOp;
   const placaFilter=(S.histPlaca||"").toUpperCase();
-  const carrierOpts=`<option value="">Todos transportadores</option>${CARRIERS.map(c=>`<option${c===cf?" selected":""}>${c}</option>`).join("")}`;
-  const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${s.val}"${s.val===sf?" selected":""}>${s.label}</option>`).join("")}<option value="nao_preenchido"${"nao_preenchido"===sf?" selected":""}>Não preenchido</option>`;
-  const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>`<option${o===of?" selected":""}>${o}</option>`).join("")}`;
+  const carrierOpts=`<option value="">Todos transportadores</option>${CARRIERS.map(c=>optHtml(c, c===cf)).join("")}`;
+  const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${attr(s.val)}"${s.val===sf?" selected":""}>${esc(s.label)}</option>`).join("")}<option value="nao_preenchido"${"nao_preenchido"===sf?" selected":""}>Não preenchido</option>`;
+  const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>optHtml(o, o===of)).join("")}`;
   const daysOpts=[7,15,30,45].map(d=>`<option value="${d}"${d===S.histDays?" selected":""}>${d} dias</option>`).join("");
   body.innerHTML=`
     <div class="filters-bar">
@@ -2021,7 +2106,7 @@ async function renderHistory(body){
       <select onchange="S.histStatus=this.value;renderTabBody()">${statusOpts}</select>
       <select onchange="S.histOp=this.value;renderTabBody()">${opOpts}</select>
       <select onchange="S.histDays=+this.value;renderTabBody()">${daysOpts}</select>
-      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.histPlaca||""}" id="hist-search-input" oninput="S.histPlaca=this.value;_debouncedHistSearch()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;">
+      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${attr(S.histPlaca||"")}" id="hist-search-input" oninput="S.histPlaca=this.value;_debouncedHistSearch()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;">
     </div>
     <div id="hist-result"><div class="loading"><span class="spin"></span>Buscando registros...</div></div>`;
 
@@ -2034,7 +2119,10 @@ async function renderHistory(body){
       for(const ds of dates)
         allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
-  let rows="";
+  const groups={};
+  for(const ds of dates){
+    groups[ds]={ rows:[], counts:{disponivel:0, indisponivel:0, manutencao:0, folga:0, programado:0, nao_preenchido:0, total:0}, carriers:new Set() };
+  }
   for(const carrier of carriersToShow){
     for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!of||p.operacao===of)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)))){
       for(const ds of dates){
@@ -2047,29 +2135,74 @@ async function renderHistory(body){
         const st=isBlank?null:getSt(v);
         const statusBadge=isBlank
           ?`<span class="badge b-blank">Não preenchido</span>`
-          :`<span class="badge ${st.badge}">${st.label}</span>`;
-        rows+=`<tr>
-          <td style="font-size:12px;white-space:nowrap">${fmtDateStr(ds)}</td>
-          <td style="font-size:12px;color:var(--muted)">${carrier}</td>
-          <td style="font-family:'DM Mono',monospace;font-weight:500">${p.placa}</td>
-          <td style="font-size:12px">${p.operacao}</td>
-          <td><span class="badge b-lime">${p.tipo}</span></td>
+          :`<span class="badge ${st.badge}">${esc(st.label)}</span>`;
+        const row=`<tr>
+          <td style="font-size:12px;color:var(--muted)">${esc(carrier)}</td>
+          <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(p.placa)}</td>
+          <td style="font-size:12px">${esc(p.operacao)}</td>
+          <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
           <td>${statusBadge}</td>
           <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(t)}</td>
-        <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'Não preenchido'}</td>
-        <td>${renderDriverCell(!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?((rec&&rec.motoristaDiurno)||p.motoristaDiurno):'',!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?((rec&&rec.motoristaNoturno)||p.motoristaNoturno):'')}</td>
+          <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?esc(rec.hodometro):'Não preenchido'}</td>
+          <td>${renderDriverCell(!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?((rec&&rec.motoristaDiurno)||p.motoristaDiurno):'',!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?((rec&&rec.motoristaNoturno)||p.motoristaNoturno):'')}</td>
         </tr>`;
+        const g=groups[ds];
+        g.rows.push(row);
+        g.counts.total++;
+        g.counts[v||"nao_preenchido"]=(g.counts[v||"nao_preenchido"]||0)+1;
+        g.carriers.add(carrier);
       }
     }
   }
+  const groupRows=dates.slice().reverse().map(ds=>{
+    const g=groups[ds];
+    if(!g||!g.rows.length) return "";
+    const c=g.counts;
+    const open=!!(S.histOpenDays&&S.histOpenDays[ds]);
+    const detailId=`hist-day-${ds}`;
+    const detail=`<tr class="hist-detail-row" id="${detailId}" style="${open?'':'display:none'}">
+      <td colspan="8">
+        <div class="hist-detail-box">
+          <table class="table hist-detail-table">
+            <thead><tr><th style="width:18%">TRANSPORTADOR</th><th style="width:10%">PLACA</th><th style="width:14%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:13%">STATUS</th><th style="width:9%">HORÁRIO</th><th style="width:12%">HODÔMETRO</th><th style="width:15%">MOTORISTAS</th></tr></thead>
+            <tbody>${g.rows.join("")}</tbody>
+          </table>
+        </div>
+      </td>
+    </tr>`;
+    return `<tr class="hist-day-row" onclick="toggleHistoryDay('${ds}')">
+      <td style="width:46px"><button class="hist-expand-btn" title="${open?'Recolher dia':'Expandir dia'}">${open?'−':'+'}</button></td>
+      <td style="font-size:13px;font-weight:600;white-space:nowrap">${fmtDateStr(ds)}</td>
+      <td><span class="cap-tag">${c.total} registro(s)</span></td>
+      <td style="font-size:12px;color:var(--muted)">${g.carriers.size} transportador(es)</td>
+      <td><span class="badge b-green">${c.disponivel||0}</span></td>
+      <td><span class="badge b-red">${c.indisponivel||0}</span></td>
+      <td><span class="badge b-amber">${c.manutencao||0}</span> <span class="badge b-blue">${c.folga||0}</span> <span class="badge b-purple">${c.programado||0}</span></td>
+      <td><span class="badge b-blank">${c.nao_preenchido||0}</span></td>
+    </tr>${detail}`;
+  }).join("");
   const result=document.getElementById("hist-result");
-  if(!rows){result.innerHTML=`<div class="empty"><span class="ei">🔍</span>Nenhum registro encontrado.</div>`;return;}
+  if(!groupRows){result.innerHTML=`<div class="empty"><span class="ei">🔍</span>Nenhum registro encontrado.</div>`;return;}
   result.innerHTML=`
-    <div class="tscroll"><table class="table">
-      <thead><tr><th style="width:11%">DATA</th><th style="width:18%">TRANSPORTADOR</th><th style="width:9%">PLACA</th><th style="width:12%">OPERAÇÃO</th><th style="width:8%">TIPO</th><th style="width:11%">STATUS</th><th style="width:8%">HORÁRIO</th><th style="width:11%">HODÔMETRO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
-      <tbody>${rows}</tbody>
+    <div class="tscroll"><table class="table hist-table">
+      <thead><tr><th style="width:46px"></th><th style="width:13%">DATA</th><th style="width:13%">TOTAL</th><th style="width:18%">TRANSPORTADORES</th><th style="width:11%">DISP.</th><th style="width:11%">INDISP.</th><th style="width:18%">OUTROS</th><th style="width:16%">NÃO PREENCHIDO</th></tr></thead>
+      <tbody>${groupRows}</tbody>
     </table></div>
     <p style="font-size:11px;color:var(--muted);margin-top:10px">Últimos ${S.histDays} dias</p>`;
+}
+
+function toggleHistoryDay(ds){
+  S.histOpenDays = S.histOpenDays || {};
+  S.histOpenDays[ds] = !S.histOpenDays[ds];
+  const detail=document.getElementById(`hist-day-${ds}`);
+  const row=detail?.previousElementSibling;
+  const btn=row?.querySelector('.hist-expand-btn');
+  const open=!!S.histOpenDays[ds];
+  if(detail) detail.style.display=open?'':'none';
+  if(btn){
+    btn.textContent=open?'−':'+';
+    btn.title=open?'Recolher dia':'Expandir dia';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2342,11 +2475,11 @@ async function renderRegister(body){
   if(S.registerSubTab==='drivers'){ await renderRegisterDrivers(body, subTabs); return; }
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando placas...</div>`;
   const allP=await dbGetPlates();
-  const carrierOpts=CARRIERS.map(c=>`<option>${c}</option>`).join("");
-  const opOpts=OPERACOES.map(o=>`<option>${o}</option>`).join("");
-  const tvOpts=TIPOS_VEIC.map(o=>`<option>${o}</option>`).join("");
-  const idOpts=IDENTS.map(o=>`<option>${o}</option>`).join("");
-  const ctOpts=CONTRATOS.map(o=>`<option>${o}</option>`).join("");
+  const carrierOpts=CARRIERS.map(c=>optHtml(c)).join("");
+  const opOpts=OPERACOES.map(o=>optHtml(o)).join("");
+  const tvOpts=TIPOS_VEIC.map(o=>optHtml(o)).join("");
+  const idOpts=IDENTS.map(o=>optHtml(o)).join("");
+  const ctOpts=CONTRATOS.map(o=>optHtml(o)).join("");
   let listHTML="";
   for(const carrier of CARRIERS){
     const plates=allP[carrier]||[];
@@ -2357,22 +2490,22 @@ async function renderRegister(body){
         ?`<span class="badge b-green" style="font-size:10px">Ativo</span>`
         :`<span class="badge b-red" style="font-size:10px">Inativo</span>`;
       const toggleBtn=ativo
-        ?`<button class="btn-toggle-off" onclick="togglePlate('${carrier}',${idx},false)" title="Desativar">⏸</button>`
-        :`<button class="btn-toggle-on" onclick="togglePlate('${carrier}',${idx},true)" title="Ativar">▶</button>`;
-      return `<tr id="row-${carrier.replace(/ /g,'_')}-${idx}" style="${ativo?'':'opacity:.55;background:rgba(240,96,96,.04)'}">
-        <td style="font-family:'DM Mono',monospace;font-weight:500">${p.placa}</td>
-        <td style="font-size:12px">${p.operacao}</td>
-        <td><span class="badge b-lime">${p.tipo}</span></td>
-        <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${p.identificacao}</span></td>
-        <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${p.contrato}</span></td>
-        <td><span class="cap-tag">${p.capacidade}m³</span></td>
+        ?`<button class="btn-toggle-off" onclick="togglePlate('${attr(jsArg(carrier))}',${idx},false)" title="Desativar">⏸</button>`
+        :`<button class="btn-toggle-on" onclick="togglePlate('${attr(jsArg(carrier))}',${idx},true)" title="Ativar">▶</button>`;
+      return `<tr id="row-${attr(carrier.replace(/ /g,'_'))}-${idx}" style="${ativo?'':'opacity:.55;background:rgba(240,96,96,.04)'}">
+        <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(p.placa)}</td>
+        <td style="font-size:12px">${esc(p.operacao)}</td>
+        <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
+        <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${esc(p.identificacao)}</span></td>
+        <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${esc(p.contrato)}</span></td>
+        <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
         <td>${statusBadge}</td>
         <td>${renderDriverCell(p.motoristaDiurno,p.motoristaNoturno)}</td>
         <td style="white-space:nowrap;vertical-align:middle">
           <div style="display:inline-flex;gap:5px;align-items:center">
             ${toggleBtn}
-            <button class="btn-edit" onclick="openEditModal('${carrier}',${idx})" title="Editar">✏️</button>
-            <button class="btn-danger" onclick="delPlate('${carrier}',${idx})" title="Remover">🗑</button>
+            <button class="btn-edit" onclick="openEditModal('${attr(jsArg(carrier))}',${idx})" title="Editar">✏️</button>
+            <button class="btn-danger" onclick="delPlate('${attr(jsArg(carrier))}',${idx})" title="Remover">🗑</button>
           </div>
         </td>
       </tr>`;
@@ -2380,7 +2513,7 @@ async function renderRegister(body){
     const activeCount=plates.filter(p=>p.ativo!==false).length;
     const inactiveCount=plates.length-activeCount;
     listHTML+=`<div class="carrier-block">
-      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${activeCount} ativo(s)</span>${inactiveCount>0?`<span class="ch-count" style="color:var(--red)">${inactiveCount} inativo(s)</span>`:''}</div>
+      <div class="carrier-head"><span class="ch-icon">🚛</span>${esc(carrier)}<span class="ch-count">${activeCount} ativo(s)</span>${inactiveCount>0?`<span class="ch-count" style="color:var(--red)">${inactiveCount} inativo(s)</span>`:''}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:620px">
         <thead><tr><th style="width:10%">PLACA</th><th style="width:16%">OPERAÇÃO</th><th style="width:10%">TIPO</th><th style="width:12%">IDENTIFICAÇÃO</th><th style="width:10%">CONTRATO</th><th style="width:9%">CAPACIDADE</th><th style="width:8%">STATUS</th><th style="width:15%">MOTORISTAS</th><th style="width:10%">AÇÕES</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -2616,23 +2749,23 @@ async function renderUsers(body){
   // Carriers section
   const carrierRows = CARRIERS.map((c,i)=>`
     <tr>
-      <td style="font-size:13px">${c}</td>
+      <td style="font-size:13px">${esc(c)}</td>
       <td><button class="btn-danger" onclick="deleteCarrier(${i})">🗑</button></td>
     </tr>`).join("");
 
   // Users section (exclude admin from edit/delete)
   const userRows = Object.entries(USERS_DB).map(([uid,u])=>`
     <tr>
-      <td style="font-family:'DM Mono',monospace;font-weight:500">${uid}</td>
-      <td style="font-size:12px">${u.name}</td>
+      <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(uid)}</td>
+      <td style="font-size:12px">${esc(u.name)}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
-      <td style="font-size:12px;color:var(--muted)">${u.carrier||'—'}</td>
-      <td style="font-size:11px;color:var(--muted)">${(u.operacoes&&u.operacoes.length)?u.operacoes.join(', '):'Todas'}</td>
+      <td style="font-size:12px;color:var(--muted)">${esc(u.carrier||'—')}</td>
+      <td style="font-size:11px;color:var(--muted)">${(u.operacoes&&u.operacoes.length)?esc(u.operacoes.join(', ')):'Todas'}</td>
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
-          <button class="btn-edit" onclick="openEditUser('${uid}')" title="Editar">✏️</button>
-          ${uid!==S.user?`<button class="btn-reset-pwd" onclick="openResetPwd('${uid}')" title="Resetar senha">🔑</button>`:''}
-          ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${uid}')" title="Remover">🗑</button>`:''}
+          <button class="btn-edit" onclick="openEditUser('${attr(jsArg(uid))}')" title="Editar">✏️</button>
+          ${uid!==S.user?`<button class="btn-reset-pwd" onclick="openResetPwd('${attr(jsArg(uid))}')" title="Resetar senha">🔑</button>`:''}
+          ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${attr(jsArg(uid))}')" title="Remover">🗑</button>`:''}
         </div>
       </td>
     </tr>`).join("");
@@ -2675,7 +2808,7 @@ async function renderUsers(body){
           </select>
         </div>
         <div class="form-field" id="new-carrier-field"><label>TRANSPORTADOR</label>
-          <select id="new-ucarrier" onchange="renderOpCheckboxes('new-op-checks','new-ucarrier')">${CARRIERS.map(c=>`<option>${c}</option>`).join('')}</select>
+          <select id="new-ucarrier" onchange="renderOpCheckboxes('new-op-checks','new-ucarrier')">${CARRIERS.map(c=>optHtml(c)).join('')}</select>
         </div>
         <div class="form-field" id="new-op-field" style="display:none;grid-column:1/-1">
           <label>OPERAÇÕES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
@@ -2713,7 +2846,7 @@ function renderOpCheckboxes(containerId, carrierSelId){
   if(!container) return;
   container.innerHTML=OPERACOES.map(op=>`
     <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none">
-      <input type="checkbox" value="${op}" style="accent-color:var(--lime);cursor:pointer"> ${op}
+      <input type="checkbox" value="${attr(op)}" style="accent-color:var(--lime);cursor:pointer"> ${esc(op)}
     </label>`).join('');
 }
 
@@ -2760,9 +2893,10 @@ async function addUser(){
   if(!pwd||pwd.length<6){msg.textContent='Senha deve ter mín. 6 caracteres.';msg.style.color='var(--red)';return;}
   if(USERS_DB[uid]){msg.textContent='Login já existe.';msg.style.color='var(--red)';return;}
   const btn=document.querySelector('#user-msg')?.previousElementSibling;
-  // Cria o usuário no Firebase Auth (email fictício: uid@nexta-frota.app)
+  // Cria o usuário no Firebase Auth secundário para preservar a sessão atual do admin.
   try {
-    await createUserWithEmailAndPassword(auth, uidToEmail(uid), pwd);
+    await createUserWithEmailAndPassword(userCreateAuth, uidToEmail(uid), pwd);
+    await signOut(userCreateAuth).catch(()=>{});
   } catch(e) {
     const code=e.code||"";
     if(code==='auth/email-already-in-use'){
@@ -2796,22 +2930,22 @@ async function deleteUser(uid){
 function openEditUser(uid){
   const u=USERS_DB[uid];
   if(!u) return;
-  const carrierOpts=CARRIERS.map(c=>`<option${c===u.carrier?' selected':''}>${c}</option>`).join('');
+  const carrierOpts=CARRIERS.map(c=>optHtml(c, c===u.carrier)).join('');
   const isAdmin=uid==='admin';
   const roleOpts=[
     {val:'carrier',  label:'Transportador'},
     {val:'operacional',label:'Operacional'},
     {val:'admin',    label:'Administrador'},
-  ].map(r=>`<option value="${r.val}"${u.role===r.val?' selected':''}>${r.label}</option>`).join('');
+  ].map(r=>`<option value="${attr(r.val)}"${u.role===r.val?' selected':''}>${esc(r.label)}</option>`).join('');
 
   const modal=document.createElement('div');
   modal.id='edit-user-modal';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
   modal.innerHTML=`
     <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:480px">
-      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar usuário — ${uid}</p>
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar usuário — ${esc(uid)}</p>
       <div class="form-grid">
-        <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="eu-name" type="text" value="${u.name}"></div>
+        <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="eu-name" type="text" value="${attr(u.name)}"></div>
         <div class="form-field"><label>NOVA SENHA <span style="font-weight:400;color:var(--muted)">(opcional)</span></label><input id="eu-pwd" type="password" placeholder="Deixe em branco para manter"></div>
         ${isAdmin?'':`<div class="form-field"><label>PERFIL</label><select id="eu-role" onchange="onEditRoleChange()">${roleOpts}</select></div>`}
         <div class="form-field" id="eu-carrier-field" style="display:${u.role==='carrier'?'block':'none'}">
@@ -2821,13 +2955,13 @@ function openEditUser(uid){
         <div class="form-field" id="eu-op-field" style="display:${u.role==='carrier'?'block':'none'};grid-column:1/-1">
           <label>OPERAÇÕES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
           <div id="eu-op-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
-            ${OPERACOES.map(op=>`<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none"><input type="checkbox" value="${op}"${(u.operacoes&&u.operacoes.includes(op))?' checked':''} style="accent-color:var(--lime);cursor:pointer"> ${op}</label>`).join('')}
+            ${OPERACOES.map(op=>`<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none"><input type="checkbox" value="${attr(op)}"${(u.operacoes&&u.operacoes.includes(op))?' checked':''} style="accent-color:var(--lime);cursor:pointer"> ${esc(op)}</label>`).join('')}
           </div>
         </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('edit-user-modal').remove()">Cancelar</button>
-        <button class="btn btn-lime" onclick="saveEditUser('${uid}')">💾 Salvar</button>
+        <button class="btn btn-lime" onclick="saveEditUser('${attr(jsArg(uid))}')">💾 Salvar</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -2898,13 +3032,15 @@ async function populateDriverSelects(selDiurno='', selNoturno=''){
   if(!selD||!selN) return;
   const allDrivers=await dbGetDrivers();
   const blank='<option value="">— Sem motorista —</option>';
-  let opts=blank;
+  let optsD=blank;
+  let optsN=blank;
   if(carrier&&op){
     const list=(allDrivers[carrier]||[]).filter(d=>d.ativo!==false&&d.operacao===op);
-    opts+=list.map(d=>`<option value="${d.nome}"${d.nome===selDiurno?' selected':''}>${d.nome}</option>`).join('');
+    optsD+=list.map(d=>optHtml(d.nome, d.nome===selDiurno)).join('');
+    optsN+=list.map(d=>optHtml(d.nome, d.nome===selNoturno)).join('');
   }
-  selD.innerHTML=opts;
-  selN.innerHTML=opts.replace(`value="${selDiurno}"${selDiurno?' selected':''}`,`value="${selDiurno}"`);
+  selD.innerHTML=optsD;
+  selN.innerHTML=optsN;
   if(selNoturno) selN.value=selNoturno;
 }
 
@@ -2936,18 +3072,18 @@ async function renderRegisterDrivers(body, subTabs=''){
         const realIdx=(allDrivers[carrier]||[]).findIndex(x=>x.nome===d.nome&&x.operacao===d.operacao&&x.turno===d.turno);
         const ativo=d.ativo!==false;
         return `<tr style="${ativo?'':'opacity:.5;background:rgba(240,96,96,.04)'}">
-          <td style="font-weight:500">${d.nome}</td>
+          <td style="font-weight:500">${esc(d.nome)}</td>
           <td><span class="badge ${d.turno==='Diurno'?'b-amber':'b-blue'}">${d.turno==='Diurno'?'☀ Diurno':'🌙 Noturno'}</span></td>
           <td><span class="badge ${ativo?'b-green':'b-red'}" style="font-size:10px">${ativo?'Ativo':'Inativo'}</span></td>
           <td style="white-space:nowrap">
-            <button class="btn-toggle-${ativo?'off':'on'}" onclick="toggleDriver('${carrier}',${realIdx},${!ativo})" title="${ativo?'Desativar':'Ativar'}">${ativo?'⏸':'▶'}</button>
-            <button class="btn-edit" onclick="openEditDriver('${carrier}',${realIdx})" title="Editar">✏️</button>
-            <button class="btn-danger" onclick="deleteDriver('${carrier}',${realIdx})" title="Remover">🗑</button>
+            <button class="btn-toggle-${ativo?'off':'on'}" onclick="toggleDriver('${attr(jsArg(carrier))}',${realIdx},${!ativo})" title="${ativo?'Desativar':'Ativar'}">${ativo?'⏸':'▶'}</button>
+            <button class="btn-edit" onclick="openEditDriver('${attr(jsArg(carrier))}',${realIdx})" title="Editar">✏️</button>
+            <button class="btn-danger" onclick="deleteDriver('${attr(jsArg(carrier))}',${realIdx})" title="Remover">🗑</button>
           </td>
         </tr>`;
       }).join('');
       opSections+=`<div style="margin-bottom:1rem">
-        <p style="font-size:11px;color:var(--muted);letter-spacing:.06em;margin-bottom:.5rem;padding:0 2px">📍 ${op}</p>
+        <p style="font-size:11px;color:var(--muted);letter-spacing:.06em;margin-bottom:.5rem;padding:0 2px">📍 ${esc(op)}</p>
         <table class="table" style="min-width:420px;table-layout:fixed;width:100%">
           <thead><tr><th style="width:55%">NOME</th><th style="width:15%">TURNO</th><th style="width:12%">STATUS</th><th style="width:18%">AÇÕES</th></tr></thead>
           <tbody>${rows}</tbody>
@@ -2956,7 +3092,7 @@ async function renderRegisterDrivers(body, subTabs=''){
     }
     if(!opSections) opSections=`<p style="font-size:13px;color:var(--muted);padding:.75rem 0">Nenhum motorista cadastrado.</p>`;
     listHTML+=`<div class="carrier-block" style="margin-bottom:1.5rem">
-      <div class="carrier-head"><span class="ch-icon">🚛</span>${carrier}<span class="ch-count">${drivers.filter(d=>d.ativo!==false).length} ativo(s)</span></div>
+      <div class="carrier-head"><span class="ch-icon">🚛</span>${esc(carrier)}<span class="ch-count">${drivers.filter(d=>d.ativo!==false).length} ativo(s)</span></div>
       <div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem">
         <div class="tscroll">${opSections}</div>
       </div>
@@ -2964,8 +3100,8 @@ async function renderRegisterDrivers(body, subTabs=''){
   }
   if(!listHTML) listHTML=`<div class="empty"><span class="ei">👤</span>Nenhum motorista cadastrado.</div>`;
 
-  const carrierOpts=carriersToShow.map(c=>`<option>${c}</option>`).join('');
-  const opOpts=OPERACOES.map(o=>`<option>${o}</option>`).join('');
+  const carrierOpts=carriersToShow.map(c=>optHtml(c)).join('');
+  const opOpts=OPERACOES.map(o=>optHtml(o)).join('');
 
   // Only admin/same carrier can add drivers
   const addForm=isAdmin||u.role==='operacional'?`
@@ -3043,7 +3179,7 @@ function openEditDriver(carrier,idx){
     const d=allDrivers[carrier]&&allDrivers[carrier][idx];
     if(!d) return;
     _editPending={driverCarrier:carrier,driverIdx:idx};
-    const opOpts=OPERACOES.map(o=>`<option${o===d.operacao?' selected':''}>${o}</option>`).join('');
+    const opOpts=OPERACOES.map(o=>optHtml(o, o===d.operacao)).join('');
     const existing=document.getElementById('edit-driver-modal');
     if(existing) existing.remove();
     const modal=document.createElement('div');
@@ -3051,9 +3187,9 @@ function openEditDriver(carrier,idx){
     modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
     modal.innerHTML=`
       <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:460px">
-        <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar motorista — ${d.nome}</p>
+        <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar motorista — ${esc(d.nome)}</p>
         <div class="form-grid">
-          <div class="form-field"><label>NOME COMPLETO</label><input id="ed-nome" type="text" value="${d.nome}"></div>
+          <div class="form-field"><label>NOME COMPLETO</label><input id="ed-nome" type="text" value="${attr(d.nome)}"></div>
           <div class="form-field"><label>OPERAÇÃO</label><select id="ed-op">${opOpts}</select></div>
           <div class="form-field"><label>TURNO</label>
             <select id="ed-turno">
@@ -3093,7 +3229,7 @@ async function saveEditDriver(){
 async function renderRegisterOps(body, subTabs=''){
   const opRows=OPERACOES.map((o,i)=>`
     <tr>
-      <td style="font-size:13px">${o}</td>
+      <td style="font-size:13px">${esc(o)}</td>
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
           <button class="btn-edit" onclick="openEditOp(${i})" title="Editar">✏️</button>
@@ -3158,7 +3294,7 @@ function openEditOp(idx){
       <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar operação</p>
       <div class="form-field">
         <label>NOME DA OPERAÇÃO</label>
-        <input id="edit-op-name" type="text" value="${name}">
+        <input id="edit-op-name" type="text" value="${attr(name)}">
       </div>
       <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('edit-op-modal').remove()">Cancelar</button>
@@ -3207,18 +3343,18 @@ async function openEditModal(carrier, idx){
   if(!p){ showToast('Placa não encontrada.', false); return; }
   // Store for saveEdit to reference
   _editPending = { carrier, idx };
-  const opOpts=OPERACOES.map(o=>`<option${o===p.operacao?' selected':''}>${o}</option>`).join('');
-  const tvOpts=TIPOS_VEIC.map(o=>`<option${o===p.tipo?' selected':''}>${o}</option>`).join('');
-  const idOpts=IDENTS.map(o=>`<option${o===p.identificacao?' selected':''}>${o}</option>`).join('');
-  const ctOpts=CONTRATOS.map(o=>`<option${o===p.contrato?' selected':''}>${o}</option>`).join('');
+  const opOpts=OPERACOES.map(o=>optHtml(o, o===p.operacao)).join('');
+  const tvOpts=TIPOS_VEIC.map(o=>optHtml(o, o===p.tipo)).join('');
+  const idOpts=IDENTS.map(o=>optHtml(o, o===p.identificacao)).join('');
+  const ctOpts=CONTRATOS.map(o=>optHtml(o, o===p.contrato)).join('');
   // Load drivers for this carrier + operation
   const allDrivers = await dbGetDrivers();
   const drvList = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false && d.operacao===p.operacao);
   const drvDiurnos = drvList.filter(d=>d.turno==='Diurno');
   const drvNoturnos = drvList.filter(d=>d.turno==='Noturno');
   const blankOpt = '<option value="">— Sem motorista —</option>';
-  const dOptsDiurno = blankOpt + drvDiurnos.map(d=>`<option value="${d.nome}"${d.nome===p.motoristaDiurno?' selected':''}>${d.nome}</option>`).join('');
-  const dOptsNoturno = blankOpt + drvNoturnos.map(d=>`<option value="${d.nome}"${d.nome===p.motoristaNoturno?' selected':''}>${d.nome}</option>`).join('');
+  const dOptsDiurno = blankOpt + drvDiurnos.map(d=>optHtml(d.nome, d.nome===p.motoristaDiurno)).join('');
+  const dOptsNoturno = blankOpt + drvNoturnos.map(d=>optHtml(d.nome, d.nome===p.motoristaNoturno)).join('');
   // helper note if no drivers
   const noDiurnoNote = drvDiurnos.length===0 ? `<p style="font-size:11px;color:var(--muted);margin-top:4px">Nenhum motorista diurno ativo nesta operação</p>` : '';
   const noNoturnoNote = drvNoturnos.length===0 ? `<p style="font-size:11px;color:var(--muted);margin-top:4px">Nenhum motorista noturno ativo nesta operação</p>` : '';
@@ -3230,13 +3366,13 @@ async function openEditModal(carrier, idx){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
   modal.innerHTML=`
     <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:620px;max-height:90vh;overflow-y:auto">
-      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar placa — ${p.placa}</p>
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:1.25rem">✏️ Editar placa — ${esc(p.placa)}</p>
       <div class="form-grid">
-        <div class="form-field"><label>OPERAÇÃO</label><select id="e-op" onchange="refreshEditDriverOpts('${carrier}')">${opOpts}</select></div>
+        <div class="form-field"><label>OPERAÇÃO</label><select id="e-op" onchange="refreshEditDriverOpts('${attr(jsArg(carrier))}')">${opOpts}</select></div>
         <div class="form-field"><label>TIPO DE VEÍCULO</label><select id="e-tipo">${tvOpts}</select></div>
         <div class="form-field"><label>IDENTIFICAÇÃO</label><select id="e-id">${idOpts}</select></div>
         <div class="form-field"><label>TIPO DE CONTRATO</label><select id="e-contrato">${ctOpts}</select></div>
-        <div class="form-field"><label>CAPACIDADE (m³)</label><input id="e-cap" type="number" value="${p.capacidade}" min="1" max="999"></div>
+        <div class="form-field"><label>CAPACIDADE (m³)</label><input id="e-cap" type="number" value="${attr(p.capacidade)}" min="1" max="999"></div>
       </div>
       <div style="border-top:1px solid var(--border);margin:1.25rem 0;padding-top:1.25rem">
         <p style="font-size:12px;font-weight:500;color:var(--lime);margin-bottom:1rem;letter-spacing:.04em">MOTORISTAS VINCULADOS</p>
@@ -3272,8 +3408,8 @@ async function refreshEditDriverOpts(carrier){
   const blank = '<option value="">— Sem motorista —</option>';
   const selD = document.getElementById('e-mot-d');
   const selN = document.getElementById('e-mot-n');
-  if(selD) selD.innerHTML = blank + drvDiurnos.map(d=>`<option value="${d.nome}">${d.nome}</option>`).join('');
-  if(selN) selN.innerHTML = blank + drvNoturnos.map(d=>`<option value="${d.nome}">${d.nome}</option>`).join('');
+  if(selD) selD.innerHTML = blank + drvDiurnos.map(d=>optHtml(d.nome)).join('');
+  if(selN) selN.innerHTML = blank + drvNoturnos.map(d=>optHtml(d.nome)).join('');
 }
 async function saveEdit(){
   const {carrier, idx} = _editPending;
@@ -3352,7 +3488,7 @@ async function saveChangePwd(){
   }
 }
 // ═══════════════════════════════════════════════════════════
-// RESET DE SENHA PELO ADMIN (via Identity Toolkit REST API)
+// RESET DE SENHA PELO ADMIN
 // ═══════════════════════════════════════════════════════════
 function openResetPwd(uid){
   const u = USERS_DB[uid];
@@ -3365,82 +3501,17 @@ function openResetPwd(uid){
   modal.innerHTML = `
     <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
       <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">🔑 Resetar senha</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">Definindo uma senha temporária para <b style="color:var(--text)">${u.name}</b>. O usuário deve trocá-la após o próximo login.</p>
-      <div class="form-grid" style="grid-template-columns:1fr">
-        <div class="form-field">
-          <label>SENHA TEMPORÁRIA</label>
-          <input id="rp-pwd" type="text" placeholder="Mín. 6 caracteres" autocomplete="off">
-        </div>
-        <div class="form-field">
-          <label>CONFIRMAR SENHA</label>
-          <input id="rp-confirm" type="text" placeholder="Repita a senha" autocomplete="off">
-        </div>
-      </div>
-      <div id="rp-msg" style="font-size:12px;color:var(--red);min-height:18px;margin-bottom:.75rem"></div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:.75rem">O Firebase Web SDK não permite que uma sessão comum altere a senha de outro usuário com segurança.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">Para redefinir a senha de <b style="color:var(--text)">${esc(u.name)}</b>, use o Console do Firebase ou uma Cloud Function com Admin SDK. Assim o painel não expõe um fluxo que parece funcionar, mas falha ou abre brecha de permissão.</p>
       <div style="display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn btn-outline" onclick="document.getElementById('reset-pwd-modal').remove()">Cancelar</button>
-        <button class="btn btn-lime" id="rp-btn" onclick="saveResetPwd('${uid}')">🔑 Resetar senha</button>
+        <button class="btn btn-lime" onclick="document.getElementById('reset-pwd-modal').remove()">Entendi</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
-  setTimeout(()=>document.getElementById('rp-pwd')?.focus(), 80);
 }
 
 async function saveResetPwd(uid){
-  const pwd     = document.getElementById('rp-pwd')?.value.trim()||'';
-  const confirm = document.getElementById('rp-confirm')?.value.trim()||'';
-  const msg     = document.getElementById('rp-msg');
-  const btn     = document.getElementById('rp-btn');
-  if(pwd.length < 6){ msg.textContent = 'A senha deve ter pelo menos 6 caracteres.'; return; }
-  if(pwd !== confirm){ msg.textContent = 'As senhas não coincidem.'; return; }
-  btn.disabled = true; btn.textContent = 'Resetando...';
-
-  // Usa a Identity Toolkit REST API para atualizar a senha de qualquer conta
-  // sem precisar estar autenticado como ela. Requer a apiKey pública do projeto.
-  try {
-    // 1. Busca o UID do Firebase Auth via lookup pelo email fictício
-    const lookupRes = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseConfig.apiKey}`,
-      { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ idToken: await auth.currentUser.getIdToken() }) }
-    );
-    // 2. Atualiza a senha usando o token do admin logado
-    const updateRes = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:update?key=${firebaseConfig.apiKey}`,
-      { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          email: uidToEmail(uid),
-          password: pwd,
-          returnSecureToken: false
-        })
-      }
-    );
-    if(!updateRes.ok){
-      const err = await updateRes.json();
-      // Se não encontrou, provavelmente o usuário ainda não foi criado no Firebase Auth
-      const code = err?.error?.message||'';
-      if(code === 'EMAIL_NOT_FOUND'){
-        // Cria a conta no Firebase Auth agora
-        const createRes = await fetch(
-          `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`,
-          { method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ email: uidToEmail(uid), password: pwd, returnSecureToken: false }) }
-        );
-        if(!createRes.ok){
-          const cerr = await createRes.json();
-          throw new Error(cerr?.error?.message||'Erro ao criar conta');
-        }
-      } else {
-        throw new Error(code||'Erro ao resetar');
-      }
-    }
-    document.getElementById('reset-pwd-modal').remove();
-    await dbAddAudit('admin_reset_pwd', { target: uid });
-    showToast(`Senha de ${USERS_DB[uid]?.name||uid} redefinida! ✓`);
-  } catch(e){
-    msg.textContent = 'Erro: ' + (e.message||String(e));
-    btn.disabled = false; btn.textContent = '🔑 Resetar senha';
-  }
+  showToast('Reset de senha de terceiros exige Console Firebase ou Cloud Function.', false);
 }
 window.openResetPwd=openResetPwd; window.saveResetPwd=saveResetPwd;
 window.openChangePwd=openChangePwd; window.saveChangePwd=saveChangePwd;
@@ -3450,7 +3521,10 @@ window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
-window.renderTabBody=renderTabBody; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.saveCutoffHour=saveCutoffHour; window.S=S; window.renderKpisMensais=renderKpisMensais;
+window.renderTabBody=renderTabBody; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.S=S; window.renderKpisMensais=renderKpisMensais;
+
+window.addEventListener("resize", _debouncedViewportQualityRefresh, { passive:true });
+window.visualViewport?.addEventListener("resize", _debouncedViewportQualityRefresh, { passive:true });
 
 // ── INIT ──
 // 1. Carrega config pública (carriers, operações) sem precisar estar logado
@@ -3616,6 +3690,15 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .table .badge,.table .cap-tag{max-width:100%;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.15;text-align:center;justify-content:center;padding:3px 7px;font-size:10.5px;}
 .table tr:last-child td{border-bottom:none;}
 .table tbody tr:hover{background:var(--lime-bg);}
+.hist-table tbody tr:hover{background:transparent;}
+.hist-day-row{cursor:pointer;background:var(--card);}
+.hist-day-row:hover{background:var(--lime-bg)!important;}
+.hist-expand-btn{width:26px;height:26px;border-radius:7px;border:1px solid rgba(200,240,50,.35);background:rgba(200,240,50,.08);color:var(--lime);font-size:18px;font-weight:700;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
+.hist-detail-row>td{padding:0!important;background:var(--dark);}
+.hist-detail-box{padding:10px 12px 14px;border-top:1px solid var(--border);}
+.hist-detail-table{border-radius:7px;min-width:980px;}
+.hist-detail-table th{background:rgba(200,240,50,.03);}
+.hist-detail-table tbody tr:hover{background:var(--lime-bg);}
 .st-sel{font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid;outline:none;}
 .st-disp{background:var(--green-bg);color:var(--green);border-color:rgba(110,224,74,.3);}
 .st-indisp{background:var(--red-bg);color:var(--red);border-color:rgba(240,96,96,.3);}
@@ -3655,32 +3738,48 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 .kpi-rank-row td{padding:10px 14px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle;}
 .kpi-rank-row:last-child td{border-bottom:none;}
 .sla-rank-item{display:flex;align-items:center;gap:10px;background:var(--dark);border-radius:8px;padding:8px 12px;border:1px solid var(--border);}
-.sla-rank-ok{border-color:rgba(110,224,74,.2);}
-.sla-rank-pend{border-color:rgba(240,96,96,.15);}
-.sla-rank-medal{font-size:15px;width:22px;flex-shrink:0;text-align:center;}
+.sla-rank-pend{border-color:rgba(240,190,64,.24);background:rgba(240,190,64,.04);}
+.sla-rank-high{border-color:rgba(240,96,96,.28);background:rgba(240,96,96,.045);}
+.sla-rank-critical{border-color:rgba(240,96,96,.46);background:rgba(240,96,96,.08);}
+.sla-rank-medal{font-size:13px;width:22px;flex-shrink:0;text-align:center;color:var(--red);font-weight:700;font-family:'DM Mono',monospace;}
 .sla-rank-name{font-size:12px;font-weight:500;color:var(--text);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .sla-rank-bar-wrap{width:80px;height:5px;background:rgba(228,242,200,.08);border-radius:99px;overflow:hidden;flex-shrink:0;}
 .sla-rank-bar-fill{display:block;height:100%;border-radius:99px;transition:width .4s;}
 .sla-rank-tag{font-size:10px;font-weight:600;padding:2px 8px;border-radius:99px;flex-shrink:0;}
-.sla-tag-ok{color:var(--green);background:rgba(110,224,74,.12);border:1px solid rgba(110,224,74,.25);}
 .sla-tag-pend{color:var(--red);background:rgba(240,96,96,.12);border:1px solid rgba(240,96,96,.25);}
 .sla-cutoff{background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;min-width:220px;}
 
-.pending-alert{display:flex;align-items:flex-start;gap:14px;border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:1.5rem;border:1px solid var(--border);}
-.pending-alert.warn{background:rgba(240,190,64,.09);border-color:rgba(240,190,64,.34);}
-.pending-alert.ok{background:rgba(110,224,74,.08);border-color:rgba(110,224,74,.28);}
-.pa-icon{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-weight:700;font-size:14px;background:rgba(240,190,64,.16);color:var(--amber);border:1px solid rgba(240,190,64,.35);}
+.pending-alert{display:flex;align-items:flex-start;gap:16px;border-radius:var(--radius-lg);padding:18px 20px;margin-bottom:1.5rem;border:1px solid var(--border);box-shadow:0 10px 24px rgba(0,0,0,.14);}
+.pending-alert.warn{background:linear-gradient(180deg,rgba(240,190,64,.105),rgba(240,190,64,.055));border-color:rgba(240,190,64,.34);}
+.pending-alert.ok{background:linear-gradient(180deg,rgba(110,224,74,.09),rgba(110,224,74,.045));border-color:rgba(110,224,74,.28);}
+.pa-icon{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-weight:800;font-size:15px;background:rgba(240,190,64,.16);color:var(--amber);border:1px solid rgba(240,190,64,.38);}
 .pending-alert.ok .pa-icon{background:rgba(110,224,74,.14);color:var(--green);border-color:rgba(110,224,74,.35);}
 .pa-content{flex:1;min-width:0;}
-.pa-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:2px;}
-.pa-sub{font-size:12px;color:var(--muted);margin-bottom:10px;}
-.pa-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;}
-.pa-group{background:rgba(17,29,10,.42);border:1px solid rgba(228,242,200,.08);border-radius:var(--radius);padding:10px;}
-.pa-day{font-size:11px;font-weight:600;color:var(--amber);letter-spacing:.05em;margin-bottom:8px;text-transform:uppercase;}
-.pa-day span{font-weight:400;color:var(--muted);letter-spacing:0;text-transform:none;margin-left:6px;}
-.pa-list{display:flex;flex-wrap:wrap;gap:6px;}
-.pa-chip{display:inline-flex;align-items:center;max-width:100%;border-radius:99px;padding:4px 9px;font-size:11px;color:var(--amber);background:rgba(240,190,64,.12);border:1px solid rgba(240,190,64,.28);}
+.pa-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px;}
+.pa-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:3px;}
+.pa-sub{font-size:12px;color:var(--muted);}
+.pa-metrics{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
+.pa-metric{min-width:74px;background:rgba(11,22,7,.66);border:1px solid rgba(228,242,200,.1);border-radius:9px;padding:7px 10px;text-align:center;}
+.pa-metric.warn{border-color:rgba(240,190,64,.28);}
+.pa-metric.ok{border-color:rgba(110,224,74,.22);}
+.pa-metric-num{display:block;font-size:18px;font-weight:800;line-height:1;color:var(--amber);}
+.pa-metric.ok .pa-metric-num{color:var(--green);}
+.pa-metric-label{display:block;margin-top:4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+.pa-cutoff-note,.pa-cutoff-alert{display:inline-flex;align-items:center;gap:8px;border-radius:8px;padding:7px 10px;margin-bottom:12px;font-size:11px;}
+.pa-cutoff-note{color:var(--muted);background:rgba(11,22,7,.45);border:1px solid rgba(228,242,200,.08);}
+.pa-cutoff-note strong{color:var(--lime);}
+.pa-cutoff-alert{color:var(--red);background:rgba(240,96,96,.1);border:1px solid rgba(240,96,96,.25);}
+.pa-cutoff-alert strong{font-size:11px;color:var(--red);}
+.pa-cutoff-alert span{color:rgba(255,190,190,.86);}
+.pa-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;}
+.pa-group{background:rgba(11,22,7,.5);border:1px solid rgba(228,242,200,.09);border-radius:10px;padding:12px 14px;}
+.pa-group.ok{border-color:rgba(110,224,74,.18);background:rgba(110,224,74,.045);}
+.pa-day{display:flex;align-items:baseline;gap:8px;font-size:11px;font-weight:700;color:var(--amber);letter-spacing:.06em;margin-bottom:9px;text-transform:uppercase;}
+.pa-day small{font-size:11px;font-weight:500;color:var(--muted);letter-spacing:0;text-transform:none;}
+.pa-list{display:flex;flex-wrap:wrap;gap:7px;}
+.pa-chip{display:inline-flex;align-items:center;max-width:100%;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:600;color:var(--amber);background:rgba(240,190,64,.12);border:1px solid rgba(240,190,64,.28);}
 .pa-chip.ok{color:var(--green);background:rgba(110,224,74,.1);border-color:rgba(110,224,74,.25);}
+@media(max-width:720px){.pa-head{flex-direction:column}.pa-metrics{justify-content:flex-start}.pa-groups{grid-template-columns:1fr}.pending-alert{padding:16px;}}
 .op-summary-table td:not(:first-child),.op-summary-table th:not(:first-child){text-align:center;}
 .op-meter{height:7px;background:rgba(228,242,200,.08);border:1px solid rgba(228,242,200,.1);border-radius:99px;overflow:hidden;}
 .op-meter span{display:block;height:100%;background:var(--green);border-radius:99px;}
@@ -3710,10 +3809,11 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 .notif-item:last-child{border-bottom:none;}
 .ni-time{font-size:11px;color:var(--muted);margin-top:3px;}
 .notif-empty{padding:2rem;text-align:center;color:var(--muted);font-size:13px;}
-.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem;}
-.chart-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;}
-.chart-title{font-size:13px;font-weight:500;margin-bottom:1rem;color:var(--dim);}
-canvas{display:block;width:100%!important;}
+.dash-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin-bottom:1.5rem;}
+@media(max-width:980px){.dash-grid{grid-template-columns:1fr;}}
+.chart-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;min-width:0;}
+.chart-title{font-size:13px;font-weight:600;margin-bottom:1rem;color:var(--dim);}
+canvas{display:block;width:100%!important;max-width:100%;contain:size layout paint;}
 .sec-title{font-size:16px;font-weight:500;margin-bottom:.25rem;}
 .sec-sub{font-size:13px;color:var(--muted);margin-bottom:1.25rem;}
 .filters-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:1.25rem;align-items:center;}
@@ -3743,6 +3843,3 @@ canvas{display:block;width:100%!important;}
   </div>
 </body>
 </html>
-
-
-
