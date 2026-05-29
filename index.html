@@ -499,6 +499,7 @@ let S = {
   notifOpen: false, histDays: 45,
   histCarrier:"", histStatus:"", histOp:"", histPlaca:"", todayOp:"", todayPlaca:"",
   registerSubTab: "plates",
+  kpiYear: new Date().getFullYear(), kpiMonth: new Date().getMonth(),
 };
 const SESSION_KEY = "nexta_frota_user";
 let ALERT_CUTOFF_HOUR = 16;
@@ -777,7 +778,7 @@ const MANUAL_OPERACIONAL_HTML = `
   <table class="hm-table">
     <thead><tr><th>Aba</th><th>O que encontrar</th></tr></thead>
     <tbody>
-      <tr><td><b>Dashboard</b></td><td>Resumo executivo com indicadores do dia e gráficos de tendência</td></tr>
+      <tr><td><b>Daily Briefing</b></td><td>Resumo executivo com indicadores do dia e gráficos de tendência</td></tr>
       <tr><td><b>Painel de Disponibilidade</b></td><td>Tabela completa com status de todos os veículos por transportador</td></tr>
       <tr><td><b>Histórico</b></td><td>Registros dos últimos 7 a 45 dias com filtros avançados</td></tr>
       <tr><td><b>Exportar</b></td><td>Geração de relatórios em Excel ou CSV</td></tr>
@@ -793,7 +794,7 @@ const MANUAL_OPERACIONAL_HTML = `
     <li>Se esquecer a senha, solicite ao administrador que redefina uma senha temporária para você.</li>
   </ul>
 
-  <div class="hm-section-title">3. Dashboard</div>
+  <div class="hm-section-title">3. Daily Briefing</div>
   <p>Exibe indicadores consolidados para o dia selecionado. Use as setas <b>‹ ›</b> para navegar entre datas.</p>
   <ul>
     <li><b>Cards de resumo:</b> Disponíveis, Indisponíveis, Manutenção, Folga, Prog./Viagem e Total.</li>
@@ -863,7 +864,7 @@ const MANUAL_OPERACIONAL_HTML = `
   </ul>
 
   <div class="hm-section-title">9. Log de auditoria</div>
-  <p>No Dashboard, o card <b>Últimas ações (auditoria)</b> exibe as ações recentes no sistema em linguagem clara. Exemplos do que é registrado:</p>
+  <p>Na aba Daily Briefing, o card <b>Últimas ações (auditoria)</b> exibe as ações recentes no sistema em linguagem clara. Exemplos do que é registrado:</p>
   <table class="hm-table">
     <thead><tr><th>Ação</th><th>Descrição exibida</th></tr></thead>
     <tbody>
@@ -1255,7 +1256,8 @@ async function renderAdmin(){
   const isOper=u.role==="operacional";
   const mc=document.getElementById("main-content");
   const allTabs=[
-    {id:"dashboard",label:"Dashboard"},
+    {id:"dashboard",label:"Daily Briefing"},
+    {id:"kpis",label:"KPIs Mensais"},
     {id:"today",label:"Painel de Disponibilidade"},
     {id:"history",label:"Histórico"},
     {id:"export",label:"Exportar"},
@@ -1278,7 +1280,7 @@ async function renderAdmin(){
 async function setTab(t){
   S.adminTab=t;
   document.querySelectorAll(".tab").forEach(el=>{
-    const map={dashboard:"Dashboard",today:"Painel de Disponibilidade",history:"Histórico",export:"Exportar",archives:"Arquivos Mensais",register:"Cadastros",users:"Usuários"}; const u2=USERS_DB[S.user]; if(u2&&u2.role==="operacional"&&(t==="register"||t==="users")){showToast("Acesso restrito.",false);return;}
+    const map={dashboard:"Daily Briefing",kpis:"KPIs Mensais",today:"Painel de Disponibilidade",history:"Histórico",export:"Exportar",archives:"Arquivos Mensais",register:"Cadastros",users:"Usuários"}; const u2=USERS_DB[S.user]; if(u2&&u2.role==="operacional"&&(t==="register"||t==="users")){showToast("Acesso restrito.",false);return;}
     el.classList.toggle("active",el.textContent.trim()===map[t]);
   });
   await renderTabBody();
@@ -1287,6 +1289,7 @@ async function renderTabBody(){
   const body=document.getElementById("tab-body");
   if(!body) return;
   if(S.adminTab==="dashboard") await renderDashboard(body);
+  else if(S.adminTab==="kpis") await renderKpisMensais(body);
   else if(S.adminTab==="today") await renderToday(body);
   else if(S.adminTab==="history") await renderHistory(body);
   else if(S.adminTab==="export") await renderExport(body);
@@ -1430,6 +1433,334 @@ async function renderDashboard(body){
 
   requestAnimationFrame(()=>{ drawPie(counts); drawLine(tDates,tDisp); drawBar(byCarrier); });
 }
+// ═══════════════════════════════════════════════════════════
+// KPIs MENSAIS
+// ═══════════════════════════════════════════════════════════
+async function renderKpisMensais(body){
+  body.innerHTML=`<div class="loading"><span class="spin"></span>Calculando KPIs mensais...</div>`;
+  const now=new Date();
+  // Default: mês atual
+  if(S.kpiYear===undefined){ S.kpiYear=now.getFullYear(); S.kpiMonth=now.getMonth(); }
+
+  // Build month selector options (last 6 months + current)
+  const MONTH_NAMES_PT=["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+  const monthOpts=[];
+  for(let i=0;i<=5;i++){
+    const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+    monthOpts.push({year:d.getFullYear(),month:d.getMonth(),label:`${MONTH_NAMES_PT[d.getMonth()]} ${d.getFullYear()}`});
+  }
+  const selOpts=monthOpts.map(m=>`<option value="${m.year}-${m.month}" ${m.year===S.kpiYear&&m.month===S.kpiMonth?"selected":""}>${m.label}</option>`).join("");
+
+  const allP=await dbGetPlates();
+  const dates=getMonthDates(S.kpiYear,S.kpiMonth);
+  // Only dates up to today
+  const todayDs=dateStr(0);
+  const effectiveDates=dates.filter(d=>d<=todayDs);
+  if(!effectiveDates.length){
+    body.innerHTML=`<div class="empty"><span class="ei">📊</span>Nenhum dado ainda para este mês.</div>`;
+    return;
+  }
+
+  // Bulk load all status for this month
+  const allPairs=[];
+  for(const carrier of CARRIERS)
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false))
+      for(const ds of effectiveDates)
+        allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  const statusMap=await dbLoadStatusBulk(allPairs);
+
+  // ── Per-carrier metrics ──────────────────────────────────
+  const carrierMetrics=CARRIERS.map(carrier=>{
+    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
+    if(!plates.length) return null;
+    let totalSlots=0,filledSlots=0,availSlots=0,unavailSlots=0,manutSlots=0,folgaSlots=0,progSlots=0;
+    let diasEnviados=0;
+    for(const ds of effectiveDates){
+      const allFilled=plates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
+      if(allFilled) diasEnviados++;
+      for(const p of plates){
+        const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
+        totalSlots++;
+        if(rec){ filledSlots++; }
+        const v=rec?rec.status:null;
+        if(v==="disponivel") availSlots++;
+        else if(v==="indisponivel") unavailSlots++;
+        else if(v==="manutencao") manutSlots++;
+        else if(v==="folga") folgaSlots++;
+        else if(v==="programado") progSlots++;
+      }
+    }
+    const dispPct=filledSlots?Math.round((availSlots/filledSlots)*100):0;
+    const fillPct=totalSlots?Math.round((filledSlots/totalSlots)*100):0;
+    const slaEnvio=effectiveDates.length?Math.round((diasEnviados/effectiveDates.length)*100):0;
+    return {carrier,plates:plates.length,totalSlots,filledSlots,availSlots,unavailSlots,
+      manutSlots,folgaSlots,progSlots,dispPct,fillPct,slaEnvio,diasEnviados,
+      diasTotal:effectiveDates.length};
+  }).filter(Boolean);
+
+  // ── Global totals ────────────────────────────────────────
+  const totFilled=carrierMetrics.reduce((s,m)=>s+m.filledSlots,0);
+  const totAvail=carrierMetrics.reduce((s,m)=>s+m.availSlots,0);
+  const totSlots=carrierMetrics.reduce((s,m)=>s+m.totalSlots,0);
+  const avgDisp=totFilled?Math.round((totAvail/totFilled)*100):0;
+  const avgFill=totSlots?Math.round((totFilled/totSlots)*100):0;
+  const totalPlates=carrierMetrics.reduce((s,m)=>s+m.plates,0);
+
+  // ── 6-month trend (disponibilidade média por mês) ────────
+  const trendMonths=[];
+  for(let i=5;i>=0;i--){
+    const td=new Date(now.getFullYear(),now.getMonth()-i,1);
+    trendMonths.push({year:td.getFullYear(),month:td.getMonth(),
+      label:MONTH_NAMES_PT[td.getMonth()].slice(0,3)});
+  }
+  // Load trend data (cached — only past months hit Firestore once)
+  const trendData=await Promise.all(trendMonths.map(async tm=>{
+    const mDates=getMonthDates(tm.year,tm.month).filter(d=>d<=todayDs);
+    if(!mDates.length) return {label:tm.label,pct:null};
+    const pairs=[];
+    for(const carrier of CARRIERS)
+      for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false))
+        for(const ds of mDates)
+          pairs.push({carrier,plate:p.placa,dateStr:ds});
+    const sm=await dbLoadStatusBulk(pairs);
+    let f=0,a=0;
+    for(const {carrier,plate,dateStr:ds} of pairs){
+      const rec=sm[`${carrier}||${plate}||${ds}`];
+      if(rec){f++; if(rec.status==="disponivel") a++;}
+    }
+    return {label:tm.label,pct:f?Math.round((a/f)*100):null};
+  }));
+
+  // ── Ranking (sorted by dispPct desc) ─────────────────────
+  const ranked=[...carrierMetrics].sort((a,b)=>b.dispPct-a.dispPct);
+  const META_DISP=95; // % meta de disponibilidade
+
+  const rankRows=ranked.map((m,i)=>{
+    const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
+    const aboveMeta=m.dispPct>=META_DISP;
+    const barColor=aboveMeta?'var(--green)':m.dispPct>=75?'var(--amber)':'var(--red)';
+    const slaColor=m.slaEnvio>=95?'var(--green)':m.slaEnvio>=70?'var(--amber)':'var(--red)';
+    return `<tr class="kpi-rank-row">
+      <td style="font-size:15px;text-align:center;width:36px">${medal}</td>
+      <td style="font-weight:500;font-size:13px">${m.carrier}</td>
+      <td style="text-align:center"><span class="cap-tag">${m.plates}</span></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:6px;background:rgba(228,242,200,.1);border-radius:99px;overflow:hidden;min-width:60px">
+            <div style="height:100%;border-radius:99px;background:${barColor};width:${m.dispPct}%;transition:width .5s"></div>
+          </div>
+          <span style="font-size:13px;font-weight:600;color:${barColor};min-width:36px;text-align:right">${m.dispPct}%</span>
+          ${aboveMeta?`<span class="kpi-badge kpi-badge-ok">✓ Meta</span>`:`<span class="kpi-badge kpi-badge-warn">${META_DISP-m.dispPct}% abaixo</span>`}
+        </div>
+      </td>
+      <td style="text-align:center;font-size:12px;color:${slaColor};font-weight:600">${m.slaEnvio}%</td>
+      <td style="text-align:center;font-size:12px;color:var(--muted)">${m.diasEnviados}/${m.diasTotal}</td>
+      <td style="text-align:center"><span class="badge b-green">${m.availSlots}</span></td>
+      <td style="text-align:center"><span class="badge b-red">${m.unavailSlots}</span></td>
+      <td style="text-align:center"><span class="badge b-amber">${m.manutSlots}</span></td>
+    </tr>`;
+  }).join("");
+
+  const monthLabel=`${MONTH_NAMES_PT[S.kpiMonth]} ${S.kpiYear}`;
+  const diasDecorridos=effectiveDates.length;
+  const diasNoMes=dates.length;
+
+  body.innerHTML=`
+    <!-- Cabeçalho + seletor de mês -->
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:1.5rem">
+      <div>
+        <p class="sec-title" style="margin-bottom:2px">KPIs Mensais</p>
+        <p style="font-size:12px;color:var(--muted)">${diasDecorridos} de ${diasNoMes} dias contabilizados · ${totalPlates} veículos ativos</p>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <select onchange="S.kpiYear=+this.value.split('-')[0];S.kpiMonth=+this.value.split('-')[1];renderTabBody()"
+          style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;color:var(--text);padding:8px 12px;font-size:13px;outline:none">${selOpts}</select>
+      </div>
+    </div>
+
+    <!-- Cards de resumo global -->
+    <div class="summary-grid" style="margin-bottom:1.5rem">
+      <div class="sum-card">
+        <div class="sum-num" style="color:var(--green)">${avgDisp}%</div>
+        <div class="sum-label">Disponibilidade média</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-num" style="color:${avgFill>=95?'var(--green)':avgFill>=70?'var(--amber)':'var(--red)'}">${avgFill}%</div>
+        <div class="sum-label">SLA de preenchimento</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-num" style="color:var(--lime)">${totalPlates}</div>
+        <div class="sum-label">Veículos ativos</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-num" style="color:var(--lime)">${CARRIERS.length}</div>
+        <div class="sum-label">Transportadores</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-num" style="color:var(--green)">${totAvail}</div>
+        <div class="sum-label">Slots disponíveis</div>
+      </div>
+      <div class="sum-card">
+        <div class="sum-num" style="color:var(--muted)">${totSlots-totFilled}</div>
+        <div class="sum-label">Slots não preenchidos</div>
+      </div>
+    </div>
+
+    <!-- Gráfico de tendência 6 meses -->
+    <div class="chart-card" style="margin-bottom:1.5rem">
+      <div class="chart-title">Evolução da disponibilidade — últimos 6 meses</div>
+      <canvas id="kpi-trend-chart" height="160"></canvas>
+    </div>
+
+    <!-- Ranking por transportador -->
+    <div class="chart-card" style="margin-bottom:1.5rem">
+      <div class="chart-title">Ranking de disponibilidade — ${monthLabel}</div>
+      <div class="tscroll">
+        <table class="table" style="min-width:780px">
+          <thead><tr>
+            <th style="width:4%">#</th>
+            <th style="width:24%">TRANSPORTADOR</th>
+            <th style="width:6%">VEÍC.</th>
+            <th style="width:28%">DISPONIBILIDADE</th>
+            <th style="width:8%">SLA ENVIO</th>
+            <th style="width:8%">DIAS ENV.</th>
+            <th style="width:7%">DISP.</th>
+            <th style="width:7%">INDISP.</th>
+            <th style="width:8%">MANUT.</th>
+          </tr></thead>
+          <tbody>${rankRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px;text-align:center;padding:2rem">Nenhum dado para o período.</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div style="margin-top:10px;font-size:11px;color:var(--muted);display:flex;gap:16px;flex-wrap:wrap">
+        <span>Meta de disponibilidade: <b style="color:var(--lime)">${META_DISP}%</b></span>
+        <span>Disponibilidade = slots disponíveis ÷ slots preenchidos</span>
+        <span>SLA envio = dias com todos os veículos preenchidos ÷ dias do período</span>
+      </div>
+    </div>
+
+    <!-- Gráfico de barras comparativo -->
+    <div class="chart-card" style="margin-bottom:1.5rem">
+      <div class="chart-title">Disponibilidade por transportador — ${monthLabel}</div>
+      <canvas id="kpi-bar-chart" height="160"></canvas>
+    </div>`;
+
+  // Draw charts after DOM is ready
+  requestAnimationFrame(()=>{
+    drawKpiTrend(trendData);
+    drawKpiBar(ranked, META_DISP);
+  });
+}
+
+function drawKpiTrend(trendData){
+  const canvas=document.getElementById("kpi-trend-chart"); if(!canvas) return;
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,160,700);
+  const pad={t:18,r:24,b:36,l:38};
+  const W2=W-pad.l-pad.r, H2=H-pad.t-pad.b;
+  const valid=trendData.filter(d=>d.pct!==null);
+  if(!valid.length) return;
+  const maxV=100;
+  // Grid + labels
+  ctx.strokeStyle="rgba(200,240,50,.12)"; ctx.lineWidth=1;
+  [0,25,50,75,100].forEach(v=>{
+    const y=pad.t+H2-(v/maxV)*H2;
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
+    ctx.fillStyle="rgba(228,242,200,.35)"; ctx.font="500 10px DM Mono,monospace";
+    ctx.textAlign="right"; ctx.fillText(v+"%",pad.l-4,y+3); ctx.textAlign="left";
+  });
+  // Meta line
+  const metaY=pad.t+H2-(95/maxV)*H2;
+  ctx.strokeStyle="rgba(200,240,50,.4)"; ctx.lineWidth=1.5;
+  ctx.setLineDash([5,4]);
+  ctx.beginPath(); ctx.moveTo(pad.l,metaY); ctx.lineTo(pad.l+W2,metaY); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle="rgba(200,240,50,.55)"; ctx.font="500 10px DM Sans,sans-serif";
+  ctx.fillText("meta 95%",pad.l+W2-60,metaY-5);
+  // Gradient fill
+  const grad=ctx.createLinearGradient(0,pad.t,0,pad.t+H2);
+  grad.addColorStop(0,"rgba(110,224,74,.22)"); grad.addColorStop(1,"rgba(110,224,74,0)");
+  const pts=trendData.map((d,i)=>({
+    x:pad.l+i*(W2/(trendData.length-1||1)),
+    y:d.pct!==null?pad.t+H2-(d.pct/maxV)*H2:null
+  }));
+  // Fill area
+  ctx.beginPath();
+  let started=false;
+  pts.forEach((p,i)=>{ if(p.y===null) return; if(!started){ctx.moveTo(p.x,p.y);started=true;}else ctx.lineTo(p.x,p.y); });
+  const lastValid=pts.filter(p=>p.y!==null).pop();
+  const firstValid=pts.filter(p=>p.y!==null)[0];
+  if(lastValid&&firstValid){
+    ctx.lineTo(lastValid.x,pad.t+H2); ctx.lineTo(firstValid.x,pad.t+H2);
+    ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
+  }
+  // Line
+  ctx.strokeStyle="var(--green)"; ctx.lineWidth=2.5;
+  ctx.beginPath(); started=false;
+  pts.forEach(p=>{ if(p.y===null){started=false;return;} if(!started){ctx.moveTo(p.x,p.y);started=true;}else ctx.lineTo(p.x,p.y); });
+  ctx.stroke();
+  // Dots + values
+  pts.forEach((p,i)=>{
+    if(p.y===null) return;
+    const v=trendData[i].pct;
+    ctx.beginPath(); ctx.arc(p.x,p.y,4,0,2*Math.PI);
+    ctx.fillStyle=v>=95?"var(--green)":v>=75?"var(--amber)":"var(--red)"; ctx.fill();
+    ctx.strokeStyle="var(--dark)"; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.fillStyle="#e4f2c8"; ctx.font="600 11px DM Sans,sans-serif";
+    ctx.textAlign="center"; ctx.fillText(v+"%",p.x,p.y-10); ctx.textAlign="left";
+    ctx.fillStyle="rgba(228,242,200,.45)"; ctx.font="500 10px DM Sans,sans-serif";
+    ctx.textAlign="center"; ctx.fillText(trendData[i].label,p.x,pad.t+H2+15); ctx.textAlign="left";
+  });
+}
+
+function drawKpiBar(ranked, meta){
+  const canvas=document.getElementById("kpi-bar-chart"); if(!canvas) return;
+  if(!ranked.length) return;
+  const {ctx,W,H}=setupHiDpiCanvas(canvas,160,700);
+  const pad={t:18,r:20,b:52,l:38};
+  const W2=W-pad.l-pad.r, H2=H-pad.t-pad.b;
+  const maxV=100;
+  // Grid
+  ctx.strokeStyle="rgba(200,240,50,.1)"; ctx.lineWidth=1;
+  [0,25,50,75,100].forEach(v=>{
+    const y=pad.t+H2-(v/maxV)*H2;
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+W2,y); ctx.stroke();
+    ctx.fillStyle="rgba(228,242,200,.38)"; ctx.font="500 10px DM Mono,monospace";
+    ctx.textAlign="right"; ctx.fillText(v+"%",pad.l-4,y+3); ctx.textAlign="left";
+  });
+  // Meta line
+  const metaY=pad.t+H2-(meta/maxV)*H2;
+  ctx.strokeStyle="rgba(200,240,50,.45)"; ctx.lineWidth=1.5; ctx.setLineDash([5,4]);
+  ctx.beginPath(); ctx.moveTo(pad.l,metaY); ctx.lineTo(pad.l+W2,metaY); ctx.stroke();
+  ctx.setLineDash([]);
+  // Bars
+  const barW=Math.min(52, W2/ranked.length*.72);
+  const step=W2/ranked.length;
+  ranked.forEach((m,i)=>{
+    const x=pad.l+i*step+(step-barW)/2;
+    const h=(m.dispPct/maxV)*H2||0;
+    const barTop=pad.t+H2-h;
+    const color=m.dispPct>=meta?"var(--green)":m.dispPct>=75?"var(--amber)":"var(--red)";
+    // Bar with rounded top
+    ctx.fillStyle=color;
+    const r=Math.min(5,barW/2,h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r,barTop); ctx.lineTo(x+barW-r,barTop);
+    ctx.quadraticCurveTo(x+barW,barTop,x+barW,barTop+r);
+    ctx.lineTo(x+barW,pad.t+H2); ctx.lineTo(x,pad.t+H2);
+    ctx.lineTo(x,barTop+r); ctx.quadraticCurveTo(x,barTop,x+r,barTop);
+    ctx.closePath(); ctx.fill();
+    // Value label
+    ctx.fillStyle="#e4f2c8"; ctx.font="600 11px DM Sans,sans-serif";
+    ctx.textAlign="center"; ctx.fillText(m.dispPct+"%",x+barW/2,barTop-6);
+    // Carrier name
+    const words=m.carrier.split(" ");
+    const cx=x+barW/2; const lineY=pad.t+H2+14;
+    ctx.fillStyle="rgba(228,242,200,.65)"; ctx.font="500 10px DM Sans,sans-serif";
+    if(words.length<=2){ ctx.fillText(m.carrier,cx,lineY); }
+    else { ctx.fillText(words[0],cx,lineY); ctx.fillText(words.slice(1).join(" "),cx,lineY+12); }
+    ctx.textAlign="left";
+  });
+}
+
 function drawPie(counts){
   const canvas=document.getElementById("pie-chart"); if(!canvas) return;
   const {ctx,W,H}=setupHiDpiCanvas(canvas,180,350);
@@ -3112,7 +3443,7 @@ window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
-window.renderTabBody=renderTabBody; window.saveCutoffHour=saveCutoffHour; window.S=S;
+window.renderTabBody=renderTabBody; window.saveCutoffHour=saveCutoffHour; window.S=S; window.renderKpisMensais=renderKpisMensais;
 
 // ── INIT ──
 // 1. Carrega config pública (carriers, operações) sem precisar estar logado
@@ -3310,6 +3641,12 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 @media(max-width:700px){.sla-bottom-row{grid-template-columns:1fr;}}
 .sla-section-title{font-size:12px;font-weight:600;color:var(--dim);margin-bottom:10px;letter-spacing:.04em;}
 .sla-ranking-list{display:flex;flex-direction:column;gap:7px;}
+.kpi-badge{display:inline-flex;align-items:center;font-size:10px;font-weight:600;padding:2px 8px;border-radius:99px;white-space:nowrap;margin-left:6px;}
+.kpi-badge-ok{color:var(--green);background:rgba(110,224,74,.12);border:1px solid rgba(110,224,74,.28);}
+.kpi-badge-warn{color:var(--amber);background:rgba(240,190,64,.12);border:1px solid rgba(240,190,64,.28);}
+.kpi-rank-row:hover{background:var(--lime-bg);}
+.kpi-rank-row td{padding:10px 14px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle;}
+.kpi-rank-row:last-child td{border-bottom:none;}
 .sla-rank-item{display:flex;align-items:center;gap:10px;background:var(--dark);border-radius:8px;padding:8px 12px;border:1px solid var(--border);}
 .sla-rank-ok{border-color:rgba(110,224,74,.2);}
 .sla-rank-pend{border-color:rgba(240,96,96,.15);}
@@ -3321,6 +3658,7 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 .sla-tag-ok{color:var(--green);background:rgba(110,224,74,.12);border:1px solid rgba(110,224,74,.25);}
 .sla-tag-pend{color:var(--red);background:rgba(240,96,96,.12);border:1px solid rgba(240,96,96,.25);}
 .sla-cutoff{background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;min-width:220px;}
+
 .pending-alert{display:flex;align-items:flex-start;gap:14px;border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:1.5rem;border:1px solid var(--border);}
 .pending-alert.warn{background:rgba(240,190,64,.09);border-color:rgba(240,190,64,.34);}
 .pending-alert.ok{background:rgba(110,224,74,.08);border-color:rgba(110,224,74,.28);}
