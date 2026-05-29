@@ -155,9 +155,13 @@ async function dbGetPreviousHodometro(plate, currentDateStr) {
 }
 
 async function dbGetNotifs() {
+  const cached = cacheGet("notifs");
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", "notifications"));
-    return snap.exists() ? (snap.data().items || []) : [];
+    const value = snap.exists() ? (snap.data().items || []) : [];
+    cacheSet("notifs", value, 15_000); // TTL curto: 15s (notifs mudam com frequência)
+    return value;
   } catch { return []; }
 }
 async function dbAddNotif(msg) {
@@ -165,16 +169,23 @@ async function dbAddNotif(msg) {
   items.unshift({ msg, time: new Date().toLocaleString("pt-BR") });
   if(items.length > 50) items.length = 50;
   await setDoc(doc(db, "config", "notifications"), { items });
+  cacheSet("notifs", items, 15_000); // write-through
 }
 async function dbClearNotifs() {
   await setDoc(doc(db, "config", "notifications"), { items: [] });
+  cacheSet("notifs", [], 15_000); // write-through
 }
 async function dbGetAudit(limitN=120) {
-  try {
-    const snap = await getDoc(doc(db, "config", "audit_log"));
-    const items = snap.exists() ? (snap.data().items || []) : [];
-    return items.slice(0, limitN);
-  } catch { return []; }
+  const cached = cacheGet("audit_log");
+  const items = cached !== undefined ? cached : await (async () => {
+    try {
+      const snap = await getDoc(doc(db, "config", "audit_log"));
+      const val = snap.exists() ? (snap.data().items || []) : [];
+      cacheSet("audit_log", val, 15_000);
+      return val;
+    } catch { return []; }
+  })();
+  return items.slice(0, limitN);
 }
 async function dbAddAudit(action, details={}) {
   try {
@@ -183,6 +194,7 @@ async function dbAddAudit(action, details={}) {
     items.unshift({ action, actor, details, atBR: new Date().toLocaleString("pt-BR") });
     if(items.length > 300) items.length = 300;
     await setDoc(doc(db, "config", "audit_log"), { items });
+    cacheSet("audit_log", items, 15_000); // write-through
   } catch(e) { console.error("audit error", e); }
 }
 function fmtAuditAction(action, details={}) {
@@ -204,22 +216,31 @@ function fmtAuditAction(action, details={}) {
   }
 }
 async function dbGetAlertCutoffHour() {
+  const cached = cacheGet("alert_cutoff");
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", "alert_cutoff"));
-    if(!snap.exists()) return null;
+    if(!snap.exists()) { cacheSet("alert_cutoff", null, 300_000); return null; }
     const h = Number(snap.data().hour);
-    return Number.isFinite(h) ? h : null;
+    const value = Number.isFinite(h) ? h : null;
+    cacheSet("alert_cutoff", value, 300_000); // TTL 5min: muda raramente
+    return value;
   } catch { return null; }
 }
 async function dbSaveAlertCutoffHour(hour) {
   await setDoc(doc(db, "config", "alert_cutoff"), { hour: Number(hour) });
+  cacheSet("alert_cutoff", Number(hour), 300_000); // write-through
 }
 
 // Users config
 async function dbGetUsers() {
+  const cached = cacheGet("cfg_users");
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", "users"));
-    return snap.exists() ? snap.data().data : null;
+    const value = snap.exists() ? snap.data().data : null;
+    cacheSet("cfg_users", value, 300_000);
+    return value;
   } catch(e) { return null; }
 }
 async function dbSaveUsers(users) {
@@ -230,34 +251,50 @@ async function dbSaveUsers(users) {
     safe[uid] = rest;
   }
   await setDoc(doc(db, "config", "users"), { data: safe });
+  cacheSet("cfg_users", safe, 300_000);
 }
 // Carriers config
 async function dbGetCarriers() {
+  const cached = cacheGet("cfg_carriers");
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", "carriers"));
-    return snap.exists() ? snap.data().list : null;
+    const value = snap.exists() ? snap.data().list : null;
+    cacheSet("cfg_carriers", value, 300_000);
+    return value;
   } catch(e) { return null; }
 }
 async function dbSaveCarriers(list) {
   await setDoc(doc(db, "config", "carriers"), { list });
+  cacheSet("cfg_carriers", list, 300_000);
 }
 async function dbGetOperacoes() {
+  const cached = cacheGet("cfg_operacoes");
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", "operacoes"));
-    return snap.exists() ? snap.data().list : null;
+    const value = snap.exists() ? snap.data().list : null;
+    cacheSet("cfg_operacoes", value, 300_000);
+    return value;
   } catch(e) { return null; }
 }
 async function dbSaveOperacoes(list) {
   await setDoc(doc(db, "config", "operacoes"), { list });
+  cacheSet("cfg_operacoes", list, 300_000);
 }
 async function dbGetDrivers() {
+  const cached = cacheGet("cfg_drivers");
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", "drivers"));
-    return snap.exists() ? (snap.data().data || {}) : {};
+    const value = snap.exists() ? (snap.data().data || {}) : {};
+    cacheSet("cfg_drivers", value, 300_000);
+    return value;
   } catch(e) { return {}; }
 }
 async function dbSaveDrivers(data) {
   await setDoc(doc(db, "config", "drivers"), { data });
+  cacheSet("cfg_drivers", data, 300_000);
 }
 // Load users and carriers from Firebase, fall back to defaults
 async function loadConfig() {
@@ -276,61 +313,154 @@ async function loadConfig() {
 
 // ── Monthly archive helpers ──
 async function dbGetArchives() {
+  const cached = cacheGet("cfg_archives");
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", "monthly_archives"));
-    return snap.exists() ? (snap.data().archives || []) : [];
+    const value = snap.exists() ? (snap.data().archives || []) : [];
+    cacheSet("cfg_archives", value, 300_000);
+    return value;
   } catch { return []; }
 }
 async function dbSaveArchive(archive) {
   // archive = { key, label, generatedAt, data (base64 xlsx) }
   let archives = await dbGetArchives();
-  // Replace if same key exists, else prepend
   const idx = archives.findIndex(a => a.key === archive.key);
   if(idx >= 0) archives[idx] = archive;
   else archives.unshift(archive);
-  // Keep only last 6
   if(archives.length > 6) archives = archives.slice(0, 6);
   await setDoc(doc(db, "config", "monthly_archives"), { archives });
+  cacheSet("cfg_archives", archives, 300_000); // write-through
 }
 
 // Check if a carrier/date submission is locked (all plates filled)
 async function dbGetLock(carrier, dateStr) {
+  const cKey = `lock||${carrier}||${dateStr}`;
+  const cached = cacheGet(cKey);
+  if (cached !== undefined) return cached;
   try {
     const id = `lock__${carrier}__${dateStr}`;
     const snap = await getDoc(doc(db, "locks", id));
-    return snap.exists() ? snap.data() : null;
+    const value = snap.exists() ? snap.data() : null;
+    cacheSet(cKey, value);
+    return value;
   } catch { return null; }
 }
 async function dbSetLock(carrier, dateStr, userName) {
   const id = `lock__${carrier}__${dateStr}`;
-  await setDoc(doc(db, "locks", id), {
-    carrier, dateStr, lockedBy: userName,
-    lockedAt: new Date().toLocaleString("pt-BR")
-  });
+  const data = { carrier, dateStr, lockedBy: userName, lockedAt: new Date().toLocaleString("pt-BR") };
+  await setDoc(doc(db, "locks", id), data);
+  // Write-through: atualiza cache imediatamente
+  cacheSet(`lock||${carrier}||${dateStr}`, data);
 }
 async function dbRemoveLock(carrier, dateStr) {
   const id = `lock__${carrier}__${dateStr}`;
   await deleteDoc(doc(db, "locks", id));
+  // Invalida cache do lock
+  cacheInvalidate(`lock||${carrier}||${dateStr}`);
 }
 async function dbClearStatusForDate(carrier, dateStr) {
-  // Remove all availability records for this carrier+date so status returns to "not filled"
+  // Remove todos os registros de disponibilidade do carrier+data
   const allP = await dbGetPlates();
   const plates = (allP[carrier] || []).filter(p => p.ativo !== false);
   await Promise.all(plates.map(async p => {
     const id = `${carrier}__${p.placa}__${dateStr}`;
     try { await deleteDoc(doc(db, "availability", id)); } catch(e) {}
   }));
+  // Invalida o cache de status de todas as placas deste carrier+data
+  cacheInvalidatePrefix(`status||${carrier}||`);
 }
 
 // Bulk load status for many plates/dates at once (batched reads)
 async function dbLoadStatusBulk(pairs) {
-  // pairs = [{carrier,plate,dateStr}]
-  // Returns {key: {status, time} | null}
+  // pairs = [{carrier, plate, dateStr}]
+  // Estratégia:
+  //   1. Serve do cache em memória sempre que possível (TTL 60s).
+  //   2. Para os pares não cacheados, agrupa por (carrier, dateStr) e faz
+  //      UMA query getDocs por grupo — em vez de um getDoc por placa.
+  //      Ex: 30 placas × 14 datas = 420 getDoc individuais → até 70 queries
+  //      agrupadas (se cada dia tiver as mesmas 5 transportadoras).
+  //   3. Preenche o cache com todos os documentos retornados.
+
   const result = {};
-  await Promise.all(pairs.map(async ({carrier,plate,dateStr}) => {
-    const key = `${carrier}||${plate}||${dateStr}`;
-    result[key] = await dbGetStatus(carrier, plate, dateStr);
+  const misses = []; // pares que não estavam em cache
+
+  // Passo 1 — cache hits
+  for (const { carrier, plate, dateStr } of pairs) {
+    const key    = `${carrier}||${plate}||${dateStr}`;
+    const cKey   = `status||${carrier}||${plate}||${dateStr}`;
+    const cached = cacheGet(cKey);
+    if (cached !== undefined) {
+      result[key] = cached;
+    } else {
+      result[key] = null; // placeholder
+      misses.push({ carrier, plate, dateStr, key, cKey });
+    }
+  }
+
+  if (misses.length === 0) return result;
+
+  // Passo 2 — agrupa misses por (carrier, dateStr) para minimizar queries
+  const groups = new Map(); // "carrier||dateStr" → Set de plates
+  for (const { carrier, dateStr } of misses) {
+    const gKey = `${carrier}||${dateStr}`;
+    if (!groups.has(gKey)) groups.set(gKey, { carrier, dateStr, plates: new Set() });
+    groups.get(gKey).plates.add(dateStr); // só para marcar o grupo
+  }
+  // Reconstrói agrupamento correto: carrier+dateStr → lista de plates
+  const groupMap = new Map();
+  for (const { carrier, plate, dateStr } of misses) {
+    const gKey = `${carrier}||${dateStr}`;
+    if (!groupMap.has(gKey)) groupMap.set(gKey, { carrier, dateStr, plates: [] });
+    groupMap.get(gKey).plates.push(plate);
+  }
+
+  // Passo 3 — uma query getDocs por grupo (carrier+dateStr)
+  await Promise.all([...groupMap.values()].map(async ({ carrier, dateStr, plates }) => {
+    try {
+      // Firestore "in" aceita até 30 valores por query; divide se necessário
+      const chunks = [];
+      for (let i = 0; i < plates.length; i += 30) chunks.push(plates.slice(i, i + 30));
+      for (const chunk of chunks) {
+        const q = query(
+          collection(db, "availability"),
+          where("carrier",  "==", carrier),
+          where("dateStr",  "==", dateStr),
+          where("plate",    "in", chunk)
+        );
+        const snap = await getDocs(q);
+        // Registra os documentos encontrados no cache e no resultado
+        const found = new Set();
+        snap.forEach(docSnap => {
+          const d = docSnap.data();
+          const value = {
+            status:          d.status,
+            time:            d.time            || "",
+            motoristaDiurno: d.motoristaDiurno || "",
+            motoristaNoturno:d.motoristaNoturno|| "",
+            hodometro:       d.hodometro !== undefined ? d.hodometro : null
+          };
+          const key  = `${carrier}||${d.plate}||${dateStr}`;
+          const cKey = `status||${carrier}||${d.plate}||${dateStr}`;
+          result[key] = value;
+          cacheSet(cKey, value);
+          found.add(d.plate);
+        });
+        // Placas não retornadas pela query = sem registro (null) — cacheia também
+        for (const plate of chunk) {
+          if (!found.has(plate)) {
+            const key  = `${carrier}||${plate}||${dateStr}`;
+            const cKey = `status||${carrier}||${plate}||${dateStr}`;
+            result[key] = null;
+            cacheSet(cKey, null);
+          }
+        }
+      }
+    } catch(e) {
+      console.error("dbLoadStatusBulk query error", carrier, dateStr, e);
+    }
   }));
+
   return result;
 }
 
