@@ -573,6 +573,13 @@ function showToast(msg,ok=true){
   t.style.color=ok?"var(--dark)":"#fff";
   t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),3000);
 }
+function debounce(fn, delay=350){
+  let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), delay); };
+}
+// Debounced search handlers — evitam re-render a cada tecla
+const _debouncedTodaySearch  = debounce(()=>renderTabBody(), 350);
+const _debouncedHistSearch   = debounce(()=>renderTabBody(), 350);
+
 function setLoading(msg="Carregando..."){
   const mc=document.getElementById("main-content")||document.getElementById("tab-body");
   if(mc) mc.innerHTML=`<div class="loading"><span class="spin"></span>${msg}</div>`;
@@ -1984,7 +1991,7 @@ async function renderToday(body){
     </div>
     <div class="filters-bar">
       <select onchange="S.todayOp=this.value;renderTabBody()">${opOpts}</select>
-      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.todayPlaca||""}" onchange="S.todayPlaca=this.value;renderTabBody()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;" onkeyup="this.onchange()">
+      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.todayPlaca||""}" id="today-search-input" oninput="S.todayPlaca=this.value;_debouncedTodaySearch()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;">
     </div>
     ${pendingAlerts}
     <div class="summary-grid">
@@ -2014,7 +2021,7 @@ async function renderHistory(body){
       <select onchange="S.histStatus=this.value;renderTabBody()">${statusOpts}</select>
       <select onchange="S.histOp=this.value;renderTabBody()">${opOpts}</select>
       <select onchange="S.histDays=+this.value;renderTabBody()">${daysOpts}</select>
-      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.histPlaca||""}" onchange="S.histPlaca=this.value;renderTabBody()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;" onkeyup="this.onchange()">
+      <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${S.histPlaca||""}" id="hist-search-input" oninput="S.histPlaca=this.value;_debouncedHistSearch()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;">
     </div>
     <div id="hist-result"><div class="loading"><span class="spin"></span>Buscando registros...</div></div>`;
 
@@ -3443,7 +3450,7 @@ window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
-window.renderTabBody=renderTabBody; window.saveCutoffHour=saveCutoffHour; window.S=S; window.renderKpisMensais=renderKpisMensais;
+window.renderTabBody=renderTabBody; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.saveCutoffHour=saveCutoffHour; window.S=S; window.renderKpisMensais=renderKpisMensais;
 
 // ── INIT ──
 // 1. Carrega config pública (carriers, operações) sem precisar estar logado
