@@ -1081,252 +1081,326 @@ async function renderCarrier(carrier){
   const ds=dateStr(S.dateOffset);
   const mc=document.getElementById("main-content");
   mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${esc(carrier)}</p><div class="loading"><span class="spin"></span>Carregando placas...</div>`;
-  let allP={};
-  let statusMap={};
-  let lock=null;
+  let allP={}, statusMap={}, lock=null, allDrivers={};
   const plates=[];
-  let allDrivers = {};
   try {
     [allP, allDrivers] = await Promise.all([
       withTimeout(dbGetPlates(), 15000, "Falha ao carregar placas"),
       withTimeout(dbGetDrivers(), 15000, "Falha ao carregar motoristas").catch(()=>({}))
     ]);
     const userOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
-    const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
-    if(loadedPlates.length===0){
+    const loadedPlates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
+    if(!loadedPlates.length){
       const opLabel=userOps?` para a operação ${userOps.join(' / ')}`:'';
       mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${esc(carrier)}</p>
         <div class="empty"><span class="ei">🚫</span>Nenhuma placa cadastrada${opLabel}.<br>Aguarde o administrador.</div>`;
       return;
     }
     plates.push(...loadedPlates);
-    const [pairsTemp, lockTemp] = [plates.map(p=>({carrier,plate:p.placa,dateStr:ds})), await withTimeout(dbGetLock(carrier,ds),15000,"Falha ao carregar status")];
-    lock = lockTemp;
-    statusMap = await withTimeout(dbLoadStatusBulk(pairsTemp),15000,"Falha ao carregar status");
+    lock = await withTimeout(dbGetLock(carrier,ds),15000,"Falha ao carregar lock");
+    statusMap = await withTimeout(dbLoadStatusBulk(plates.map(p=>({carrier,plate:p.placa,dateStr:ds}))),15000,"Falha ao carregar status");
   } catch(e){
     console.error(e);
     mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${esc(carrier)}</p>
-      <div class="empty"><span class="ei">⚠</span>Erro ao carregar a disponibilidade.<br>Atualize a página ou tente novamente.</div>`;
+      <div class="empty"><span class="ei">⚠</span>Erro ao carregar.<br>Atualize a página ou tente novamente.</div>`;
     return;
   }
-  const isCarrierUser = USERS_DB[S.user] && USERS_DB[S.user].role==='carrier';
-  const rows=plates.map(p=>{
-    const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
-    const cur=rec?rec.status:null;
-    const curTime=rec?rec.time:"";
-    const st=cur?getSt(cur):null;
-    const isIndisp=statusSemHorario(cur);
-      if(lock){
-      // LOCKED — read-only view
-      const stBadge=cur?`<span class="badge ${st.badge}">${esc(st.label)}</span>`:`<span class="badge b-blank">—</span>`;
-      const timeBadge=isIndisp?`<span style="font-size:11px;color:var(--muted)">N/A</span>`:curTime?`<span style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(curTime)}</span>`:`<span style="color:var(--muted)">—</span>`;
-      const motD=(rec&&rec.motoristaDiurno)||p.motoristaDiurno||'—';
-      const motN=(rec&&rec.motoristaNoturno)||p.motoristaNoturno||'—';
-      return `<tr>
-        <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${esc(p.placa)}</td>
-        <td style="font-size:11px;color:var(--muted)">${esc(p.operacao)}</td>
-        <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
-        <td>${stBadge}</td>
-        <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--dim)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</td>
-        <td style="font-size:11px;font-family:'DM Mono',monospace">${timeBadge}</td>
-        <td>${renderDriverCell(motD,motN)}</td>
-      </tr>`;
+
+  const isCarrierUser = USERS_DB[S.user]?.role==='carrier';
+
+  // ── build one card per plate ──────────────────────────────
+  const cards = plates.map(p=>{
+    const rec       = statusMap[`${carrier}||${p.placa}||${ds}`];
+    const cur       = rec?.status ?? null;
+    const curTime   = rec?.time   ?? "";
+    const curOdo    = rec?.hodometro ?? null;
+    const st        = cur ? getSt(cur) : null;
+    const isIndisp  = statusSemHorario(cur);
+    const savedMotD = (rec?.motoristaDiurno)  || p.motoristaDiurno  || '';
+    const savedMotN = (rec?.motoristaNoturno) || p.motoristaNoturno || '';
+
+    // ── header chips ────────────────────────────────────────
+    const chips=`
+      <span class="vc-chip vc-chip-op">${esc(p.operacao)}</span>
+      <span class="vc-chip vc-chip-tipo">${esc(p.tipo)}</span>
+      <span class="vc-chip">${esc(p.contrato)}</span>`;
+
+    // ── LOCKED view ─────────────────────────────────────────
+    if(lock){
+      const stBadge = cur
+        ? `<span class="badge ${st.badge}" style="font-size:13px;padding:5px 14px">${esc(st.label)}</span>`
+        : `<span class="badge b-blank" style="font-size:13px;padding:5px 14px">—</span>`;
+      const timeVal = isIndisp ? 'N/A' : (curTime ? fmtTimeValue(curTime) : '—');
+      return `
+        <div class="veh-card veh-card--locked">
+          <div class="vc-header">
+            <span class="vc-placa">${esc(p.placa)}</span>
+            <div class="vc-chips">${chips}</div>
+          </div>
+          <div class="vc-row-locked">
+            <div class="vc-field-ro">
+              <span class="vc-label">STATUS</span>
+              ${stBadge}
+            </div>
+            <div class="vc-field-ro">
+              <span class="vc-label">DISPONÍVEL ÀS</span>
+              <span class="vc-val-mono">${timeVal}</span>
+            </div>
+            <div class="vc-field-ro">
+              <span class="vc-label">HODÔMETRO</span>
+              <span class="vc-val-mono">${curOdo!==null?curOdo:'—'}</span>
+            </div>
+            <div class="vc-field-ro">
+              <span class="vc-label">MOTORISTAS</span>
+              <div class="vc-drivers-ro">
+                <span>☀ ${esc(savedMotD||'—')}</span>
+                <span>🌙 ${esc(savedMotN||'—')}</span>
+              </div>
+            </div>
+          </div>
+        </div>`;
     }
-    const blankOpt=cur===null?`<option value="" selected disabled>— Selecione —</option>`:"";
-    const sOpts=blankOpt+STATUS_OPTS.map(s=>`<option value="${attr(s.val)}"${cur===s.val?" selected":""}>${esc(s.label)}</option>`).join("");
-    const selCls=cur?`st-sel ${st.cls}`:`st-sel st-blank`;
-    const timeCls=isIndisp?`time-sel time-na`:curTime?`time-sel time-filled`:`time-sel time-blank`;
-    const timeDisabled=(!cur||isIndisp)?'disabled':'';
-    // Build driver select options for this plate's carrier+operation
-    // Include both active and inactive drivers for this carrier+operation
-    const opDriversAtivos   = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false&&d.operacao===p.operacao);
-    const opDriversInativos = (allDrivers[carrier]||[]).filter(d=>d.ativo===false&&d.operacao===p.operacao);
-    const savedMotD = (rec&&rec.motoristaDiurno) || p.motoristaDiurno || '';
-    const savedMotN = (rec&&rec.motoristaNoturno) || p.motoristaNoturno || '';
+
+    // ── EDITABLE view ────────────────────────────────────────
+    const blankOpt = cur===null ? `<option value="" selected disabled>— Selecione o status —</option>` : '';
+    const sOpts    = blankOpt + STATUS_OPTS.map(s=>`<option value="${attr(s.val)}"${cur===s.val?' selected':''}>${esc(s.label)}</option>`).join('');
+    const selCls   = cur ? `st-sel ${st.cls}` : `st-sel st-blank`;
+    const timeCls  = isIndisp ? `time-sel time-na` : curTime ? `time-sel time-filled` : `time-sel time-blank`;
+    const timeDis  = (!cur||isIndisp) ? 'disabled' : '';
+
+    // driver options
+    const opDrvAtivos   = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false&&d.operacao===p.operacao);
+    const opDrvInativos = (allDrivers[carrier]||[]).filter(d=>d.ativo===false&&d.operacao===p.operacao);
     function buildDriverOpts(savedVal, turno){
-      const ativos   = opDriversAtivos.filter(d=>d.turno===turno);
-      const inativos = opDriversInativos.filter(d=>d.turno===turno);
+      const ativos   = opDrvAtivos.filter(d=>d.turno===turno);
+      const inativos = opDrvInativos.filter(d=>d.turno===turno);
       let opts = `<option value="">— Sem motorista —</option>`;
-      // Motoristas removidos não aparecem como opção — o dado histórico já está salvo no Firestore
-      // Active drivers — normal style
       opts += ativos.map(d=>optHtml(d.nome, d.nome===savedVal)).join('');
-      // Inactive drivers — dimmed via optgroup label trick + unicode prefix
       if(inativos.length){
-        opts += `<optgroup label="──────────────" style="color:rgba(228,242,200,.2);font-size:9px"></optgroup>`;
+        opts += `<optgroup label="──────────" style="color:rgba(228,242,200,.2);font-size:9px"></optgroup>`;
         opts += inativos.map(d=>`<option value="${attr(d.nome)}"${d.nome===savedVal?' selected':''} style="color:rgba(228,242,200,.35)">▪ ${esc(d.nome)} (inativo)</option>`).join('');
       }
       return opts;
     }
-    const driverSelStyle = 'width:100%;box-sizing:border-box;font-size:11px;padding:4px 6px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);outline:none;font-family:inherit';
-    const driverCell = isCarrierUser
-      ? `<div style="display:grid;gap:4px;min-width:120px">
-           <div style="display:grid;grid-template-columns:16px 1fr;align-items:center;gap:3px">
-             <span style="color:var(--amber);font-size:12px;text-align:center">☀</span>
-             <select class="driver-sel-d" style="${driverSelStyle}">${buildDriverOpts(savedMotD,'Diurno')}</select>
-           </div>
-           <div style="display:grid;grid-template-columns:16px 1fr;align-items:center;gap:3px">
-             <span style="color:var(--blue);font-size:12px;text-align:center">🌙</span>
-             <select class="driver-sel-n" style="${driverSelStyle}">${buildDriverOpts(savedMotN,'Noturno')}</select>
-           </div>
-         </div>`
-      : renderDriverCell(savedMotD, savedMotN);
-    return `<tr>
-      <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${esc(p.placa)}</td>
-      <td style="font-size:11px;color:var(--muted)">${esc(p.operacao)}</td>
-      <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
-      <td><select class="${selCls}" style="width:128px;box-sizing:border-box;font-size:11px" onchange="onStChange(this)">${sOpts}</select></td>
-      <td>${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Ex: 251000" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:96px;box-sizing:border-box;font-size:11px;padding:5px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace">`:`<span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--muted)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</span>`}</td>
-      <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)" style="width:96px;box-sizing:border-box;font-size:11px">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select></td>
-      <td>${driverCell}</td>
-    </tr>`;
-  }).join("");
 
-  const lockedBanner=lock?`
-    <div class="locked-banner">
-      🔒 Disponibilidade enviada em ${esc(lock.lockedAt)} — não é possível editar.
-    </div>`:'';
-  const actionBar=lock?'':`
-    <div style="display:flex;gap:10px;margin-top:1rem;">
-      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${attr(jsArg(carrier))}','${attr(jsArg(ds))}')">💾 Salvar disponibilidade</button>
+    const needsCompletion = !cur || (!isIndisp && !curTime) || (isCarrierUser && curOdo===null);
+    const cardMod = needsCompletion ? '' : ' veh-card--done';
+
+    return `
+      <div class="veh-card${cardMod}" data-placa="${attr(p.placa)}">
+        <div class="vc-header">
+          <span class="vc-placa">${esc(p.placa)}</span>
+          <div class="vc-chips">${chips}</div>
+          ${!needsCompletion?`<span class="vc-done-badge">✓</span>`:''}
+        </div>
+
+        <div class="vc-body">
+          <!-- STATUS -->
+          <div class="vc-field vc-field--full">
+            <label class="vc-label">STATUS</label>
+            <select class="${selCls} vc-status-sel" onchange="onStChange(this)">${sOpts}</select>
+          </div>
+
+          <!-- HODÔMETRO + HORÁRIO side by side -->
+          <div class="vc-row-2">
+            ${isCarrierUser ? `
+            <div class="vc-field">
+              <label class="vc-label">HODÔMETRO (km)</label>
+              <input class="odo-input vc-input" type="number" inputmode="numeric" min="0"
+                placeholder="Ex: 251000"
+                value="${curOdo!==null?curOdo:''}"
+                style="font-family:'DM Mono',monospace">
+            </div>` : `
+            <div class="vc-field">
+              <label class="vc-label">HODÔMETRO</label>
+              <span class="vc-val-mono" style="padding:12px 0;display:block">${curOdo!==null?curOdo:'—'}</span>
+            </div>`}
+            <div class="vc-field">
+              <label class="vc-label">DISPONÍVEL ÀS</label>
+              <select class="${timeCls} vc-time-sel" ${timeDis} onchange="onTimeChange(this)">
+                ${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}
+              </select>
+            </div>
+          </div>
+
+          <!-- MOTORISTAS -->
+          ${isCarrierUser ? `
+          <div class="vc-row-2">
+            <div class="vc-field">
+              <label class="vc-label">☀ MOTORISTA DIURNO</label>
+              <select class="driver-sel-d vc-driver-sel">${buildDriverOpts(savedMotD,'Diurno')}</select>
+            </div>
+            <div class="vc-field">
+              <label class="vc-label">🌙 MOTORISTA NOTURNO</label>
+              <select class="driver-sel-n vc-driver-sel">${buildDriverOpts(savedMotN,'Noturno')}</select>
+            </div>
+          </div>` : `
+          <div class="vc-field vc-field--full">
+            <label class="vc-label">MOTORISTAS</label>
+            <div class="vc-drivers-ro">
+              <span>☀ ${esc(savedMotD||'—')}</span>
+              <span>🌙 ${esc(savedMotN||'—')}</span>
+            </div>
+          </div>`}
+        </div>
+      </div>`;
+  }).join('');
+
+  const userOpsLabel2=(USERS_DB[S.user]?.operacoes?.length)?` — ${USERS_DB[S.user].operacoes.join(' / ')}`:'';
+  const lockedBanner = lock
+    ? `<div class="locked-banner">🔒 Disponibilidade enviada em ${esc(lock.lockedAt)} — não é possível editar.</div>`
+    : '';
+  const actionBar = lock ? '' : `
+    <div class="vc-save-bar">
+      <button class="btn btn-lime btn-full" id="save-btn" style="max-width:480px;height:52px;font-size:15px" onclick="saveAll('${attr(jsArg(carrier))}','${attr(jsArg(ds))}')">
+        💾 Salvar disponibilidade
+      </button>
     </div>`;
 
-  const userOpsLabel2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?` — ${USERS_DB[S.user].operacoes.join(' / ')}`:'';
   mc.innerHTML=`
     <p class="sec-title">Disponibilidade da frota</p>
-    <p class="sec-sub">${esc(carrier)}${esc(userOpsLabel2)} — Informe o status de cada veículo</p>
+    <p class="sec-sub">${esc(carrier)}${esc(userOpsLabel2)}</p>
     <div class="date-nav">
       <button onclick="chDate(-1)">‹</button>
       <span class="date-label">${fmtDate(S.dateOffset)}</span>
       <button onclick="chDate(1)">›</button>
     </div>
     ${lockedBanner}
-    <div class="tscroll">
-      <table class="table" style="min-width:800px">
-        <thead><tr><th style="width:11%">PLACA</th><th style="width:19%">OPERAÇÃO</th><th style="width:10%">TIPO</th><th style="width:15%">STATUS</th><th style="width:12%">HODÔMETRO</th><th style="width:12%">DISPONÍVEL ÀS</th><th style="width:21%">MOTORISTAS</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
+    <div class="veh-cards" id="veh-cards">${cards}</div>
     ${actionBar}`;
 }
 function onStChange(sel){
-  const row=sel.closest('tr');
-  const timeSel=row?row.querySelector('.time-sel, .time-na, .time-blank, .time-filled'):null;
+  // works for both card (.veh-card) and table row (tr) containers
+  const container = sel.closest('.veh-card') || sel.closest('tr');
+  const timeSel = container?.querySelector('.time-sel,.time-na,.time-blank,.time-filled,.vc-time-sel');
+  const card = sel.closest('.veh-card');
+
   if(!sel.value){
-    sel.className='st-sel st-blank';
-    if(timeSel){
-      timeSel.disabled=true;
-      timeSel.value='';
-      timeSel.className='time-sel time-blank';
-    }
+    sel.className = sel.className.includes('vc-') ? 'st-sel st-blank vc-status-sel' : 'st-sel st-blank';
+    if(timeSel){ timeSel.disabled=true; timeSel.value=''; timeSel.className='time-sel time-blank'+(timeSel.classList.contains('vc-time-sel')?' vc-time-sel':''); }
+    if(card) card.classList.remove('veh-card--done');
     return;
   }
   const st=getSt(sel.value);
-  sel.className=`st-sel ${st.cls}`;
+  const vcCls = sel.classList.contains('vc-status-sel') ? ' vc-status-sel' : '';
+  sel.className=`st-sel ${st.cls}${vcCls}`;
   if(timeSel){
+    const vcTimeCls = timeSel.classList.contains('vc-time-sel') ? ' vc-time-sel' : '';
     if(statusSemHorario(sel.value)){
-      // Horário não se aplica — desabilita e limpa
-      timeSel.disabled=true;
-      timeSel.value='';
-      timeSel.className='time-sel time-na';
-      // Replace options with N/A
+      timeSel.disabled=true; timeSel.value='';
+      timeSel.className=`time-sel time-na${vcTimeCls}`;
       timeSel.innerHTML='<option value="">N/A</option>';
     } else {
-      // Habilita e restaura as opções de horário
       timeSel.disabled=false;
       const allowNoForecast=sel.value==='manutencao';
       const keepValue=timeSel.value==='sem_previsao'&&!allowNoForecast?'':timeSel.value;
       timeSel.innerHTML=buildTimeOpts(keepValue,allowNoForecast);
-      timeSel.className=timeSel.value?'time-sel time-filled':'time-sel time-blank';
+      timeSel.className=(timeSel.value?'time-sel time-filled':'time-sel time-blank')+vcTimeCls;
     }
   }
+  // update done badge on card
+  if(card) _refreshCardDone(card);
 }
 function onTimeChange(sel){
-  if(sel.value) sel.className='time-sel time-filled';
-  else sel.className='time-sel time-blank';
+  const vcCls = sel.classList.contains('vc-time-sel') ? ' vc-time-sel' : '';
+  sel.className = (sel.value ? 'time-sel time-filled' : 'time-sel time-blank') + vcCls;
+  const card = sel.closest('.veh-card');
+  if(card) _refreshCardDone(card);
+}
+function _refreshCardDone(card){
+  const stSel  = card.querySelector('.vc-status-sel');
+  const timeSel= card.querySelector('.vc-time-sel');
+  const odoInp = card.querySelector('.odo-input');
+  const isCarrier = USERS_DB[S.user]?.role==='carrier';
+  const hasStatus  = stSel && stSel.value;
+  const isIndisp   = stSel && statusSemHorario(stSel.value);
+  const hasTime    = isIndisp || (timeSel && timeSel.value);
+  const hasOdo     = !isCarrier || (odoInp && odoInp.value!=='');
+  const done = hasStatus && hasTime && hasOdo;
+  card.classList.toggle('veh-card--done', done);
+  let badge = card.querySelector('.vc-done-badge');
+  if(done && !badge){
+    badge=document.createElement('span'); badge.className='vc-done-badge'; badge.textContent='✓';
+    card.querySelector('.vc-header')?.appendChild(badge);
+  } else if(!done && badge){ badge.remove(); }
 }
 async function saveAll(carrier,ds){
   const btn=document.getElementById("save-btn");
-  const rows=document.querySelectorAll(".table tbody tr");
-  // Validate: all rows must have status AND time filled
-  const isCarrierUser = USERS_DB[S.user] && USERS_DB[S.user].role==='carrier';
-  let missing=[];
-  rows.forEach(row=>{
-    const plate=row.cells[0].textContent.trim();
-    const statusSel=row.querySelector(".st-sel,.st-blank");
-    const timeSel=row.querySelector(".time-sel");
-    const odoInput=row.querySelector('.odo-input');
-    const hasStatus=statusSel&&statusSel.value;
-    const isIndisp=statusSel&&statusSemHorario(statusSel.value);
-    const hasTime=timeSel&&timeSel.value;
-    const hasOdo = !isCarrierUser || (odoInput && odoInput.value!=='');
-    if(!hasStatus||(! isIndisp&&!hasTime) || !hasOdo) missing.push(plate);
+  const isCarrierUser = USERS_DB[S.user]?.role==='carrier';
+
+  // Collect all cards (new layout) — fall back to table rows for admin/operacional readonly view
+  const cards=[...document.querySelectorAll('.veh-card[data-placa]')];
+
+  // ── Validation ───────────────────────────────────────────
+  const missing=[];
+  cards.forEach(card=>{
+    const plate    = card.dataset.placa;
+    const statusSel= card.querySelector('.vc-status-sel,.st-sel,.st-blank');
+    const timeSel  = card.querySelector('.vc-time-sel,.time-sel');
+    const odoInput = card.querySelector('.odo-input');
+    const hasStatus= statusSel?.value;
+    const isIndisp = statusSel && statusSemHorario(statusSel.value);
+    const hasTime  = isIndisp || (timeSel?.value);
+    const hasOdo   = !isCarrierUser || (odoInput && odoInput.value!=='');
+    if(!hasStatus||!hasTime||!hasOdo) missing.push(plate);
   });
-  if(missing.length>0){
-    showToast(`Preencha status e horário quando aplicável antes de salvar.`,false);
-    // Highlight missing rows
-    rows.forEach(row=>{
-      const plate=row.cells[0].textContent.trim();
-      if(missing.includes(plate)) row.style.background="rgba(240,96,96,.08)";
-      else row.style.background="";
+  if(missing.length){
+    showToast('Preencha todos os campos obrigatórios antes de salvar.', false);
+    cards.forEach(card=>{
+      card.classList.toggle('veh-card--error', missing.includes(card.dataset.placa));
     });
+    // Scroll to first error
+    document.querySelector('.veh-card--error')?.scrollIntoView({behavior:'smooth',block:'center'});
     return;
   }
+  cards.forEach(c=>c.classList.remove('veh-card--error'));
 
-  // Cache previous hodometro values to avoid double Firebase fetches
-  const prevOdoCache = {};
-  const invalidOdoRows=[];
+  // ── Hodômetro validation ─────────────────────────────────
+  const prevOdoCache={}, invalidOdoCards=[];
   if(isCarrierUser){
-    for (const row of rows){
-      const plate=row.cells[0].textContent.trim();
-      const odoInput=row.querySelector('.odo-input');
+    for(const card of cards){
+      const plate   = card.dataset.placa;
+      const odoInput= card.querySelector('.odo-input');
       if(!odoInput) continue;
       const currentOdo=Number(odoInput.value);
       if(!Number.isFinite(currentOdo)) continue;
       const previousOdo=await dbGetPreviousHodometro(plate, ds);
       prevOdoCache[plate]=previousOdo;
-      if(previousOdo !== null && currentOdo < previousOdo){
-        invalidOdoRows.push(plate);
-        row.style.background="rgba(240,96,96,.08)";
-      } else {
-        row.style.background="";
+      if(previousOdo!==null && currentOdo<previousOdo){
+        invalidOdoCards.push(plate);
+        card.classList.add('veh-card--error');
       }
     }
   }
-
-  if(invalidOdoRows.length>0){
-    const detalhes = invalidOdoRows.map(plate => {
-      const previousOdo = prevOdoCache[plate];
-      return `${plate} (último registrado: ${previousOdo ?? "não encontrado"})`;
-    });
-    showToast(`Hodômetro inválido para: ${detalhes.join(", ")}. O valor informado não pode ser menor que o último registrado.`, false);
+  if(invalidOdoCards.length){
+    const detalhes=invalidOdoCards.map(plate=>`${plate} (último: ${prevOdoCache[plate]??'—'})`);
+    showToast(`Hodômetro menor que o anterior: ${detalhes.join(', ')}`, false);
+    document.querySelector('.veh-card--error')?.scrollIntoView({behavior:'smooth',block:'center'});
     return;
   }
 
-  if(btn){btn.disabled=true;btn.textContent="Salvando...";}
+  if(btn){btn.disabled=true; btn.textContent='Salvando...';}
   const allP=await dbGetPlates();
-  const proms=[];
-  rows.forEach(row=>{
-    const plate=row.cells[0].textContent.trim();
-    const statusSel=row.querySelector(".st-sel");
-    const timeSel=row.querySelector(".time-sel");
-    // Read drivers from the selects rendered in the row (falls back to plate record if not a carrier user)
-    const pRecord=(allP[carrier]||[]).find(p=>p.placa===plate)||{};
-    const dSelD = row.querySelector('.driver-sel-d');
-    const dSelN = row.querySelector('.driver-sel-n');
-    const motDiurno  = dSelD ? dSelD.value  : (pRecord.motoristaDiurno||'');
-    const motNoturno = dSelN ? dSelN.value  : (pRecord.motoristaNoturno||'');
-    const odoInput=row.querySelector('.odo-input');
-    const hodometro = odoInput && odoInput.value!==''? Number(odoInput.value) : null;
-    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,motDiurno,motNoturno, hodometro));
+  const proms=cards.map(card=>{
+    const plate    = card.dataset.placa;
+    const statusSel= card.querySelector('.vc-status-sel,.st-sel');
+    const timeSel  = card.querySelector('.vc-time-sel,.time-sel');
+    const dSelD    = card.querySelector('.driver-sel-d');
+    const dSelN    = card.querySelector('.driver-sel-n');
+    const odoInput = card.querySelector('.odo-input');
+    const pRecord  = (allP[carrier]||[]).find(p=>p.placa===plate)||{};
+    const motD = dSelD?.value || pRecord.motoristaDiurno||'';
+    const motN = dSelN?.value || pRecord.motoristaNoturno||'';
+    const odo  = odoInput&&odoInput.value!=='' ? Number(odoInput.value) : null;
+    return dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,motD,motN,odo);
   });
   await Promise.all(proms);
   const u=USERS_DB[S.user];
-  // Lock this carrier/date so it can't be edited again
   await dbSetLock(carrier, ds, u.name);
   await dbAddNotif(`${u.name} enviou a disponibilidade — ${fmtDateStr(ds)}`);
-  await dbAddAudit("status_submit", { carrier, date: ds, rows: rows.length });
+  await dbAddAudit("status_submit", { carrier, date: ds, rows: cards.length });
   showToast("Disponibilidade salva e bloqueada! ✓");
-  if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
+  if(btn){btn.disabled=false; btn.innerHTML="💾 Salvar disponibilidade";}
   await renderCarrier(carrier);
 }
 async function chDate(d){ S.dateOffset+=d; await render(); }
@@ -3565,7 +3639,7 @@ window.openResetPwd=openResetPwd; window.saveResetPwd=saveResetPwd;
 window.openChangePwd=openChangePwd; window.saveChangePwd=saveChangePwd;
 window.doLogin=doLogin; window.logout=logout;
 window.chDate=chDate; window.setTab=setTab;
-window.onStChange=onStChange; window.saveAll=saveAll;
+window.onStChange=onStChange; window.saveAll=saveAll; window._refreshCardDone=_refreshCardDone;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
@@ -3875,6 +3949,47 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
 .spin{width:18px;height:18px;border:2px solid var(--border2);border-top-color:var(--lime);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;}
 @keyframes spin{to{transform:rotate(360deg);}}
 @media(max-width:700px){.dash-grid{grid-template-columns:1fr;}}
+
+/* ── Vehicle Cards (tela do transportador) ──────────────── */
+.veh-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin-bottom:1.5rem;}
+.veh-card{background:var(--card);border:1.5px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;transition:border-color .2s;}
+.veh-card--done{border-color:rgba(110,224,74,.45);background:rgba(110,224,74,.03);}
+.veh-card--error{border-color:rgba(240,96,96,.6)!important;background:rgba(240,96,96,.06)!important;animation:shake .35s ease;}
+.veh-card--locked{border-color:var(--border);opacity:.92;}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+
+.vc-header{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:12px 14px 10px;background:rgba(200,240,50,.04);border-bottom:1px solid var(--border);}
+.vc-placa{font-family:'DM Mono',monospace;font-size:15px;font-weight:600;color:var(--lime);letter-spacing:.06em;margin-right:2px;}
+.vc-chips{display:flex;flex-wrap:wrap;gap:5px;flex:1;}
+.vc-chip{font-size:10px;padding:2px 8px;border-radius:99px;background:rgba(228,242,200,.07);border:1px solid var(--border);color:var(--dim);white-space:nowrap;}
+.vc-chip-op{background:var(--lime-bg);color:var(--lime);border-color:var(--border2);}
+.vc-chip-tipo{background:rgba(112,168,240,.1);color:var(--blue);border-color:rgba(112,168,240,.25);}
+.vc-done-badge{font-size:11px;font-weight:700;color:var(--green);background:rgba(110,224,74,.14);border:1px solid rgba(110,224,74,.3);border-radius:99px;padding:2px 9px;margin-left:auto;}
+
+.vc-body{padding:14px;display:flex;flex-direction:column;gap:12px;}
+.vc-field{display:flex;flex-direction:column;gap:6px;}
+.vc-field--full{grid-column:1/-1;}
+.vc-row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.vc-label{font-size:10px;font-weight:600;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;}
+.vc-row-locked{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;padding:14px;}
+.vc-field-ro{display:flex;flex-direction:column;gap:5px;}
+.vc-val-mono{font-family:'DM Mono',monospace;font-size:13px;color:var(--lime);}
+.vc-drivers-ro{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim);}
+.vc-save-bar{position:sticky;bottom:0;background:linear-gradient(to top,var(--dark) 70%,transparent);padding:16px 0 8px;display:flex;justify-content:center;}
+
+/* Make selects and inputs full-width, finger-friendly inside cards */
+.vc-status-sel{width:100%!important;min-height:44px;font-size:14px!important;padding:10px 12px!important;border-radius:var(--radius)!important;}
+.vc-time-sel{width:100%!important;min-height:44px;font-size:14px!important;padding:10px 12px!important;border-radius:var(--radius)!important;}
+.vc-input{width:100%!important;min-height:44px;font-size:14px!important;padding:10px 12px!important;border-radius:var(--radius)!important;background:var(--dark);border:1px solid var(--border2);color:var(--text);outline:none;}
+.vc-input:focus{border-color:var(--lime);}
+.vc-driver-sel{width:100%!important;min-height:44px;font-size:13px!important;padding:8px 10px!important;border-radius:var(--radius)!important;background:var(--dark);border:1px solid var(--border2);color:var(--text);outline:none;}
+.vc-driver-sel:focus{border-color:var(--lime);}
+
+/* Single column on small screens */
+@media(max-width:520px){
+  .veh-cards{grid-template-columns:1fr;}
+  .vc-row-2{grid-template-columns:1fr;}
+}
 @media(max-width:640px){.main{padding:1rem;}.topbar{padding:0 1rem;}.topbar-sub,.topbar-div,.user-name{display:none;}}
 </style>
 </head>
