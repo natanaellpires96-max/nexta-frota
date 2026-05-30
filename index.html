@@ -204,6 +204,8 @@ function fmtAuditAction(action, details={}) {
   switch(action) {
     case "status_submit":
       return `✅ Disponibilidade enviada${details.carrier ? ` — ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
+    case "meta_disp_update":
+      return `🎯 Meta de disponibilidade atualizada${details.value !== undefined ? ` para ${details.value}%` : ""}`;
     case "alert_cutoff_update":
       return `🔔 Horário de corte de alerta atualizado${details.hour !== undefined ? ` para ${String(details.hour).padStart(2,'0')}:00` : ""}`;
     case "plate_add":
@@ -236,6 +238,22 @@ async function dbSaveAlertCutoffHour(hour) {
 }
 
 // Users config
+async function dbGetMetaDisp() {
+  const cached = cacheGet("cfg_meta_disp");
+  if (cached !== undefined) return cached;
+  try {
+    const snap = await getDoc(doc(db, "config", "meta_disp"));
+    if(!snap.exists()) { cacheSet("cfg_meta_disp", null, 300_000); return null; }
+    const v = Number(snap.data().value);
+    const value = Number.isFinite(v) && v > 0 && v <= 100 ? v : null;
+    cacheSet("cfg_meta_disp", value, 300_000);
+    return value;
+  } catch { return null; }
+}
+async function dbSaveMetaDisp(value) {
+  await setDoc(doc(db, "config", "meta_disp"), { value: Number(value) });
+  cacheSet("cfg_meta_disp", Number(value), 300_000);
+}
 async function dbGetUsers() {
   const cached = cacheGet("cfg_users");
   if (cached !== undefined) return cached;
@@ -305,13 +323,15 @@ async function loadConfig() {
     withTimeout(dbGetUsers(), 10000, "Timeout dbGetUsers").catch(e=>{console.error(e); return null}),
     withTimeout(dbGetCarriers(), 10000, "Timeout dbGetCarriers").catch(e=>{console.error(e); return null}),
     withTimeout(dbGetOperacoes(), 10000, "Timeout dbGetOperacoes").catch(e=>{console.error(e); return null}),
-    withTimeout(dbGetAlertCutoffHour(), 10000, "Timeout dbGetAlertCutoffHour").catch(e=>{console.error(e); return null})
+    withTimeout(dbGetAlertCutoffHour(), 10000, "Timeout dbGetAlertCutoffHour").catch(e=>{console.error(e); return null}),
+    withTimeout(dbGetMetaDisp(), 10000, "Timeout dbGetMetaDisp").catch(e=>{console.error(e); return null}),
   ];
-  const [fbUsers, fbCarriers, fbOps, fbCutoff] = await Promise.all(loaders);
+  const [fbUsers, fbCarriers, fbOps, fbCutoff, fbMeta] = await Promise.all(loaders);
   if(fbUsers) USERS_DB = fbUsers;
   if(fbCarriers) CARRIERS = fbCarriers;
   if(fbOps) OPERACOES = fbOps;
   if(Number.isFinite(fbCutoff)) ALERT_CUTOFF_HOUR = fbCutoff;
+  if(Number.isFinite(fbMeta) && fbMeta > 0) META_DISP = fbMeta;
 }
 
 // ── Monthly archive helpers ──
@@ -507,6 +527,7 @@ let S = {
 };
 const SESSION_KEY = "nexta_frota_user";
 let ALERT_CUTOFF_HOUR = 16;
+let META_DISP = 95; // % meta de disponibilidade — sobrescrito pelo Firestore no loadConfig
 
 // ═══════════════════════════════════════════════════════════
 // HELPERS
@@ -1490,6 +1511,19 @@ async function renderDashboard(body){
             <button class="btn btn-lime btn-sm" onclick="saveCutoffHour()">Salvar</button>
           </div>
           <div style="margin-top:10px;font-size:11px;color:var(--muted)">Corte atual: <span style="color:var(--lime);font-weight:500">${String(ALERT_CUTOFF_HOUR).padStart(2,'0')}:00</span></div>
+        </div>
+        <div class="sla-cutoff">
+          <div class="sla-section-title">🎯 Meta de disponibilidade</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px">% mínimo de veículos disponíveis — usado nos KPIs Mensais e gráficos</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:4px;background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:4px 10px">
+              <input id="meta-disp-input" type="number" min="50" max="100" value="${META_DISP}" oninput="const s=document.getElementById('meta-disp-slider');if(s)s.value=this.value" style="width:48px;background:transparent;border:none;color:var(--lime);font-size:15px;font-weight:600;font-family:'DM Mono',monospace;outline:none;text-align:center">
+              <span style="font-size:13px;color:var(--lime);font-weight:600">%</span>
+            </div>
+            <input id="meta-disp-slider" type="range" min="50" max="100" value="${META_DISP}" oninput="document.getElementById('meta-disp-input').value=this.value" style="flex:1;min-width:80px;accent-color:var(--lime)">
+            <button class="btn btn-lime btn-sm" onclick="saveMetaDisp()">Salvar</button>
+          </div>
+          <div style="margin-top:10px;font-size:11px;color:var(--muted)">Meta atual: <span style="color:var(--lime);font-weight:500">${META_DISP}%</span></div>
         </div>` : ''}
       </div>
     </div>
@@ -1600,7 +1634,7 @@ async function renderKpisMensais(body){
 
   // ── Ranking (sorted by dispPct desc) ─────────────────────
   const ranked=[...carrierMetrics].sort((a,b)=>b.dispPct-a.dispPct);
-  const META_DISP=95; // % meta de disponibilidade
+  // META_DISP é a variável global carregada do Firestore (padrão 95%)
 
   const rankRows=ranked.map((m,i)=>{
     const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
@@ -1986,6 +2020,20 @@ function chartColors(){
     card:get("--card","#14240d"),
     text:get("--text","#e4f2c8")
   };
+}
+async function saveMetaDisp(){
+  const input = document.getElementById("meta-disp-input");
+  if(!input) return;
+  const val = parseInt(input.value, 10);
+  if(isNaN(val) || val < 50 || val > 100){
+    showToast("Meta deve ser entre 50% e 100%.", false);
+    return;
+  }
+  META_DISP = val;
+  await dbSaveMetaDisp(val);
+  await dbAddAudit("meta_disp_update", { value: val });
+  showToast(`Meta de disponibilidade definida para ${val}%! ✓`);
+  await renderTabBody();
 }
 async function saveCutoffHour(){
   const u = USERS_DB[S.user];
@@ -3521,7 +3569,7 @@ window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates;
-window.renderTabBody=renderTabBody; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.S=S; window.renderKpisMensais=renderKpisMensais;
+window.renderTabBody=renderTabBody; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.saveMetaDisp=saveMetaDisp; window.S=S; window.renderKpisMensais=renderKpisMensais;
 
 window.addEventListener("resize", _debouncedViewportQualityRefresh, { passive:true });
 window.visualViewport?.addEventListener("resize", _debouncedViewportQualityRefresh, { passive:true });
