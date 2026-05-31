@@ -2877,6 +2877,10 @@ async function exportPdf(rows, filename, periodLabel) {
     ];
   });
 
+  // Pre-fill page backgrounds for all pages the table will need.
+  // autoTable draws AFTER didDrawPage on each new page, so we must NOT
+  // overdraw the table area. Instead we use willDrawPage to paint only
+  // the header strip + footer strip, leaving the body area untouched.
   doc.autoTable({
     startY: 24,
     head: [["DATA","TRANSPORTADOR","PLACA","OPERAÇÃO","TIPO","HODÔMETRO","STATUS","HORÁRIO","MOTORISTA"]],
@@ -2921,33 +2925,37 @@ async function exportPdf(rows, filename, periodLabel) {
       }
     },
     didDrawCell(data) {
-      // Draw status pill accent dot
       if(data.section==="body" && data.column.index===6) {
         const col = STATUS_COLOR[data.cell.raw] || C.muted;
         doc.setFillColor(...col);
         doc.circle(data.cell.x+1.8, data.cell.y+data.cell.height/2, 0.9, "F");
       }
     },
-    margin: { left:14, right:10 },
+    margin: { top: 20, left: 14, right: 10, bottom: 14 },
     tableWidth: PW - 24,
-    didDrawPage(data) {
-      // Header on each page
-      rect(0, 0, PW, PH, C.dark);
-      rect(0, 0, 4, PH, C.lime);
-      if(data.pageNumber > 1) {
-        rect(4, 0, PW-4, 14, C.mid);
-        line(4, 14, PW, 14, C.border, 0.3);
+    // willDrawPage fires BEFORE the table rows are drawn — safe to paint header/footer strips
+    willDrawPage(data) {
+      const pg = data.pageNumber;
+      // Dark background — only the strips, NOT the table body area
+      // Top strip (header)
+      const headerH = pg === 1 ? 0 : 16; // p1 header already drawn above
+      if(pg > 1){
+        rect(0, 0, PW, headerH, C.mid);
+        rect(0, 0, 4, PH, C.lime);
+        line(4, headerH, PW, headerH, C.border, 0.3);
         setFont(7, "bold", C.lime);
         doc.text("NEXTA — Gestão de Frota", 14, 10);
         setFont(7, "normal", C.muted);
         doc.text(periodLabel, PW-10, 10, {align:"right"});
       }
-      // Footer
-      rect(0, PH-10, PW, 10, C.mid);
-      line(0, PH-10, PW, PH-10, C.border, 0.3);
+      // Bottom footer strip
+      rect(0, PH-12, PW, 12, C.mid);
+      line(0, PH-12, PW, PH-12, C.border, 0.3);
       setFont(7, "normal", C.muted);
-      doc.text("NEXTA — Gestão de Frota  |  Documento confidencial", 14, PH-4);
-      doc.text(String(data.pageNumber), PW-10, PH-4, {align:"right"});
+      doc.text("NEXTA — Gestão de Frota  |  Documento confidencial", 14, PH-5);
+      doc.text(String(pg), PW-10, PH-5, {align:"right"});
+      // Left lime bar
+      rect(0, 0, 4, PH, C.lime);
     },
   });
 
