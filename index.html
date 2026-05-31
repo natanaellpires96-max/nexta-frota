@@ -102,7 +102,7 @@ async function dbGetStatus(carrier, plate, dateStr) {
     return value;
   } catch { return null; }
 }
-async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodometro) {
+async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodômetro) {
   const id = `${carrier}__${plate}__${dateStr}`;
   const data = {
     carrier, plate, dateStr, status, time: time||"", filled: true,
@@ -117,9 +117,9 @@ async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiur
   cacheSet(cKey, { status, time: time||"", motoristaDiurno: motoristaDiurno||"", motoristaNoturno: motoristaNoturno||"", hodometro: hodometro!==undefined?hodometro:null });
 }
 
-async function dbGetPreviousHodometro(plate, currentDateStr) {
+async function dbGetPreviousHodômetro(plate, currentDateStr) {
   try {
-    // Query all availability records for this plate that have a hodometro value
+    // Query all availability records for this plate that have a hodômetro value
     // and a dateStr strictly before currentDateStr, ordered descending to get the most recent.
     const q = query(
       collection(db, "availability"),
@@ -137,7 +137,7 @@ async function dbGetPreviousHodometro(plate, currentDateStr) {
     }
   } catch (e) {
     // Fallback: if the composite index doesn't exist yet, scan all records for this plate
-    console.warn("dbGetPreviousHodometro: falling back to full scan", e.message);
+    console.warn("dbGetPreviousHodômetro: falling back to full scan", e.message);
     try {
       const qFallback = query(collection(db, "availability"), where("plate", "==", plate));
       const snap = await getDocs(qFallback);
@@ -151,7 +151,7 @@ async function dbGetPreviousHodometro(plate, currentDateStr) {
         if (Number.isFinite(val)) return val;
       }
     } catch (e2) {
-      console.error("dbGetPreviousHodometro fallback failed", e2);
+      console.error("dbGetPreviousHodômetro fallback failed", e2);
     }
   }
   return null;
@@ -548,7 +548,7 @@ function optHtml(v, selected=false){
   return `<option value="${attr(v)}"${selected?' selected':''}>${esc(v)}</option>`;
 }
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
-function statusSemHorario(v){ return v==='indisponivel'||v==='programado'||v==='folga'; }
+function statusSemHorario(v){ return v==='indisponível'||v==='programado'||v==='folga'; }
 function fmtTimeValue(v){ return v==='sem_previsao'?'Sem previsão':(v||'—'); }
 function renderDriverCell(diurno='', noturno=''){
   const motD=diurno||'—';
@@ -654,17 +654,20 @@ function renderPendingAlert(groups, {title, subtitle, okSubtitle, cutoffHour, cu
     <div class="pa-group ${g.pending.length?'':'ok'}">
       <div class="pa-day"><span>${esc(g.label)}</span><small>${fmtDateStr(g.ds)}</small></div>
       <div class="pa-list">
-        ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${esc(c)}</span>`).join(""):`<span class="pa-chip ok">Sem pendencias</span>`}
+        ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${esc(c)}</span>`).join(""):`<span class="pa-chip ok">Sem pendências</span>`}
       </div>
     </div>`).join("");
   const cutoffCard=(cutoffReached&&todayPending.length)
-    ? `<div class="pa-cutoff-alert"><strong>Corte ${String(cutoffHour).padStart(2,'0')}:00 atingido</strong><span>${todayPending.length} pendencia(s) para hoje</span></div>`
+    ? `<div class="pa-cutoff-alert"><strong>Corte ${String(cutoffHour).padStart(2,'0')}:00 atingido</strong><span>${todayPending.length} pendência(s) para hoje</span></div>`
     : `<div class="pa-cutoff-note">Corte configurado: <strong>${String(cutoffHour).padStart(2,'0')}:00</strong></div>`;
   if(total===0){
     return `<div class="pending-alert ok">
       <div class="pa-icon">✓</div>
       <div class="pa-content">
-        <div class="pa-head"><div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">${okSubtitle}</div></div>${metricCards}</div>
+        <div class="pa-head">
+          <div><div class="pa-title">Disponibilidade em dia</div><div class="pa-sub">${okSubtitle}</div></div>
+          <div class="pa-metrics">${metricCards}</div>
+        </div>
         ${cutoffCard}
       </div>
     </div>`;
@@ -672,7 +675,10 @@ function renderPendingAlert(groups, {title, subtitle, okSubtitle, cutoffHour, cu
   return `<div class="pending-alert warn">
     <div class="pa-icon">!</div>
     <div class="pa-content">
-      <div class="pa-head"><div><div class="pa-title">${title}</div><div class="pa-sub">${subtitle}</div></div><div class="pa-metrics">${metricCards}</div></div>
+      <div class="pa-head">
+        <div><div class="pa-title">${title}</div><div class="pa-sub">${subtitle}</div></div>
+        <div class="pa-metrics">${metricCards}</div>
+      </div>
       ${cutoffCard}
       <div class="pa-groups">${groupsHtml}</div>
     </div>
@@ -680,7 +686,7 @@ function renderPendingAlert(groups, {title, subtitle, okSubtitle, cutoffHour, cu
 }
 async function buildPendingAlerts(allP, filterOps){
   if(S.dateOffset !== 0) return "";
-  const targets=[{label:"Hoje", ds:dateStr(0)},{label:"Amanha", ds:dateStr(1)}];
+  const targets=[{label:"Hoje", ds:dateStr(0)},{label:"Amanhã", ds:dateStr(1)}];
   const CUTOFF_HOUR = ALERT_CUTOFF_HOUR;
   const cutoffReached = (new Date()).getHours() >= CUTOFF_HOUR;
 
@@ -705,9 +711,9 @@ async function buildPendingAlerts(allP, filterOps){
       return {...t, pending: pendingItems};
     }));
     return renderPendingAlert(groups, {
-      title:"Pendencias de preenchimento",
-      subtitle:"Operacoes sem envio concluido para o periodo monitorado.",
-      okSubtitle:"Todas as operacoes preencheram hoje e amanha.",
+      title:"Pendências de preenchimento",
+      subtitle:"Operações sem envio concluído para o período monitorado.",
+      okSubtitle:"Todas as operações preencheram hoje e amanhã.",
       cutoffHour:CUTOFF_HOUR,
       cutoffReached
     });
@@ -720,9 +726,9 @@ async function buildPendingAlerts(allP, filterOps){
     return {...t, pending: checks.filter(x=>!x.lock).map(x=>x.carrier)};
   }));
   return renderPendingAlert(groups, {
-    title:"Pendencias de preenchimento",
-    subtitle:"Transportadores sem envio concluido para hoje e amanha.",
-    okSubtitle:"Todos os transportadores preencheram hoje e amanha.",
+    title:"Pendências de preenchimento",
+    subtitle:"Transportadores sem envio concluído para hoje e amanhã.",
+    okSubtitle:"Todos os transportadores preencheram hoje e amanhã.",
     cutoffHour:CUTOFF_HOUR,
     cutoffReached
   });
@@ -891,7 +897,7 @@ const MANUAL_OPERACIONAL_HTML = `
     <li><b>Gráfico de pizza:</b> distribuição percentual dos status no dia.</li>
     <li><b>Linha de tendência:</b> evolução da disponibilidade nos últimos 14 dias.</li>
     <li><b>Barras por transportador:</b> comparativo entre as empresas.</li>
-    <li><b>Tabela por operação:</b> resumo por unidade operacional com barra de disponibilidade.</li>
+    <li><b>Tabela por operacao:</b> resumo por unidade operacional com barra de disponibilidade.</li>
     <li><b>Últimas ações (auditoria):</b> registro das ações recentes no sistema com descrição legível, autor e horário.</li>
   </ul>
 
@@ -1088,7 +1094,7 @@ async function renderCarrier(carrier){
       withTimeout(dbGetPlates(), 15000, "Falha ao carregar placas"),
       withTimeout(dbGetDrivers(), 15000, "Falha ao carregar motoristas").catch(()=>({}))
     ]);
-    const userOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
+    const userOps=(USERS_DB[S.user]&&USERS_DB[S.user].operações&&USERS_DB[S.user].operações.length)?USERS_DB[S.user].operações:null;
     const loadedPlates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
     if(!loadedPlates.length){
       const opLabel=userOps?` para a operação ${userOps.join(' / ')}`:'';
@@ -1218,7 +1224,7 @@ async function renderCarrier(carrier){
             <div class="vc-field">
               <label class="vc-label">DISPONÍVEL ÀS</label>
               <select class="${timeCls} vc-time-sel" ${timeDis} onchange="onTimeChange(this)">
-                ${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}
+                ${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutenção')}
               </select>
             </div>
           </div>
@@ -1246,7 +1252,7 @@ async function renderCarrier(carrier){
       </div>`;
   }).join('');
 
-  const userOpsLabel2=(USERS_DB[S.user]?.operacoes?.length)?` — ${USERS_DB[S.user].operacoes.join(' / ')}`:'';
+  const userOpsLabel2=(USERS_DB[S.user]?.operações?.length)?` — ${USERS_DB[S.user].operações.join(' / ')}`:'';
   const lockedBanner = lock
     ? `<div class="locked-banner">🔒 Disponibilidade enviada em ${esc(lock.lockedAt)} — não é possível editar.</div>`
     : '';
@@ -1292,7 +1298,7 @@ function onStChange(sel){
       timeSel.innerHTML='<option value="">N/A</option>';
     } else {
       timeSel.disabled=false;
-      const allowNoForecast=sel.value==='manutencao';
+      const allowNoForecast=sel.value==='manutenção';
       const keepValue=timeSel.value==='sem_previsao'&&!allowNoForecast?'':timeSel.value;
       timeSel.innerHTML=buildTimeOpts(keepValue,allowNoForecast);
       timeSel.className=(timeSel.value?'time-sel time-filled':'time-sel time-blank')+vcTimeCls;
@@ -1364,7 +1370,7 @@ async function saveAll(carrier,ds){
       if(!odoInput) continue;
       const currentOdo=Number(odoInput.value);
       if(!Number.isFinite(currentOdo)) continue;
-      const previousOdo=await dbGetPreviousHodometro(plate, ds);
+      const previousOdo=await dbGetPreviousHodômetro(plate, ds);
       prevOdoCache[plate]=previousOdo;
       if(previousOdo!==null && currentOdo<previousOdo){
         invalidOdoCards.push(plate);
@@ -1468,7 +1474,7 @@ async function renderDashboard(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando dashboard...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
-  const _uOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
+  const _uOps=(USERS_DB[S.user]&&USERS_DB[S.user].operações&&USERS_DB[S.user].operações.length)?USERS_DB[S.user].operações:null;
   const pendingAlerts=await buildPendingAlerts(allP,_uOps);
   const auditItems=await dbGetAudit(8);
 
@@ -1510,7 +1516,7 @@ async function renderDashboard(body){
   const opOrder=[...OPERACOES,...Object.keys(byOp).filter(o=>!OPERACOES.includes(o)).sort()];
   const opRows=opOrder.filter(op=>byOp[op]).map(op=>{
     const r=byOp[op];
-    const dispPct=r.total?Math.round((r.disponivel/r.total)*100):0;
+    const dispPct=r.total?Math.round((r.disponível/r.total)*100):0;
     return `<tr><td style="font-weight:500">${esc(op)}</td><td><span class="badge b-green">${r.disponivel}</span></td><td><span class="badge b-red">${r.indisponivel}</span></td><td><span class="badge b-amber">${r.manutencao}</span></td><td><span class="badge b-blue">${r.folga}</span></td><td><span class="badge b-purple">${r.programado||0}</span></td><td><span class="badge b-blank">${r.pendente}</span></td><td><span class="cap-tag">${r.total}</span></td><td><div class="op-meter"><span style="width:${dispPct}%"></span></div><div class="op-meter-label">${dispPct}% disponível</div></td></tr>`;
   }).join("");
 
@@ -1560,23 +1566,25 @@ async function renderDashboard(body){
       </div>
 
       <!-- Row 2: Ranking + corte -->
-      <div class="sla-bottom-row">
-        <div class="sla-ranking">
-          <div class="sla-section-title">⚠ Maiores pendências de preenchimento — hoje</div>
-          <div class="sla-ranking-list">
-            ${pendingRanking.map((r,i)=>{
-              const pendPct = r.totalOps ? Math.round((r.pendOps/r.totalOps)*100) : 0;
-              const severity = i===0?'sla-rank-critical':i<=2?'sla-rank-high':'sla-rank-pend';
-              return `<div class="sla-rank-item ${severity}">
-                <span class="sla-rank-medal">${i+1}.</span>
-                <span class="sla-rank-name">${esc(r.carrier)}</span>
-                <span class="sla-rank-bar-wrap"><span class="sla-rank-bar-fill" style="width:${pendPct}%;background:${i===0?'var(--red)':'var(--amber)'}"></span></span>
-                <span class="sla-rank-tag sla-tag-pend">${r.pendOps}/${r.totalOps} pend.</span>
-              </div>`;
-            }).join('') || '<div style="font-size:12px;color:var(--green);padding:6px 0">✓ Nenhuma pendência de preenchimento hoje</div>'}
-          </div>
+      <!-- Ranking — ocupa largura total -->
+      <div class="sla-ranking">
+        <div class="sla-section-title">⚠ Maiores pendências de preenchimento — hoje</div>
+        <div class="sla-ranking-list">
+          ${pendingRanking.map((r,i)=>{
+            const pendPct = r.totalOps ? Math.round((r.pendOps/r.totalOps)*100) : 0;
+            const severity = i===0?'sla-rank-critical':i<=2?'sla-rank-high':'sla-rank-pend';
+            return `<div class="sla-rank-item ${severity}">
+              <span class="sla-rank-medal">${i+1}.</span>
+              <span class="sla-rank-name">${esc(r.carrier)}</span>
+              <span class="sla-rank-bar-wrap"><span class="sla-rank-bar-fill" style="width:${pendPct}%;background:${i===0?'var(--red)':'var(--amber)'}"></span></span>
+              <span class="sla-rank-tag sla-tag-pend">${r.pendOps}/${r.totalOps} pend.</span>
+            </div>`;
+          }).join('') || '<div style="font-size:12px;color:var(--green);padding:6px 0">✓ Nenhuma pendência de preenchimento hoje</div>'}
         </div>
-        ${currentUser.role==="admin" ? `
+      </div>
+      <!-- Config cards — dois lado a lado, só para admin -->
+      ${currentUser.role==="admin" ? `
+      <div class="sla-config-row">
         <div class="sla-cutoff">
           <div class="sla-section-title">⏰ Horário de corte</div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Alerta acende quando passa deste horário sem preenchimento</div>
@@ -1598,8 +1606,8 @@ async function renderDashboard(body){
             <button class="btn btn-lime btn-sm" onclick="saveMetaDisp()">Salvar</button>
           </div>
           <div style="margin-top:10px;font-size:11px;color:var(--muted)">Meta atual: <span style="color:var(--lime);font-weight:500">${META_DISP}%</span></div>
-        </div>` : ''}
-      </div>
+        </div>
+      </div>` : ''}
     </div>
     <div class="card" style="margin-bottom:1.25rem"><div style="font-size:13px;color:var(--dim);margin-bottom:8px">Últimas ações (auditoria)</div><div style="display:grid;gap:6px">${auditItems.length ? auditItems.map(a=>`<div style="font-size:12px;color:var(--text);background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span style="color:var(--lime)">${fmtAuditAction(a.action, a.details||{})}</span><span style="color:var(--muted);white-space:nowrap;font-size:11px">${a.actor||"Sistema"} · ${a.atBR||""}</span></div>`).join("") : `<div style="font-size:12px;color:var(--muted)">Sem eventos recentes.</div>`}</div></div>
     <div class="dash-grid"><div class="chart-card"><div class="chart-title">Distribuição de status - hoje</div><canvas id="pie-chart" height="260"></canvas></div><div class="chart-card"><div class="chart-title">Tendência de disponibilidade - 14 dias</div><canvas id="line-chart" height="260"></canvas></div></div>
@@ -2113,7 +2121,7 @@ async function saveCutoffHour(){
   const u = USERS_DB[S.user];
   if(!u || u.role!=="admin"){ showToast("Acesso restrito.", false); return; }
   const sel=document.getElementById("cutoff-hour-sel");
-  if(!sel){ showToast("Campo de corte nao encontrado.", false); return; }
+  if(!sel){ showToast("Campo de corte não encontrado.", false); return; }
   const hour=Number(sel.value);
   if(!Number.isFinite(hour) || hour<0 || hour>23){ showToast("Hora invalida.", false); return; }
   try{
@@ -2135,7 +2143,7 @@ async function renderToday(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
-  const _uOps2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
+  const _uOps2=(USERS_DB[S.user]&&USERS_DB[S.user].operações&&USERS_DB[S.user].operações.length)?USERS_DB[S.user].operações:null;
   const pendingAlerts=await buildPendingAlerts(allP,_uOps2);
   const opFilter=S.todayOp||"";
   const placaFilter=(S.todayPlaca||"").toUpperCase();
@@ -2248,7 +2256,7 @@ async function renderHistory(body){
   for(const carrier of carriersToShow){
     for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!of||p.operacao===of)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)))){
       for(const ds of dates){
-        const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = nao preenchido
+        const rec=statusMap[`${carrier}||${p.placa}||${ds}`]; // null = não preenchido
         const v=rec?rec.status:null;
         const t=rec?rec.time:"";
         if(sf==="nao_preenchido"){ if(v!==null) continue; }
@@ -2297,9 +2305,9 @@ async function renderHistory(body){
       <td style="font-size:13px;font-weight:600;white-space:nowrap">${fmtDateStr(ds)}</td>
       <td><span class="cap-tag">${c.total} registro(s)</span></td>
       <td style="font-size:12px;color:var(--muted)">${g.carriers.size} transportador(es)</td>
-      <td><span class="badge b-green">${c.disponivel||0}</span></td>
-      <td><span class="badge b-red">${c.indisponivel||0}</span></td>
-      <td><span class="badge b-amber">${c.manutencao||0}</span> <span class="badge b-blue">${c.folga||0}</span> <span class="badge b-purple">${c.programado||0}</span></td>
+      <td><span class="badge b-green">${c.disponível||0}</span></td>
+      <td><span class="badge b-red">${c.indisponível||0}</span></td>
+      <td><span class="badge b-amber">${c.manutenção||0}</span> <span class="badge b-blue">${c.folga||0}</span> <span class="badge b-purple">${c.programado||0}</span></td>
       <td><span class="badge b-blank">${c.nao_preenchido||0}</span></td>
     </tr>${detail}`;
   }).join("");
@@ -2488,7 +2496,7 @@ async function buildRows(dates, onProgress){
   Object.assign(statusMap, anchorMap);
   if(onProgress) onProgress(95);
 
-  // Build per-plate sorted hodometro history from everything fetched so far.
+  // Build per-plate sorted hodômetro history from everything fetched so far.
   // This lets us find the last known value before any date in O(n) without
   // extra Firestore calls, correctly handling gaps in the data.
   const plateHodoHistory = {}; // plate -> [{dateStr, hod}] sorted asc
@@ -2506,7 +2514,7 @@ async function buildRows(dates, onProgress){
   for(const plate of Object.keys(plateHodoHistory))
     plateHodoHistory[plate].sort((a,b) => a.dateStr.localeCompare(b.dateStr));
 
-  // Returns the most recent hodometro registered strictly before targetDate.
+  // Returns the most recent hodômetro registered strictly before targetDate.
   function lastKnownHodoBefore(plate, targetDate){
     const hist = plateHodoHistory[plate];
     if(!hist) return null;
@@ -2669,7 +2677,7 @@ async function renderRegister(body){
 }
 async function addPlate(){
   const carrier=document.getElementById("r-carrier").value;
-  const operacao=document.getElementById("r-op").value;
+  const operação=document.getElementById("r-op").value;
   const placa=document.getElementById("r-placa").value.trim().toUpperCase();
   const tipo=document.getElementById("r-tipo").value;
   const identificacao=document.getElementById("r-id").value;
@@ -2882,7 +2890,7 @@ async function renderUsers(body){
       <td style="font-size:12px">${esc(u.name)}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${esc(u.carrier||'—')}</td>
-      <td style="font-size:11px;color:var(--muted)">${(u.operacoes&&u.operacoes.length)?esc(u.operacoes.join(', ')):'Todas'}</td>
+      <td style="font-size:11px;color:var(--muted)">${(u.operações&&u.operações.length)?esc(u.operações.join(', ')):'Todas'}</td>
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
           <button class="btn-edit" onclick="openEditUser('${attr(jsArg(uid))}')" title="Editar">✏️</button>
@@ -2933,7 +2941,7 @@ async function renderUsers(body){
           <select id="new-ucarrier" onchange="renderOpCheckboxes('new-op-checks','new-ucarrier')">${CARRIERS.map(c=>optHtml(c)).join('')}</select>
         </div>
         <div class="form-field" id="new-op-field" style="display:none;grid-column:1/-1">
-          <label>OPERAÇÕES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
+          <label>OPERACOES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
           <div id="new-op-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px"></div>
         </div>
       </div>
@@ -2947,7 +2955,7 @@ async function renderUsers(body){
     <p class="sec-title" style="margin-bottom:.75rem">Usuários cadastrados</p>
     <div class="tscroll">
       <table class="table" style="min-width:520px">
-        <thead><tr><th style="width:12%">LOGIN</th><th style="width:22%">NOME</th><th style="width:10%">PERFIL</th><th style="width:20%">TRANSPORTADOR</th><th style="width:20%">OPERAÇÕES</th><th style="width:16%">AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:12%">LOGIN</th><th style="width:22%">NOME</th><th style="width:10%">PERFIL</th><th style="width:20%">TRANSPORTADOR</th><th style="width:20%">OPERACOES</th><th style="width:16%">AÇÕES</th></tr></thead>
         <tbody>${userRows}</tbody>
       </table>
     </div>`;
@@ -3008,7 +3016,7 @@ async function addUser(){
   const pwd=document.getElementById('new-upwd').value.trim();
   const role=document.getElementById('new-urole').value;
   const carrier=(role==='carrier')?document.getElementById('new-ucarrier').value:'';
-  const operacoes=(role==='carrier')?getCheckedOps('new-op-checks'):[];
+  const operações=(role==='carrier')?getCheckedOps('new-op-checks'):[];
   const msg=document.getElementById('user-msg');
   if(!uid){msg.textContent='Informe o login.';msg.style.color='var(--red)';return;}
   if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
@@ -3032,7 +3040,7 @@ async function addUser(){
   }
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   // Salva perfil no Firestore SEM a senha
-  USERS_DB[uid]={name, role, initials, ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
+  USERS_DB[uid]={name, role, initials, ...(carrier?{carrier}:{}), ...(operações.length?{operações}:{})};
   await dbSaveUsers(USERS_DB);
   ['new-uid','new-uname','new-upwd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   msg.textContent=`Usuário ${uid} criado!`;msg.style.color='var(--green)';
@@ -3075,9 +3083,9 @@ function openEditUser(uid){
           <select id="eu-carrier">${carrierOpts}</select>
         </div>
         <div class="form-field" id="eu-op-field" style="display:${u.role==='carrier'?'block':'none'};grid-column:1/-1">
-          <label>OPERAÇÕES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
+          <label>OPERACOES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
           <div id="eu-op-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
-            ${OPERACOES.map(op=>`<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none"><input type="checkbox" value="${attr(op)}"${(u.operacoes&&u.operacoes.includes(op))?' checked':''} style="accent-color:var(--lime);cursor:pointer"> ${esc(op)}</label>`).join('')}
+            ${OPERACOES.map(op=>`<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none"><input type="checkbox" value="${attr(op)}"${(u.operações&&u.operações.includes(op))?' checked':''} style="accent-color:var(--lime);cursor:pointer"> ${esc(op)}</label>`).join('')}
           </div>
         </div>
       </div>
@@ -3128,7 +3136,7 @@ async function saveEditUser(uid){
     initials,
     role: newRole,
     ...(newCarrier?{carrier:newCarrier}:{carrier:''}),
-    operacoes: newOps
+    operações: newOps
   };
   delete USERS_DB[uid].password; // garante remoção caso ainda exista localmente
   await dbSaveUsers(USERS_DB);
@@ -3536,7 +3544,7 @@ async function refreshEditDriverOpts(carrier){
 async function saveEdit(){
   const {carrier, idx} = _editPending;
   if(!carrier && carrier!==0){ showToast('Erro: dados da placa não encontrados.', false); return; }
-  const operacao=document.getElementById('e-op').value;
+  const operação=document.getElementById('e-op').value;
   const tipo=document.getElementById('e-tipo').value;
   const identificacao=document.getElementById('e-id').value;
   const contrato=document.getElementById('e-contrato').value;
@@ -3849,8 +3857,8 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 .sla-kpi-bar{height:4px;background:rgba(228,242,200,.1);border-radius:99px;overflow:hidden;}
 .sla-kpi-bar span{display:block;height:100%;border-radius:99px;transition:width .4s;}
 .sla-kpi-meta{background:var(--lime-bg);border:1px solid var(--border2);border-radius:var(--radius);padding:14px 16px;display:flex;flex-direction:column;justify-content:center;}
-.sla-bottom-row{display:grid;grid-template-columns:1fr auto;gap:1.5rem;align-items:start;}
-@media(max-width:700px){.sla-bottom-row{grid-template-columns:1fr;}}
+.sla-config-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem;}
+@media(max-width:700px){.sla-config-row{grid-template-columns:1fr;}}
 .sla-section-title{font-size:12px;font-weight:600;color:var(--dim);margin-bottom:10px;letter-spacing:.04em;}
 .sla-ranking-list{display:flex;flex-direction:column;gap:7px;}
 .kpi-badge{display:inline-flex;align-items:center;font-size:10px;font-weight:600;padding:2px 8px;border-radius:99px;white-space:nowrap;margin-left:6px;}
@@ -3877,14 +3885,14 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 .pa-icon{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-weight:800;font-size:15px;background:rgba(240,190,64,.16);color:var(--amber);border:1px solid rgba(240,190,64,.38);}
 .pending-alert.ok .pa-icon{background:rgba(110,224,74,.14);color:var(--green);border-color:rgba(110,224,74,.35);}
 .pa-content{flex:1;min-width:0;}
-.pa-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px;}
+.pa-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;}
 .pa-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:3px;}
 .pa-sub{font-size:12px;color:var(--muted);}
-.pa-metrics{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
-.pa-metric{min-width:74px;background:rgba(11,22,7,.66);border:1px solid rgba(228,242,200,.1);border-radius:9px;padding:7px 10px;text-align:center;}
-.pa-metric.warn{border-color:rgba(240,190,64,.28);}
-.pa-metric.ok{border-color:rgba(110,224,74,.22);}
-.pa-metric-num{display:block;font-size:18px;font-weight:800;line-height:1;color:var(--amber);}
+.pa-metrics{display:flex;gap:8px;flex-shrink:0;}
+.pa-metric{width:80px;background:rgba(11,22,7,.66);border:1px solid rgba(228,242,200,.1);border-radius:9px;padding:8px 10px;text-align:center;}
+.pa-metric.warn{border-color:rgba(240,190,64,.38);}
+.pa-metric.ok{border-color:rgba(110,224,74,.28);}
+.pa-metric-num{display:block;font-size:20px;font-weight:800;line-height:1;color:var(--amber);}
 .pa-metric.ok .pa-metric-num{color:var(--green);}
 .pa-metric-label{display:block;margin-top:4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
 .pa-cutoff-note,.pa-cutoff-alert{display:inline-flex;align-items:center;gap:8px;border-radius:8px;padding:7px 10px;margin-bottom:12px;font-size:11px;}
@@ -3893,15 +3901,15 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 .pa-cutoff-alert{color:var(--red);background:rgba(240,96,96,.1);border:1px solid rgba(240,96,96,.25);}
 .pa-cutoff-alert strong{font-size:11px;color:var(--red);}
 .pa-cutoff-alert span{color:rgba(255,190,190,.86);}
-.pa-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;}
-.pa-group{background:rgba(11,22,7,.5);border:1px solid rgba(228,242,200,.09);border-radius:10px;padding:12px 14px;}
+.pa-groups{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:stretch;}
+.pa-group{background:rgba(11,22,7,.5);border:1px solid rgba(228,242,200,.09);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:9px;}
 .pa-group.ok{border-color:rgba(110,224,74,.18);background:rgba(110,224,74,.045);}
-.pa-day{display:flex;align-items:baseline;gap:8px;font-size:11px;font-weight:700;color:var(--amber);letter-spacing:.06em;margin-bottom:9px;text-transform:uppercase;}
+.pa-day{display:flex;align-items:baseline;gap:8px;font-size:11px;font-weight:700;color:var(--amber);letter-spacing:.06em;text-transform:uppercase;}
 .pa-day small{font-size:11px;font-weight:500;color:var(--muted);letter-spacing:0;text-transform:none;}
-.pa-list{display:flex;flex-wrap:wrap;gap:7px;}
-.pa-chip{display:inline-flex;align-items:center;max-width:100%;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:600;color:var(--amber);background:rgba(240,190,64,.12);border:1px solid rgba(240,190,64,.28);}
+.pa-list{display:flex;flex-wrap:wrap;gap:7px;align-content:flex-start;}
+.pa-chip{display:inline-flex;align-items:center;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:600;color:var(--amber);background:rgba(240,190,64,.12);border:1px solid rgba(240,190,64,.28);}
 .pa-chip.ok{color:var(--green);background:rgba(110,224,74,.1);border-color:rgba(110,224,74,.25);}
-@media(max-width:720px){.pa-head{flex-direction:column}.pa-metrics{justify-content:flex-start}.pa-groups{grid-template-columns:1fr}.pending-alert{padding:16px;}}
+@media(max-width:720px){.pa-head{flex-direction:column;align-items:flex-start;}.pa-metrics{width:100%;justify-content:flex-start;}.pa-groups{grid-template-columns:1fr;}.pending-alert{padding:14px;}}
 .op-summary-table td:not(:first-child),.op-summary-table th:not(:first-child){text-align:center;}
 .op-meter{height:7px;background:rgba(228,242,200,.08);border:1px solid rgba(228,242,200,.1);border-radius:99px;overflow:hidden;}
 .op-meter span{display:block;height:100%;background:var(--green);border-radius:99px;}
