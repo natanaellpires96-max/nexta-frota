@@ -735,8 +735,14 @@ async function buildPendingAlerts(allP, filterOps){
   const activeCarriers=CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
   if(!activeCarriers.length) return "";
   const groups=await Promise.all(targets.map(async t=>{
-    const checks=await Promise.all(activeCarriers.map(async carrier=>({ carrier, lock: await dbGetLock(carrier,t.ds) })));
-    return {...t, pending: checks.filter(x=>!x.lock).map(x=>x.carrier)};
+    const checks=await Promise.all(activeCarriers.map(async carrier=>{
+      const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
+      const lock=await dbGetLock(carrier,t.ds);
+      if(lock) return { carrier, done:true };
+      const sm=await dbLoadStatusBulk(plates.map(p=>({carrier,plate:p.placa,dateStr:t.ds})));
+      return { carrier, done: plates.length>0 && plates.every(p=>sm[`${carrier}||${p.placa}||${t.ds}`]) };
+    }));
+    return {...t, pending: checks.filter(x=>!x.done).map(x=>x.carrier)};
   }));
   return renderPendingAlert(groups, {
     title:"Pendências de preenchimento",
@@ -781,7 +787,8 @@ async function buildStatusBoardAlert(allP, userOps=null){
     const total  = plates.length;
     const avail  = plates.filter(p=>sm[`${carrier}||${p.placa}||${ds}`]?.status==="disponivel").length;
     const pct    = filled ? Math.round((avail/filled)*100) : 0;
-    return { carrier, lock, filled, total, avail, pct,
+    const done = !!lock || (total>0 && filled === total);
+    return { carrier, lock, done, filled, total, avail, pct,
       pending: total - filled,
       allFilled: filled === total };
   }));
@@ -789,7 +796,7 @@ async function buildStatusBoardAlert(allP, userOps=null){
   const totalVehicles   = carrierData.reduce((s,c)=>s+c.total,0);
   const totalFilled     = carrierData.reduce((s,c)=>s+c.filled,0);
   const totalAvail      = carrierData.reduce((s,c)=>s+c.avail,0);
-  const totalPending    = carrierData.filter(c=>!c.lock).length;
+  const totalPending    = carrierData.filter(c=>!c.done).length;
   const globalPct       = totalFilled ? Math.round((totalAvail/totalFilled)*100) : 0;
   const allDone         = totalPending === 0;
   const fillPct         = totalVehicles ? Math.round((totalFilled/totalVehicles)*100) : 0;
@@ -810,16 +817,16 @@ async function buildStatusBoardAlert(allP, userOps=null){
 
   // Carrier tiles
   const tiles = carrierData.map(c=>{
-    const tileColor = c.lock
+    const tileColor = c.done
       ? 'rgba(110,224,74,.08)' : isPastCutoff
       ? 'rgba(240,96,96,.08)' : 'rgba(240,190,64,.06)';
-    const tileBorder = c.lock
+    const tileBorder = c.done
       ? 'rgba(110,224,74,.25)' : isPastCutoff
       ? 'rgba(240,96,96,.3)' : 'rgba(240,190,64,.25)';
     const dispPct = c.filled ? Math.round((c.avail/c.filled)*100) : 0;
     const barColor = dispPct >= META_DISP ? 'var(--green)' : dispPct >= 70 ? 'var(--amber)' : 'var(--red)';
     const shortName = c.carrier.replace('Transportes','').replace('Transportadora','').trim();
-    const statusLabel = c.lock
+    const statusLabel = c.done
       ? `<span style="font-size:10px;color:var(--green);font-weight:600">🔒 Enviado</span>`
       : `<span style="font-size:10px;color:${isPastCutoff?'var(--red)':'var(--amber)'};font-weight:600">${c.pending} placa(s) pendente</span>`;
     return `
@@ -1252,6 +1259,9 @@ async function renderCarrier(carrier){
     const [pairsTemp, lockTemp] = [plates.map(p=>({carrier,plate:p.placa,dateStr:ds})), await withTimeout(dbGetLock(carrier,ds),15000,"Falha ao carregar status")];
     lock = lockTemp;
     statusMap = await withTimeout(dbLoadStatusBulk(pairsTemp),15000,"Falha ao carregar status");
+    if(!lock && plates.length && plates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`])){
+      lock = { carrier, dateStr: ds, lockedBy: "Sistema", lockedAt: "preenchimento concluído" };
+    }
   } catch(e){
     console.error(e);
     mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${esc(carrier)}</p>
@@ -1332,7 +1342,7 @@ async function renderCarrier(carrier){
     </div>`:'';
   const actionBar=lock?'':`
     <div style="display:flex;gap:10px;margin-top:1rem;">
-      <button class="btn btn-lime" id="save-btn" onclick="saveAll('${attr(jsArg(carrier))}','${attr(jsArg(ds))}')">💾 Salvar disponibilidade</button>
+      <button type="button" class="btn btn-lime" id="save-btn" data-carrier="${attr(carrier)}" data-date="${attr(ds)}">💾 Salvar disponibilidade</button>
     </div>`;
 
   mc.innerHTML=`
@@ -1351,6 +1361,13 @@ async function renderCarrier(carrier){
       </table>
     </div>
     ${actionBar}`;
+  const saveBtn=document.getElementById("save-btn");
+  if(saveBtn){
+    saveBtn.addEventListener("click", (ev)=>{
+      ev.preventDefault();
+      saveAll(saveBtn.dataset.carrier, saveBtn.dataset.date, saveBtn);
+    });
+  }
 }
 function onStChange(sel){
   const row=sel.closest('tr');
@@ -1381,39 +1398,54 @@ function onTimeChange(sel){
   else sel.className='time-sel time-blank';
 }
 function _refreshCardDone(card){ /* no-op — kept for compatibility */ }
-async function saveAll(carrier,ds){
-  const btn=document.getElementById("save-btn");
-  const rows=document.querySelectorAll(".table tbody tr");
-  const isCarrierUser = USERS_DB[S.user] && USERS_DB[S.user].role==='carrier';
+async function saveAll(carrier, ds, btnEl=null){
+  const btn=btnEl || document.getElementById("save-btn");
+  if(btn && btn.dataset.saving==="1") return;
+  carrier = carrier || btn?.dataset?.carrier || USERS_DB[S.user]?.carrier || "";
+  ds = ds || btn?.dataset?.date || dateStr(S.dateOffset);
+  const table=btn?.closest("#main-content")?.querySelector(".table") || document.querySelector("#main-content .table");
+  const rows=[...(table?.querySelectorAll("tbody tr") || [])];
+  const u=USERS_DB[S.user] || {};
+  const isCarrierUser = u.role==='carrier';
+  if(!carrier || !ds || !rows.length){
+    showToast("Não foi possível localizar os dados para salvar. Atualize a página e tente novamente.", false);
+    return;
+  }
+
   let missing=[];
   rows.forEach(row=>{
-    const plate=row.dataset.placa||row.cells[0].textContent.trim();
-    const statusSel=row.querySelector(".st-sel,.st-blank");
+    const plate=row.dataset.placa||row.cells[0]?.textContent.trim()||"";
+    const statusSel=row.querySelector(".st-sel");
     const timeSel=row.querySelector(".time-sel");
     const odoInput=row.querySelector('.odo-input');
-    const hasStatus=statusSel&&statusSel.value;
+    const hasStatus=!!(statusSel&&statusSel.value);
     const isIndisp=statusSel&&statusSemHorario(statusSel.value);
-    const hasTime=timeSel&&timeSel.value;
+    const hasTime=!!(timeSel&&timeSel.value);
     const hasOdo = !isCarrierUser || (odoInput && odoInput.value!=='');
     if(!hasStatus||(!isIndisp&&!hasTime)||!hasOdo) missing.push(plate);
   });
   if(missing.length>0){
-    showToast(`Preencha status e horário quando aplicável antes de salvar.`,false);
+    showToast("Preencha status, hodômetro e horário quando aplicável antes de salvar.",false);
     rows.forEach(row=>{
-      const plate=row.dataset.placa||row.cells[0].textContent.trim();
+      const plate=row.dataset.placa||row.cells[0]?.textContent.trim()||"";
       row.style.background=missing.includes(plate)?"rgba(240,96,96,.08)":"";
     });
     return;
   }
+
   const prevOdoCache = {};
   const invalidOdoRows=[];
   if(isCarrierUser){
     for (const row of rows){
-      const plate=row.dataset.placa||row.cells[0].textContent.trim();
+      const plate=row.dataset.placa||row.cells[0]?.textContent.trim()||"";
       const odoInput=row.querySelector('.odo-input');
       if(!odoInput) continue;
       const currentOdo=Number(odoInput.value);
-      if(!Number.isFinite(currentOdo)) continue;
+      if(!Number.isFinite(currentOdo)){
+        invalidOdoRows.push(plate);
+        row.style.background="rgba(240,96,96,.08)";
+        continue;
+      }
       const previousOdo=await dbGetPreviousHodometro(plate, ds);
       prevOdoCache[plate]=previousOdo;
       if(previousOdo !== null && currentOdo < previousOdo){
@@ -1426,33 +1458,57 @@ async function saveAll(carrier,ds){
   }
   if(invalidOdoRows.length>0){
     const detalhes = invalidOdoRows.map(plate => `${plate} (último: ${prevOdoCache[plate]??'—'})`);
-    showToast(`Hodômetro menor que o anterior: ${detalhes.join(', ')}`, false);
+    showToast(`Hodômetro inválido: ${detalhes.join(', ')}`, false);
     return;
   }
-  if(btn){btn.disabled=true;btn.textContent="Salvando...";}
-  const allP=await dbGetPlates();
-  const proms=[];
-  rows.forEach(row=>{
-    const plate=row.dataset.placa||row.cells[0].textContent.trim();
-    const statusSel=row.querySelector(".st-sel");
-    const timeSel=row.querySelector(".time-sel");
-    const pRecord=(allP[carrier]||[]).find(p=>p.placa===plate)||{};
-    const dSelD = row.querySelector('.driver-sel-d');
-    const dSelN = row.querySelector('.driver-sel-n');
-    const motDiurno  = dSelD ? dSelD.value  : (pRecord.motoristaDiurno||'');
-    const motNoturno = dSelN ? dSelN.value  : (pRecord.motoristaNoturno||'');
-    const odoInput=row.querySelector('.odo-input');
-    const hodometro = odoInput && odoInput.value!==''? Number(odoInput.value) : null;
-    proms.push(dbSaveStatus(carrier,plate,ds,statusSel.value,timeSel.value,motDiurno,motNoturno,hodometro));
-  });
-  await Promise.all(proms);
-  const u=USERS_DB[S.user];
-  await dbSetLock(carrier, ds, u.name);
-  await dbAddNotif(`${u.name} enviou a disponibilidade — ${fmtDateStr(ds)}`);
-  await dbAddAudit("status_submit", { carrier, date: ds, rows: rows.length });
-  showToast("Disponibilidade salva e bloqueada! ✓");
-  if(btn){btn.disabled=false;btn.innerHTML="💾 Salvar disponibilidade";}
-  await renderCarrier(carrier);
+
+  if(btn){btn.disabled=true;btn.dataset.saving="1";btn.textContent="Salvando...";}
+  try{
+    const allP=await dbGetPlates();
+    const saves=rows.map(row=>{
+      const plate=row.dataset.placa||row.cells[0]?.textContent.trim()||"";
+      const statusSel=row.querySelector(".st-sel");
+      const timeSel=row.querySelector(".time-sel");
+      const pRecord=(allP[carrier]||[]).find(p=>p.placa===plate)||{};
+      const dSelD = row.querySelector('.driver-sel-d');
+      const dSelN = row.querySelector('.driver-sel-n');
+      const motDiurno  = dSelD ? dSelD.value  : (pRecord.motoristaDiurno||'');
+      const motNoturno = dSelN ? dSelN.value  : (pRecord.motoristaNoturno||'');
+      const odoInput=row.querySelector('.odo-input');
+      const hodometro = odoInput && odoInput.value!==''? Number(odoInput.value) : null;
+      const timeValue = statusSemHorario(statusSel.value) ? "" : (timeSel?.value || "");
+      return dbSaveStatus(carrier,plate,ds,statusSel.value,timeValue,motDiurno,motNoturno,hodometro);
+    });
+    const results=await Promise.allSettled(saves);
+    const failed=results.filter(r=>r.status==="rejected");
+    if(failed.length){
+      console.error("Falha ao salvar disponibilidade", failed.map(f=>f.reason));
+      showToast(`Falha ao salvar ${failed.length} placa(s). Verifique sua conexão e tente novamente.`, false);
+      return;
+    }
+
+    try { await dbSetLock(carrier, ds, u.name||carrier); }
+    catch(e) { console.warn("Disponibilidade salva, mas não foi possível bloquear o lançamento.", e); }
+
+    Promise.allSettled([
+      dbAddNotif(`${u.name||carrier} enviou a disponibilidade — ${fmtDateStr(ds)}`),
+      dbAddAudit("status_submit", { carrier, date: ds, rows: rows.length })
+    ]).then(res=>{
+      res.forEach(r=>{ if(r.status==="rejected") console.warn("Registro auxiliar pós-salvamento falhou", r.reason); });
+    });
+
+    showToast("Disponibilidade salva com sucesso! ✓");
+    await renderCarrier(carrier);
+  } catch(e){
+    console.error("saveAll error", e);
+    showToast(`Erro ao salvar: ${e.code||e.message||"tente novamente."}`, false);
+  } finally {
+    if(btn){
+      btn.disabled=false;
+      btn.dataset.saving="";
+      btn.innerHTML="💾 Salvar disponibilidade";
+    }
+  }
 }
 
 async function chDate(d){ S.dateOffset+=d; await render(); }
@@ -1543,9 +1599,14 @@ async function renderDashboard(body){
     }
   }
 
-  const todayLocks = await Promise.all(CARRIERS.map(async carrier => ({ carrier, lock: await dbGetLock(carrier, ds) })));
   const activeCarrierList = CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
-  const lockedToday = todayLocks.filter(x=>x.lock && activeCarrierList.includes(x.carrier)).length;
+  const todayDone = await Promise.all(activeCarrierList.map(async carrier => {
+    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
+    const lock=await dbGetLock(carrier, ds);
+    const filledByStatus=plates.length>0 && plates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
+    return { carrier, done: !!lock || filledByStatus };
+  }));
+  const lockedToday = todayDone.filter(x=>x.done).length;
   const pendingToday = Math.max(0, activeCarrierList.length - lockedToday);
   const slaToday = activeCarrierList.length ? Math.round((lockedToday/activeCarrierList.length)*100) : 100;
   const pendingRanking = activeCarrierList.map(carrier=>{
@@ -2243,11 +2304,13 @@ async function renderToday(body){
       </tr>`;
     }).join("");
     const lock=await dbGetLock(carrier,ds);
-    const lockBadge=lock
-      ?`<span style="font-size:11px;color:var(--lime);margin-left:8px;background:var(--lime-bg);border:1px solid var(--border2);padding:2px 8px;border-radius:99px;">🔒 Enviado ${lock.lockedAt}</span>`
+    const allFilled=plates.length>0 && plates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
+    const done=!!lock || allFilled;
+    const lockBadge=done
+      ?`<span style="font-size:11px;color:var(--lime);margin-left:8px;background:var(--lime-bg);border:1px solid var(--border2);padding:2px 8px;border-radius:99px;">🔒 Enviado ${lock?lock.lockedAt:'preenchimento concluído'}</span>`
       :`<span style="font-size:11px;color:var(--muted);margin-left:8px;">Pendente</span>`;
     const isAdmin2=USERS_DB[S.user]&&USERS_DB[S.user].role==="admin";
-    const unlockBtn=(lock&&isAdmin2)
+    const unlockBtn=(done&&isAdmin2)
       ?`<button class="btn-unlock" onclick="adminUnlock('${attr(jsArg(carrier))}','${attr(jsArg(ds))}')" title="Desfazer lançamento">🔓 Desbloquear</button>`
       :'';
     sections+=`<div class="carrier-block">
