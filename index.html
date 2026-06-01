@@ -104,7 +104,7 @@ async function dbGetStatus(carrier, plate, dateStr) {
     return value;
   } catch { return null; }
 }
-async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodômetro) {
+async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodometro) {
   const id = `${carrier}__${plate}__${dateStr}`;
   const data = {
     carrier, plate, dateStr, status, time: time||"", filled: true,
@@ -119,7 +119,7 @@ async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiur
   cacheSet(cKey, { status, time: time||"", motoristaDiurno: motoristaDiurno||"", motoristaNoturno: motoristaNoturno||"", hodometro: hodometro!==undefined?hodometro:null });
 }
 
-async function dbGetPreviousHodômetro(plate, currentDateStr) {
+async function dbGetPreviousHodometro(plate, currentDateStr) {
   try {
     // Query all availability records for this plate that have a hodômetro value
     // and a dateStr strictly before currentDateStr, ordered descending to get the most recent.
@@ -139,7 +139,7 @@ async function dbGetPreviousHodômetro(plate, currentDateStr) {
     }
   } catch (e) {
     // Fallback: if the composite index doesn't exist yet, scan all records for this plate
-    console.warn("dbGetPreviousHodômetro: falling back to full scan", e.message);
+    console.warn("dbGetPreviousHodometro: falling back to full scan", e.message);
     try {
       const qFallback = query(collection(db, "availability"), where("plate", "==", plate));
       const snap = await getDocs(qFallback);
@@ -153,7 +153,7 @@ async function dbGetPreviousHodômetro(plate, currentDateStr) {
         if (Number.isFinite(val)) return val;
       }
     } catch (e2) {
-      console.error("dbGetPreviousHodômetro fallback failed", e2);
+      console.error("dbGetPreviousHodometro fallback failed", e2);
     }
   }
   return null;
@@ -270,8 +270,11 @@ async function dbSaveUsers(users) {
   // Nunca persiste o campo "password" no Firestore — autenticação é gerenciada pelo Firebase Auth
   const safe = {};
   for(const [uid, u] of Object.entries(users)){
-    const { password: _pw, ...rest } = u;
-    safe[uid] = rest;
+    const { password: _pw, operações: legacyOps, ...rest } = u;
+    const ops = rest.operacoes || legacyOps || [];
+    safe[uid] = { ...rest };
+    if(ops.length) safe[uid].operacoes = ops;
+    else delete safe[uid].operacoes;
   }
   await setDoc(doc(db, "config", "users"), { data: safe });
   cacheSet("cfg_users", safe, 300_000);
@@ -550,7 +553,11 @@ function optHtml(v, selected=false){
   return `<option value="${attr(v)}"${selected?' selected':''}>${esc(v)}</option>`;
 }
 function getSt(v){ return STATUS_OPTS.find(s=>s.val===v)||STATUS_OPTS[0]; }
-function statusSemHorario(v){ return v==='indisponível'||v==='programado'||v==='folga'; }
+function statusSemHorario(v){ return v==='indisponivel'||v==='programado'||v==='folga'; }
+function userOperacoes(u){
+  const ops = u?.operacoes || u?.operações || [];
+  return ops.length ? ops : null;
+}
 function fmtTimeValue(v){ return v==='sem_previsao'?'Sem previsão':(v||'—'); }
 function renderDriverCell(diurno='', noturno=''){
   const motD=diurno||'—';
@@ -1233,7 +1240,7 @@ async function renderCarrier(carrier){
       withTimeout(dbGetPlates(), 15000, "Falha ao carregar placas"),
       withTimeout(dbGetDrivers(), 15000, "Falha ao carregar motoristas").catch(()=>({}))
     ]);
-    const userOps=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?USERS_DB[S.user].operacoes:null;
+    const userOps=userOperacoes(USERS_DB[S.user]);
     const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
     if(loadedPlates.length===0){
       const opLabel=userOps?` para a operação ${userOps.join(' / ')}`:'';
@@ -1317,7 +1324,8 @@ async function renderCarrier(carrier){
     </tr>`;
   }).join("");
 
-  const userOpsLabel2=(USERS_DB[S.user]&&USERS_DB[S.user].operacoes&&USERS_DB[S.user].operacoes.length)?` — ${USERS_DB[S.user].operacoes.join(' / ')}`:'';
+  const userOpsForLabel=userOperacoes(USERS_DB[S.user]);
+  const userOpsLabel2=userOpsForLabel?` — ${userOpsForLabel.join(' / ')}`:'';
   const lockedBanner=lock?`
     <div class="locked-banner">
       🔒 Disponibilidade enviada em ${esc(lock.lockedAt)} — não é possível editar.
@@ -1512,7 +1520,7 @@ async function renderDashboard(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando dashboard...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
-  const _uOps=(USERS_DB[S.user]&&USERS_DB[S.user].operações&&USERS_DB[S.user].operações.length)?USERS_DB[S.user].operações:null;
+  const _uOps=userOperacoes(USERS_DB[S.user]);
   const pendingAlerts=await buildPendingAlerts(allP,_uOps);
   const auditItems=await dbGetAudit(8);
 
@@ -1554,7 +1562,7 @@ async function renderDashboard(body){
   const opOrder=[...OPERACOES,...Object.keys(byOp).filter(o=>!OPERACOES.includes(o)).sort()];
   const opRows=opOrder.filter(op=>byOp[op]).map(op=>{
     const r=byOp[op];
-    const dispPct=r.total?Math.round((r.disponível/r.total)*100):0;
+    const dispPct=r.total?Math.round((r.disponivel/r.total)*100):0;
     return `<tr><td style="font-weight:500">${esc(op)}</td><td><span class="badge b-green">${r.disponivel}</span></td><td><span class="badge b-red">${r.indisponivel}</span></td><td><span class="badge b-amber">${r.manutencao}</span></td><td><span class="badge b-blue">${r.folga}</span></td><td><span class="badge b-purple">${r.programado||0}</span></td><td><span class="badge b-blank">${r.pendente}</span></td><td><span class="cap-tag">${r.total}</span></td><td><div class="op-meter"><span style="width:${dispPct}%"></span></div><div class="op-meter-label">${dispPct}% disponível</div></td></tr>`;
   }).join("");
 
@@ -2195,7 +2203,7 @@ async function renderToday(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
-  const _uOps2=(USERS_DB[S.user]&&USERS_DB[S.user].operações&&USERS_DB[S.user].operações.length)?USERS_DB[S.user].operações:null;
+  const _uOps2=userOperacoes(USERS_DB[S.user]);
   const pendingAlerts=await buildStatusBoardAlert(allP,_uOps2);
   const opFilter=S.todayOp||"";
   const placaFilter=(S.todayPlaca||"").toUpperCase();
@@ -2357,9 +2365,9 @@ async function renderHistory(body){
       <td style="font-size:13px;font-weight:600;white-space:nowrap">${fmtDateStr(ds)}</td>
       <td><span class="cap-tag">${c.total} registro(s)</span></td>
       <td style="font-size:12px;color:var(--muted)">${g.carriers.size} transportador(es)</td>
-      <td><span class="badge b-green">${c.disponível||0}</span></td>
-      <td><span class="badge b-red">${c.indisponível||0}</span></td>
-      <td><span class="badge b-amber">${c.manutenção||0}</span> <span class="badge b-blue">${c.folga||0}</span> <span class="badge b-purple">${c.programado||0}</span></td>
+      <td><span class="badge b-green">${c.disponivel||0}</span></td>
+      <td><span class="badge b-red">${c.indisponivel||0}</span></td>
+      <td><span class="badge b-amber">${c.manutencao||0}</span> <span class="badge b-blue">${c.folga||0}</span> <span class="badge b-purple">${c.programado||0}</span></td>
       <td><span class="badge b-blank">${c.nao_preenchido||0}</span></td>
     </tr>${detail}`;
   }).join("");
@@ -2393,69 +2401,167 @@ function toggleHistoryDay(ds){
 async function renderExport(body){
   const now=new Date();
   const mons=["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
-  // Min date = 45 days ago (history limit), max = today
   const maxDate=localDateStr(now);
   const minD=new Date(); minD.setDate(minD.getDate()-45);
   const minDate=localDateStr(minD);
+  const todayFmt=fmtDate(0).replace(' — Hoje','');
+  const weekDates=getDates(7);
+  const weekLabel=`${fmtDateStr(weekDates[0])} → ${fmtDateStr(weekDates[6])}`;
+  const monthLabel=`${mons[now.getMonth()]} ${now.getFullYear()}`;
 
   body.innerHTML=`
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-bottom:1.5rem">
-      <div class="card">
-        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">📅 Relatório do dia</p>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Disponibilidade de todos os veículos no dia atual</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-lime btn-sm" onclick="exportDay('xlsx')">Excel (.xlsx)</button>
-          <button class="btn btn-outline btn-sm" onclick="exportDay('csv')">CSV</button>
-          <button class="btn btn-outline btn-sm" onclick="exportDay('pdf')" style="border-color:rgba(176,126,240,.4);color:#b07ef0">PDF</button>
-        </div>
+    <!-- Header -->
+    <div style="margin-bottom:2rem">
+      <p class="sec-title" style="margin-bottom:4px">Exportar relatórios</p>
+      <p style="font-size:13px;color:var(--muted)">Escolha o período e o formato. Os dados incluem status, hodômetro, motoristas e km percorrido.</p>
+    </div>
+
+    <!-- Format legend -->
+    <div class="exp-fmt-legend">
+      <div class="exp-fmt-tag exp-fmt-xlsx">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Excel — planilha editável, ideal para análises
       </div>
-      <div class="card">
-        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">📆 Relatório semanal</p>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Últimos 7 dias de disponibilidade</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-lime btn-sm" onclick="exportWeek('xlsx')">Excel (.xlsx)</button>
-          <button class="btn btn-outline btn-sm" onclick="exportWeek('csv')">CSV</button>
-          <button class="btn btn-outline btn-sm" onclick="exportWeek('pdf')" style="border-color:rgba(176,126,240,.4);color:#b07ef0">PDF</button>
-        </div>
+      <div class="exp-fmt-tag exp-fmt-csv">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        CSV — dados brutos, ideal para sistemas externos
       </div>
-      <div class="card">
-        <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">🗓 Relatório mensal</p>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">${mons[now.getMonth()]} ${now.getFullYear()}</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-lime btn-sm" onclick="exportMonth('xlsx')">Excel (.xlsx)</button>
-          <button class="btn btn-outline btn-sm" onclick="exportMonth('csv')">CSV</button>
-          <button class="btn btn-outline btn-sm" onclick="exportMonth('pdf')" style="border-color:rgba(176,126,240,.4);color:#b07ef0">PDF</button>
-        </div>
+      <div class="exp-fmt-tag exp-fmt-pdf">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15v-4"/><path d="M12 15v-6"/><path d="M15 15v-2"/></svg>
+        PDF — relatório executivo com gráficos e KPIs
       </div>
     </div>
 
-    <!-- CUSTOM DATE RANGE -->
-    <div class="card">
-      <p style="font-size:13px;font-weight:500;margin-bottom:.25rem">📋 Relatório por período personalizado</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">Selecione um intervalo dentro dos últimos 45 dias</p>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:1.25rem">
-        <div class="form-field" style="min-width:160px">
-          <label>DATA INICIAL</label>
-          <input type="date" id="exp-date-from" min="${minDate}" max="${maxDate}" value="${minDate}"
-            style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 11px;outline:none;width:100%"
-            onchange="validateCustomDates()">
+    <!-- Report cards grid -->
+    <div class="exp-grid">
+
+      <!-- Diário -->
+      <div class="exp-card exp-card--day">
+        <div class="exp-card-accent"></div>
+        <div class="exp-card-body">
+          <div class="exp-card-icon">📅</div>
+          <div class="exp-card-info">
+            <div class="exp-card-title">Diário</div>
+            <div class="exp-card-period">${todayFmt}</div>
+            <div class="exp-card-desc">Disponibilidade de todos os veículos no dia selecionado</div>
+          </div>
         </div>
-        <div class="form-field" style="min-width:160px">
-          <label>DATA FINAL</label>
-          <input type="date" id="exp-date-to" min="${minDate}" max="${maxDate}" value="${maxDate}"
-            style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 11px;outline:none;width:100%"
-            onchange="validateCustomDates()">
+        <div class="exp-card-actions">
+          <button class="exp-btn exp-btn-xlsx" onclick="exportDay('xlsx')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Excel
+          </button>
+          <button class="exp-btn exp-btn-csv" onclick="exportDay('csv')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            CSV
+          </button>
+          <button class="exp-btn exp-btn-pdf" onclick="exportDay('pdf')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            PDF
+          </button>
         </div>
-        <div id="custom-date-msg" style="font-size:12px;color:var(--red);align-self:center"></div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-lime btn-sm" onclick="exportCustom('xlsx')">Excel (.xlsx)</button>
-        <button class="btn btn-outline btn-sm" onclick="exportCustom('csv')">CSV</button>
-        <button class="btn btn-outline btn-sm" onclick="exportCustom('pdf')" style="border-color:rgba(176,126,240,.4);color:#b07ef0">PDF</button>
+
+      <!-- Semanal -->
+      <div class="exp-card exp-card--week">
+        <div class="exp-card-accent"></div>
+        <div class="exp-card-body">
+          <div class="exp-card-icon">📆</div>
+          <div class="exp-card-info">
+            <div class="exp-card-title">Semanal</div>
+            <div class="exp-card-period">${weekLabel}</div>
+            <div class="exp-card-desc">Últimos 7 dias de disponibilidade da frota</div>
+          </div>
+        </div>
+        <div class="exp-card-actions">
+          <button class="exp-btn exp-btn-xlsx" onclick="exportWeek('xlsx')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Excel
+          </button>
+          <button class="exp-btn exp-btn-csv" onclick="exportWeek('csv')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            CSV
+          </button>
+          <button class="exp-btn exp-btn-pdf" onclick="exportWeek('pdf')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            PDF
+          </button>
+        </div>
       </div>
+
+      <!-- Mensal -->
+      <div class="exp-card exp-card--month">
+        <div class="exp-card-accent"></div>
+        <div class="exp-card-body">
+          <div class="exp-card-icon">🗓</div>
+          <div class="exp-card-info">
+            <div class="exp-card-title">Mensal</div>
+            <div class="exp-card-period">${monthLabel}</div>
+            <div class="exp-card-desc">Todos os dias do mês atual com KPIs consolidados</div>
+          </div>
+        </div>
+        <div class="exp-card-actions">
+          <button class="exp-btn exp-btn-xlsx" onclick="exportMonth('xlsx')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Excel
+          </button>
+          <button class="exp-btn exp-btn-csv" onclick="exportMonth('csv')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            CSV
+          </button>
+          <button class="exp-btn exp-btn-pdf" onclick="exportMonth('pdf')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            PDF
+          </button>
+        </div>
+      </div>
+
+      <!-- Personalizado -->
+      <div class="exp-card exp-card--custom" style="grid-column:1/-1">
+        <div class="exp-card-accent"></div>
+        <div class="exp-card-body" style="flex-wrap:wrap;gap:20px">
+          <div style="display:flex;gap:16px;align-items:flex-start">
+            <div class="exp-card-icon">🗂</div>
+            <div class="exp-card-info">
+              <div class="exp-card-title">Período personalizado</div>
+              <div class="exp-card-desc" style="margin-top:2px">Intervalo livre dentro dos últimos 45 dias</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px;align-items:flex-end;flex:1;flex-wrap:wrap">
+            <div class="form-field" style="min-width:150px;margin:0">
+              <label>DATA INICIAL</label>
+              <input type="date" id="exp-date-from" min="${minDate}" max="${maxDate}" value="${minDate}"
+                style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 11px;outline:none;width:100%;transition:border-color .15s"
+                onchange="validateCustomDates()" onfocus="this.style.borderColor='var(--lime)'" onblur="this.style.borderColor='var(--border2)'">
+            </div>
+            <div style="color:var(--muted);font-size:18px;padding-bottom:8px">→</div>
+            <div class="form-field" style="min-width:150px;margin:0">
+              <label>DATA FINAL</label>
+              <input type="date" id="exp-date-to" min="${minDate}" max="${maxDate}" value="${maxDate}"
+                style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 11px;outline:none;width:100%;transition:border-color .15s"
+                onchange="validateCustomDates()" onfocus="this.style.borderColor='var(--lime)'" onblur="this.style.borderColor='var(--border2)'">
+            </div>
+            <div id="custom-date-msg" style="font-size:12px;color:var(--red);align-self:center"></div>
+          </div>
+        </div>
+        <div class="exp-card-actions">
+          <button class="exp-btn exp-btn-xlsx" onclick="exportCustom('xlsx')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Excel
+          </button>
+          <button class="exp-btn exp-btn-csv" onclick="exportCustom('csv')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            CSV
+          </button>
+          <button class="exp-btn exp-btn-pdf" onclick="exportCustom('pdf')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            PDF
+          </button>
+        </div>
+      </div>
+
     </div>`;
 }
-
 function validateCustomDates(){
   const from=document.getElementById('exp-date-from')?.value;
   const to=document.getElementById('exp-date-to')?.value;
@@ -2933,29 +3039,30 @@ async function exportPdf(rows, filename, periodLabel) {
     },
     margin: { top: 20, left: 14, right: 10, bottom: 14 },
     tableWidth: PW - 24,
-    // willDrawPage fires BEFORE the table rows are drawn — safe to paint header/footer strips
+    // willDrawPage fires BEFORE the table rows are drawn.
+    // Paint full dark background first, then header/footer strips on top.
+    // The table rows will be drawn after this by autoTable, covering the body area.
     willDrawPage(data) {
       const pg = data.pageNumber;
-      // Dark background — only the strips, NOT the table body area
-      // Top strip (header)
-      const headerH = pg === 1 ? 0 : 16; // p1 header already drawn above
+      // 1. Full page dark background
+      rect(0, 0, PW, PH, C.dark);
+      // 2. Left lime accent bar
+      rect(0, 0, 4, PH, C.lime);
+      // 3. Header strip (only from page 2 onward — page 1 header drawn manually above)
       if(pg > 1){
-        rect(0, 0, PW, headerH, C.mid);
-        rect(0, 0, 4, PH, C.lime);
-        line(4, headerH, PW, headerH, C.border, 0.3);
+        rect(4, 0, PW-4, 16, C.mid);
+        line(4, 16, PW, 16, C.border, 0.3);
         setFont(7, "bold", C.lime);
         doc.text("NEXTA — Gestão de Frota", 14, 10);
         setFont(7, "normal", C.muted);
         doc.text(periodLabel, PW-10, 10, {align:"right"});
       }
-      // Bottom footer strip
-      rect(0, PH-12, PW, 12, C.mid);
-      line(0, PH-12, PW, PH-12, C.border, 0.3);
+      // 4. Footer strip
+      rect(4, PH-12, PW-4, 12, C.mid);
+      line(4, PH-12, PW, PH-12, C.border, 0.3);
       setFont(7, "normal", C.muted);
       doc.text("NEXTA — Gestão de Frota  |  Documento confidencial", 14, PH-5);
       doc.text(String(pg), PW-10, PH-5, {align:"right"});
-      // Left lime bar
-      rect(0, 0, 4, PH, C.lime);
     },
   });
 
@@ -3300,13 +3407,15 @@ async function renderUsers(body){
     </tr>`).join("");
 
   // Users section (exclude admin from edit/delete)
-  const userRows = Object.entries(USERS_DB).map(([uid,u])=>`
+  const userRows = Object.entries(USERS_DB).map(([uid,u])=>{
+    const ops = userOperacoes(u);
+    return `
     <tr>
       <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(uid)}</td>
       <td style="font-size:12px">${esc(u.name)}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${esc(u.carrier||'—')}</td>
-      <td style="font-size:11px;color:var(--muted)">${(u.operações&&u.operações.length)?esc(u.operações.join(', ')):'Todas'}</td>
+      <td style="font-size:11px;color:var(--muted)">${ops?esc(ops.join(', ')):'Todas'}</td>
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
           <button class="btn-edit" onclick="openEditUser('${attr(jsArg(uid))}')" title="Editar">✏️</button>
@@ -3314,7 +3423,8 @@ async function renderUsers(body){
           ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${attr(jsArg(uid))}')" title="Remover">🗑</button>`:''}
         </div>
       </td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
 
   body.innerHTML=`
     <!-- NEW CARRIER -->
@@ -3432,7 +3542,7 @@ async function addUser(){
   const pwd=document.getElementById('new-upwd').value.trim();
   const role=document.getElementById('new-urole').value;
   const carrier=(role==='carrier')?document.getElementById('new-ucarrier').value:'';
-  const operações=(role==='carrier')?getCheckedOps('new-op-checks'):[];
+  const operacoes=(role==='carrier')?getCheckedOps('new-op-checks'):[];
   const msg=document.getElementById('user-msg');
   if(!uid){msg.textContent='Informe o login.';msg.style.color='var(--red)';return;}
   if(!name){msg.textContent='Informe o nome.';msg.style.color='var(--red)';return;}
@@ -3456,7 +3566,7 @@ async function addUser(){
   }
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   // Salva perfil no Firestore SEM a senha
-  USERS_DB[uid]={name, role, initials, ...(carrier?{carrier}:{}), ...(operações.length?{operações}:{})};
+  USERS_DB[uid]={name, role, initials, ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
   await dbSaveUsers(USERS_DB);
   ['new-uid','new-uname','new-upwd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   msg.textContent=`Usuário ${uid} criado!`;msg.style.color='var(--green)';
@@ -3476,6 +3586,7 @@ async function deleteUser(uid){
 function openEditUser(uid){
   const u=USERS_DB[uid];
   if(!u) return;
+  const currentOps=userOperacoes(u) || [];
   const carrierOpts=CARRIERS.map(c=>optHtml(c, c===u.carrier)).join('');
   const isAdmin=uid==='admin';
   const roleOpts=[
@@ -3501,7 +3612,7 @@ function openEditUser(uid){
         <div class="form-field" id="eu-op-field" style="display:${u.role==='carrier'?'block':'none'};grid-column:1/-1">
           <label>OPERACOES VISÍVEIS <span style="font-weight:400;color:var(--muted)">(deixe vazio para ver todas)</span></label>
           <div id="eu-op-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
-            ${OPERACOES.map(op=>`<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none"><input type="checkbox" value="${attr(op)}"${(u.operações&&u.operações.includes(op))?' checked':''} style="accent-color:var(--lime);cursor:pointer"> ${esc(op)}</label>`).join('')}
+            ${OPERACOES.map(op=>`<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--dark);border:1px solid var(--border2);border-radius:7px;padding:5px 10px;cursor:pointer;user-select:none"><input type="checkbox" value="${attr(op)}"${currentOps.includes(op)?' checked':''} style="accent-color:var(--lime);cursor:pointer"> ${esc(op)}</label>`).join('')}
           </div>
         </div>
       </div>
@@ -3552,8 +3663,9 @@ async function saveEditUser(uid){
     initials,
     role: newRole,
     ...(newCarrier?{carrier:newCarrier}:{carrier:''}),
-    operações: newOps
+    operacoes: newOps
   };
+  delete USERS_DB[uid].operações;
   delete USERS_DB[uid].password; // garante remoção caso ainda exista localmente
   await dbSaveUsers(USERS_DB);
   document.getElementById('edit-user-modal').remove();
@@ -4077,7 +4189,18 @@ window.visualViewport?.addEventListener("resize", _debouncedViewportQualityRefre
 loadConfig().catch(e=>{ console.error(e); }).then(()=>{
   // 2. Firebase Auth mantém a sessão automaticamente entre recarregamentos.
   //    onAuthStateChanged é chamado assim que o SDK determina o estado de auth.
+  let authResolved = false;
+  const authFallback = setTimeout(()=>{
+    if(authResolved) return;
+    authResolved = true;
+    S.user = null;
+    clearSession();
+    console.warn("Firebase Auth demorou para responder; exibindo login como fallback.");
+    render();
+  }, 6000);
   onAuthStateChanged(auth, async (firebaseUser) => {
+    authResolved = true;
+    clearTimeout(authFallback);
     if(firebaseUser){
       // Extrai o uid da convenção email: uid@nexta-frota.app
       const uid = firebaseUser.email.replace(/@nexta-frota\.app$/, "");
@@ -4277,6 +4400,41 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 @media(max-width:700px){.sla-config-row{grid-template-columns:1fr;}}
 .sla-section-title{font-size:12px;font-weight:600;color:var(--dim);margin-bottom:10px;letter-spacing:.04em;}
 .sla-ranking-list{display:flex;flex-direction:column;gap:7px;}
+/* ── Export screen ──────────────────────────────────────── */
+.exp-fmt-legend{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:1.75rem;}
+.exp-fmt-tag{display:inline-flex;align-items:center;gap:7px;font-size:11px;padding:6px 12px;border-radius:99px;font-weight:500;}
+.exp-fmt-xlsx{background:rgba(110,224,74,.1);color:var(--green);border:1px solid rgba(110,224,74,.25);}
+.exp-fmt-csv{background:rgba(112,168,240,.1);color:var(--blue);border:1px solid rgba(112,168,240,.25);}
+.exp-fmt-pdf{background:rgba(176,126,240,.1);color:#b07ef0;border:1px solid rgba(176,126,240,.25);}
+
+.exp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.exp-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;display:flex;flex-direction:column;transition:border-color .2s,box-shadow .2s;}
+.exp-card:hover{border-color:var(--border2);box-shadow:0 4px 20px rgba(0,0,0,.25);}
+.exp-card-accent{height:3px;}
+.exp-card--day   .exp-card-accent{background:linear-gradient(90deg,var(--lime),var(--green));}
+.exp-card--week  .exp-card-accent{background:linear-gradient(90deg,var(--blue),#5588e0);}
+.exp-card--month .exp-card-accent{background:linear-gradient(90deg,var(--amber),#e0a030);}
+.exp-card--custom .exp-card-accent{background:linear-gradient(90deg,#b07ef0,#8050c0);}
+
+.exp-card-body{display:flex;align-items:flex-start;gap:14px;padding:18px 18px 14px;}
+.exp-card-icon{font-size:24px;line-height:1;flex-shrink:0;margin-top:2px;}
+.exp-card-info{flex:1;min-width:0;}
+.exp-card-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:3px;}
+.exp-card-period{font-size:12px;color:var(--lime);font-weight:500;font-family:"DM Mono",monospace;margin-bottom:6px;}
+.exp-card-desc{font-size:12px;color:var(--muted);line-height:1.55;}
+
+.exp-card-actions{display:flex;gap:8px;padding:0 18px 16px;flex-wrap:wrap;margin-top:auto;}
+.exp-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid;transition:all .15s;font-family:"DM Sans",sans-serif;}
+.exp-btn-xlsx{background:rgba(110,224,74,.12);color:var(--green);border-color:rgba(110,224,74,.3);}
+.exp-btn-xlsx:hover{background:rgba(110,224,74,.2);border-color:var(--green);}
+.exp-btn-csv{background:rgba(112,168,240,.1);color:var(--blue);border-color:rgba(112,168,240,.28);}
+.exp-btn-csv:hover{background:rgba(112,168,240,.2);border-color:var(--blue);}
+.exp-btn-pdf{background:rgba(176,126,240,.1);color:#b07ef0;border-color:rgba(176,126,240,.28);}
+.exp-btn-pdf:hover{background:rgba(176,126,240,.2);border-color:#b07ef0;}
+
+@media(max-width:780px){.exp-grid{grid-template-columns:1fr;}}
+@media(min-width:781px) and (max-width:1060px){.exp-grid{grid-template-columns:1fr 1fr;}}
+
 .kpi-legend{display:flex;align-items:center;flex-wrap:wrap;gap:0;margin-top:14px;background:rgba(228,242,200,.04);border:1px solid rgba(228,242,200,.1);border-radius:10px;overflow:hidden;}
 .kpi-legend-item{display:flex;align-items:center;gap:8px;padding:10px 16px;flex:1;min-width:180px;}
 .kpi-legend-sep{width:1px;height:36px;background:rgba(228,242,200,.1);flex-shrink:0;}
