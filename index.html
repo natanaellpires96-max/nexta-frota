@@ -653,7 +653,7 @@ function getMonthDates(year,month){
 }
 function renderPendingAlert(groups, {title, subtitle, okSubtitle, cutoffHour, cutoffReached}){
   const total=groups.reduce((sum,g)=>sum+g.pending.length,0);
-  const todayPending=(groups.find(g=>g.label==="Hoje")?.pending)||[];
+  const tomorrowPending=(groups.find(g=>g.label==="Amanhã")?.pending)||[];
   const metricCards=groups.map(g=>`
     <div class="pa-metric ${g.pending.length?'warn':'ok'}">
       <span class="pa-metric-num">${g.pending.length}</span>
@@ -666,8 +666,8 @@ function renderPendingAlert(groups, {title, subtitle, okSubtitle, cutoffHour, cu
         ${g.pending.length?g.pending.map(c=>`<span class="pa-chip">${esc(c)}</span>`).join(""):`<span class="pa-chip ok">Sem pendências</span>`}
       </div>
     </div>`).join("");
-  const cutoffCard=(cutoffReached&&todayPending.length)
-    ? `<div class="pa-cutoff-alert"><strong>Corte ${String(cutoffHour).padStart(2,'0')}:00 atingido</strong><span>${todayPending.length} pendência(s) para hoje</span></div>`
+  const cutoffCard=(cutoffReached&&tomorrowPending.length)
+    ? `<div class="pa-cutoff-alert"><strong>Corte ${String(cutoffHour).padStart(2,'0')}:00 atingido</strong><span>${tomorrowPending.length} pendência(s) para amanhã</span></div>`
     : `<div class="pa-cutoff-note">Corte configurado: <strong>${String(cutoffHour).padStart(2,'0')}:00</strong></div>`;
   if(total===0){
     return `<div class="pending-alert ok">
@@ -767,12 +767,16 @@ function restoreSession(){
 // ═══════════════════════════════════════════════════════════
 // STATUS BOARD ALERT (Painel de Disponibilidade — variante operacional)
 // ═══════════════════════════════════════════════════════════
-async function buildStatusBoardAlert(allP, userOps=null){
-  if(S.dateOffset !== 0) return "";
-  const ds = dateStr(0);
+async function buildStatusBoardAlert(allP, userOps=null, offset=0){
+  const ds = dateStr(offset);
   const now = new Date();
-  const currentHour = now.getHours() + now.getMinutes()/60;
-  const isPastCutoff = currentHour >= ALERT_CUTOFF_HOUR;
+  const targetDate = new Date();
+  targetDate.setDate(targetDate.getDate() + offset);
+  targetDate.setHours(0,0,0,0);
+  const cutoffDate = new Date(targetDate);
+  cutoffDate.setDate(cutoffDate.getDate() - 1);
+  cutoffDate.setHours(ALERT_CUTOFF_HOUR, 0, 0, 0);
+  const isPastCutoff = now >= cutoffDate;
 
   const activeCarriers = CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false&&(!userOps||userOps.some(op=>(allP[c]||[]).find(pl=>pl.placa===p.placa&&pl.operacao===op)))));
   if(!activeCarriers.length) return "";
@@ -811,8 +815,8 @@ async function buildStatusBoardAlert(allP, userOps=null){
   const urgencyBorder = allDone
     ? 'rgba(110,224,74,.3)'
     : isPastCutoff ? 'rgba(240,96,96,.4)' : 'rgba(240,190,64,.35)';
-  const urgencyIcon = allDone ? '✓' : isPastCutoff ? '🔴' : '⚡';
-  const urgencyLabel = allDone ? 'Tudo preenchido' : isPastCutoff ? 'Corte atingido' : 'Em andamento';
+  const urgencyIcon = allDone ? '✓' : isPastCutoff ? '🔴' : '⏳';
+  const urgencyLabel = allDone ? 'Tudo preenchido' : isPastCutoff ? 'Corte atingido' : 'Corte dentro do prazo';
   const urgencyColor = allDone ? 'var(--green)' : isPastCutoff ? 'var(--red)' : 'var(--amber)';
 
   // Carrier tiles
@@ -865,7 +869,7 @@ async function buildStatusBoardAlert(allP, userOps=null){
       <div class="sb-header-left">
         <span class="sb-urgency-dot" style="background:${urgencyColor}"></span>
         <div>
-          <div class="sb-title">Painel de disponibilidade — <span style="color:var(--lime)">${fmtDate(0).split('—')[1]?.trim()||fmtDate(0)}</span></div>
+          <div class="sb-title">Painel de disponibilidade — <span style="color:var(--lime)">${fmtDate(offset).split('—')[1]?.trim()||fmtDate(offset)}</span></div>
           <div class="sb-sub">${urgencyIcon} ${urgencyLabel} · Corte: <b style="color:var(--lime)">${String(ALERT_CUTOFF_HOUR).padStart(2,'0')}:00</b></div>
         </div>
       </div>
@@ -916,6 +920,7 @@ async function render(){
       </div>
       <div class="topbar-right">
         ${(u.role==="admin"||u.role==="operacional")?`<button class="notif-btn" onclick="toggleNotif()" title="Notificações">🔔${hasNotif?'<span class="notif-dot"></span>':''}</button>`:""}
+        <button class="help-btn" onclick="refreshSystem()" title="Atualizar dados">🔄 Atualizar</button>
         ${helpRole?`<button class="help-btn" onclick="openHelpModal('${helpRole}')" title="${helpTitle}">❓ ${helpLabel}</button>`:""}
         <div class="avatar ${u.role==="admin"||u.role==="operacional"?"admin":""}">${esc(u.initials)}</div>
         <span class="user-name">${u.role==="admin"?"Administrador":u.role==="operacional"?esc(u.name):esc(u.carrier)}</span>
@@ -928,6 +933,14 @@ async function render(){
   if(u.role==="admin") await renderAdmin();
   else if(u.role==="operacional") await renderOperacional();
   else await renderCarrier(u.carrier);
+}
+
+async function refreshSystem(){
+  showToast('Atualizando dados...');
+  _cache.clear();
+  await loadConfig();
+  await render();
+  showToast('Sistema atualizado.', true);
 }
 
 // ── Conteúdo dos manuais embutidos ──────────────────────────
@@ -2265,7 +2278,7 @@ async function renderToday(body){
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
   const _uOps2=userOperacoes(USERS_DB[S.user]);
-  const pendingAlerts=await buildStatusBoardAlert(allP,_uOps2);
+  const pendingAlerts = await buildStatusBoardAlert(allP,_uOps2,S.dateOffset);
   const opFilter=S.todayOp||"";
   const placaFilter=(S.todayPlaca||"").toUpperCase();
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
@@ -4237,6 +4250,7 @@ async function saveResetPwd(uid){
 window.openResetPwd=openResetPwd; window.saveResetPwd=saveResetPwd;
 window.openChangePwd=openChangePwd; window.saveChangePwd=saveChangePwd;
 window.doLogin=doLogin; window.logout=logout;
+window.refreshSystem=refreshSystem;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll; window._refreshCardDone=_refreshCardDone;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
