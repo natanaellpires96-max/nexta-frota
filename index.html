@@ -20,7 +20,7 @@ import {
 import {
   getAuth, signInWithEmailAndPassword, signOut,
   onAuthStateChanged, updatePassword, createUserWithEmailAndPassword,
-  deleteUser as fbDeleteUser
+  sendPasswordResetEmail, deleteUser as fbDeleteUser
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -4270,17 +4270,28 @@ function openResetPwd(uid){
   modal.innerHTML = `
     <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
       <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">🔑 Resetar senha</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:.75rem">O Firebase Web SDK não permite que uma sessão comum altere a senha de outro usuário com segurança.</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">Para redefinir a senha de <b style="color:var(--text)">${esc(u.name)}</b>, use o Console do Firebase ou uma Cloud Function com Admin SDK. Assim o painel não expõe um fluxo que parece funcionar, mas falha ou abre brecha de permissão.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:.75rem">Será enviado um e-mail de redefinição de senha para <b style="color:var(--text)">${esc(uidToEmail(uid))}</b>.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">O usuário poderá então definir sua própria senha com segurança a partir do e-mail.</p>
       <div style="display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn btn-lime" onclick="document.getElementById('reset-pwd-modal').remove()">Entendi</button>
+        <button class="btn btn-outline" onclick="document.getElementById('reset-pwd-modal').remove()">Cancelar</button>
+        <button class="btn btn-lime" id="reset-pwd-submit" onclick="saveResetPwd('${attr(jsArg(uid))}')">Enviar e-mail</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 }
 
 async function saveResetPwd(uid){
-  showToast('Reset de senha de terceiros exige Console Firebase ou Cloud Function.', false);
+  const btn = document.getElementById('reset-pwd-submit');
+  if(btn){ btn.disabled = true; btn.textContent = 'Enviando...'; }
+  try{
+    await sendPasswordResetEmail(auth, uidToEmail(uid));
+    showToast('E-mail de redefinição enviado com sucesso!');
+    document.getElementById('reset-pwd-modal')?.remove();
+  } catch(e){
+    console.error('Erro ao enviar reset de senha', e);
+    showToast(`Falha ao enviar e-mail: ${e.code||e.message}`, false);
+    if(btn){ btn.disabled = false; btn.textContent = 'Enviar e-mail'; }
+  }
 }
 window.openResetPwd=openResetPwd; window.saveResetPwd=saveResetPwd;
 window.openChangePwd=openChangePwd; window.saveChangePwd=saveChangePwd;
