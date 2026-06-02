@@ -384,8 +384,10 @@ async function dbSetLock(carrier, dateStr, userName) {
 async function dbRemoveLock(carrier, dateStr) {
   const id = `lock__${carrier}__${dateStr}`;
   await deleteDoc(doc(db, "locks", id));
-  // Invalida cache do lock
+  // Invalida cache do lock e de status relacionados para evitar estado preso em cache
   cacheInvalidate(`lock||${carrier}||${dateStr}`);
+  cacheInvalidatePrefix(`lock||${carrier}||`);
+  cacheInvalidatePrefix(`status||${carrier}||`);
 }
 async function dbClearStatusForDate(carrier, dateStr) {
   // Remove todos os registros de disponibilidade do carrier+data
@@ -711,7 +713,7 @@ async function buildPendingAlerts(allP, filterOps){
         if(!plates.length) continue;
         const pairs=plates.map(p=>({carrier,plate:p.placa,dateStr:t.ds}));
         const sm=await dbLoadStatusBulk(pairs);
-        const allFilled=plates.every(p=>sm[`${carrier}||${p.placa}||${t.ds}`]);
+        const allFilled=plates.every(p=>sm[`${carrier}||${p.placa}||${t.ds}`]?.status);
         if(!allFilled){
           for(const op of filterOps){
             const opPlates=plates.filter(p=>p.operacao===op);
@@ -725,8 +727,8 @@ async function buildPendingAlerts(allP, filterOps){
     }));
     return renderPendingAlert(groups, {
       title:"Pendências de preenchimento",
-      subtitle:"Operações sem envio concluído para o período monitorado.",
-      okSubtitle:"Todas as operações preencheram hoje e amanhã.",
+      subtitle:"Operações com pelo menos uma placa sem envio concluído para o período monitorado.",
+      okSubtitle:"Todas as operações preencheram todas as placas hoje e amanhã.",
       cutoffHour:CUTOFF_HOUR,
       cutoffReached
     });
@@ -737,17 +739,15 @@ async function buildPendingAlerts(allP, filterOps){
   const groups=await Promise.all(targets.map(async t=>{
     const checks=await Promise.all(activeCarriers.map(async carrier=>{
       const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
-      const lock=await dbGetLock(carrier,t.ds);
-      if(lock) return { carrier, done:true };
       const sm=await dbLoadStatusBulk(plates.map(p=>({carrier,plate:p.placa,dateStr:t.ds})));
-      return { carrier, done: plates.length>0 && plates.every(p=>sm[`${carrier}||${p.placa}||${t.ds}`]) };
+      return { carrier, done: plates.length>0 && plates.every(p=>sm[`${carrier}||${p.placa}||${t.ds}`]?.status) };
     }));
     return {...t, pending: checks.filter(x=>!x.done).map(x=>x.carrier)};
   }));
   return renderPendingAlert(groups, {
     title:"Pendências de preenchimento",
-    subtitle:"Transportadores sem envio concluído para hoje e amanhã.",
-    okSubtitle:"Todos os transportadores preencheram hoje e amanhã.",
+    subtitle:"Transportadores com pelo menos uma placa pendente para hoje e amanhã.",
+    okSubtitle:"Todos os transportadores preencheram todas as placas hoje e amanhã.",
     cutoffHour:CUTOFF_HOUR,
     cutoffReached
   });
@@ -1354,8 +1354,9 @@ async function renderCarrier(carrier){
   const userOpsForLabel=userOperacoes(USERS_DB[S.user]);
   const userOpsLabel2=userOpsForLabel?` — ${userOpsForLabel.join(' / ')}`:'';
   const lockedBanner=lock?`
-    <div class="locked-banner">
-      🔒 Disponibilidade enviada em ${esc(lock.lockedAt)} — não é possível editar.
+    <div class="locked-banner" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <div>🔒 Disponibilidade enviada em ${esc(lock.lockedAt)} — não é possível editar.</div>
+      <button type="button" class="btn btn-outline btn-sm" onclick="refreshSystem()">🔄 Atualizar</button>
     </div>`:'';
   const actionBar=lock?'':`
     <div style="display:flex;gap:10px;margin-top:1rem;">
@@ -2282,7 +2283,7 @@ async function renderToday(body){
   const ds=dateStr(S.dateOffset);
   const allP=await dbGetPlates();
   const _uOps2=userOperacoes(USERS_DB[S.user]);
-  const pendingAlerts = await buildStatusBoardAlert(allP,_uOps2,S.dateOffset);
+  const pendingAlerts = await buildPendingAlerts(allP,_uOps2);
   const opFilter=S.todayOp||"";
   const placaFilter=(S.todayPlaca||"").toUpperCase();
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
@@ -3469,6 +3470,8 @@ async function adminUnlock(carrier, ds){
     dbRemoveLock(carrier, ds),
     dbClearStatusForDate(carrier, ds)
   ]);
+  cacheInvalidatePrefix(`lock||${carrier}||`);
+  cacheInvalidatePrefix(`status||${carrier}||`);
   await dbAddNotif(`Admin desbloqueou e resetou o lançamento de ${carrier} — ${fmtDateStr(ds)}`);
   await dbAddAudit("admin_unlock", { carrier, date: ds });
   showToast(`Lançamento de ${carrier} desbloqueado e resetado!`);
@@ -3480,12 +3483,17 @@ async function adminUnlock(carrier, ds){
 async function adminUnlockPlate(carrier, plate, ds){
   if(!confirm(`Desbloquear apenas a placa "${plate}" de "${carrier}" em ${fmtDateStr(ds)}?\n\nO status será apagado e poderá ser preenchido novamente.`)) return;
   try{
-    // Delete only this specific plate's status record
+    // Delete only this specific plate's status record and remove the carrier/date lock if present
     const id = `${carrier}__${plate}__${ds}`;
-    await deleteDoc(doc(db, "availability", id));
+    await Promise.all([
+      deleteDoc(doc(db, "availability", id)),
+      dbRemoveLock(carrier, ds)
+    ]);
     // Invalidate cache
     const cKey = `status||${carrier}||${plate}||${ds}`;
     cacheInvalidate(cKey);
+    cacheInvalidatePrefix(`lock||${carrier}||`);
+    cacheInvalidatePrefix(`status||${carrier}||`);
     await dbAddNotif(`Admin desbloqueou a placa ${plate} de ${carrier} — ${fmtDateStr(ds)}`);
     await dbAddAudit("admin_unlock_plate", { carrier, plate, date: ds });
     showToast(`Placa ${plate} desbloqueada!`);
