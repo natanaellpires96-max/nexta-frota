@@ -3481,8 +3481,11 @@ async function adminUnlockPlate(carrier, plate, ds){
   if(!confirm(`Desbloquear apenas a placa "${plate}" de "${carrier}" em ${fmtDateStr(ds)}?\n\nO status será apagado e poderá ser preenchido novamente.`)) return;
   try{
     // Delete only this specific plate's status record
-    const statusRef = db.collection('availability').doc(`${carrier}||${plate}||${ds}`);
-    await statusRef.delete();
+    const id = `${carrier}__${plate}__${ds}`;
+    await deleteDoc(doc(db, "availability", id));
+    // Invalidate cache
+    const cKey = `status||${carrier}||${plate}||${ds}`;
+    cacheInvalidate(cKey);
     await dbAddNotif(`Admin desbloqueou a placa ${plate} de ${carrier} — ${fmtDateStr(ds)}`);
     await dbAddAudit("admin_unlock_plate", { carrier, plate, date: ds });
     showToast(`Placa ${plate} desbloqueada!`);
