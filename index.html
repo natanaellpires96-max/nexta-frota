@@ -783,7 +783,8 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
 
   // Per-carrier status
   const carrierData = await Promise.all(activeCarriers.map(async carrier=>{
-    const plates = (allP[carrier]||[]).filter(p=>p.ativo!==false);
+    const plates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
+    if(!plates.length) return null;
     const lock   = await dbGetLock(carrier, ds);
     const pairs  = plates.map(p=>({carrier,plate:p.placa,dateStr:ds}));
     const sm     = await dbLoadStatusBulk(pairs);
@@ -797,10 +798,13 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
       allFilled: filled === total };
   }));
 
-  const totalVehicles   = carrierData.reduce((s,c)=>s+c.total,0);
-  const totalFilled     = carrierData.reduce((s,c)=>s+c.filled,0);
-  const totalAvail      = carrierData.reduce((s,c)=>s+c.avail,0);
-  const totalPending    = carrierData.filter(c=>!c.done).length;
+  const carrierDataFiltered = carrierData.filter(Boolean);
+  if(!carrierDataFiltered.length) return "";
+
+  const totalVehicles   = carrierDataFiltered.reduce((s,c)=>s+c.total,0);
+  const totalFilled     = carrierDataFiltered.reduce((s,c)=>s+c.filled,0);
+  const totalAvail      = carrierDataFiltered.reduce((s,c)=>s+c.avail,0);
+  const totalPending    = carrierDataFiltered.filter(c=>!c.done).length;
   const globalPct       = totalFilled ? Math.round((totalAvail/totalFilled)*100) : 0;
   const allDone         = totalPending === 0;
   const fillPct         = totalVehicles ? Math.round((totalFilled/totalVehicles)*100) : 0;
@@ -820,7 +824,7 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
   const urgencyColor = allDone ? 'var(--green)' : isPastCutoff ? 'var(--red)' : 'var(--amber)';
 
   // Carrier tiles
-  const tiles = carrierData.map(c=>{
+  const tiles = carrierDataFiltered.map(c=>{
     const tileColor = c.done
       ? 'rgba(110,224,74,.08)' : isPastCutoff
       ? 'rgba(240,96,96,.08)' : 'rgba(240,190,64,.06)';
@@ -889,7 +893,7 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
           </div>
           <div>
             <div class="sb-kpi-label">Envios</div>
-            <div class="sb-kpi-sub">${activeCarriers.length - totalPending}/${activeCarriers.length} transportadores</div>
+            <div class="sb-kpi-sub">${carrierDataFiltered.length - totalPending}/${carrierDataFiltered.length} transportadores</div>
           </div>
         </div>
       </div>
@@ -2295,6 +2299,7 @@ async function renderToday(body){
       continue;
     }
     if(!plates.length) continue;
+    const isAdmin2=USERS_DB[S.user]&&USERS_DB[S.user].role==="admin";
     const rows=plates.map(p=>{
       const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
       const v=rec?rec.status:null;
@@ -2303,6 +2308,7 @@ async function renderToday(body){
       // Only show drivers if availability was actually filled
       const motDToday=v?((rec&&rec.motoristaDiurno)||p.motoristaDiurno||''):'';
       const motNToday=v?((rec&&rec.motoristaNoturno)||p.motoristaNoturno||''):'';
+      const unlockPlateBtn=(v&&isAdmin2)?`<button class="btn-unlock-plate" onclick="adminUnlockPlate('${attr(jsArg(carrier))}','${attr(jsArg(p.placa))}','${attr(jsArg(ds))}')" title="Desbloquear apenas esta placa">🔓</button>`:''
       return `<tr>
         <td style="font-weight:500;font-family:'DM Mono',monospace">${esc(p.placa)}</td>
         <td style="font-size:12px">${esc(p.operacao)}</td>
@@ -2314,6 +2320,7 @@ async function renderToday(body){
         <td style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;white-space:nowrap">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?`<span style="color:var(--dim)">${rec.hodometro}</span>`:'—'}</td>
         <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?fmtTimeValue(rec.time):'—'}</td>
         <td>${renderDriverCell(motDToday,motNToday)}</td>
+        <td style="text-align:center">${unlockPlateBtn}</td>
       </tr>`;
     }).join("");
     const lock=await dbGetLock(carrier,ds);
@@ -2322,14 +2329,13 @@ async function renderToday(body){
     const lockBadge=done
       ?`<span style="font-size:11px;color:var(--lime);margin-left:8px;background:var(--lime-bg);border:1px solid var(--border2);padding:2px 8px;border-radius:99px;">🔒 Enviado ${lock?lock.lockedAt:'preenchimento concluído'}</span>`
       :`<span style="font-size:11px;color:var(--muted);margin-left:8px;">Pendente</span>`;
-    const isAdmin2=USERS_DB[S.user]&&USERS_DB[S.user].role==="admin";
     const unlockBtn=(done&&isAdmin2)
-      ?`<button class="btn-unlock" onclick="adminUnlock('${attr(jsArg(carrier))}','${attr(jsArg(ds))}')" title="Desfazer lançamento">🔓 Desbloquear</button>`
+      ?`<button class="btn-unlock" onclick="adminUnlock('${attr(jsArg(carrier))}','${attr(jsArg(ds))}')" title="Desfazer lançamento">🔓 Desbloquear tudo</button>`
       :'';
     sections+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${esc(carrier)}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
-      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1160px">
-        <thead><tr><th style="width:8%">PLACA</th><th style="width:12%">OPERAÇÃO</th><th style="width:8%">TIPO</th><th style="width:8%">IDENTIFICAÇÃO</th><th style="width:7%">CONTRATO</th><th style="width:6%">CAPACIDADE</th><th style="width:13%">STATUS</th><th style="width:7%"><span style="font-size:9px">HODÔMETRO</span></th><th style="width:6%">HORÁRIO</th><th style="width:19%">MOTORISTAS</th></tr></thead>
+      <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1100px">
+        <thead><tr><th style="width:7%">PLACA</th><th style="width:11%">OPERAÇÃO</th><th style="width:7%">TIPO</th><th style="width:7%">IDENTIFICAÇÃO</th><th style="width:6%">CONTRATO</th><th style="width:6%">CAPACIDADE</th><th style="width:11%">STATUS</th><th style="width:7%"><span style="font-size:9px">HODÔMETRO</span></th><th style="width:6%">HORÁRIO</th><th style="width:17%">MOTORISTAS</th><th style="width:5%">AÇÃO</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
@@ -3469,6 +3475,24 @@ async function adminUnlock(carrier, ds){
   await renderTabBody();
 }
 
+// ADMIN UNLOCK SINGLE PLATE
+// ═══════════════════════════════════════════════════════════
+async function adminUnlockPlate(carrier, plate, ds){
+  if(!confirm(`Desbloquear apenas a placa "${plate}" de "${carrier}" em ${fmtDateStr(ds)}?\n\nO status será apagado e poderá ser preenchido novamente.`)) return;
+  try{
+    // Delete only this specific plate's status record
+    const statusRef = db.collection('availability').doc(`${carrier}||${plate}||${ds}`);
+    await statusRef.delete();
+    await dbAddNotif(`Admin desbloqueou a placa ${plate} de ${carrier} — ${fmtDateStr(ds)}`);
+    await dbAddAudit("admin_unlock_plate", { carrier, plate, date: ds });
+    showToast(`Placa ${plate} desbloqueada!`);
+    await renderTabBody();
+  } catch(e){
+    console.error(e);
+    showToast("Erro ao desbloquear placa.", false);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════
 // USERS MANAGEMENT
 // ═══════════════════════════════════════════════════════════
@@ -4254,7 +4278,7 @@ window.refreshSystem=refreshSystem;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll; window._refreshCardDone=_refreshCardDone;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates; window.exportPdf=exportPdf;
 window.renderTabBody=renderTabBody; window.buildStatusBoardAlert=buildStatusBoardAlert; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.saveMetaDisp=saveMetaDisp; window.S=S; window.renderKpisMensais=renderKpisMensais;
 
@@ -4408,6 +4432,8 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .b-blank{background:rgba(228,242,200,.06);color:rgba(228,242,200,.35);border-color:rgba(228,242,200,.15);font-style:italic;}
 .btn-unlock{background:none;border:1px solid rgba(240,96,96,.3);border-radius:7px;font-size:11px;color:rgba(240,96,96,.7);padding:4px 10px;cursor:pointer;white-space:nowrap;transition:all .15s;}
 .btn-unlock:hover{background:rgba(240,96,96,.1);border-color:var(--red);color:var(--red);}
+.btn-unlock-plate{background:none;border:none;font-size:13px;color:rgba(240,96,96,.55);padding:2px 6px;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;}
+.btn-unlock-plate:hover{color:var(--red);}
 .archive-card{display:flex;align-items:center;gap:16px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem 1.5rem;margin-bottom:10px;flex-wrap:wrap;}
 .archive-card:hover{background:var(--card2);}
 .archive-icon{font-size:28px;flex-shrink:0;}
