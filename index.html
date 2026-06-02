@@ -363,23 +363,16 @@ async function dbSaveArchive(archive) {
 
 // Check if a carrier/date submission is locked (all plates filled)
 async function dbGetLock(carrier, dateStr) {
-  const cKey = `lock||${carrier}||${dateStr}`;
-  const cached = cacheGet(cKey);
-  if (cached !== undefined) return cached;
   try {
     const id = `lock__${carrier}__${dateStr}`;
     const snap = await getDoc(doc(db, "locks", id));
-    const value = snap.exists() ? snap.data() : null;
-    cacheSet(cKey, value);
-    return value;
+    return snap.exists() ? snap.data() : null;
   } catch { return null; }
 }
 async function dbSetLock(carrier, dateStr, userName) {
   const id = `lock__${carrier}__${dateStr}`;
   const data = { carrier, dateStr, lockedBy: userName, lockedAt: new Date().toLocaleString("pt-BR") };
   await setDoc(doc(db, "locks", id), data);
-  // Write-through: atualiza cache imediatamente
-  cacheSet(`lock||${carrier}||${dateStr}`, data);
 }
 async function dbRemoveLock(carrier, dateStr) {
   const id = `lock__${carrier}__${dateStr}`;
@@ -495,6 +488,10 @@ async function dbLoadStatusBulk(pairs) {
 }
 
 // ═══════════════════════════════════════════════════════════
+function recordHasStatus(rec){
+  return !!(rec && rec.status);
+}
+
 // DATA & CONFIG
 // ═══════════════════════════════════════════════════════════
 // USERS_DB and CARRIERS are loaded dynamically from Firebase
@@ -1276,8 +1273,15 @@ async function renderCarrier(carrier){
     const [pairsTemp, lockTemp] = [plates.map(p=>({carrier,plate:p.placa,dateStr:ds})), await withTimeout(dbGetLock(carrier,ds),15000,"Falha ao carregar status")];
     lock = lockTemp;
     statusMap = await withTimeout(dbLoadStatusBulk(pairsTemp),15000,"Falha ao carregar status");
-    if(!lock && plates.length && plates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`])){
+    const allFilledByStatus = plates.length>0 && plates.every(p=>recordHasStatus(statusMap[`${carrier}||${p.placa}||${ds}`]));
+    if(!lock && allFilledByStatus){
       lock = { carrier, dateStr: ds, lockedBy: "Sistema", lockedAt: "preenchimento concluído" };
+    }
+    if(lock && !allFilledByStatus){
+      console.warn("Ignorando bloqueio inconsistente", carrier, ds);
+      lock = null;
+      await dbRemoveLock(carrier, ds).catch(()=>{});
+      _cache.clear();
     }
   } catch(e){
     console.error(e);
@@ -1529,8 +1533,11 @@ async function saveAll(carrier, ds, btnEl=null){
   }
 }
 
-async function chDate(d){ S.dateOffset+=d; await render(); }
-
+async function chDate(d){
+  S.dateOffset += d;
+  _cache.clear();
+  await render();
+}
 // ═══════════════════════════════════════════════════════════
 // ADMIN SHELL
 // ═══════════════════════════════════════════════════════════
@@ -1621,7 +1628,7 @@ async function renderDashboard(body){
   const todayDone = await Promise.all(activeCarrierList.map(async carrier => {
     const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
     const lock=await dbGetLock(carrier, ds);
-    const filledByStatus=plates.length>0 && plates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
+    const filledByStatus=plates.length>0 && plates.every(p=>recordHasStatus(statusMap[`${carrier}||${p.placa}||${ds}`]));
     return { carrier, done: !!lock || filledByStatus };
   }));
   const lockedToday = todayDone.filter(x=>x.done).length;
@@ -1632,7 +1639,7 @@ async function renderDashboard(body){
     let pendOps = 0;
     for(const op of opSet){
       const opPlates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(p.operacao||"Sem operação")===op);
-      const opFilled=opPlates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
+      const opFilled=opPlates.every(p=>recordHasStatus(statusMap[`${carrier}||${p.placa}||${ds}`]));
       if(!opFilled) pendOps++;
     }
     return { carrier, pendOps, totalOps: opSet.size };
@@ -1784,7 +1791,7 @@ async function renderKpisMensais(body){
     let totalSlots=0,filledSlots=0,availSlots=0,unavailSlots=0,manutSlots=0,folgaSlots=0,progSlots=0;
     let diasEnviados=0;
     for(const ds of effectiveDates){
-      const allFilled=plates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
+      const allFilled=plates.every(p=>recordHasStatus(statusMap[`${carrier}||${p.placa}||${ds}`]));
       if(allFilled) diasEnviados++;
       for(const p of plates){
         const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
@@ -2324,9 +2331,16 @@ async function renderToday(body){
         <td style="text-align:center">${unlockPlateBtn}</td>
       </tr>`;
     }).join("");
-    const lock=await dbGetLock(carrier,ds);
-    const allFilled=plates.length>0 && plates.every(p=>statusMap[`${carrier}||${p.placa}||${ds}`]);
-    const done=!!lock || allFilled;
+    let lock=await dbGetLock(carrier,ds);
+    const allFilled=plates.length>0 && plates.every(p=>recordHasStatus(statusMap[`${carrier}||${p.placa}||${ds}`]));
+    const isStaleLock = lock && !allFilled;
+    if(isStaleLock){
+      console.warn("Ignorando bloqueio inconsistente em Today", carrier, ds);
+      await dbRemoveLock(carrier, ds).catch(()=>{});
+      lock = null;
+      _cache.clear();
+    }
+    const done=!!lock && !isStaleLock || allFilled;
     const lockBadge=done
       ?`<span style="font-size:11px;color:var(--lime);margin-left:8px;background:var(--lime-bg);border:1px solid var(--border2);padding:2px 8px;border-radius:99px;">🔒 Enviado ${lock?lock.lockedAt:'preenchimento concluído'}</span>`
       :`<span style="font-size:11px;color:var(--muted);margin-left:8px;">Pendente</span>`;
@@ -3470,8 +3484,7 @@ async function adminUnlock(carrier, ds){
     dbRemoveLock(carrier, ds),
     dbClearStatusForDate(carrier, ds)
   ]);
-  cacheInvalidatePrefix(`lock||${carrier}||`);
-  cacheInvalidatePrefix(`status||${carrier}||`);
+  _cache.clear();
   await dbAddNotif(`Admin desbloqueou e resetou o lançamento de ${carrier} — ${fmtDateStr(ds)}`);
   await dbAddAudit("admin_unlock", { carrier, date: ds });
   showToast(`Lançamento de ${carrier} desbloqueado e resetado!`);
@@ -3492,8 +3505,7 @@ async function adminUnlockPlate(carrier, plate, ds){
     // Invalidate cache
     const cKey = `status||${carrier}||${plate}||${ds}`;
     cacheInvalidate(cKey);
-    cacheInvalidatePrefix(`lock||${carrier}||`);
-    cacheInvalidatePrefix(`status||${carrier}||`);
+    _cache.clear();
     await dbAddNotif(`Admin desbloqueou a placa ${plate} de ${carrier} — ${fmtDateStr(ds)}`);
     await dbAddAudit("admin_unlock_plate", { carrier, plate, date: ds });
     showToast(`Placa ${plate} desbloqueada!`);
@@ -4754,3 +4766,5 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
   </div>
 </body>
 </html>
+
+
