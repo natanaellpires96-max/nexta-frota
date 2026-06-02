@@ -20,7 +20,7 @@ import {
 import {
   getAuth, signInWithEmailAndPassword, signOut,
   onAuthStateChanged, updatePassword, createUserWithEmailAndPassword,
-  sendPasswordResetEmail, deleteUser as fbDeleteUser
+  deleteUser as fbDeleteUser
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -4270,27 +4270,80 @@ function openResetPwd(uid){
   modal.innerHTML = `
     <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
       <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">🔑 Resetar senha</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:.75rem">Será enviado um e-mail de redefinição de senha para <b style="color:var(--text)">${esc(uidToEmail(uid))}</b>.</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">O usuário poderá então definir sua própria senha com segurança a partir do e-mail.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:.75rem">Será criada uma senha temporária para <b style="color:var(--text)">${esc(uidToEmail(uid))}</b> e exibida para que você possa passá-la ao usuário.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">O usuário deverá trocar essa senha assim que acessar o sistema.</p>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('reset-pwd-modal').remove()">Cancelar</button>
-        <button class="btn btn-lime" id="reset-pwd-submit" onclick="saveResetPwd('${attr(jsArg(uid))}')">Enviar e-mail</button>
+        <button class="btn btn-lime" id="reset-pwd-submit" onclick="saveResetPwd('${attr(jsArg(uid))}')">Gerar senha temporária</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 }
 
+function randomTempPassword(){
+  return `Tmp${Math.random().toString(36).slice(2,12)}#`;
+}
+async function ensureAuthAccountTempPwd(uid){
+  const email = uidToEmail(uid);
+  const tempPwd = randomTempPassword();
+  try{
+    await createUserWithEmailAndPassword(userCreateAuth, email, tempPwd);
+    await signOut(userCreateAuth).catch(()=>{});
+    return tempPwd;
+  } catch(e){
+    const code = e.code||"";
+    await signOut(userCreateAuth).catch(()=>{});
+    if(code==='auth/email-already-in-use'){
+      return null;
+    }
+    throw e;
+  }
+}
+function renderResetPwdResult(uid, tempPwd){
+  const modal = document.getElementById('reset-pwd-modal');
+  if(!modal) return;
+  modal.innerHTML = `
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">✅ Senha temporária gerada</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Copie e entregue esta senha ao usuário. Ele deve alterá-la ao acessar o sistema.</p>
+      <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:1rem;margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;">
+        <code style="font-size:14px;color:var(--text);font-family:monospace;word-break:break-all;">${esc(tempPwd)}</code>
+        <button class="btn btn-outline" onclick="navigator.clipboard.writeText('${attr(jsArg(tempPwd))}').then(()=>showToast('Senha copiada!'))">Copiar</button>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-lime" onclick="document.getElementById('reset-pwd-modal').remove()">Fechar</button>
+      </div>
+    </div>`;
+}
+function renderResetPwdAccountExists(uid){
+  const modal = document.getElementById('reset-pwd-modal');
+  if(!modal) return;
+  modal.innerHTML = `
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">⚠️ Conta já existe</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Esta conta já está registrada no Firebase Auth e não pode ter a senha alterada diretamente pelo cliente do navegador.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Use o console Firebase ou um endpoint administrativo para trocar a senha.</p>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('reset-pwd-modal').remove()">Fechar</button>
+      </div>
+    </div>`;
+}
 async function saveResetPwd(uid){
   const btn = document.getElementById('reset-pwd-submit');
-  if(btn){ btn.disabled = true; btn.textContent = 'Enviando...'; }
+  if(btn){ btn.disabled = true; btn.textContent = 'Gerando...'; }
   try{
-    await sendPasswordResetEmail(auth, uidToEmail(uid));
-    showToast('E-mail de redefinição enviado com sucesso!');
-    document.getElementById('reset-pwd-modal')?.remove();
+    const tempPwd = await ensureAuthAccountTempPwd(uid);
+    if(tempPwd){
+      renderResetPwdResult(uid, tempPwd);
+      showToast('Senha temporária gerada com sucesso!');
+      return;
+    }
+    renderResetPwdAccountExists(uid);
+    showToast('Conta já existe no Auth; redefinição direta não é possível pelo cliente.', false);
   } catch(e){
-    console.error('Erro ao enviar reset de senha', e);
-    showToast(`Falha ao enviar e-mail: ${e.code||e.message}`, false);
-    if(btn){ btn.disabled = false; btn.textContent = 'Enviar e-mail'; }
+    console.error('Erro ao gerar senha temporária', e);
+    showToast(`Falha ao gerar senha: ${e.code||e.message}`, false);
+    if(btn){ btn.disabled=false; btn.textContent='Gerar senha temporária'; }
   }
 }
 window.openResetPwd=openResetPwd; window.saveResetPwd=saveResetPwd;
