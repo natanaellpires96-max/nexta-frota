@@ -217,7 +217,9 @@ function fmtAuditAction(action, details={}) {
     case "admin_reset_pwd":
       return `🔑 Senha redefinida pelo admin${details.target ? ` — usuário ${details.target}` : ""}`;
     case "admin_unlock":
-      return `🔓 Lançamento desbloqueado${details.carrier ? ` — ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
+      return `🔓 Lançamento desbloqueado — ${details.carrier || ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
+    case "admin_unlock_plate":
+      return `🔓 Placa desbloqueada — ${details.plate || ""}${details.carrier ? ` · ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
     default:
       return action;
   }
@@ -756,9 +758,6 @@ function saveSession(uid){
 }
 function clearSession(){
   try { localStorage.removeItem(SESSION_KEY); } catch(e) {}
-}
-function restoreSession(){
-  // Não faz nada aqui — a sessão é restaurada via onAuthStateChanged no init
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1419,7 +1418,6 @@ function onTimeChange(sel){
   if(sel.value) sel.className='time-sel time-filled';
   else sel.className='time-sel time-blank';
 }
-function _refreshCardDone(card){ /* no-op — kept for compatibility */ }
 async function saveAll(carrier, ds, btnEl=null){
   const btn=btnEl || document.getElementById("save-btn");
   if(btn && btn.dataset.saving==="1") return;
@@ -4363,7 +4361,7 @@ window.openChangePwd=openChangePwd; window.saveChangePwd=saveChangePwd;
 window.doLogin=doLogin; window.logout=logout;
 window.refreshSystem=refreshSystem;
 window.chDate=chDate; window.setTab=setTab;
-window.onStChange=onStChange; window.saveAll=saveAll; window._refreshCardDone=_refreshCardDone;
+window.onStChange=onStChange; window.saveAll=saveAll;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates; window.exportPdf=exportPdf;
