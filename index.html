@@ -9578,12 +9578,13 @@ function xlsxMapPedidosLiberadosRows(rows) {
       ? dataEntregaRaw.toLocaleDateString('pt-BR')
       : String(dataEntregaRaw).trim().replace(/^(\d{4})-(\d{2})-(\d{2}).*/, '$3/$2/$1');
 
-    const key = erpId + '||' + terminal;
+    // Chave inclui dataEntrega para não misturar pedidos de dias diferentes
+    const key = erpId + '||' + terminal + '||' + dataEntrega;
     if (!groups[key]) {
       const cliCad = clientes.find(c => c.codigoSAP === erpId);
       groups[key] = {
         codigoSAP: erpId,
-        ordens: [],       // Nos. Ordem SAP acumulados por linha do Excel
+        ordens: [],
         cliente,
         cidade,
         lat: cliCad?.lat ?? 0,
@@ -9594,22 +9595,30 @@ function xlsxMapPedidosLiberadosRows(rows) {
         identidadePetronas: cliCad?.identidadePetronas ?? false,
         dataEntregaLogistica: dataEntrega,
         produtos: [],
+        _prodKeys: new Set(), // controle interno de deduplicação
       };
       order.push(key);
     }
+
     if (ordemSAP && !groups[key].ordens.includes(ordemSAP)) groups[key].ordens.push(ordemSAP);
 
     if (volume > 0) {
       const prodLabel = PRODUTOS.find(p => p.startsWith(material))
         ?? (material ? `${material} - ${prodNome}` : prodNome);
-      // ordemSAP vai junto ao produto para ser exibido por compartimento
-      if (prodLabel) groups[key].produtos.push({ produto: prodLabel, volume, ordemSAP });
+
+      // Deduplicar: mesma ordemSAP + mesmo produto = linha duplicada na planilha
+      const prodKey = (ordemSAP || prodLabel) + '||' + (prodLabel || '') + '||' + volume;
+      if (prodLabel && !groups[key]._prodKeys.has(prodKey)) {
+        groups[key]._prodKeys.add(prodKey);
+        groups[key].produtos.push({ produto: prodLabel, volume, ordemSAP });
+      }
     }
   }
 
   return order.map((key, i) => {
     const g = groups[key];
     g.id = Date.now() + i;
+    delete g._prodKeys; // remove controle interno antes de retornar
     return g;
   }).filter(g => g.produtos.length > 0);
 }
