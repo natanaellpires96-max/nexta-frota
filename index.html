@@ -543,8 +543,8 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
       if (rec && rec.status) {
         v.disponibilidade    = rec.status === 'disponivel' ? 'Disponível' : 'Indisponível';
         v._motivoIndisponivel = rec.status !== 'disponivel' ? rec.status : null;
-        if (rec.motoristaDiurno)  v.motoristaDiurno = rec.motoristaDiurno;
-        if (rec.motoristaNoturno) v.motoristaNt      = rec.motoristaNoturno;
+        if (rec.motoristaDiurno)  { v.motoristaDiurno = rec.motoristaDiurno; v._motoristaPainel = true; }
+        if (rec.motoristaNoturno) { v.motoristaNt      = rec.motoristaNoturno; v._motoristaPainel = true; }
       } else {
         // Sem registro no painel para este dia → não marcou disponível → bloqueia
         v.disponibilidade    = 'Indisponível';
@@ -5199,18 +5199,27 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
 ══════════════════════════════ */
 #roteirizador-shell .header {
   background: #111d0a;
-  padding: 14px 22px;
+  padding: 0 24px;
+  height: 60px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 0;
   border-bottom: 1px solid #1c2d12;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
 }
 #roteirizador-shell .header::before { display: none; }
 
-#roteirizador-shell .logo-area { display: flex; align-items: center; gap: 12px; position: relative; z-index: 1; }
-#roteirizador-shell .logo-text { display: flex; flex-direction: column; gap: 2px; }
+#roteirizador-shell .logo-area {
+  display: flex; align-items: center; gap: 12px;
+  position: relative; z-index: 1; flex-shrink: 0;
+  min-width: 180px;
+  padding-right: 28px;
+  border-right: 1px solid rgba(200,240,50,0.15);
+  margin-right: 20px;
+}
+#roteirizador-shell .logo-text { display: flex; flex-direction: column; gap: 3px; }
 #roteirizador-shell .logo-nexta { height: 26px; width: auto; display: block; filter: none; }
 #roteirizador-shell .logo-brand {
   font-size: 15px; font-weight: 600; color: var(--text);
@@ -5218,10 +5227,14 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
 }
 #roteirizador-shell .login-nexta-logo { height: 24px; width: auto; display: block; }
 #roteirizador-shell .logo-sub {
-  font-size: 11px; color: rgba(200,240,180,0.55); letter-spacing: 0;
-  text-transform: none; font-family: var(--font);
+  font-size: 9px; color: rgba(200,240,180,0.4); letter-spacing: 0.13em;
+  text-transform: uppercase; font-family: var(--font); white-space: nowrap;
 }
-#roteirizador-shell .header-actions { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; flex-wrap: nowrap; }
+#roteirizador-shell .header-actions {
+  display: flex; align-items: center; gap: 7px;
+  position: relative; z-index: 1; flex-wrap: nowrap;
+  flex: 1; justify-content: flex-end;
+}
 
 /* Botão Otimizar — acento índigo */
 #roteirizador-shell .btn-otimizar {
@@ -5936,6 +5949,8 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
   border-bottom: 1px solid #1c2d12 !important;
   width: 100% !important;
   box-sizing: border-box !important;
+  overflow: visible !important;
+  height: 60px !important;
 }
 
 /* Logo — mais espaçamento entre letras */
@@ -5990,7 +6005,7 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
         <svg class="logo-nexta" viewBox="0 0 242 45" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M149.631 0.870612H138.515L127.579 14.6805L116.586 0.870612H105.356L121.715 21.6422L104.148 43.9406H114.999L127.078 28.421L139.156 43.7829L139.279 43.9406H150.833L133.011 21.5161L149.631 0.870612ZM67.2515 43.9437H97.073V35.4805H65.8352V26.5725H86.6225V18.1756H65.8352V9.26758H97.073V0.870612H56.9272V43.9437H67.2515ZM196.417 0.870612H155.382V9.26758H171.479V43.9406H180.324V9.27074H196.42V0.870612H196.417ZM224.4 0.870612H211.811L195.01 43.9437H204.426L208.498 33.1273H227.523L231.658 43.9437H241.2L224.4 0.870612ZM224.453 24.7304H211.618L217.892 8.75657L224.457 24.7304H224.453ZM36.8748 0.870612V34.8938C36.8748 35.2786 36.5719 35.6666 36.1019 35.6666C35.9127 35.6666 35.6729 35.6004 35.4963 35.3764L17.8759 4.82621C17.0305 3.35942 15.8508 2.0882 14.3777 1.25545C13.0718 0.517321 11.4504 1.75258e-06 9.54517 1.75258e-06C4.25526 -0.00315263 0 4.25211 0 9.86061V43.9437H8.93006V9.92054C8.93006 9.53571 9.23288 9.14772 9.70289 9.14772C9.89215 9.14772 10.1319 9.21396 10.3085 9.43792L26.5599 37.9031C27.2097 39.0387 27.8595 40.0828 28.503 40.9755C29.7774 42.7514 32.4586 44.8207 36.2691 44.8207C41.559 44.8207 45.8111 40.5654 45.8111 34.9569V0.870612H36.8811H36.8748Z" fill="#EEFE7A"/>
         </svg>
-        <div class="logo-sub" style="letter-spacing:0.18em;text-transform:uppercase;font-size:10px;">Roteirização Logística Outbound</div>
+        <div class="logo-sub" style="letter-spacing:0.12em;text-transform:uppercase;font-size:9px;">Roteirização Outbound</div>
       </div>
     </div>
     <div class="header-actions">
@@ -6001,10 +6016,19 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
         <button class="header-logout" onclick="fazerLogout()" title="Sair">✕</button>
       </div>
       <input type="file" id="input-import-cadastral" accept=".xlsx,.xls" style="display:none" onchange="importarDadosCadastrais(this)"/>
-      <button class="btn btn-sm" onclick="document.getElementById('input-import-cadastral').click()" title="Importa terminais, clientes e veículos de uma planilha .xlsx" style="background:rgba(100,220,120,0.15);color:#7CDB8A;border:1px solid rgba(100,220,120,0.35);white-space:nowrap;font-size:10px;letter-spacing:0.06em;">⬆ Importar cadastrais</button>
-      <button class="btn btn-sm" onclick="exportarDadosPainel()" style="background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.85);border-color:rgba(255,255,255,0.25);backdrop-filter:blur(4px);white-space:nowrap;font-size:10px;letter-spacing:0.06em;">Exportar dados cadastrais</button>
-      <button class="btn btn-sm" id="btn-reiniciar-rot" onclick="reiniciarRoteirizador()" title="Reinicia o módulo de roteirização mantendo os dados" style="background:rgba(200,240,50,0.12);color:#c8f032;border:1px solid rgba(200,240,50,0.30);white-space:nowrap;font-size:10px;letter-spacing:0.06em;">🔄 Reiniciar</button>
-<button class="btn-otimizar-ded" onclick="abrirModalDataCarga('dedicado')" title="Prioriza uso de todos os dedicados (custo fixo)" style="letter-spacing:0.1em;">ROTEIRIZAR PEDIDOS</button>
+      <button class="btn btn-sm" onclick="document.getElementById('input-import-cadastral').click()" title="Importa terminais, clientes e veículos de uma planilha .xlsx" style="background:rgba(100,220,120,0.12);color:#7CDB8A;border:1px solid rgba(100,220,120,0.30);white-space:nowrap;font-size:11px;letter-spacing:0.02em;padding:5px 12px;border-radius:7px;">⬆ Importar</button>
+      <!-- Seletor de data de operação -->
+      <div style="display:flex;align-items:center;gap:7px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:7px;padding:5px 12px;">
+        <span style="font-size:10px;color:rgba(255,255,255,0.4);white-space:nowrap;letter-spacing:0.07em;">📅 DATA OP.</span>
+        <input type="date" id="rot-data-operacao"
+          style="background:transparent;border:none;color:#EEFE7A;font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;width:126px;"
+          onchange="onDataOperacaoChange(this.value)"
+          title="Data de carregamento — sincroniza disponibilidade e roteirização"/>
+      </div>
+      <button class="btn btn-sm" onclick="exportarDadosPainel()" style="background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.70);border:1px solid rgba(255,255,255,0.14);white-space:nowrap;font-size:11px;letter-spacing:0.02em;padding:5px 12px;border-radius:7px;">Exportar cadastrais</button>
+      <button class="btn btn-sm" id="btn-reiniciar-rot" onclick="reiniciarRoteirizador()" title="Reinicia o módulo de roteirização mantendo os dados" style="background:rgba(200,240,50,0.09);color:#c8f032;border:1px solid rgba(200,240,50,0.22);white-space:nowrap;font-size:11px;letter-spacing:0.02em;padding:5px 12px;border-radius:7px;">🔄 Reiniciar</button>
+      <div style="width:1px;height:20px;background:rgba(200,240,50,0.2);margin:0 4px;flex-shrink:0;"></div>
+      <button class="btn-otimizar-ded" onclick="abrirModalDataCarga('dedicado')" title="Prioriza uso de todos os dedicados (custo fixo)" style="letter-spacing:0.07em;padding:8px 18px;font-size:12px;white-space:nowrap;">ROTEIRIZAR PEDIDOS</button>
     </div>
   </div>
 
@@ -6017,6 +6041,7 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
     <button class="tab" onclick="showTab('resultado')">Otimização Rotas</button>
     <button class="tab" onclick="showTab('mapa')">Resumo Operação</button>
     <button class="tab" onclick="showTab('operacao')">Envio Transportadora</button>
+    <button class="tab" onclick="showTab('dashboard_rot')">📊 Dashboard</button>
     <button class="tab" onclick="showTab('historico')">Histórico</button>
   </div>
 
@@ -6402,10 +6427,84 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
     </div>
   </div>
 
-  <!-- ── HISTÓRICO ──────────────────────────────────────────────────────────── -->
+  <!-- ── DASHBOARD ─────────────────────────────────────────────────────────── -->
+  <div id="tab-dashboard_rot" class="page">
+    <div style="padding:20px 0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px;">
+        <div>
+          <div class="sec-title" style="margin:0;">Dashboard de Operações</div>
+          <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Análise histórica das roteirizações salvas</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div style="display:flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;">
+            <span style="font-size:11px;color:var(--text-3);letter-spacing:0.06em;">MES</span>
+            <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--pet-green);font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;">
+              <option value="">Selecionar</option>
+            </select>
+          </div>
+          <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:11px;padding:6px 14px;">Todos os periodos</button>
+          <button class="btn btn-sm" onclick="dashSalvarAtual()" style="background:var(--surface);border:1px solid var(--border-dk);color:var(--text-2);font-size:11px;padding:6px 14px;" title="Salva roteirizacao atual no Dashboard">Salvar no Dashboard</button>
+        </div>
+      </div>
+      <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px;">
+        <div class="sum-card"><div class="sum-num" id="dk-viagens" style="color:var(--pet-green)">-</div><div class="sum-label">Viagens</div></div>
+        <div class="sum-card"><div class="sum-num" id="dk-entregas" style="color:#70a8f0">-</div><div class="sum-label">Entregas</div></div>
+        <div class="sum-card"><div class="sum-num" id="dk-volume" style="color:#f0be40">-</div><div class="sum-label">Volume m3</div></div>
+        <div class="sum-card"><div class="sum-num" id="dk-ocup" style="color:#b07ef0">-</div><div class="sum-label">Ocup. Media</div></div>
+        <div class="sum-card"><div class="sum-num" id="dk-km" style="color:#6ee04a">-</div><div class="sum-label">Km Total</div></div>
+        <div class="sum-card"><div class="sum-num" id="dk-clientes" style="color:#f06060">-</div><div class="sum-label">Clientes</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Volume por Cliente (m3)</div>
+          <div id="dash-chart-vol" style="max-height:280px;overflow-y:auto;"></div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Entregas por Cliente</div>
+          <div id="dash-chart-ent" style="max-height:280px;overflow-y:auto;"></div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Km Rodado vs Volume por Cliente</div>
+          <div id="dash-chart-km" style="max-height:280px;overflow-y:auto;"></div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Taxa de Ocupacao por Viagem (%)</div>
+          <canvas id="dash-chart-ocup" height="260"></canvas>
+        </div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);">Mapa Historico de Viagens</div>
+          <div style="display:flex;gap:12px;align-items:center;font-size:11px;color:var(--text-3);">
+            <span><span style="display:inline-block;width:10px;height:10px;background:#00A499;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Terminal</span>
+            <span><span style="display:inline-block;width:10px;height:10px;background:#4F46E5;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Cliente</span>
+          </div>
+        </div>
+        <div id="dash-mapa" style="height:420px;border-radius:8px;background:#1a2e14;"></div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+        <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Tabela Detalhada por Cliente</div>
+        <div class="tscroll">
+          <table class="table" style="min-width:700px;">
+            <thead><tr>
+              <th>CLIENTE</th><th>CIDADE</th><th>ENTREGAS</th>
+              <th>VOLUME (m3)</th><th>KM MEDIO</th><th>VOL/KM</th>
+            </tr></thead>
+            <tbody id="dash-tabela-cli-body">
+              <tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:32px;">Selecione um mes ou clique em Todos os periodos</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── HISTORICO ─────────────────────────────────────────────────────────── -->
   <div id="tab-historico" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <div class="sec-title" style="margin:0;">Histórico de roteirizações</div>
+      <div class="sec-title" style="margin:0;">Historico de roteirizacoes</div>
       <div style="display:flex;gap:6px;">
         <button class="btn btn-sm" onclick="carregarListaHistorico()">Atualizar lista</button>
         <button class="btn btn-green btn-sm" onclick="selecionarPastaHistorico()">Selecionar pasta</button>
@@ -6531,7 +6630,13 @@ let _modoOtimizarPendente = null;
 
 function abrirModalDataCarga(modo) {
   _modoOtimizarPendente = modo;
-  // Pré-preenche com hoje
+  // Usa data do seletor do header — roteiriza direto sem modal
+  const dataOp = document.getElementById('rot-data-operacao')?.value;
+  if (dataOp) {
+    otimizar(modo || 'padrao', new Date(dataOp + 'T00:00:00'));
+    return;
+  }
+  // Fallback: abre modal com hoje
   const hoje = new Date();
   const iso = `${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-${String(hoje.getDate()).padStart(2,'0')}`;
   document.getElementById('input-data-carga').value = iso;
@@ -7510,9 +7615,9 @@ function limparFiltros(aba) {
   if (aba === 'clientes') renderClientes();
   if (aba === 'pedidos') renderPedidos();
   if (aba === 'veiculos') {
-    // Sincroniza disponibilidade do painel para hoje antes de renderizar
-    const hoje = new Date();
-    const ds = `${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-${String(hoje.getDate()).padStart(2,'0')}`;
+    // Usa data de operação do header; fallback para hoje
+    const inputData = document.getElementById('rot-data-operacao')?.value;
+    const ds = inputData || (() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-${String(h.getDate()).padStart(2,'0')}`; })();
     sincronizarDisponibilidadeVeiculos(ds).then(() => renderVeiculos()).catch(() => renderVeiculos());
   }
   if (aba === 'mapa') renderMapaGeral();
@@ -7790,6 +7895,7 @@ function renderMapaGeral() {
   const placasAlocadasSet = new Set();
   const placasProblemaSet = new Set();
   const alocadoPorPedidoGlobal = new Map();
+  let _idxViagemGlobal = 0; // contador global de viagens para coloração única
 
   veiculos.forEach(vg => {
     const viagensG = (ultimoResultado[vg.id] || []).filter(vi => (vi.paradas || []).length);
@@ -7834,7 +7940,9 @@ function renderMapaGeral() {
       }
       if (pontos.length < 2) return;
 
-      const cor = corPorPlaca(v.placa);
+      const _paletaViagem = ['#00A499','#20419A','#763F98','#f28e2b','#e15759','#59a14f','#edc948','#4e79a7','#9c755f','#ff9da7','#e76f51','#2f4b7c','#a8dadc','#e63946','#06d6a0','#118ab2'];
+      const cor = _paletaViagem[_idxViagemGlobal % _paletaViagem.length];
+      _idxViagemGlobal++;
       const volViagem = paradas.reduce((s, p) => s + (p.volumeTotal || 0), 0);
       viagensMapa.push({ v, idx, pontos, cor, volViagem, terminalNome, destinos: paradas.length, viagem: vi, paradas });
       const cur = porPlaca.get(v.placa) || { cor, ciclos: 0, destinos: 0, volume: 0, transportadora: v.transportadora || '-' };
@@ -7949,6 +8057,29 @@ function renderMapaGeral() {
 
   viagensVisiveis.forEach(item => {
     osrmRoute(item.pontos, camadaMapaGeral, item.cor, 4, 0.86).catch(()=>{});
+
+    // Calcula clock de chegada para cada parada desta viagem
+    const v_item = item.v;
+    const vi_item = item.viagem;
+    const jIniMin_item = (() => { const h = parseHoraMin(v_item.jornadaInicio||'06:00'); return isNaN(h)?360:h; })();
+    const todasViagens_item = (ultimoResultado[v_item.id]||[]).filter(vi=>!vi._vazio&&(vi.paradas||[]).length);
+    let clock_item = inicioViagemAbsMin(todasViagens_item, todasViagens_item.indexOf(vi_item), jIniMin_item, v_item.tempoPerdidoMin||0, doisTurnos(v_item)?2:1);
+    clock_item += (vi_item.esperaTerminalMin||0);
+    // clocksPorParada[i] = minutos absolutos de chegada no ponto i (0 = origem)
+    const clocksPorParada = [clock_item];
+    (item.paradas||[]).forEach((par, pi) => {
+      if (pi === 0) clock_item += (par.tempoCarregamentoMin||0);
+      clock_item += (par.deslocCarregadoMin||0) + (par.tempoEsperaRestricaoMin||0);
+      clocksPorParada.push(clock_item);
+      clock_item += (par.tempoDescargaMin||0) + (par.deslocVazioMin||0);
+    });
+    function absMinToHM(m) {
+      if (m == null || isNaN(m)) return null;
+      const hm = ((m%1440)+1440)%1440;
+      const d = Math.floor(m/1440);
+      return String(Math.floor(hm/60)).padStart(2,'0')+':'+String(hm%60).padStart(2,'00')+(d>0?` (+${d}d)`:'');
+    }
+
     item.pontos.forEach((p, i) => {
       const tipoFim  = (i === item.pontos.length - 1 && p.tipo === 'retorno');
       const isOrigem = p.tipo === 'origem';
@@ -7985,6 +8116,9 @@ function renderMapaGeral() {
         return (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))).toFixed(1);
       })();
       const distLabel = distKm ? `<div style="font-size:11px;color:#2563EB;margin-bottom:4px;">📏 <strong>${distKm} km</strong> do terminal</div>` : '';
+      // Horário estimado de chegada
+      const horaCheg = absMinToHM(clocksPorParada[i]);
+      const horaLabel = (horaCheg && !isOrigem && !tipoFim) ? `<div style="font-size:12px;font-weight:600;color:#111827;margin-bottom:4px;">🕐 Chegada estimada: <strong>${horaCheg}</strong></div>` : '';
       const descarga  = par?.tempoDescargaMin    ? `<div style="font-size:11px;color:#6B7280;margin-top:2px;">⏳ Descarga: ~${par.tempoDescargaMin} min</div>` : '';
       const janela    = par?.pedido?.restricao   ? `<div style="margin-top:6px;padding:4px 8px;background:#FFFBEB;color:#92400E;border-radius:4px;font-size:10px;border:1px solid #FDE68A;">⏱ Janela: ${par.pedido.restricao}</div>` : '';
       const centroide = p.isCentroide            ? `<div style="font-size:10px;color:#92400E;margin-top:4px;">⚠ Posição aproximada</div>` : '';
@@ -8014,6 +8148,7 @@ function renderMapaGeral() {
               </div>
             </div>
             ${placa}
+            ${horaLabel}
             ${distLabel}
             ${produtos ? `<div style="background:#F9FAFB;border-radius:6px;padding:8px;margin-bottom:6px;font-size:11px;">
               <div style="font-weight:600;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Carga entregue</div>
@@ -8047,14 +8182,14 @@ function renderMapaGeral() {
     return viagens.length > 0 && !placasNoMapa.has(v.placa);
   });
 
-  const itensLegenda = [...porPlaca.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([placa, d]) => `
-      <div class="mapa-geral-item ${placaFiltroAtual === placa.toUpperCase() ? 'ativo' : ''}" onclick="toggleFiltroMapaPlaca('${placa.replace(/'/g, "\\'")}')">
-        <span class="mapa-geral-cor" style="background:${d.cor};"></span>
+  const itensLegenda = viagensMapa
+    .sort((a, b) => a.v.placa.localeCompare(b.v.placa) || a.idx - b.idx)
+    .map(item => `
+      <div class="mapa-geral-item ${placaFiltroAtual === item.v.placa.toUpperCase() ? 'ativo' : ''}" onclick="toggleFiltroMapaPlaca('${item.v.placa.replace(/'/g, "\\'")}')">
+        <span class="mapa-geral-cor" style="background:${item.cor};"></span>
         <div>
-          <div style="font-weight:700;line-height:1.1;">${placa}</div>
-          <div style="font-size:11px;color:#4A6535;">${d.transportadora} · ${d.ciclos} viagem(ns) · ${d.destinos} destinos · ${d.volume.toFixed(1)} m³</div>
+          <div style="font-weight:700;line-height:1.1;">${item.v.placa} <span style="font-size:10px;font-weight:400;color:#6B7280;">Viagem ${item.idx + 1}</span></div>
+          <div style="font-size:11px;color:#4A6535;">${item.v.transportadora||'-'} · ${item.destinos} destino(s) · ${item.volViagem.toFixed(1)} m³</div>
         </div>
       </div>
     `).join('');
@@ -9791,6 +9926,17 @@ function renderVeiculos() {
             <span class="tag tag-blue" style="font-size:9px;">${v.jornadaInicio||'06:00'}-${v.jornadaFim||'18:00'} (${Math.round((v.jornadaMin||duracaoJornadaMin(v.jornadaInicio||'06:00', v.jornadaFim||'18:00'))/60)}h)</span>
             <span class="tag tag-purple" style="font-size:9px;">V/C: ${(v.velMediaVazio||55).toFixed(0)} / ${(v.velMediaCarregado||45).toFixed(0)} km/h</span>
           </div>
+          ${(v.motoristaDiurno || v.motoristaNt) ? `
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;padding:5px 10px;background:rgba(74,101,53,0.1);border-radius:6px;border:1px solid rgba(74,101,53,0.2);">
+            <span style="font-size:10px;color:#4A6535;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;white-space:nowrap;">🧑‍✈️ Motorista</span>
+            ${v.motoristaDiurno ? `<span style="font-size:11px;color:#1F2937;font-weight:500;">☀️ ${v.motoristaDiurno}</span>` : ''}
+            ${v.motoristaDiurno && v.motoristaNt ? `<span style="color:#9CA3AF;font-size:10px;">·</span>` : ''}
+            ${v.motoristaNt ? `<span style="font-size:11px;color:#1F2937;font-weight:500;">🌙 ${v.motoristaNt}</span>` : ''}
+            ${v._motoristaPainel ? `<span style="font-size:9px;background:#D1FAE5;color:#065F46;border-radius:4px;padding:1px 5px;margin-left:2px;">painel</span>` : `<span style="font-size:9px;background:#F3F4F6;color:#6B7280;border-radius:4px;padding:1px 5px;margin-left:2px;">cadastro</span>`}
+          </div>` : `
+          <div style="display:flex;align-items:center;gap:6px;margin-top:6px;padding:4px 10px;background:#FFF7ED;border-radius:6px;border:1px solid #FDE68A;">
+            <span style="font-size:10px;color:#92400E;">⚠ Motorista não informado no painel para este dia</span>
+          </div>`}
           <div class="pills">
             ${v.compartimentos.map((c,i)=>`<span class="pill">C${i+1}: ${c.cap}m³${c.produto?' - '+c.produto:''}</span>`).join('')}
           </div>
@@ -12971,6 +13117,7 @@ window.initRoteirizadorIntegrado = async function(){
     try { await carregarPedidosLiberados(); } catch(e) { console.warn('Roteirizador: falha ao carregar pedidos', e); }
   }
   try { popularDropdownRoteirizacoes(); } catch(e) {}
+  initDataOperacao();
   if(typeof invalidateSizeMapasRoteirizador === 'function') invalidateSizeMapasRoteirizador();
 };
 window.invalidateSizeMapasRoteirizador = function(){
@@ -12987,16 +13134,41 @@ window.invalidateSizeMapasRoteirizador = function(){
    2. Detalhamento por Entrega (uma linha por produto por parada)
    3. Resumo por Cliente
 ══════════════════════════════════════════════════════════════ */
-function exportarRelatorioRoteirizacao() {
+
+// Helper local — equivalente ao dateStr() do sistema pai
+function _isoHoje(offsetDias) {
+  const d = new Date(); d.setDate(d.getDate() + (offsetDias||0));
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function onDataOperacaoChange(valor) {
+  if (!valor) return;
+  sincronizarDisponibilidadeVeiculos(valor).then(() => {
+    if (document.getElementById('tab-veiculos')?.classList.contains('active')) renderVeiculos();
+    showToast(`Disponibilidade atualizada para ${new Date(valor + 'T12:00:00').toLocaleDateString('pt-BR')} ✅`, true);
+  }).catch(() => {});
+}
+
+function initDataOperacao() {
+  const el = document.getElementById('rot-data-operacao');
+  if (!el || el._inicializado) return;
+  el._inicializado = true;
+  const amanha = new Date(); amanha.setDate(amanha.getDate() + 1);
+  const iso = `${amanha.getFullYear()}-${String(amanha.getMonth()+1).padStart(2,'0')}-${String(amanha.getDate()).padStart(2,'0')}`;
+  el.value = iso;
+  sincronizarDisponibilidadeVeiculos(iso).catch(() => {});
+}
+
+window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() {
   try {
     if (!ultimoResultado) { showToast('Roteirize primeiro para gerar o relatório.', false); return; }
     const todosVeic = veiculos.filter(v => ultimoResultado[v.id] && ultimoResultado[v.id].some(vi => !vi._vazio && (vi.paradas||[]).length));
     if (!todosVeic.length) { showToast('Nenhuma rota gerada para exportar.', false); return; }
-    const dataEntrega = document.getElementById('rot-data-entrega')?.value || (typeof dateStr === 'function' ? dateStr(0) : new Date().toISOString().slice(0,10));
+    const dataEntrega = document.getElementById('rot-data-operacao')?.value || document.getElementById('rot-data-entrega')?.value || _isoHoje(0);
     const nomeArq = 'Roteirizacao_' + dataEntrega.replace(/-/g,'') + '_' + new Date().toISOString().slice(11,16).replace(':','');
 
     function hav(a,b,c,d){const R=6371,dL=(c-a)*Math.PI/180,dl=(d-b)*Math.PI/180,x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dl/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
-    function mH(m){if(m==null||isNaN(m))return '-';const hm=((m%1440)+1440)%1440;return String(Math.floor(hm/60)).padStart(2,'0')+':'+String(hm%60).padStart(2,'0');}
+    function mH(m){if(m==null||isNaN(m))return '-';const hm=((Math.round(m)%1440)+1440)%1440;return String(Math.floor(hm/60)).padStart(2,'0')+':'+String(hm%60).padStart(2,'0');}
     function mkWs(data){const ws=XLSX.utils.aoa_to_sheet(data);const r=XLSX.utils.decode_range(ws['!ref']||'A1');ws['!cols']=Array.from({length:r.e.c+1},()=>({wch:22}));return ws;}
 
     // ── Aba 1: Resumo por Veículo ─────────────────────────────────────────────
@@ -13012,7 +13184,7 @@ function exportarRelatorioRoteirizacao() {
 
     // ── Aba 2: Resumo por Viagem (UMA LINHA POR VIAGEM) ──────────────────────
     const a2=[['RESUMO POR VIAGEM — '+dataEntrega],[],
-      ['Nº VIAGEM','PLACA','TRANSPORTADORA','CONTRATO','TIPO','TERMINAL','MOTORISTA','Nº ENTREGAS','VOLUME (m³)','OCUPAÇÃO (%)','HORA SAÍDA','HORA CHEGADA ÚLTIMO','JORNADA (h)']];
+      ['ID VIAGEM','PLACA','TRANSPORTADORA','CONTRATO','TIPO','TERMINAL','MOTORISTA','Nº ENTREGAS','VOLUME (m³)','OCUPAÇÃO (%)','HORA SAÍDA','HORA CHEGADA ÚLTIMO','JORNADA (h)']];
     todosVeic.forEach(v=>{
       const vis=(ultimoResultado[v.id]||[]).filter(vi=>!vi._vazio&&(vi.paradas||[]).length);
       const jI=(()=>{const h=parseHoraMin(v.jornadaInicio||'06:00');return isNaN(h)?360:h;})();
@@ -13020,49 +13192,48 @@ function exportarRelatorioRoteirizacao() {
       vis.forEach((vi,iV)=>{
         let ck=inicioViagemAbsMin(vis,iV,jI,v.tempoPerdidoMin||0,doisTurnos(v)?2:1)+(vi.esperaTerminalMin||0);
         const hSaida=mH(ck+(vi.paradas[0]?.tempoCarregamentoMin||0));
-        // Calcular hora chegada no último destino
+        // Hora chegada no último cliente: percorrer todas as paradas sequencialmente
         let ckFim=ck+(vi.paradas[0]?.tempoCarregamentoMin||0);
         vi.paradas.forEach((par,iP)=>{
-          if(iP>0) ckFim+=(par.deslocCarregadoMin||0)+(par.tempoEsperaRestricaoMin||0);
-          if(iP===vi.paradas.length-1) ckFim+=(par.deslocCarregadoMin||0)+(par.tempoEsperaRestricaoMin||0);
+          ckFim+=Math.round(par.deslocCarregadoMin||0)+(par.tempoEsperaRestricaoMin||0);
+          if(iP<vi.paradas.length-1) ckFim+=Math.round(par.tempoDescargaMin||0)+Math.round(par.deslocVazioMin||0);
         });
-        // Recalcular corretamente
-        let ckExato=ck+(vi.paradas[0]?.tempoCarregamentoMin||0);
-        vi.paradas.forEach((par,iP)=>{
-          if(iP===0){}
-          ckExato+=(par.deslocCarregadoMin||0)+(par.tempoEsperaRestricaoMin||0);
-          if(iP<vi.paradas.length-1) ckExato+=(par.tempoDescargaMin||0)+(par.deslocVazioMin||0);
-        });
-        const hChegada=mH(ckExato);
+        const hChegada=mH(ckFim);
         const volV=vi.paradas.reduce((s,p)=>s+(p.volumeTotal||0),0);
         const ocup=cap>0?((volV/cap)*100).toFixed(1):'-';
         const jornH=parseFloat(((vi.jornadaProdMin||0)/60).toFixed(2));
-        a2.push([iV+1,v.placa,v.transportadora||'-',v.contrato||'-',v.tipo||'-',v.terminal||'-',v.motoristaDiurno||v.motoristaNt||'-',vi.paradas.length,parseFloat(volV.toFixed(3)),ocup,hSaida,hChegada,jornH]);
+        const petId=vi.petId||`VIA${v.placa}${iV+1}`;
+        a2.push([petId,v.placa,v.transportadora||'-',v.contrato||'-',v.tipo||'-',v.terminal||'-',v.motoristaDiurno||v.motoristaNt||'-',vi.paradas.length,parseFloat(volV.toFixed(3)),ocup,hSaida,hChegada,jornH]);
       });
     });
 
     // ── Aba 3: Detalhe por Entrega ────────────────────────────────────────────
     const a3=[['DETALHAMENTO POR ENTREGA — '+dataEntrega],[],
-      ['Nº VIAGEM','PLACA','TRANSPORTADORA','CONTRATO','TIPO','TERMINAL','MOTORISTA','SEQ.','CLIENTE','CIDADE','UF','CÓD. PRODUTO','PRODUTO','VOLUME (m³)','VOLUME (L)','HORA SAÍDA','HORA CHEGADA','JANELA','DIST. TERMINAL (km)','DESCARGA (min)','ORDEM SAP']];
+      ['ID VIAGEM','PLACA','TRANSPORTADORA','CONTRATO','TIPO','TERMINAL','MOTORISTA','SEQ.','CLIENTE','CIDADE','UF','CÓD. PRODUTO','PRODUTO','VOLUME (m³)','VOLUME (L)','HORA SAÍDA','HORA CHEGADA','JANELA','DIST. TERMINAL (km)','DESCARGA (min)','ORDEM SAP']];
     todosVeic.forEach(v=>{
       const vis=(ultimoResultado[v.id]||[]).filter(vi=>!vi._vazio&&(vi.paradas||[]).length);
       const jI=(()=>{const h=parseHoraMin(v.jornadaInicio||'06:00');return isNaN(h)?360:h;})();
       vis.forEach((vi,iV)=>{
+        const petId=vi.petId||`VIA${v.placa}${iV+1}`;
         let ck=inicioViagemAbsMin(vis,iV,jI,v.tempoPerdidoMin||0,doisTurnos(v)?2:1)+(vi.esperaTerminalMin||0);
         const hs=mH(ck+(vi.paradas[0]?.tempoCarregamentoMin||0));
-        const tLa=vi._terminalLat||v._terminalLat||null,tLo=vi._terminalLon||v._terminalLon||null;
+        // Busca coordenadas do terminal via terminaisCad
+        const termNome = vi.terminalOrigem || v.terminal || vi.paradas[0]?.pedido?.terminal || '';
+        const termObj  = (typeof terminaisCad !== 'undefined' ? terminaisCad : []).find(t => t.nome === termNome);
+        const tLa = termObj ? parseFloat(termObj.lat) : null;
+        const tLo = termObj ? parseFloat(termObj.lon) : null;
         vi.paradas.forEach((par,iP)=>{
-          if(iP===0)ck+=(par.tempoCarregamentoMin||0);
-          ck+=(par.deslocCarregadoMin||0)+(par.tempoEsperaRestricaoMin||0);
+          if(iP===0) ck+=Math.round(par.tempoCarregamentoMin||0);
+          ck+=Math.round(par.deslocCarregadoMin||0)+(par.tempoEsperaRestricaoMin||0);
           const hc=mH(ck);
           const dk=(tLa&&par.lat&&par.lon)?hav(tLa,tLo,par.lat,par.lon).toFixed(1):'-';
           const ped=par.pedido||{};
           const prods=(ped.produtos||[]).length?ped.produtos:[{produto:'-',volume:par.volumeTotal||0,ordemSAP:ped.ordemSAP||'-'}];
           prods.forEach(pr=>{
             const[cod,...desc]=(pr.produto||'').split(' - ');
-            a3.push([iV+1,v.placa,v.transportadora||'-',v.contrato||'-',v.tipo||'-',v.terminal||'-',v.motoristaDiurno||v.motoristaNt||'-',iP+1,ped.cliente||ped.nomeCliente||par.nome||'-',ped.cidade||'-',ped.uf||'-',cod?.trim()||'-',desc.join(' - ')||pr.produto||'-',pr.volume||0,parseFloat(((pr.volume||0)*1000).toFixed(0)),hs,hc,ped.restricao||'-',dk,par.tempoDescargaMin||'-',pr.ordemSAP||ped.ordemSAP||'-']);
+            a3.push([petId,v.placa,v.transportadora||'-',v.contrato||'-',v.tipo||'-',v.terminal||'-',v.motoristaDiurno||v.motoristaNt||'-',iP+1,ped.cliente||ped.nomeCliente||par.nome||'-',ped.cidade||'-',ped.uf||'-',cod?.trim()||'-',desc.join(' - ')||pr.produto||'-',pr.volume||0,parseFloat(((pr.volume||0)*1000).toFixed(0)),hs,hc,ped.restricao||'-',dk,Math.round(par.tempoDescargaMin)||'-',pr.ordemSAP||ped.ordemSAP||'-']);
           });
-          ck+=(par.tempoDescargaMin||0)+(par.deslocVazioMin||0);
+          ck+=Math.round(par.tempoDescargaMin||0)+Math.round(par.deslocVazioMin||0);
         });
       });
     });
@@ -13099,7 +13270,449 @@ function exportarRelatorioRoteirizacao() {
    Retorna array de distâncias acumuladas por ponto (em km) via
    window._osrmDistancias[layer._leaflet_id] para uso nos popups.
 ──────────────────────────────────────────────────────────────── */
-window._osrmDistancias = window._osrmDistancias || {};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DASHBOARD DE OPERAÇÕES
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+
+// ── Armazenamento ──────────────────────────────────────────────────────────
+// Snapshots guardados em localStorage: { [chaveYYYYMM]: [snapshot, ...] }
+const DASH_KEY = 'nexta_dash_v1';
+
+function dashGetStore() {
+  try { return JSON.parse(localStorage.getItem(DASH_KEY) || '{}'); } catch { return {}; }
+}
+function dashSetStore(store) {
+  try { localStorage.setItem(DASH_KEY, JSON.stringify(store)); } catch(e) {
+    showToast('Armazenamento cheio. Remova períodos antigos.', false);
+  }
+}
+
+function dashChave(snapshot) {
+  const d = new Date(snapshot.savedAt || snapshot.datasEntrega?.[0] || Date.now());
+  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+function dashChaveLabel(k) {
+  const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  return `${meses[parseInt(k.slice(4))-1]}/${k.slice(0,4)}`;
+}
+
+// ── Salvar roteirização atual no Dashboard ─────────────────────────────────
+window.dashSalvarAtual = function() {
+  if (!ultimoResultado) { showToast('Execute a otimização primeiro.', false); return; }
+  const snapshot = {
+    versao: 1,
+    savedAt: new Date().toISOString(),
+    datasEntrega: [...new Set((pedidos||[]).map(p=>p.dataEntregaLogistica).filter(Boolean))],
+    pedidos:    JSON.parse(JSON.stringify(pedidos||[])),
+    terminais:  JSON.parse(JSON.stringify(terminaisCad||[])),
+    veiculos:   JSON.parse(JSON.stringify(veiculos||[])),
+    resultado:  JSON.parse(JSON.stringify(ultimoResultado||{})),
+  };
+  const chave = dashChave(snapshot);
+  const store = dashGetStore();
+  if (!store[chave]) store[chave] = [];
+  store[chave].push(snapshot);
+  dashSetStore(store);
+  dashPopularMeses();
+  showToast(`Roteirização salva no Dashboard — ${dashChaveLabel(chave)} ✓`);
+};
+
+// ── Popular select de meses ────────────────────────────────────────────────
+window.dashPopularMeses = function() {
+  const sel = document.getElementById('dash-mes-sel');
+  if (!sel) return;
+  const store = dashGetStore();
+  const chaves = Object.keys(store).sort().reverse();
+  sel.innerHTML = '<option value="">Selecionar</option>';
+  chaves.forEach(k => {
+    const opt = document.createElement('option');
+    opt.value = k; opt.textContent = dashChaveLabel(k) + ` (${store[k].length} rot.)`;
+    sel.appendChild(opt);
+  });
+};
+
+// ── Extrair dados agregados de snapshots ───────────────────────────────────
+function dashAgregar(snapshots) {
+  const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade}
+  const viagens_ocup = []; // {label, ocup}
+  let totalViagens = 0, totalKm = 0, totalVol = 0, totalCap = 0;
+  const rotasMap = [];   // para o mapa: [{termLat,termLon,paradas:[{lat,lon,nome}]}]
+
+  snapshots.forEach(snap => {
+    const res = snap.resultado || {};
+    const vecs = snap.veiculos || [];
+    const terms = snap.terminais || [];
+
+    vecs.forEach(v => {
+      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+      if (!viagens.length) return;
+
+      // Terminal lat/lon
+      const term = terms.find(t => t.nome === v.terminal);
+      const tLat = term?.lat, tLon = term?.lon;
+
+      const capV = v.capacidade || v.capacidadeTotal || 0;
+
+      viagens.forEach((vi, iV) => {
+        totalViagens++;
+        const rotaPontos = { termLat: tLat, termLon: tLon, placa: v.placa, paradas: [] };
+        let volViagem = 0;
+
+        vi.paradas.forEach(par => {
+          const ped = par.pedido || {};
+          const nome = ped.cliente || ped.nomeCliente || par.nome || '?';
+          const cidade = ped.cidade || '-';
+          const vol = par.volumeTotal || 0;
+          const coords = latLonEfetivo ? latLonEfetivo(ped) : { lat: par.lat, lon: par.lon };
+          const lat = coords?.lat || par.lat;
+          const lon = coords?.lon || par.lon;
+          const km = (tLat && tLon && lat && lon)
+            ? haversine(tLat, tLon, lat, lon) : 0;
+
+          if (!clientes[nome]) clientes[nome] = { nome, cidade, entregas:0, volume:0, km:0, lat, lon };
+          clientes[nome].entregas++;
+          clientes[nome].volume += vol;
+          clientes[nome].km = Math.max(clientes[nome].km, km); // km médio = maior distância do terminal
+
+          totalVol += vol;
+          volViagem += vol;
+          totalKm += km;
+
+          rotaPontos.paradas.push({ lat, lon, nome, vol });
+        });
+
+        rotasMap.push(rotaPontos);
+        if (capV > 0) {
+          const ocup = Math.round((volViagem / capV) * 100);
+          viagens_ocup.push({ label: `${v.placa} V${iV+1}`, ocup });
+          totalCap += capV;
+        }
+      });
+    });
+  });
+
+  const totalVec = totalCap > 0 ? Math.round((totalVol / totalCap) * 100) : 0;
+  const totalEntregas = Object.values(clientes).reduce((s,c)=>s+c.entregas, 0);
+
+  return {
+    clientes: Object.values(clientes).sort((a,b)=>b.volume-a.volume),
+    viagens_ocup,
+    totalViagens,
+    totalEntregas,
+    totalVol: parseFloat(totalVol.toFixed(1)),
+    totalKm: Math.round(totalKm),
+    totalOcup: totalVec,
+    totalClientes: Object.keys(clientes).length,
+    rotasMap,
+  };
+}
+
+// ── Renderizar Dashboard ───────────────────────────────────────────────────
+function dashRender(snapshots) {
+  if (!snapshots || !snapshots.length) {
+    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes')
+      .forEach(el => { if(el) el.textContent = '-'; });
+    document.getElementById('dash-tabela-cli-body').innerHTML =
+      '<tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:32px;">Nenhum dado para este período</td></tr>';
+    return;
+  }
+
+  const d = dashAgregar(snapshots);
+
+  // KPIs
+  const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
+  set('dk-viagens',  d.totalViagens);
+  set('dk-entregas', d.totalEntregas);
+  set('dk-volume',   d.totalVol + ' m³');
+  set('dk-ocup',     d.totalOcup + '%');
+  set('dk-km',       d.totalKm.toLocaleString('pt-BR') + ' km');
+  set('dk-clientes', d.totalClientes);
+
+  // Gráfico de barras: volume por cliente
+  dashBarChart('dash-chart-vol', d.clientes.slice(0,20), c=>c.volume.toFixed(1),
+    '#f0be40', 'm³', c=>c.nome);
+
+  // Gráfico de barras: entregas por cliente
+  dashBarChart('dash-chart-ent', d.clientes.slice(0,20).sort((a,b)=>b.entregas-a.entregas),
+    c=>c.entregas, '#70a8f0', 'ent.', c=>c.nome);
+
+  // Gráfico Km vs Volume
+  dashKmVolChart('dash-chart-km', d.clientes.slice(0,20));
+
+  // Gráfico de ocupação
+  dashOcupChart('dash-chart-ocup', d.viagens_ocup.slice(0,30));
+
+  // Mapa
+  dashRenderMapa(d.rotasMap);
+
+  // Tabela
+  const tbody = document.getElementById('dash-tabela-cli-body');
+  if (tbody) {
+    tbody.innerHTML = d.clientes.map(c => {
+      const kmVol = c.km > 0 ? (c.volume / c.km).toFixed(2) : '-';
+      return `<tr>
+        <td style="font-weight:500">${c.nome}</td>
+        <td style="font-size:12px;color:var(--text-3)">${c.cidade}</td>
+        <td style="text-align:center">${c.entregas}</td>
+        <td style="text-align:center">${c.volume.toFixed(1)}</td>
+        <td style="text-align:center">${c.km > 0 ? c.km.toFixed(0)+' km' : '-'}</td>
+        <td style="text-align:center">${kmVol !== '-' ? kmVol+' m³/km' : '-'}</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
+// ── Gráfico de barras horizontal inline ───────────────────────────────────
+function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!itens.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:12px">Sem dados</div>'; return; }
+  const maxV = Math.max(...itens.map(i => parseFloat(valFn(i)) || 0), 1);
+  el.innerHTML = itens.map(item => {
+    const v = parseFloat(valFn(item)) || 0;
+    const pct = Math.round((v / maxV) * 100);
+    const label = labelFn(item);
+    const short = label.length > 28 ? label.slice(0,26)+'…' : label;
+    return `<div style="margin-bottom:6px;">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-3);margin-bottom:2px;">
+        <span title="${label}">${short}</span>
+        <span style="color:var(--text-2);font-weight:600">${v} ${sufixo}</span>
+      </div>
+      <div style="height:7px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:${cor};border-radius:99px;transition:width .4s;"></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Gráfico Km vs Volume ───────────────────────────────────────────────────
+function dashKmVolChart(containerId, clientes) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const itens = clientes.filter(c => c.km > 0).slice(0,15);
+  if (!itens.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:12px">Sem dados de localização</div>'; return; }
+  const maxKm = Math.max(...itens.map(c=>c.km), 1);
+  const maxVol = Math.max(...itens.map(c=>c.volume), 1);
+  el.innerHTML = itens.map(c => {
+    const pctKm = Math.round((c.km / maxKm) * 100);
+    const pctVol = Math.round((c.volume / maxVol) * 100);
+    const short = c.nome.length > 22 ? c.nome.slice(0,20)+'…' : c.nome;
+    return `<div style="margin-bottom:8px;">
+      <div style="font-size:10px;color:var(--text-3);margin-bottom:2px;" title="${c.nome}">${short}</div>
+      <div style="display:flex;gap:4px;align-items:center;">
+        <span style="font-size:9px;color:var(--text-3);width:20px;text-align:right;">km</span>
+        <div style="flex:1;height:5px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
+          <div style="width:${pctKm}%;height:100%;background:#6ee04a;border-radius:99px;"></div>
+        </div>
+        <span style="font-size:9px;color:#6ee04a;width:36px;">${c.km.toFixed(0)}km</span>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;margin-top:2px;">
+        <span style="font-size:9px;color:var(--text-3);width:20px;text-align:right;">m³</span>
+        <div style="flex:1;height:5px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
+          <div style="width:${pctVol}%;height:100%;background:#f0be40;border-radius:99px;"></div>
+        </div>
+        <span style="font-size:9px;color:#f0be40;width:36px;">${c.volume.toFixed(1)}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Gráfico de ocupação (canvas) ───────────────────────────────────────────
+function dashOcupChart(canvasId, itens) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const W = canvas.offsetWidth || 400;
+  canvas.width = W * (window.devicePixelRatio || 1);
+  canvas.height = 260 * (window.devicePixelRatio || 1);
+  canvas.style.width = W + 'px';
+  canvas.style.height = '260px';
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, 260);
+  if (!itens.length) return;
+
+  const pad = { t:16, r:10, b:44, l:34 };
+  const W2 = W - pad.l - pad.r;
+  const H2 = 260 - pad.t - pad.b;
+  const barW = Math.max(6, Math.min(28, W2 / itens.length - 3));
+  const maxV = 100;
+
+  // Grid
+  ctx.strokeStyle = 'rgba(200,240,50,0.1)'; ctx.lineWidth = 1;
+  [0, 25, 50, 75, 100].forEach(pct => {
+    const y = pad.t + H2 - (pct / maxV) * H2;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + W2, y); ctx.stroke();
+    ctx.fillStyle = 'rgba(228,242,200,0.35)'; ctx.font = `10px DM Mono,monospace`;
+    ctx.textAlign = 'right'; ctx.fillText(pct + '%', pad.l - 4, y + 3);
+  });
+
+  // Linha de 100%
+  ctx.strokeStyle = 'rgba(240,96,96,0.3)'; ctx.setLineDash([4,4]);
+  const y100 = pad.t;
+  ctx.beginPath(); ctx.moveTo(pad.l, y100); ctx.lineTo(pad.l + W2, y100); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Barras
+  itens.forEach((item, i) => {
+    const x = pad.l + i * (W2 / itens.length) + (W2 / itens.length - barW) / 2;
+    const h = (Math.min(item.ocup, 100) / maxV) * H2;
+    const y = pad.t + H2 - h;
+    const cor = item.ocup >= 90 ? '#6ee04a' : item.ocup >= 60 ? '#f0be40' : '#f06060';
+    ctx.fillStyle = cor;
+    ctx.beginPath();
+    ctx.roundRect(x, y, barW, h, [3,3,0,0]);
+    ctx.fill();
+    // Label do valor
+    if (barW >= 14) {
+      ctx.fillStyle = 'rgba(228,242,200,0.7)';
+      ctx.font = `bold 9px DM Sans,sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(item.ocup + '%', x + barW/2, y - 3);
+    }
+    // Label placa no eixo X (diagonal)
+    if (itens.length <= 20) {
+      ctx.save();
+      ctx.translate(x + barW/2, pad.t + H2 + 6);
+      ctx.rotate(-Math.PI / 4);
+      ctx.fillStyle = 'rgba(228,242,200,0.4)';
+      ctx.font = '8px DM Sans,sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(item.label, 0, 0);
+      ctx.restore();
+    }
+  });
+  ctx.textAlign = 'left';
+}
+
+// ── Mapa Histórico ─────────────────────────────────────────────────────────
+let _dashMap = null;
+let _dashMapLayers = [];
+
+function dashRenderMapa(rotasMap) {
+  if (typeof L === 'undefined') return;
+  const el = document.getElementById('dash-mapa');
+  if (!el) return;
+
+  // Inicializar mapa uma só vez
+  if (!_dashMap) {
+    _dashMap = L.map('dash-mapa', { zoomControl: true, attributionControl: false });
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 18
+    }).addTo(_dashMap);
+  }
+
+  // Limpar camadas anteriores
+  _dashMapLayers.forEach(l => _dashMap.removeLayer(l));
+  _dashMapLayers = [];
+
+  if (!rotasMap.length) return;
+
+  const bounds = [];
+  const terminaisVistos = new Set();
+  const clientesVistos = {};
+
+  rotasMap.forEach((rota, ri) => {
+    const cor = `hsl(${(ri * 47) % 360},70%,55%)`;
+
+    // Terminal
+    if (rota.termLat && rota.termLon) {
+      const tKey = `${rota.termLat.toFixed(4)},${rota.termLon.toFixed(4)}`;
+      if (!terminaisVistos.has(tKey)) {
+        terminaisVistos.add(tKey);
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="width:14px;height:14px;background:#00A499;border:2px solid #fff;border-radius:50%;box-shadow:0 0 6px #00A499;"></div>`,
+          iconSize: [14,14], iconAnchor: [7,7]
+        });
+        const m = L.marker([rota.termLat, rota.termLon], { icon })
+          .bindPopup(`<b>Terminal</b><br><small>${rota.placa}</small>`);
+        m.addTo(_dashMap);
+        _dashMapLayers.push(m);
+        bounds.push([rota.termLat, rota.termLon]);
+      }
+    }
+
+    // Paradas e linhas
+    let prev = rota.termLat ? [rota.termLat, rota.termLon] : null;
+    rota.paradas.forEach(par => {
+      if (!par.lat || !par.lon) return;
+      bounds.push([par.lat, par.lon]);
+
+      // Linha do terminal até o cliente
+      if (prev) {
+        const line = L.polyline([prev, [par.lat, par.lon]], {
+          color: cor, weight: 1.5, opacity: 0.45, dashArray: '4 4'
+        }).addTo(_dashMap);
+        _dashMapLayers.push(line);
+      }
+      prev = [par.lat, par.lon];
+
+      // Marcador cliente (agrupa múltiplas visitas)
+      const cKey = `${par.lat.toFixed(4)},${par.lon.toFixed(4)}`;
+      if (!clientesVistos[cKey]) {
+        clientesVistos[cKey] = { lat: par.lat, lon: par.lon, nome: par.nome, visitas: 0, vol: 0 };
+      }
+      clientesVistos[cKey].visitas++;
+      clientesVistos[cKey].vol += par.vol || 0;
+    });
+  });
+
+  // Renderizar marcadores de clientes
+  Object.values(clientesVistos).forEach(c => {
+    const r = Math.min(12, 6 + c.visitas * 1.5);
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="width:${r*2}px;height:${r*2}px;background:#4F46E5;border:1.5px solid rgba(255,255,255,0.6);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:700;">${c.visitas>1?c.visitas:''}</div>`,
+      iconSize: [r*2, r*2], iconAnchor: [r, r]
+    });
+    const m = L.marker([c.lat, c.lon], { icon })
+      .bindPopup(`<b>${c.nome}</b><br>${c.visitas} visita(s)<br>${c.vol.toFixed(1)} m³`);
+    m.addTo(_dashMap);
+    _dashMapLayers.push(m);
+  });
+
+  // Ajustar zoom
+  if (bounds.length) {
+    try { _dashMap.fitBounds(bounds, { padding: [30, 30], maxZoom: 12 }); } catch(e) {}
+  }
+
+  // Forçar resize após render
+  setTimeout(() => _dashMap && _dashMap.invalidateSize(), 200);
+}
+
+// ── Carregar por mês selecionado ───────────────────────────────────────────
+window.dashCarregarMes = function(chave) {
+  if (!chave) return;
+  const store = dashGetStore();
+  dashRender(store[chave] || []);
+};
+
+// ── Carregar todos os períodos ─────────────────────────────────────────────
+window.dashCarregarTodos = function() {
+  const store = dashGetStore();
+  const todos = Object.values(store).flat();
+  dashRender(todos);
+};
+
+// ── Hook: popular meses quando abre a aba ─────────────────────────────────
+const _origShowTab = window.showTab;
+window.showTab = function(tab) {
+  if (_origShowTab) _origShowTab(tab);
+  if (tab === 'dashboard_rot') {
+    dashPopularMeses();
+    // Invalidar mapa se já existir
+    setTimeout(() => { if (_dashMap) _dashMap.invalidateSize(); }, 300);
+  }
+};
+
+// Popular na inicialização
+dashPopularMeses();
+
+})(); // fim IIFE dashboard
+
 
 async function osrmFetchSegmento(a, b) {
   // Tenta perfil truck primeiro, cai para driving se falhar
