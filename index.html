@@ -6482,18 +6482,22 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
             <span><span style="display:inline-block;width:10px;height:10px;background:#4F46E5;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Cliente</span>
           </div>
         </div>
-        <div id="dash-mapa" style="height:420px;border-radius:8px;background:#1a2e14;"></div>
+        <div id="dash-mapa" style="height:420px;border-radius:8px;background:#E5E7EB;"></div>
       </div>
-      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
         <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Tabela Detalhada por Cliente</div>
         <div class="tscroll">
-          <table class="table" style="min-width:700px;">
-            <thead><tr>
-              <th>CLIENTE</th><th>CIDADE</th><th>ENTREGAS</th>
-              <th>VOLUME (m3)</th><th>KM MEDIO</th><th>VOL/KM</th>
+          <table style="min-width:700px;width:100%;border-collapse:collapse;background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;">
+            <thead><tr style="background:#F9FAFB;">
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:left;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">CLIENTE</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:left;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">CIDADE</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:center;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">ENTREGAS</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:center;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">VOLUME (m³)</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:center;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">KM MÉDIO</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:center;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">VOL/KM</th>
             </tr></thead>
             <tbody id="dash-tabela-cli-body">
-              <tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:32px;">Selecione um mes ou clique em Todos os periodos</td></tr>
+              <tr><td colspan="6" style="color:#9CA3AF;text-align:center;padding:32px;font-size:13px;">Selecione um mes ou clique em Todos os periodos</td></tr>
             </tbody>
           </table>
         </div>
@@ -10931,7 +10935,7 @@ function utilEstilo(pct) {
 }
 
 // ── Exportação Herrlog ────────────────────────────────────────────────────────
-function exportarHrrlog() {
+async function exportarHrrlog() {
   if (!ultimoResultado || !veiculos.length) { alert('Execute a otimização primeiro.'); return; }
   if (typeof XLSX === 'undefined') { alert('SheetJS não carregado.'); return; }
 
@@ -11062,6 +11066,14 @@ function exportarHrrlog() {
   const hoje = new Date();
   const fname = `Herrlog_${String(hoje.getDate()).padStart(2,'0')}${String(hoje.getMonth()+1).padStart(2,'0')}${hoje.getFullYear()}_${String(hoje.getHours()).padStart(2,'0')}${String(hoje.getMinutes()).padStart(2,'0')}.xlsx`;
   XLSX.writeFile(wb, fname);
+
+  // Salva automaticamente no histórico do dashboard após exportar
+  try {
+    await salvarNoHistorico(true);
+    showToast('Herrlog exportado e salvo no histórico ✅', true);
+  } catch(e) {
+    showToast('Herrlog exportado. Falha ao salvar histórico: ' + e.message, false);
+  }
 }
 
 
@@ -12837,14 +12849,15 @@ async function selecionarPastaHistorico() {
   }
 }
 
-async function salvarNoHistorico() {
-  if (!ultimoResultado) { alert('Execute a otimização antes de salvar.'); return; }
+async function salvarNoHistorico(silencioso = false) {
+  if (!ultimoResultado) { if (!silencioso) alert('Execute a otimização antes de salvar.'); return; }
   if (!dirHandleHistorico) {
+    if (silencioso) return; // não abre diálogo no modo automático
     showTab('historico');
     await selecionarPastaHistorico();
     if (!dirHandleHistorico) return;
   }
-  if (!await _histGarantirPermissao()) { alert('Permissão de escrita negada.'); return; }
+  if (!await _histGarantirPermissao()) { if (!silencioso) alert('Permissão de escrita negada.'); return; }
 
   let totalViagens = 0, totalVolume = 0, totalPedidos = 0, totalRotas = 0;
   const terminaisUsados = new Set();
@@ -12894,10 +12907,11 @@ async function salvarNoHistorico() {
     await ws.write(JSON.stringify(snapshot, null, 2));
     await ws.close();
     _atualizarPetSeq(ultimoResultado); // persiste contador apenas ao salvar
-    alert(`Roteirização salva: ${filename}`);
+    if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
   } catch(e) {
-    alert('Erro ao salvar: ' + e.message);
+    if (!silencioso) alert('Erro ao salvar: ' + e.message);
+    else throw e; // propaga erro para o chamador tratar
   }
 }
 
@@ -13450,15 +13464,16 @@ function dashRender(snapshots) {
   // Tabela
   const tbody = document.getElementById('dash-tabela-cli-body');
   if (tbody) {
-    tbody.innerHTML = d.clientes.map(c => {
+    tbody.innerHTML = d.clientes.map((c, i) => {
       const kmVol = c.km > 0 ? (c.volume / c.km).toFixed(2) : '-';
-      return `<tr>
-        <td style="font-weight:500">${c.nome}</td>
-        <td style="font-size:12px;color:var(--text-3)">${c.cidade}</td>
-        <td style="text-align:center">${c.entregas}</td>
-        <td style="text-align:center">${c.volume.toFixed(1)}</td>
-        <td style="text-align:center">${c.km > 0 ? c.km.toFixed(0)+' km' : '-'}</td>
-        <td style="text-align:center">${kmVol !== '-' ? kmVol+' m³/km' : '-'}</td>
+      const bg = i % 2 === 0 ? '#FFFFFF' : '#F9FAFB';
+      return `<tr style="background:${bg};border-bottom:1px solid #E5E7EB;">
+        <td style="padding:10px 14px;font-size:13px;font-weight:500;color:#111827;">${c.nome}</td>
+        <td style="padding:10px 14px;font-size:12px;color:#6B7280;">${c.cidade}</td>
+        <td style="padding:10px 14px;font-size:13px;color:#111827;text-align:center;">${c.entregas}</td>
+        <td style="padding:10px 14px;font-size:13px;color:#111827;text-align:center;">${c.volume.toFixed(1)}</td>
+        <td style="padding:10px 14px;font-size:13px;color:#111827;text-align:center;">${c.km > 0 ? c.km.toFixed(0)+' km' : '-'}</td>
+        <td style="padding:10px 14px;font-size:13px;color:#111827;text-align:center;">${kmVol !== '-' ? kmVol+' m³/km' : '-'}</td>
       </tr>`;
     }).join('');
   }
@@ -13599,8 +13614,9 @@ function dashRenderMapa(rotasMap) {
   // Inicializar mapa uma só vez
   if (!_dashMap) {
     _dashMap = L.map('dash-mapa', { zoomControl: true, attributionControl: false });
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      maxZoom: 18
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap &copy; CARTO'
     }).addTo(_dashMap);
   }
 
