@@ -9,6 +9,50 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script type="module">
+// ═══════════════════════════════════════════════════════════════════════════
+// NEXTA — APP PRINCIPAL (Gestão de Frota)
+// ═══════════════════════════════════════════════════════════════════════════
+// Módulo ES6 (type="module"): escopo isolado do <script> não-module abaixo
+// (Roteirizador). Funções que precisam ser chamadas via onclick="" inline no
+// HTML, ou usadas pelo script do Roteirizador, são expostas manualmente em
+// `window.*` — ver bloco "EXPOSIÇÃO GLOBAL (contrato com onclick / Roteirizador)"
+// próximo ao final deste script.
+//
+// ÍNDICE
+//   FIREBASE ............................. config + inicialização do SDK
+//   CACHE EM MEMÓRIA ...................... cache de leituras (TTL 60s)
+//   DB HELPERS ............................ funções de leitura/escrita no Firestore
+//   DATA & CONFIG .......................... USERS_DB / CARRIERS (carregados do Firebase)
+//   STATE .................................. estado S{} da UI (aba ativa, usuário, etc)
+//   HELPERS ................................ utilitários gerais (datas, escape html, etc)
+//   STATUS BOARD ALERT ..................... painel de disponibilidade (variante operacional)
+//   RENDER ROOT ............................ roteamento de tela (login/carrier/admin)
+//   LOGIN ................................... tela de login (Firebase Auth)
+//   NOTIFICATIONS ........................... painel de notificações
+//   CARRIER VIEW ............................ visão do transportador
+//   ADMIN SHELL .............................. shell de abas do painel admin/operacional
+//   DASHBOARD ................................ aba "Daily Briefing"
+//   KPIS MENSAIS .............................. aba "KPIs Mensais"
+//   TODAY ..................................... aba "Painel de Disponibilidade"
+//   HISTORY .................................... aba "Histórico"
+//   EXPORT ...................................... aba "Exportar" (Excel)
+//   EXPORT PDF ................................... relatório executivo em PDF
+//   REGISTER ...................................... aba "Cadastros"
+//   MONTHLY ARCHIVES .............................. aba "Arquivos Mensais"
+//   ADMIN UNLOCK ................................... destravar dia/placa travados
+//   USERS MANAGEMENT ................................ aba "Usuários" (CRUD usuários/transportadores)
+//   REGISTER SUB-TAB CONTROLLER ..................... sub-abas dentro de Cadastros
+//   DRIVERS MANAGEMENT ............................... CRUD de motoristas
+//   OPERACOES MANAGEMENT (admin only) ................ CRUD de operações/linhas de negócio
+//   TOGGLE PLATE ACTIVE/INACTIVE ...................... ativar/inativar placa
+//   EDIT PLATE MODAL .................................. modal de edição de placa
+//   ALTERAR SENHA (usuário logado) .................... troca de senha própria
+//   RESET DE SENHA PELO ADMIN ......................... reset de senha de outro usuário
+//   IMPORTAR DADOS CADASTRAIS ......................... import em massa via Excel
+//   EXPOSIÇÃO GLOBAL (contrato com onclick / Roteirizador) — window.* assignments
+//   BOOT ............................................... onAuthStateChanged → render()
+// ═══════════════════════════════════════════════════════════════════════════
+
 // ═══════════════════════════════════════════════════════════
 // FIREBASE
 // ═══════════════════════════════════════════════════════════
@@ -4485,6 +4529,16 @@ async function saveResetPwd(uid){
     if(btn){ btn.disabled=false; btn.textContent='Gerar senha temporária'; }
   }
 }
+// ═══════════════════════════════════════════════════════════
+// EXPOSIÇÃO GLOBAL (contrato com onclick / Roteirizador)
+// ═══════════════════════════════════════════════════════════
+// Este script roda como <script type="module">, então suas funções NÃO vão
+// automaticamente para `window` (diferente de scripts comuns). Como o HTML
+// usa atributos onclick="funcao()" inline, e o script do Roteirizador
+// (não-module, mais abaixo no documento) também precisa chamar algumas
+// dessas funções, cada função usada fora deste módulo precisa ser exposta
+// explicitamente aqui. As atribuições continuam ao longo do restante do
+// script, próximas de onde cada função é definida.
 window.openResetPwd=openResetPwd; window.saveResetPwd=saveResetPwd;
 window.openChangePwd=openChangePwd; window.saveChangePwd=saveChangePwd;
 window.doLogin=doLogin; window.logout=logout;
@@ -4698,6 +4752,10 @@ function _mostrarResumoImportacao({ terminais, clientes, veiculos, erros, arquiv
   modal.addEventListener('click', e => { if(e.target===modal) modal.remove(); });
 }
 
+// Bloco consolidado: demais funções usadas via onclick="" no HTML (cadastros,
+// notificações, exportações, usuários/transportadores, motoristas, etc) e
+// `window.S` — o objeto de estado da UI, também consultado pelo Roteirizador
+// para saber qual usuário está logado (ver dashSalvarAtual / exportarRelatorioRoteirizacao).
 window.importarDadosCadastrais = importarDadosCadastrais;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
@@ -5183,7 +5241,7 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
 }
 
 /* Inner container */
-#roteirizador-shell > div:not(#login-overlay):not([id]) {
+#roteirizador-shell > div:not([id]) {
   background: var(--surface);
   color: var(--text);
   width: 100%;
@@ -5827,87 +5885,6 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
 }
 
 /* ══════════════════════════════
-   LOGIN OVERLAY
-══════════════════════════════ */
-#roteirizador-shell #login-overlay {
-  position: fixed; inset: 0; z-index: 9999;
-  background: #111827;
-  display: flex; align-items: center; justify-content: center; padding: 20px;
-}
-#roteirizador-shell #login-overlay::before { display: none; }
-#roteirizador-shell .login-card {
-  background: var(--surface); border-radius: var(--radius-lg); position: relative; z-index: 1;
-  box-shadow: var(--shadow-lg);
-  border: 0.5px solid var(--border);
-  padding: 36px 40px; width: 100%; max-width: 420px;
-}
-#roteirizador-shell .login-logo { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
-#roteirizador-shell .login-logo-icon {
-  width: 40px; height: 40px; border-radius: var(--radius); background: var(--text);
-  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-}
-#roteirizador-shell .login-brand { font-family: var(--font); font-weight: 600; font-size: 14px; color: var(--text); letter-spacing: 0; }
-#roteirizador-shell .login-sub-brand { font-size: 11px; color: var(--text-3); letter-spacing: 0; text-transform: none; }
-#roteirizador-shell .login-title { font-family: var(--font); font-size: 20px; font-weight: 600; color: var(--text); margin-bottom: 5px; }
-#roteirizador-shell .login-desc { font-size: 13px; color: var(--text-3); margin-bottom: 24px; }
-#roteirizador-shell .login-field { margin-bottom: 14px; }
-#roteirizador-shell .login-field label { display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
-#roteirizador-shell .login-field input {
-  width: 100%; padding: 9px 12px; border: 0.5px solid var(--border);
-  border-radius: var(--radius); font-family: var(--font); font-size: 14px;
-  background: var(--surface); color: var(--text); outline: none; transition: border-color 0.15s;
-}
-#roteirizador-shell .login-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
-#roteirizador-shell .login-btn {
-  width: 100%; padding: 11px; border: none; cursor: pointer; margin-top: 6px;
-  background: var(--accent); color: #fff; border-radius: var(--radius);
-  font-family: var(--font); font-size: 14px; font-weight: 500; letter-spacing: 0;
-  text-transform: none; transition: background 0.15s; box-shadow: none;
-}
-#roteirizador-shell .login-btn:hover { background: var(--accent-dk); transform: none; box-shadow: none; }
-#roteirizador-shell .login-btn:active { transform: none; }
-#roteirizador-shell .login-error {
-  background: var(--red-bg); border: 0.5px solid var(--red-border); border-radius: var(--radius);
-  color: var(--red-text); font-size: 12.5px; padding: 9px 12px; margin-top: 12px; display: none;
-}
-#roteirizador-shell .login-error.visible { display: block; }
-#roteirizador-shell .login-divider { border: none; border-top: 0.5px solid var(--border); margin: 20px 0 0; }
-#roteirizador-shell .login-admin-toggle { margin-top: 12px; font-size: 11.5px; color: var(--text-4); text-align: center; cursor: pointer; user-select: none; transition: color 0.15s; }
-#roteirizador-shell .login-admin-toggle:hover { color: var(--accent); }
-#roteirizador-shell .login-admin-section { display: none; margin-top: 14px; }
-#roteirizador-shell .login-admin-section.open { display: block; }
-#roteirizador-shell .login-admin-subtitle { font-family: var(--font); font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
-#roteirizador-shell .login-admin-desc { font-size: 11.5px; color: var(--text-2); margin-bottom: 10px; line-height: 1.55; }
-#roteirizador-shell .login-admin-desc code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-size: 11px; color: var(--accent-text); border: 0.5px solid var(--border); }
-#roteirizador-shell .login-admin-info { font-size: 11px; color: var(--text-3); margin-top: 8px; min-height: 16px; }
-#roteirizador-shell .login-admin-separator { border: none; border-top: 0.5px dashed var(--border); margin: 14px 0; }
-#roteirizador-shell .login-gen-row { display: flex; gap: 6px; margin-bottom: 6px; }
-#roteirizador-shell .login-gen-row input {
-  flex: 1; padding: 8px 10px; border: 0.5px solid var(--border); border-radius: var(--radius);
-  font-size: 12px; font-family: var(--font); background: var(--surface); color: var(--text); outline: none; transition: border-color 0.15s;
-}
-#roteirizador-shell .login-gen-row input:focus { border-color: var(--accent); }
-#roteirizador-shell .login-gen-btn {
-  padding: 8px 12px; border: none; border-radius: var(--radius); font-size: 11.5px;
-  font-family: var(--font); font-weight: 500; letter-spacing: 0; cursor: pointer;
-  background: var(--blue-bg); color: var(--blue-text); transition: all 0.15s; flex-shrink: 0;
-}
-#roteirizador-shell .login-gen-btn:hover { background: var(--blue); color: #fff; }
-#roteirizador-shell .login-gen-output {
-  background: #1F2937; color: #A5F3FC; font-size: 11px; font-family: var(--font-mono);
-  padding: 10px 12px; border-radius: var(--radius); word-break: break-all;
-  margin-top: 8px; display: none; border: 0.5px solid #374151; position: relative;
-}
-#roteirizador-shell .login-gen-output.visible { display: block; }
-#roteirizador-shell .login-gen-copy {
-  position: absolute; top: 6px; right: 6px; padding: 3px 8px;
-  background: rgba(79,70,229,0.2); color: #A5F3FC; border: 0.5px solid rgba(79,70,229,0.4);
-  border-radius: 4px; font-size: 10px; cursor: pointer; font-family: var(--font);
-  font-weight: 500; letter-spacing: 0; transition: all 0.15s;
-}
-#roteirizador-shell .login-gen-copy:hover { background: var(--accent); color: #fff; }
-
-/* ══════════════════════════════
    HISTÓRICO
 ══════════════════════════════ */
 #roteirizador-shell .hist-folder-bar {
@@ -5930,11 +5907,6 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
 #roteirizador-shell .hist-entry-meta { font-size: 11.5px; color: var(--text-2); margin-bottom: 4px; }
 #roteirizador-shell .hist-entry-chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
 #roteirizador-shell .hist-entry-actions { display: flex; gap: 5px; flex-shrink: 0; align-items: flex-start; }
-
-/* ══════════════════════════════
-   HEADER USER (oculto no contexto integrado)
-══════════════════════════════ */
-#roteirizador-shell .header-user { display: none !important; }
 
 /* ══════════════════════════════
    OVERRIDES de integração
@@ -6009,12 +5981,6 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
       </div>
     </div>
     <div class="header-actions">
-      <div class="header-user" id="header-user" style="display:none">
-        <div class="header-user-avatar" id="header-user-avatar">?</div>
-        <span class="header-user-name" id="header-user-name">Usuário</span>
-        <button id="btn-admin" class="header-logout" onclick="abrirAdminModal()" title="Gerenciar usuários" style="font-size:13px;display:none;">⚙</button>
-        <button class="header-logout" onclick="fazerLogout()" title="Sair">✕</button>
-      </div>
       <input type="file" id="input-import-cadastral" accept=".xlsx,.xls" style="display:none" onchange="importarDadosCadastrais(this)"/>
       <button class="btn btn-sm" onclick="document.getElementById('input-import-cadastral').click()" title="Importa terminais, clientes e veículos de uma planilha .xlsx" style="background:rgba(100,220,120,0.12);color:#7CDB8A;border:1px solid rgba(100,220,120,0.30);white-space:nowrap;font-size:11px;letter-spacing:0.02em;padding:5px 12px;border-radius:7px;">⬆ Importar</button>
       <!-- Seletor de data de operação — compacto -->
@@ -6586,17 +6552,21 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
   </div>
 
   <div id="modal-viagem" class="modal-backdrop" onclick="fecharModalViagem(event)">
-    <div class="modal-card">
+    <div class="modal-card" style="max-width:860px;width:98vw;">
       <div class="modal-head">
         <div id="mv-titulo" style="font-family:var(--font-cond);font-size:18px;font-weight:700;letter-spacing:0.04em;">Mapa da viagem</div>
-        <div style="display:flex;gap:6px;">
-          <button class="btn btn-sm" onclick="abrirNavegacaoExterna()">Abrir no mapa</button>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <span id="mv-dist-total" style="font-size:12px;font-weight:600;color:var(--accent);display:none;background:var(--accent-bg);border:0.5px solid var(--accent-border);padding:3px 10px;border-radius:20px;">📏 — km</span>
+          <button class="btn btn-sm" onclick="mvResetarRota()" title="Restaurar rota original">↺ Resetar rota</button>
+          <button class="btn btn-sm" onclick="mvExportarMapa()" title="Exportar mapa como imagem">🖼 Exportar mapa</button>
+          <button class="btn btn-sm" onclick="abrirNavegacaoExterna()">Abrir no Google Maps</button>
           <button class="btn btn-sm btn-danger" onclick="fecharModalViagem()">Fechar</button>
         </div>
       </div>
       <div class="modal-body">
-        <div id="mv-resumo" class="alert alert-info" style="margin-bottom:10px;">-</div>
-        <div id="mv-mapa" class="mini-map"></div>
+        <div id="mv-resumo" class="alert alert-info" style="margin-bottom:8px;">-</div>
+        <div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">💡 Arraste os pontos 🔵 no mapa para ajustar o trajeto. A distância total é recalculada automaticamente.</div>
+        <div id="mv-mapa" class="mini-map" style="height:420px;"></div>
         <div id="mv-lista" style="margin-top:10px;"></div>
       </div>
     </div>
@@ -6616,18 +6586,62 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
     </div>
   </div>
 <script>
-// ─── Autenticação ─────────────────────────────────────────────────────────────
-// Adicione usuários abaixo ou use a seção Admin na tela de login para gerar linhas.
-// Para gerar um senhaHash no console do browser:
-//   sha256("suasenha").then(h => console.log(h))
-const USUARIOS_CONFIG = [
-  { login: 'matheus', senhaHash: 'e17f4767a0e2d2d46ec691de2e7a02cf55c6d5c40981367e9b27f9bba88f5b19', nome: 'Matheus Piva Sanches', admin: true },
-  { login: 'natanael', senhaHash: '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4', nome: 'Natanael Pires' },
-  { login: 'julio', senhaHash: '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4', nome: 'Julio Souza' },
-  { login: 'raphaela', senhaHash: '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4', nome: 'Raphaela Andre' },
-];
+// ═══════════════════════════════════════════════════════════════════════════
+// NEXTA — ROTEIRIZADOR (motor de roteirização outbound)
+// ═══════════════════════════════════════════════════════════════════════════
+// Script comum (NÃO é type="module"): suas funções e variáveis de nível
+// superior já ficam automaticamente em `window`, por isso não precisa de
+// exposição manual como o script do app principal (acima, no <head>).
+// Esse comportamento é o que permite que o HTML deste shell (#roteirizador-
+// shell, gerado estaticamente no <body>) chame essas funções via onclick="".
+//
+// PONTO DE ENTRADA REAL: window.initRoteirizadorIntegrado() — chamado pelo
+// app principal (renderRoteirizador() / setTab('roteirizador')) sempre que a
+// aba "Roteirizador" é aberta. Não há login próprio aqui: o acesso já é
+// controlado pelo login do NEXTA (apenas perfis admin/operacional).
+//
+// Depende de 3 funções do app principal, expostas via window.* por ele:
+//   window.showToast, window.dateStr, window.sincronizarDisponibilidadeVeiculos
+//
+// ÍNDICE
+//   Modal data de carregamento ............. abre/confirma data de carregamento antes de otimizar
+//   Upload overlay pós-login ................ tela de upload (hoje sem uso ativo, ver Init)
+//   Cadastral ................................ leitura de terminais/clientes/veículos (Excel/JSON)
+//   Pedidos ................................... leitura/persistência de pedidos
+//   Estado global ............................. pedidos, veiculos, terminaisCad, clientes, etc
+//   Contador de IDs de viagem ................. gera ID único por viagem (petId)
+//   DADOS PRÉ-CADASTRADOS ...................... import de dados.xlsx ou fallback JSON
+//   Utilitários ................................ helpers gerais (datas, horas, formatação)
+//   Filtro multi-terminal do Resumo Operação .... filtros do dashboard operacional
+//   Centroides de cidades ........................ fallback de lat/lon por cidade
+//   Best-insertion helpers ........................ heurística de inserção de parada
+//   Combobox pesquisável .......................... componente de busca reutilizável
+//   TERMINAIS ...................................... CRUD de terminais
+//   CLIENTES ........................................ CRUD de clientes
+//   PEDIDOS .......................................... CRUD de pedidos
+//   Quebrar Pedido ................................... divide pedido em múltiplas entregas
+//   Pedidos Liberados (Excel) ........................ importação de pedidos liberados
+//   Upload de pedidos pelo usuário .................... upload manual de pedidos
+//   CSV ................................................ exportação/leitura CSV
+//   VEÍCULOS ............................................ CRUD de veículos/turnos
+//   OTIMIZAÇÃO ........................................... motor de roteirização (função otimizar())
+//   Exportação Herrlog .................................. exportação no formato Herrlog
+//   Ajuste manual (drag-and-drop) ........................ mover viagens entre placas manualmente
+//   Drag de parada (entrega individual) .................. mover parada individual
+//   Troca de placa (veículo) .............................. substituir veículo de uma viagem
+//   Mapa completo do veículo .............................. visualização de rota no mapa (Leaflet)
+//   SHAREPOINT ............................................. integração de upload/leitura via SharePoint
+//   HISTÓRICO DE ROTEIRIZAÇÕES ............................. File System Access API (salvar/ler local)
+//   Init .................................................... window.initRoteirizadorIntegrado (ponto de entrada)
+//   RELATÓRIO EXCEL — Roteirização Completa ................ exportarRelatorioRoteirizacao()
+// ═══════════════════════════════════════════════════════════════════════════
 
-let _usuariosAtivos = [...USUARIOS_CONFIG];
+// ─── Autenticação ─────────────────────────────────────────────────────────────
+// O Roteirizador não possui login próprio: o acesso a esta aba já é controlado
+// pelo login único do NEXTA (Firebase Auth) — apenas perfis "admin" e
+// "operacional" conseguem abrir a aba "Roteirizador" (ver setTab() no app
+// principal). Um sistema de login paralelo existia aqui anteriormente
+// (hash local sem salt) mas foi removido por ser redundante e inseguro.
 
 // ── Modal data de carregamento ────────────────────────────────────────────────
 let _modoOtimizarPendente = null;
@@ -6658,58 +6672,6 @@ function confirmarOtimizar() {
   if (!val) { alert('Informe a data de carregamento.'); return; }
   fecharModalDataCarga();
   otimizar(_modoOtimizarPendente || 'padrao', new Date(val + 'T00:00:00'));
-}
-
-async function sha256(str) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
-}
-
-async function fazerLogin() {
-  const login  = document.getElementById('login-usuario').value.trim().toLowerCase();
-  const senha  = document.getElementById('login-senha').value;
-  const erroEl = document.getElementById('login-erro');
-  erroEl.classList.remove('visible');
-
-  if (!login || !senha) {
-    erroEl.textContent = 'Preencha o login e a senha.';
-    erroEl.classList.add('visible');
-    return;
-  }
-
-  const hash    = await sha256(senha);
-  const usuario = _usuariosAtivos.find(u => u.login.toLowerCase() === login && u.senhaHash === hash);
-
-  if (!usuario) {
-    erroEl.textContent = 'Usuário ou senha incorretos.';
-    erroEl.classList.add('visible');
-    document.getElementById('login-senha').value = '';
-    document.getElementById('login-senha').focus();
-    return;
-  }
-
-  sessionStorage.setItem('auth_usuario', JSON.stringify({ login: usuario.login, nome: usuario.nome || usuario.login, admin: !!usuario.admin }));
-  _aplicarSessao({ login: usuario.login, nome: usuario.nome || usuario.login, admin: !!usuario.admin });
-}
-
-function _aplicarSessao(u) {
-  document.getElementById('login-overlay').style.display = 'none';
-  abrirUploadOverlay();
-  const nome    = u.nome || u.login;
-  const iniciais = nome.split(' ').filter(Boolean).map(p => p[0]).slice(0, 2).join('').toUpperCase();
-  document.getElementById('header-user').style.display = '';
-  document.getElementById('header-user-avatar').textContent = iniciais;
-  document.getElementById('header-user-name').textContent  = nome;
-  document.getElementById('btn-admin').style.display = u.admin ? '' : 'none';
-}
-
-function fazerLogout() {
-  sessionStorage.removeItem('auth_usuario');
-  document.getElementById('login-overlay').style.display = 'flex';
-  document.getElementById('header-user').style.display   = 'none';
-  document.getElementById('login-usuario').value = '';
-  document.getElementById('login-senha').value   = '';
-  document.getElementById('login-erro').classList.remove('visible');
 }
 
 // ─── Upload overlay pós-login ─────────────────────────────────────────────────
@@ -6857,133 +6819,6 @@ async function uploadPedDrop(e) {
   const file = e.dataTransfer?.files?.[0];
   if (file) await uploadPedidosOverlay({ files: [file] });
 }
-
-function abrirAdminModal() {
-  document.getElementById('admin-modal').style.display = 'flex';
-  document.getElementById('admin-add-info').textContent    = '';
-  document.getElementById('login-import-info').textContent = '';
-  document.getElementById('admin-new-login').value = '';
-  document.getElementById('admin-new-senha').value = '';
-  document.getElementById('admin-new-nome').value  = '';
-  adminRenderizarLista();
-}
-
-function fecharAdminModal() {
-  document.getElementById('admin-modal').style.display = 'none';
-}
-
-function adminRenderizarLista() {
-  const el = document.getElementById('admin-users-list');
-  if (!_usuariosAtivos.length) {
-    el.innerHTML = '<div style="font-size:12px;color:var(--text-3);padding:6px 0;">Nenhum usuário cadastrado.</div>';
-    return;
-  }
-  el.innerHTML = _usuariosAtivos.map(u => `
-    <div style="display:flex;align-items:center;justify-content:space-between;
-                padding:7px 10px;background:var(--bg);border-radius:6px;margin-bottom:5px;
-                border:1px solid var(--border);">
-      <div>
-        <span style="font-size:13px;font-weight:600;color:var(--text);">${u.nome || u.login}</span>
-        <span style="font-size:11px;color:var(--text-3);margin-left:8px;">${u.login}</span>
-      </div>
-      <button onclick="adminRemoverUsuario('${u.login}')"
-              style="background:none;border:1px solid #FCA5A5;color:#B91C1C;border-radius:4px;
-                     font-size:11px;padding:2px 8px;cursor:pointer;">Remover</button>
-    </div>`).join('');
-}
-
-async function adminAdicionarUsuario() {
-  const login  = document.getElementById('admin-new-login').value.trim().toLowerCase();
-  const senha  = document.getElementById('admin-new-senha').value;
-  const nome   = document.getElementById('admin-new-nome').value.trim();
-  const infoEl = document.getElementById('admin-add-info');
-
-  if (!login || !senha) {
-    infoEl.style.color = '#B91C1C';
-    infoEl.textContent = '⚠ Preencha o login e a senha.'; return;
-  }
-  if (_usuariosAtivos.find(u => u.login === login)) {
-    infoEl.style.color = '#B91C1C';
-    infoEl.textContent = `⚠ Login "${login}" já existe.`; return;
-  }
-
-  _usuariosAtivos = [..._usuariosAtivos, { login, senhaHash: await sha256(senha), nome: nome || login }];
-  document.getElementById('admin-new-login').value = '';
-  document.getElementById('admin-new-senha').value = '';
-  document.getElementById('admin-new-nome').value  = '';
-  infoEl.style.color = 'var(--pet-green-dk)';
-  infoEl.textContent = `✓ Usuário "${login}" adicionado.`;
-  adminRenderizarLista();
-}
-
-function exportarConfiguracaoUsuarios() {
-  const linhas = _usuariosAtivos.map(u =>
-    `  { login: '${u.login}', senhaHash: '${u.senhaHash}', nome: '${u.nome || u.login}'${u.admin ? ', admin: true' : ''} },`
-  ).join('\n');
-  const bloco = `const USUARIOS_CONFIG = [\n${linhas}\n];`;
-  document.getElementById('export-output-text').textContent = bloco;
-  document.getElementById('export-output').classList.add('visible');
-}
-
-function copiarExportacao() {
-  const txt = document.getElementById('export-output-text').textContent;
-  navigator.clipboard.writeText(txt).then(() => {
-    const btn = document.getElementById('export-output').querySelector('.login-gen-copy');
-    btn.textContent = 'Copiado!';
-    setTimeout(() => { btn.textContent = 'Copiar'; }, 1800);
-  });
-}
-
-function adminRemoverUsuario(login) {
-  if (!confirm(`Remover o usuário "${login}"?`)) return;
-  _usuariosAtivos = _usuariosAtivos.filter(u => u.login !== login);
-  adminRenderizarLista();
-}
-
-async function importarUsuariosExcel(input) {
-  const file   = input.files[0];
-  if (!file) return;
-  const infoEl = document.getElementById('login-import-info');
-  infoEl.textContent = 'Processando…';
-
-  try {
-    const data = await file.arrayBuffer();
-    const wb   = XLSX.read(data);
-    const ws   = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-
-    const colVal = (row, ...nomes) => {
-      const k = Object.keys(row).find(k => nomes.includes(k.toLowerCase().trim()));
-      return k ? String(row[k]).trim() : '';
-    };
-
-    const novos = [];
-    for (const row of rows) {
-      const login = colVal(row, 'login', 'email', 'e-mail', 'usuário', 'usuario');
-      const senha = colVal(row, 'senha', 'password', 'pass');
-      const nome  = colVal(row, 'nome', 'name', 'nome completo');
-      if (!login || !senha) continue;
-      novos.push({ login: login.toLowerCase(), senhaHash: await sha256(senha), nome: nome || login });
-    }
-
-    if (!novos.length) {
-      infoEl.style.color = '#B91C1C';
-      infoEl.textContent = '⚠ Nenhum usuário encontrado. Verifique as colunas (Login, Senha, Nome).';
-      return;
-    }
-
-    _usuariosAtivos = novos;
-    infoEl.style.color = 'var(--pet-green-dk)';
-    infoEl.textContent = `✓ ${novos.length} usuário(s) importados e salvos.`;
-    input.value = '';
-    adminRenderizarLista();
-  } catch (e) {
-    infoEl.style.color = '#B91C1C';
-    infoEl.textContent = `✕ Erro ao ler o Excel: ${e.message}`;
-  }
-}
-
-// Sessao do Roteirizador desativada: autenticacao herdada do Nexta-Frota integrado.
 
 // ─── Estado global ────────────────────────────────────────────────────────────
 let pedidos = [], veiculos = [], terminaisCad = [], clientes = [];
@@ -7726,15 +7561,17 @@ function abrirModalViagem(veiculoId, idxViagem) {
   garantirMapaViagem();
   dadosMapaAtual = validos;
 
+  // Inicializa waypoints arrastáveis
+  _mvWaypoints = validos.map((p, i) => ({ ...p, idx: i, marker: null }));
+  _mvPolylines = [];
+
   const latlngs = validos.map(p => [p.lat, p.lon]);
-  // Busca rota de caminhão e distâncias acumuladas, depois desenha marcadores
-  // Desenha marcadores imediatamente (sem travar)
-  // Rota por estrada carrega em background e aparece quando pronta
+
+  // Desenha rota arrastável (sem bloquear UI)
+  mvDesenharRota().catch(() => {});
+
+  // Distâncias para popups (em background) — não desenha polylines aqui, mvDesenharRota faz isso
   const distAcum = [];
-  osrmRoute(validos, camadaViagem, '#00A499', 4, 0.88).then(d => {
-    // Atualiza popups com distâncias reais quando OSRM responder
-    if (d) d.forEach((km, i) => distAcum[i] = km);
-  }).catch(() => {});
 
   // Calcula horário absoluto de chegada para cada parada
   const jIni = parseHoraMin(v.jornadaInicio || '06:00');
@@ -7836,11 +7673,27 @@ function abrirModalViagem(veiculoId, idxViagem) {
         </div>`;
     }
 
-    const marker = L.marker([p.lat, p.lon], { icon }).addTo(camadaViagem);
+    // Marcador arrastável — atualiza waypoint e redesenha rota ao soltar
+    const icon_drag = L.divIcon({
+      className: '',
+      html: `<div style="width:28px;height:28px;border-radius:50%;background:${bgColor};color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);cursor:grab;font-family:Inter,sans-serif;">${seq}</div>`,
+      iconSize: [28,28], iconAnchor: [14,14]
+    });
+    const marker = L.marker([p.lat, p.lon], { icon: icon_drag, draggable: true }).addTo(camadaViagem);
     marker.bindPopup(popupHtml, { maxWidth: 300 });
+    marker.on('dragend', async (e) => {
+      const ll = e.target.getLatLng();
+      _mvWaypoints[idx].lat = ll.lat;
+      _mvWaypoints[idx].lon = ll.lng;
+      await mvDesenharRota();
+    });
+    marker.on('click', () => marker.openPopup());
+    if (_mvWaypoints[idx]) _mvWaypoints[idx].marker = marker;
   });
 
   mapaViagem.fitBounds(latlngs, { padding: [32, 32] });
+  // Mostra distância inicial
+  mvRecalcularDistancia();
 }
 
 function abrirNavegacaoExterna() {
@@ -8878,7 +8731,9 @@ function lerTiposSelecionados(containerId) {
   return [...document.querySelectorAll(`#${containerId} .tipo-btn.ativo`)].map(b => b.textContent);
 }
 
-// ─── TERMINAIS ────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// TERMINAIS
+// ═══════════════════════════════════════════════════════════════════════════
 
 function gerarHorarioGrid(diasAtivos, horarios) {
   const grid = document.getElementById('horario-grid');
@@ -9075,7 +8930,9 @@ function carregarExemplosTerminais() {
   atualizarDropdownsTerminais();
 }
 
-// ─── CLIENTES ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// CLIENTES
+// ═══════════════════════════════════════════════════════════════════════════
 
 function abrirFormCliente(id) {
   editandoClienteId = id;
@@ -9233,7 +9090,9 @@ function carregarExemplosClientes() {
   atualizarDropdownsClientes();
 }
 
-// ─── PEDIDOS ──────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// PEDIDOS
+// ═══════════════════════════════════════════════════════════════════════════
 
 function addProdutoForm(produto='', volume='', ordemSAP='') {
   numProdForm++;
@@ -9699,7 +9558,9 @@ function baixarModeloPedidos() {
   XLSX.writeFile(wb, 'modelo_pedidos_liberados.xlsx');
 }
 
-// ─── CSV ─────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// CSV
+// ═══════════════════════════════════════════════════════════════════════════
 
 function handleCSV(event) {
   const file = event.target.files[0]; if (!file) return;
@@ -9736,7 +9597,9 @@ function handleCSV(event) {
   reader.readAsText(file);
 }
 
-// ─── VEÍCULOS ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// VEÍCULOS
+// ═══════════════════════════════════════════════════════════════════════════
 
 function aplicarTurnoVeiculo() {
   const turno = document.getElementById('v-turno')?.value;
@@ -9983,7 +9846,9 @@ function carregarExemplos() {
   renderVeiculos();
 }
 
-// ─── OTIMIZAÇÃO ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// OTIMIZAÇÃO
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function otimizar(modo = 'padrao', dataCarregamento = null) {
   // ══════════════════════════════════════════════════════════════════════════
@@ -12629,7 +12494,9 @@ function renderResultado(resultado, controleTempo={}) {
   document.getElementById('resultado-content').innerHTML = htmlAlertas + html;
 }
 
-// ─── SHAREPOINT ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// SHAREPOINT
+// ═══════════════════════════════════════════════════════════════════════════
 
 function spToggleConfig() {
   const panel = document.getElementById('sp-config-panel');
@@ -12844,7 +12711,9 @@ async function spSalvar(entidade, itens, mapFn) {
   }
 }
 
-// ─── HISTÓRICO DE ROTEIRIZAÇÕES (File System Access API) ──────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// HISTÓRICO DE ROTEIRIZAÇÕES (File System Access API)
+// ═══════════════════════════════════════════════════════════════════════════
 
 const HIST_IDB_NAME  = 'nexta-historico';
 const HIST_IDB_STORE = 'handles';
@@ -12943,10 +12812,11 @@ async function salvarNoHistorico(silencioso = false) {
 
   const datasEntrega = [...new Set(pedidos.map(p => p.dataEntregaLogistica).filter(Boolean))];
 
-  const sessaoAtiva = JSON.parse(sessionStorage.getItem('auth_usuario') || '{}');
+  // Usuário logado vem sempre do app principal (Firebase Auth) — é a única
+  // forma de acessar o Roteirizador (ver setTab() / controle de acesso).
   const usuarioLogado = (S && S.user && USERS_DB && USERS_DB[S.user])
     ? (USERS_DB[S.user].name || USERS_DB[S.user].login || S.user)
-    : (sessaoAtiva.nome || sessaoAtiva.login || sessaoAtiva.email || S?.user || 'Desconhecido');
+    : (S?.user || 'Desconhecido');
   const snapshot = {
     versao: 1,
     savedAt: new Date().toISOString(),
@@ -13342,7 +13212,144 @@ window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() 
 
 </script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
 <script>
+// ═══════════════════════════════════════════════════════════════════════════
+// NEXTA — MAPA DE VIAGEM + DASHBOARD DE OPERAÇÕES
+// ═══════════════════════════════════════════════════════════════════════════
+// Terceiro <script> não-module, carregado após Leaflet/leaflet-image (tags
+// <script src> imediatamente acima no documento). Continuação do mesmo
+// escopo global do Roteirizador (script anterior) — usa variáveis e funções
+// definidas ali (pedidos, veiculos, ultimoResultado, showToast, etc).
+//
+// ÍNDICE
+//   MAPA DE VIAGEM .............. waypoints arrastáveis + exportação de imagem do mapa
+//   DASHBOARD DE OPERAÇÕES — IIFE isolada, com seu próprio armazenamento:
+//     Armazenamento ................. snapshots de roteirizações salvas em localStorage
+//     Salvar roteirização atual ..... window.dashSalvarAtual()
+//     Popular select de meses ....... window.dashPopularMeses()
+//     Extrair dados agregados ....... agrega snapshots de um ou mais meses
+//     Renderizar Dashboard .......... monta a tela com KPIs e gráficos
+//     Gráfico de barras horizontal ... gráfico inline (sem libs externas)
+//     Gráfico Km vs Volume ........... gráfico de dispersão
+//     Gráfico de ocupação (canvas) .... gráfico de ocupação por viagem
+//     Mapa Histórico .................. mapa Leaflet com rotas agregadas
+//     Carregar por mês selecionado .... window.dashCarregarMes()
+//     Carregar todos os períodos ...... window.dashCarregarTodos()
+//     Hook: popular meses .............. dispara ao abrir a aba do dashboard
+// ═══════════════════════════════════════════════════════════════════════════
+
+/* ══════════════════════════════════════════════════════
+   MAPA DE VIAGEM — waypoints arrastáveis + exportação
+══════════════════════════════════════════════════════ */
+let _mvWaypoints = [];       // [{lat,lon,marker,tipo,nome}] pontos originais
+let _mvPolylines = [];       // polylines desenhadas (uma por segmento)
+let _mvUserWaypoints = [];   // waypoints intermediários adicionados pelo usuário ao arrastar
+let _mvDistSpan = null;
+
+// Recalcula e exibe a distância total de todos os segmentos no mapa
+async function mvRecalcularDistancia() {
+  const el = document.getElementById('mv-dist-total');
+  if (!el) return;
+  el.style.display = 'inline-block';
+  el.textContent = '📏 calculando…';
+
+  // Coleta todos os pontos na ordem: origem → waypoints intermediários → destino
+  const pontos = _mvWaypoints.map(w => ({ lat: w.lat, lon: w.lon }));
+  // Insere waypoints intermediários (arrastados) entre os pontos originais
+  // Por simplicidade recalcula a rota completa pelos pontos originais (mesma lógica do osrmRoute)
+  let totalKm = 0;
+  for (let i = 0; i < pontos.length - 1; i++) {
+    try {
+      const res = await osrmFetchSegmento(pontos[i], pontos[i+1]);
+      totalKm += res.distKm;
+    } catch(e) {}
+  }
+  el.textContent = `📏 ${totalKm.toFixed(1)} km`;
+}
+
+// Adiciona marcadores arrastáveis nos pontos de parada
+function mvAdicionarWaypointArrastavel(p, idx) {
+  const isOrigem  = p.tipo === 'origem';
+  const isRetorno = p.tipo === 'retorno';
+  const draggable = true;
+
+  const iconHtml = `<div style="
+    width:22px;height:22px;border-radius:50%;
+    background:${isOrigem ? '#111827' : isRetorno ? '#6B7280' : '#4F46E5'};
+    color:#fff;font-size:10px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;
+    border:2.5px solid #fff;
+    box-shadow:0 2px 8px rgba(0,0,0,0.4);
+    cursor:grab;font-family:Inter,sans-serif;
+  ">${isOrigem ? '⬤' : isRetorno ? '↩' : String(idx)}</div>`;
+
+  const icon = L.divIcon({ className: '', html: iconHtml, iconSize: [22,22], iconAnchor: [11,11] });
+  const marker = L.marker([p.lat, p.lon], { icon, draggable }).addTo(camadaViagem);
+
+  marker.on('dragend', async (e) => {
+    const latlng = e.target.getLatLng();
+    _mvWaypoints[idx].lat = latlng.lat;
+    _mvWaypoints[idx].lon = latlng.lng;
+    // Redesenha a rota com o novo ponto
+    await mvDesenharRota();
+  });
+
+  _mvWaypoints[idx].marker = marker;
+}
+
+// Redesenha toda a rota baseado nos waypoints atuais
+async function mvDesenharRota() {
+  // Remove polylines antigas
+  _mvPolylines.forEach(pl => { try { camadaViagem.removeLayer(pl); } catch(e){} });
+  _mvPolylines = [];
+
+  const pontos = _mvWaypoints;
+  for (let i = 0; i < pontos.length - 1; i++) {
+    try {
+      const { coords } = await osrmFetchSegmento(pontos[i], pontos[i+1]);
+      const pl = L.polyline(coords, { color: '#00A499', weight: 4, opacity: 0.9 }).addTo(camadaViagem);
+      _mvPolylines.push(pl);
+    } catch(e) {
+      const pl = L.polyline([[pontos[i].lat, pontos[i].lon],[pontos[i+1].lat, pontos[i+1].lon]], { color: '#00A499', weight: 3, opacity: 0.6, dashArray: '6,4' }).addTo(camadaViagem);
+      _mvPolylines.push(pl);
+    }
+  }
+  mvRecalcularDistancia();
+}
+
+// Reseta para a rota original
+async function mvResetarRota() {
+  if (!dadosMapaAtual) return;
+  _mvWaypoints.forEach((w,i) => {
+    const orig = dadosMapaAtual[i];
+    if (!orig) return;
+    w.lat = orig.lat; w.lon = orig.lon;
+    if (w.marker) w.marker.setLatLng([orig.lat, orig.lon]);
+  });
+  await mvDesenharRota();
+}
+
+// Exporta o mapa como imagem PNG
+function mvExportarMapa() {
+  if (!mapaViagem) return;
+  if (typeof leafletImage === 'undefined') {
+    // Fallback: abre Google Maps
+    showToast('Biblioteca de exportação não carregada. Use "Abrir no Google Maps".', false);
+    return;
+  }
+  showToast('Gerando imagem do mapa…', true);
+  leafletImage(mapaViagem, (err, canvas) => {
+    if (err) { showToast('Erro ao gerar imagem: ' + err, false); return; }
+    const titulo = document.getElementById('mv-titulo')?.textContent || 'Mapa_Viagem';
+    const a = document.createElement('a');
+    a.download = titulo.replace(/[^a-zA-Z0-9]/g,'_') + '.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+    showToast('Mapa exportado! ✅', true);
+  });
+}
+
 /* ── OSRM Road Routing ──────────────────────────────────────────
    Busca trajeto real por estradas via OSRM público (OpenStreetMap).
    Recebe array de {lat, lon}, devolve array de [lat, lng] do trajeto.
