@@ -6017,11 +6017,11 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
       </div>
       <input type="file" id="input-import-cadastral" accept=".xlsx,.xls" style="display:none" onchange="importarDadosCadastrais(this)"/>
       <button class="btn btn-sm" onclick="document.getElementById('input-import-cadastral').click()" title="Importa terminais, clientes e veículos de uma planilha .xlsx" style="background:rgba(100,220,120,0.12);color:#7CDB8A;border:1px solid rgba(100,220,120,0.30);white-space:nowrap;font-size:11px;letter-spacing:0.02em;padding:5px 12px;border-radius:7px;">⬆ Importar</button>
-      <!-- Seletor de data de operação -->
-      <div style="display:flex;align-items:center;gap:7px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:7px;padding:5px 12px;">
-        <span style="font-size:10px;color:rgba(255,255,255,0.4);white-space:nowrap;letter-spacing:0.07em;">📅 DATA OP.</span>
+      <!-- Seletor de data de operação — compacto -->
+      <div style="display:flex;align-items:center;gap:4px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:7px;padding:5px 8px;" title="Data de operação — sincroniza disponibilidade e roteirização">
+        <span style="font-size:11px;line-height:1;">📅</span>
         <input type="date" id="rot-data-operacao"
-          style="background:transparent;border:none;color:#EEFE7A;font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;width:126px;"
+          style="background:transparent;border:none;color:#EEFE7A;font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;width:100px;"
           onchange="onDataOperacaoChange(this.value)"
           title="Data de carregamento — sincroniza disponibilidade e roteirização"/>
       </div>
@@ -7510,6 +7510,8 @@ function selecionarCompartimentos(comps, volumeAlvo, modo='exact') {
   const alvo = volInt(volumeAlvo);
   let melhor = null;
   let melhorSoma = -1;
+  let melhorGeq = null;      // geq: menor soma que ainda >= alvo
+  let melhorSomaGeq = Infinity;
   const total = 1 << n;
   for (let mask = 1; mask < total; mask++) {
     let soma = 0;
@@ -7528,11 +7530,20 @@ function selecionarCompartimentos(comps, volumeAlvo, modo='exact') {
       if (soma === alvo) return subset;
       continue;
     }
+    if (modo === 'geq') {
+      // Menor combinação de capacidade >= volume (desperdício mínimo)
+      if (soma >= alvo && soma < melhorSomaGeq) {
+        melhorSomaGeq = soma;
+        melhorGeq = subset;
+      }
+      continue;
+    }
     if (soma <= alvo && soma > melhorSoma) {
       melhorSoma = soma;
       melhor = subset;
     }
   }
+  if (modo === 'geq') return melhorGeq;
   return modo === 'maxLE' ? melhor : null;
 }
 
@@ -9578,13 +9589,12 @@ function xlsxMapPedidosLiberadosRows(rows) {
       ? dataEntregaRaw.toLocaleDateString('pt-BR')
       : String(dataEntregaRaw).trim().replace(/^(\d{4})-(\d{2})-(\d{2}).*/, '$3/$2/$1');
 
-    // Chave inclui dataEntrega para não misturar pedidos de dias diferentes
-    const key = erpId + '||' + terminal + '||' + dataEntrega;
+    const key = erpId + '||' + terminal;
     if (!groups[key]) {
       const cliCad = clientes.find(c => c.codigoSAP === erpId);
       groups[key] = {
         codigoSAP: erpId,
-        ordens: [],
+        ordens: [],       // Nos. Ordem SAP acumulados por linha do Excel
         cliente,
         cidade,
         lat: cliCad?.lat ?? 0,
@@ -9595,30 +9605,22 @@ function xlsxMapPedidosLiberadosRows(rows) {
         identidadePetronas: cliCad?.identidadePetronas ?? false,
         dataEntregaLogistica: dataEntrega,
         produtos: [],
-        _prodKeys: new Set(), // controle interno de deduplicação
       };
       order.push(key);
     }
-
     if (ordemSAP && !groups[key].ordens.includes(ordemSAP)) groups[key].ordens.push(ordemSAP);
 
     if (volume > 0) {
       const prodLabel = PRODUTOS.find(p => p.startsWith(material))
         ?? (material ? `${material} - ${prodNome}` : prodNome);
-
-      // Deduplicar: mesma ordemSAP + mesmo produto = linha duplicada na planilha
-      const prodKey = (ordemSAP || prodLabel) + '||' + (prodLabel || '') + '||' + volume;
-      if (prodLabel && !groups[key]._prodKeys.has(prodKey)) {
-        groups[key]._prodKeys.add(prodKey);
-        groups[key].produtos.push({ produto: prodLabel, volume, ordemSAP });
-      }
+      // ordemSAP vai junto ao produto para ser exibido por compartimento
+      if (prodLabel) groups[key].produtos.push({ produto: prodLabel, volume, ordemSAP });
     }
   }
 
   return order.map((key, i) => {
     const g = groups[key];
     g.id = Date.now() + i;
-    delete g._prodKeys; // remove controle interno antes de retornar
     return g;
   }).filter(g => g.produtos.length > 0);
 }
@@ -10126,7 +10128,9 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     const copia = compsDisp.map(c => ({ ...c }));
     for (const pr of produtos) {
       const el  = copia.filter(c => compElegivelProduto(c, pr.produto) && c.disponivel > 0);
-      const aloc = selecionarCompartimentos(el, pr.volume, 'exact');
+      // Tenta exact primeiro (ideal); se não houver combinação exata, aceita >= (compartimento maior)
+      let aloc = selecionarCompartimentos(el, pr.volume, 'exact');
+      if (!aloc) aloc = selecionarCompartimentos(el, pr.volume, 'geq');
       if (!aloc) return false;
       aloc.forEach(c => { c.disponivel = 0; });
     }
@@ -10139,7 +10143,8 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     let primeiro = true;
     for (const pr of (produtosSelecionados || [])) {
       const el  = viagem.compsDisp.filter(c => compElegivelProduto(c, pr.produto) && c.disponivel > 0);
-      const aloc = selecionarCompartimentos(el, pr.volume, 'exact');
+      let aloc = selecionarCompartimentos(el, pr.volume, 'exact');
+      if (!aloc) aloc = selecionarCompartimentos(el, pr.volume, 'geq'); // aceita compartimento maior
       if (!aloc) return false;
       const item = { pedidoId: pedido.id, pedido, produto: pr.produto, volume: pr.volume, restante: 0, ordemSAP: pr.ordemSAP || '' };
       // Primeiro produto do pedido → cria a parada com timing; demais → adiciona à parada existente
@@ -10522,10 +10527,14 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         .sort((a, b) => a.capacidade - b.capacidade); // menores primeiro
       const volTotal15 = totalVolPedido(pedido);
       const maiorCapOcioso = ociososCompat.length ? Math.max(...ociososCompat.map(v => v.capacidade)) : 0;
-      // Guarda (a): pula split proativo apenas se um único truck resolve ≥85% do volume.
-      // 85% calibrado com dados reais: Americana (87.5%) deve ir para Passo 2 (resto
-      // bundla bem com cliente próximo); Rio Claro (80%) deve ser dividido em 2 trucks.
-      const umTruckResolveMaior = maiorCapOcioso >= volTotal15 * 0.85;
+      // Guarda (a): pula split se QUALQUER veículo compatível (ocioso ou não) consegue ≥85% do volume.
+      // Isso evita dividir pedidos quando há um truck grande disponível em 2ª viagem.
+      const maiorCapQualquer = veiculos
+        .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) &&
+          (v.disponibilidade || 'Disponível') !== 'Indisponível' &&
+          veicOk(v, pedido))
+        .reduce((mx, v) => Math.max(mx, v.capacidade), 0);
+      const umTruckResolveMaior = maiorCapQualquer >= volTotal15 * 0.85;
       if (ociososCompat.length >= 2 && !umTruckResolveMaior) {
         const resSnap15 = JSON.parse(JSON.stringify(resultado));
         const ctSnap15  = JSON.parse(JSON.stringify(controleTempo));
@@ -10567,26 +10576,33 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         }
       }
     }
+    if (alocado) continue; // ← Passo 1.5 alocou — não continuar para Passo 2/3
 
     // PASSO 2: Abrir nova viagem — pré-verifica compartimentos antes de criar
     {
       const cands2 = candidatos(pedido);
       const motivosSkip = [];
+      console.log(`[P2] ${pedido.cliente} vol=${totalVolPedido(pedido).toFixed(1)}m³ candidatos=${cands2.length}`);
       for (const v of cands2) {
         const fitOk = podeFitar(pedido.produtos, criarCompsDisp(v));
         if (!fitOk) {
+          const comps = criarCompsDisp(v).map(c=>c.cap).join('+');
+          const prods = pedido.produtos.map(p=>`${p.produto}:${p.volume}m³`).join(', ');
+          console.log(`  → ${v.placa} REJEITADO: compartimento incompatível. comps=[${comps}] prods=[${prods}]`);
           motivosSkip.push({ placa: v.placa, contrato: v.contrato||'Dedicado', motivo: 'compartimento incompatível' });
           continue;
         }
         const t = tentarNovaViagem(pedido, v);
         if (!t) {
+          const ct = controleTempo[v.id];
+          console.log(`  → ${v.placa} REJEITADO: timing/jornada. usadoMin=${ct.usadoMin} limiteMin=${ct.limiteMin} clockV=${clockV(v)}`);
           motivosSkip.push({ placa: v.placa, contrato: v.contrato||'Dedicado', motivo: 'timing/jornada' });
           continue;
         }
         if (commitPedido(t.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
           resultado[v.id].push(t.vi);
           alocado = true;
-          // Diagnóstico: avisa quando Spot é escolhido e havia Dedicados na fila
+          console.log(`  → ${v.placa} ALOCADO P2`);
           if ((v.contrato||'Dedicado') === 'Spot') {
             const dedSkip = motivosSkip.filter(m => m.contrato !== 'Spot');
             if (dedSkip.length)
@@ -10598,11 +10614,28 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       }
     }
     if (!alocado) {
-      // PASSO 3 (primário): quebra controlada.
+      // PASSO 2.5: Tenta nova viagem com tolerância de jornada antes de quebrar.
+      // Se algum veículo aceita o pedido INTEIRO com leve estouro de jornada,
+      // é sempre melhor que fragmentar o pedido em 2 entregas para o mesmo cliente.
+      const cands25 = candidatos(pedido);
+      for (const v of cands25) {
+        const fitOk = podeFitar(pedido.produtos, criarCompsDisp(v));
+        if (!fitOk) continue;
+        const t = tentarNovaViagem(pedido, v, pedido.produtos, { permitirExcederJornada: true });
+        if (!t) continue;
+        if (commitPedido(t.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
+          resultado[v.id].push(t.vi);
+          alocado = true;
+          console.log('[Otimizador] PASSO 2.5 (jornada estendida):', pedido.cliente, '→', v.placa);
+          break;
+        }
+      }
+    }
+    if (!alocado) {
+      // PASSO 3 (primário): quebra controlada — ÚLTIMO RECURSO.
+      // Só chega aqui se nenhum veículo com capacidade total aceitou o pedido inteiro.
       // Modo padrão: 1 parte — evita consumir a frota em um único cliente.
-      // Modo dedicado: ilimitado — frota já está paga; ocupa o máximo possível.
-      // Modo dedicado: máx 2 partes — evita fragmentar pedidos em 3+ trucks
-      // (aprendizado: remainder tiny numa 3ª viagem gera ocupação <30%).
+      // Modo dedicado: máx 2 partes — evita fragmentar pedidos em 3+ trucks.
       const qb = tentarQuebraPedido(pedido, { maxPartes: modo === 'dedicado' ? 2 : 1 });
       if (qb.alocadoAlgum) {
         alocado = true;
@@ -10634,6 +10667,24 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   for (const pedido of fila) {
     const pendentes = produtosPendentesPedido(pedido);
     if (totalVolProdutos(pendentes) <= 0.0001) continue;
+
+    // Primeiro tenta alocar os pendentes INTEIROS em nova viagem antes de quebrar mais
+    let alocadoInteiro = false;
+    const cands4 = candidatos(pedido);
+    for (const v of cands4) {
+      const fitOk = podeFitar(pendentes, criarCompsDisp(v));
+      if (!fitOk) continue;
+      const t = tentarNovaViagem({ ...pedido, produtos: pendentes }, v, pendentes, { permitirExcederJornada: true });
+      if (!t) continue;
+      if (commitPedido(t.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
+        resultado[v.id].push(t.vi);
+        alocadoInteiro = true;
+        console.log('[Otimizador] PASSO 4 (remanescente inteiro):', pedido.cliente, '→', v.placa);
+        break;
+      }
+    }
+    if (alocadoInteiro) continue;
+
     const qb2 = tentarQuebraPedido(pedido, { produtosIniciais: pendentes, permitirExcederJornada: true });
     if (qb2.alocadoAlgum && !qb2.completo) {
       console.log('[Otimizador] REMANESCENTE APÓS SOBRA:', pedido.cliente,
@@ -10700,6 +10751,14 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       for (const pedido of pedidosFonte) {
         let alocado = false;
 
+        // Usa apenas os produtos ainda pendentes para este pedido
+        // (exclui o que já está alocado em outros veículos)
+        const pendProds = produtosPendentesPedido(pedido);
+        if (totalVolProdutos(pendProds) <= 0.0001) {
+          // Pedido já 100% coberto por outros veículos — não precisa migrar
+          continue;
+        }
+
         // Candidatos: exclui vFonte, prioriza Dedicado antes de Spot e depois os já ativos
         // Regra crítica: NUNCA mover trips de Dedicado para Spot
         const vFonteEhSpot = (vFonte.contrato || 'Dedicado') === 'Spot';
@@ -10709,8 +10768,6 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
             if (lockedTerminals.has(baseVeiculoLabel(v))) return false;
             if ((v.disponibilidade || 'Disponível') === 'Indisponível') return false;
             if (!veicOk(v, pedido)) return false;
-            // Bloqueia Dedicado → Spot: só Spot pode receber trips de Dedicado se não há outra opção,
-            // mas neste caso preferimos manter o Dedicado alocado.
             if (!vFonteEhSpot && (v.contrato || 'Dedicado') === 'Spot') return false;
             return true;
           })
@@ -10721,22 +10778,22 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
             return (resultado[b.id].length > 0 ? 1 : 0) - (resultado[a.id].length > 0 ? 1 : 0);
           });
 
-        // 1. Encaixar em viagem existente de outro veículo
+        // 1. Encaixar em viagem existente (só produtos pendentes)
         for (const v of cands) {
           for (const vi of resultado[v.id]) {
-            const t = tentarEncaixe(pedido, v, vi);
-            if (t && commitPedido(vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
+            const t = tentarEncaixe(pedido, v, vi, pendProds);
+            if (t && commitPedido(vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v, pendProds)) {
               alocado = true; break;
             }
           }
           if (alocado) break;
         }
 
-        // 2. Nova viagem em outro veículo
+        // 2. Nova viagem (só produtos pendentes)
         if (!alocado) {
           for (const v of cands) {
-            const t = tentarNovaViagem(pedido, v);
-            if (t && commitPedido(t.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
+            const t = tentarNovaViagem(pedido, v, pendProds);
+            if (t && commitPedido(t.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v, pendProds)) {
               resultado[v.id].push(t.vi);
               alocado = true; break;
             }
@@ -12887,10 +12944,13 @@ async function salvarNoHistorico(silencioso = false) {
   const datasEntrega = [...new Set(pedidos.map(p => p.dataEntregaLogistica).filter(Boolean))];
 
   const sessaoAtiva = JSON.parse(sessionStorage.getItem('auth_usuario') || '{}');
+  const usuarioLogado = (S && S.user && USERS_DB && USERS_DB[S.user])
+    ? (USERS_DB[S.user].name || USERS_DB[S.user].login || S.user)
+    : (sessaoAtiva.nome || sessaoAtiva.login || sessaoAtiva.email || S?.user || 'Desconhecido');
   const snapshot = {
     versao: 1,
     savedAt: new Date().toISOString(),
-    salvoPor: sessaoAtiva.nome || sessaoAtiva.login || 'Desconhecido',
+    salvoPor: usuarioLogado,
     datasEntrega,
     resumo: {
       totalRotas,
@@ -12969,7 +13029,7 @@ async function carregarListaHistorico() {
       <div class="hist-entry">
         <div class="hist-entry-info">
           <div class="hist-entry-date">${dtStr}</div>
-          <div class="hist-entry-meta">Entrega: <strong>${entrega}</strong>${data.salvoPor ? ` &nbsp;·&nbsp; Salvo por: <strong>${data.salvoPor}</strong>` : ''}</div>
+          <div class="hist-entry-meta">Entrega: <strong>${entrega}</strong>${data.salvoPor ? ` &nbsp;·&nbsp; Salvo por: <strong>${data.salvoPor === 'Desconhecido' ? ((S && S.user && USERS_DB && USERS_DB[S.user]) ? (USERS_DB[S.user].name || S.user) : data.salvoPor) : data.salvoPor}</strong>` : ''}</div>
           <div class="hist-entry-chips">
             <span class="tag tag-green">${totalRotas} rota${totalRotas !== 1 ? 's' : ''}</span>
             <span class="tag tag-blue">${totalViagens} ${totalViagens !== 1 ? 'viagens' : 'viagem'}</span>
