@@ -5848,7 +5848,7 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
 }
 #roteirizador-shell .mapa-geral-kpi.has-tip:hover .mapa-geral-kpi-tip { opacity: 1; visibility: visible; transform: translateY(0); }
 #roteirizador-shell .mapa-geral-layout { display: grid; grid-template-columns: 1fr 240px; gap: 12px; align-items: start; }
-#roteirizador-shell .mapa-geral { width: 100%; height: 640px; border-radius: var(--radius); border: 0.5px solid var(--border); overflow: hidden; background: #E5E7EB; position: relative; z-index: 1; }
+#roteirizador-shell .mapa-geral { width: 100%; height: 640px; min-height: 400px; border-radius: var(--radius); border: 0.5px solid var(--border); overflow: hidden; background: #E5E7EB; position: relative; z-index: 1; }
 #roteirizador-shell .mapa-geral-legenda { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 12px; max-height: 520px; overflow: auto; }
 #roteirizador-shell .mapa-geral-item { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; border: 0.5px solid transparent; border-radius: var(--radius); padding: 5px 6px; cursor: pointer; transition: all 0.15s; }
 #roteirizador-shell .mapa-geral-item:hover { background: var(--bg); border-color: var(--border); }
@@ -6557,16 +6557,19 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
         <div id="mv-titulo" style="font-family:var(--font-cond);font-size:18px;font-weight:700;letter-spacing:0.04em;">Mapa da viagem</div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
           <span id="mv-dist-total" style="font-size:12px;font-weight:600;color:var(--accent);display:none;background:var(--accent-bg);border:0.5px solid var(--accent-border);padding:3px 10px;border-radius:20px;">📏 — km</span>
-          <button class="btn btn-sm" onclick="mvResetarRota()" title="Restaurar rota original">↺ Resetar rota</button>
+          <span id="mv-vias-badge" style="display:none;font-size:11px;font-weight:600;color:#818CF8;background:rgba(79,70,229,0.12);border:1px solid rgba(79,70,229,0.3);padding:3px 10px;border-radius:20px;">0 via(s)</span>
+          <button class="btn btn-sm" onclick="mvResetarRota()" title="Remove todas as vias e restaura a rota original">↺ Resetar rota</button>
+          <button class="btn btn-sm" onclick="mvCompartilharGoogleMaps()" title="Abrir rota ajustada no Google Maps para compartilhar com motorista">📤 Compartilhar</button>
           <button class="btn btn-sm" onclick="mvExportarMapa()" title="Exportar mapa como imagem">🖼 Exportar mapa</button>
-          <button class="btn btn-sm" onclick="abrirNavegacaoExterna()">Abrir no Google Maps</button>
           <button class="btn btn-sm btn-danger" onclick="fecharModalViagem()">Fechar</button>
         </div>
       </div>
       <div class="modal-body">
         <div id="mv-resumo" class="alert alert-info" style="margin-bottom:8px;">-</div>
-        <div style="font-size:11px;color:var(--text-3);margin-bottom:6px;">💡 Arraste os pontos 🔵 no mapa para ajustar o trajeto. A distância total é recalculada automaticamente.</div>
-        <div id="mv-mapa" class="mini-map" style="height:420px;"></div>
+        <div style="font-size:11px;color:var(--text-3);margin-bottom:6px;background:rgba(79,70,229,0.07);border:1px solid rgba(79,70,229,0.2);border-radius:7px;padding:7px 12px;">
+          🖱 <strong>Clique e arraste qualquer ponto da linha verde</strong> para desviar o trajeto por outra estrada. O km é recalculado automaticamente. Clique nos marcadores ◆ de via para removê-los.
+        </div>
+        <div id="mv-mapa" class="mini-map" style="height:420px;cursor:default;"></div>
         <div id="mv-lista" style="margin-top:10px;"></div>
       </div>
     </div>
@@ -7146,13 +7149,18 @@ function baixarModeloExcel() {
 function nomeTerminais() { return terminaisCad.map(t => t.nome); }
 
 function showTab(name) {
-  const tabNames = ['terminais','clientes','pedidos','veiculos','resultado','mapa','operacao','historico'];
+  const tabNames = ['terminais','clientes','pedidos','veiculos','resultado','mapa','operacao','dashboard_rot','historico'];
   const routeRoot = document.getElementById('roteirizador-shell') || document;
   routeRoot.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', tabNames[i] === name));
   routeRoot.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   routeRoot.querySelector('#tab-' + name)?.classList.add('active');
   if (name === 'operacao') renderTemplateOperacao();
-  if (name === 'mapa') renderMapaGeral();
+  if (name === 'mapa') {
+    renderMapaGeral();
+    // Garante invalidateSize após o CSS aplicar display:block
+    setTimeout(() => { try { if (mapaGeral) mapaGeral.invalidateSize(); } catch(e){} }, 120);
+    setTimeout(() => { try { if (mapaGeral) mapaGeral.invalidateSize(); } catch(e){} }, 400);
+  }
 }
 
 function exportarDadosPainel() {
@@ -7483,6 +7491,10 @@ function aplicarFiltrosOperacao() {
 function fecharModalViagem(ev=null) {
   if (ev && ev.target && ev.target.id !== 'modal-viagem') return;
   document.getElementById('modal-viagem').classList.remove('show');
+  // Re-renderiza a lista de viagens para refletir imediatamente o km ajustado
+  // (e outras mudanças feitas no mapa) no card de "Otimização Rotas" e,
+  // por consequência, manter consistência com o template de "Envio Transportadora".
+  if (ultimoResultado) renderResultado(ultimoResultado, ultimoControleTempo || {});
 }
 
 function garantirMapaViagem() {
@@ -7490,7 +7502,8 @@ function garantirMapaViagem() {
     mapaViagem = L.map('mv-mapa');
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
-      attribution: '&copy; OpenStreetMap &copy; CARTO'
+      attribution: '&copy; OpenStreetMap &copy; CARTO',
+      crossOrigin: true
     }).addTo(mapaViagem);
   }
   if (camadaViagem) camadaViagem.remove();
@@ -7560,10 +7573,25 @@ function abrirModalViagem(veiculoId, idxViagem) {
   document.getElementById('modal-viagem').classList.add('show');
   garantirMapaViagem();
   dadosMapaAtual = validos;
+  window._mvVeiculoId  = veiculoId;
+  window._mvIdxViagem  = idxViagem;
 
   // Inicializa waypoints arrastáveis
   _mvWaypoints = validos.map((p, i) => ({ ...p, idx: i, marker: null }));
   _mvPolylines = [];
+
+  // Restaurar vias salvas anteriormente para esta viagem.
+  // Prioriza o dado persistido no próprio objeto da viagem (viagem._userWaypoints),
+  // que é a fonte confiável e sobrevive mesmo se o cache em memória (_mvRotasSalvas)
+  // tiver sido perdido (ex.: viagem carregada do histórico, página recarregada).
+  const chaveAtual = `${veiculoId}||${idxViagem}`;
+  const waypointsPersistidos = (viagem._userWaypoints && viagem._userWaypoints.length)
+    ? viagem._userWaypoints
+    : _mvRotasSalvas[chaveAtual]?.userWaypoints;
+  if (waypointsPersistidos?.length) {
+    _mvUserWaypoints = waypointsPersistidos.map(uw => ({ ...uw, marker: null }));
+    _mvAtualizarBadgeVias();
+  }
 
   const latlngs = validos.map(p => [p.lat, p.lon]);
 
@@ -7692,8 +7720,11 @@ function abrirModalViagem(veiculoId, idxViagem) {
   });
 
   mapaViagem.fitBounds(latlngs, { padding: [32, 32] });
-  // Mostra distância inicial
-  mvRecalcularDistancia();
+  // OBS: não chamar mvRecalcularDistancia() aqui — mvDesenharRota() (chamada acima,
+  // logo após montar os waypoints) já recalcula e exibe a distância ao final.
+  // Chamar de novo aqui criava uma segunda execução concorrente que invalidava
+  // o token da primeira antes dela terminar de desenhar a polyline, fazendo o
+  // traçado nunca aparecer (apenas o km, calculado por esta segunda chamada).
 }
 
 function abrirNavegacaoExterna() {
@@ -10929,8 +10960,13 @@ async function exportarHrrlog() {
       // Volume total em litros
       const volLitros = Math.round(vi.paradas.reduce((s, p) => s + (p.volumeTotal || 0), 0) * 1000);
 
-      // KM total da viagem
-      const kmTotal = Math.round(vi.paradas.reduce((s, p) => s + (p.distanciaKm || 0), 0));
+      // KM total da viagem — usa o km ajustado manualmente no mapa da viagem
+      // (quando o usuário desviou a rota), senão cai no cálculo original do otimizador
+      const kmTotal = Math.round(
+        vi._kmAjustado != null
+          ? vi._kmAjustado
+          : vi.paradas.reduce((s, p) => s + (p.distanciaKm || 0), 0)
+      );
 
       const codViagem = vi.petId || `VIA${v.placa}${idx + 1}`;
 
@@ -12373,6 +12409,10 @@ function renderResultado(resultado, controleTempo={}) {
         const esperaTagHtml = esperaTermRender > 0
           ? `<span style="font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FCD34D;border-radius:4px;padding:2px 7px;">⏳ Espera terminal ${fmtDT(inicioCicloMin)}→${fmtDT(inicioCicloMin+esperaTermRender)} (${Math.round(esperaTermRender)} min)</span>`
           : '';
+        // Indica que o usuário ajustou manualmente o trajeto desta viagem no mapa
+        const kmAjustadoTagHtml = viagem._kmAjustado != null
+          ? `<span style="font-size:11px;color:#3730A3;background:rgba(79,70,229,0.1);border:1px solid rgba(79,70,229,0.3);border-radius:4px;padding:2px 7px;" title="Rota ajustada manualmente no mapa">📏 ${viagem._kmAjustado.toFixed(1)} km (ajustada)</span>`
+          : '';
         const _temViol = viagensComViolacao.has(viagem);
         html += `<div class="viagem-header viagem-draggable"
           draggable="true"
@@ -12390,6 +12430,7 @@ function renderResultado(resultado, controleTempo={}) {
           <span style="font-size:12px;color:#4A6535;">${fmtDT(inicioCicloMin+esperaTermRender)} → ${fmtDT(fimCicloMin)}</span>
           ${esperaTagHtml}
           <span style="font-size:12px;color:#4A6535;">${(viagem.tempoConsumidoMin||0).toFixed(0)} min</span>
+          ${kmAjustadoTagHtml}
           <button class="btn btn-sm" style="padding:2px 8px;" onclick="abrirModalViagem(${v.id},${ti})">Mapa</button>
           <span class="tag ${utilTag(utilV)}" style="margin-left:auto;${utilTagStyle(utilV)}">${utilV}%</span>
         </div>`;
@@ -13074,10 +13115,12 @@ window.initRoteirizadorIntegrado = async function(){
   if(typeof invalidateSizeMapasRoteirizador === 'function') invalidateSizeMapasRoteirizador();
 };
 window.invalidateSizeMapasRoteirizador = function(){
-  setTimeout(()=>{
-    try { if(mapaGeral && typeof mapaGeral.invalidateSize === 'function') mapaGeral.invalidateSize(); } catch(e) {}
-    try { if(mapaViagem && typeof mapaViagem.invalidateSize === 'function') mapaViagem.invalidateSize(); } catch(e) {}
-  }, 120);
+  [120, 350, 700, 1200].forEach(delay => {
+    setTimeout(()=>{
+      try { if(mapaGeral  && typeof mapaGeral.invalidateSize  === 'function') mapaGeral.invalidateSize();  } catch(e) {}
+      try { if(mapaViagem && typeof mapaViagem.invalidateSize === 'function') mapaViagem.invalidateSize(); } catch(e) {}
+    }, delay);
+  });
 };
 
 /* ══════════════════════════════════════════════════════════════
@@ -13212,12 +13255,12 @@ window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() 
 
 </script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
+<script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════════════════════
 // NEXTA — MAPA DE VIAGEM + DASHBOARD DE OPERAÇÕES
 // ═══════════════════════════════════════════════════════════════════════════
-// Terceiro <script> não-module, carregado após Leaflet/leaflet-image (tags
+// Terceiro <script> não-module, carregado após Leaflet/html2canvas (tags
 // <script src> imediatamente acima no documento). Continuação do mesmo
 // escopo global do Roteirizador (script anterior) — usa variáveis e funções
 // definidas ali (pedidos, veiculos, ultimoResultado, showToast, etc).
@@ -13242,111 +13285,381 @@ window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() 
 /* ══════════════════════════════════════════════════════
    MAPA DE VIAGEM — waypoints arrastáveis + exportação
 ══════════════════════════════════════════════════════ */
-let _mvWaypoints = [];       // [{lat,lon,marker,tipo,nome}] pontos originais
+let _mvWaypoints = [];       // [{lat,lon,marker,tipo,nome}] pontos originais (origem, paradas, retorno)
 let _mvPolylines = [];       // polylines desenhadas (uma por segmento)
-let _mvUserWaypoints = [];   // waypoints intermediários adicionados pelo usuário ao arrastar
+let _mvUserWaypoints = [];   // waypoints intermediários inseridos pelo usuário arrastando a linha
 let _mvDistSpan = null;
+let _mvDragMarker = null;    // marcador fantasma que aparece ao hover na linha
+let _mvRenderToken = 0;      // token incremental — evita que uma chamada antiga de mvDesenharRota
+                              // sobrescreva o resultado de uma chamada mais recente (race condition)
 
-// Recalcula e exibe a distância total de todos os segmentos no mapa
-async function mvRecalcularDistancia() {
+// ─── State para salvar rota ajustada na viagem ────────────────────────────
+// Salva os waypoints do usuário por chave "vId||iV" para persistir durante a sessão
+const _mvRotasSalvas = {};
+
+function _mvChaveViagem() {
+  return `${window._mvVeiculoId || ''}||${window._mvIdxViagem ?? ''}`;
+}
+
+// ─── Garantir mapa ──────────────────────────────────────────────────────────
+function garantirMapaViagem() {
+  if (!mapaViagem) {
+    mapaViagem = L.map('mv-mapa', { zoomControl: true });
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap &copy; CARTO',
+      crossOrigin: true // permite que o html2canvas leia os tiles sem "tainted canvas" (CORS)
+    }).addTo(mapaViagem);
+  }
+  if (camadaViagem) camadaViagem.remove();
+  camadaViagem = L.layerGroup().addTo(mapaViagem);
+  _mvPolylines = [];
+  _mvUserWaypoints = [];
+  _mvWaypoints = [];
+  const badge = document.getElementById('mv-vias-badge');
+  if (badge) badge.style.display = 'none';
+  setTimeout(() => mapaViagem.invalidateSize(), 50);
+}
+
+// ─── Desenhar marcador de parada (fixo, não arrastável) ────────────────────
+function mvAdicionarWaypointArrastavel(p, idx) {
+  const isOrigem  = p.tipo === 'origem';
+  const isRetorno = p.tipo === 'retorno';
+
+  const iconHtml = `<div style="
+    width:24px;height:24px;border-radius:50%;
+    background:${isOrigem ? '#111827' : isRetorno ? '#6B7280' : '#4F46E5'};
+    color:#fff;font-size:11px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;
+    border:2.5px solid #fff;
+    box-shadow:0 2px 8px rgba(0,0,0,0.4);
+    font-family:Inter,sans-serif;
+    pointer-events:auto;
+  ">${isOrigem ? '⬤' : isRetorno ? '↩' : String(idx)}</div>`;
+
+  const icon = L.divIcon({ className: '', html: iconHtml, iconSize: [24,24], iconAnchor: [12,12] });
+  // Pontos de parada NÃO são arrastáveis — apenas as vias intermediárias o são
+  const marker = L.marker([p.lat, p.lon], { icon, draggable: false }).addTo(camadaViagem);
+
+  if (p._popup) marker.bindPopup(p._popup, { maxWidth: 300 });
+  _mvWaypoints[idx].marker = marker;
+}
+
+// ─── Desenhar rota completa com waypoints intermediários ───────────────────
+// Monta a sequência: wp[0] → [vias entre 0 e 1] → wp[1] → [vias entre 1 e 2] → wp[2] ...
+async function mvDesenharRota() {
+  // Token desta execução — se outra chamada de mvDesenharRota for disparada
+  // antes desta terminar (ex.: clique seguido de arraste rápido), a execução
+  // mais antiga detecta que não é mais a "atual" e descarta seu resultado,
+  // evitando que o km e o traçado fiquem presos num estado anterior.
+  const myToken = ++_mvRenderToken;
+  let obsoleta = false; // true = outra chamada mais recente assumiu — não recalcular km aqui
+
+  try {
+    // Monta sequência completa intercalando vias do usuário
+    const sequencia = _mvMontarSequencia();
+
+    const novasPolylines = [];
+    for (let i = 0; i < sequencia.length - 1; i++) {
+      try {
+        const { coords } = await osrmFetchSegmento(sequencia[i], sequencia[i+1]);
+        if (myToken !== _mvRenderToken) {
+          novasPolylines.forEach(pl => { try { camadaViagem.removeLayer(pl); } catch(e){} });
+          obsoleta = true;
+          return; // execução obsoleta — abandona e limpa o que já tinha desenhado
+        }
+        const pl = L.polyline(coords, {
+          color: '#00A499', weight: 5, opacity: 0.85,
+          lineCap: 'round', lineJoin: 'round'
+        }).addTo(camadaViagem);
+
+        // Torna cada segmento clicável para inserir nova via
+        _mvBindPolylineClick(pl, i, sequencia);
+        novasPolylines.push(pl);
+      } catch(e) {
+        if (myToken !== _mvRenderToken) {
+          novasPolylines.forEach(pl => { try { camadaViagem.removeLayer(pl); } catch(e2){} });
+          obsoleta = true;
+          return; // execução obsoleta — abandona e limpa o que já tinha desenhado
+        }
+        const pl = L.polyline(
+          [[sequencia[i].lat, sequencia[i].lon],[sequencia[i+1].lat, sequencia[i+1].lon]],
+          { color: '#00A499', weight: 4, opacity: 0.5, dashArray: '6,4' }
+        ).addTo(camadaViagem);
+        novasPolylines.push(pl);
+      }
+    }
+
+    if (myToken !== _mvRenderToken) {
+      // Outra chamada mais recente já está em andamento — descarta o que foi desenhado aqui
+      novasPolylines.forEach(pl => { try { camadaViagem.removeLayer(pl); } catch(e){} });
+      obsoleta = true;
+      return;
+    }
+
+    // Só agora, com a certeza de que esta é a execução mais recente, remove as
+    // polylines antigas e assume as novas.
+    _mvPolylines.forEach(pl => { try { camadaViagem.removeLayer(pl); } catch(e){} });
+    _mvPolylines = novasPolylines;
+
+    // Re-desenhar marcadores de via por cima das polylines
+    _mvUserWaypoints.forEach(uw => {
+      if (uw.marker) { try { camadaViagem.removeLayer(uw.marker); } catch(e){} }
+      _mvDesenharMarcadorVia(uw);
+    });
+
+    // Re-trazer marcadores de parada para frente
+    _mvWaypoints.forEach(w => { if (w.marker) w.marker.bringToFront(); });
+  } catch (e) {
+    // Qualquer erro inesperado não previsto pelos try/catch internos acima
+    // (ex.: falha ao desenhar um marcador) cai aqui. Não é re-lançado: graças
+    // ao finally abaixo, o km ainda será recalculado com o que for possível,
+    // em vez de deixar o badge "preso" sem nunca atualizar.
+    console.error('mvDesenharRota: erro inesperado', e);
+  } finally {
+    // Recalcula o km SEMPRE que esta não for uma execução obsoleta — mesmo que
+    // algo tenha falhado acima. Isso garante que o usuário sempre veja o km
+    // atualizado (ou ao menos "calculando…" seguido de um valor), nunca um
+    // badge ausente para sempre.
+    if (!obsoleta) {
+      await mvRecalcularDistancia(myToken);
+    }
+  }
+}
+
+// ─── Monta sequência intercalando vias entre waypoints fixos ──────────────
+function _mvMontarSequencia() {
+  const seq = [];
+  for (let i = 0; i < _mvWaypoints.length; i++) {
+    seq.push(_mvWaypoints[i]);
+    // Adicionar vias do usuário que pertencem ao segmento i → i+1
+    const viasSegmento = _mvUserWaypoints
+      .filter(uw => uw.segmento === i)
+      .sort((a, b) => a.ordem - b.ordem);
+    viasSegmento.forEach(v => seq.push(v));
+  }
+  return seq;
+}
+
+// ─── Bind clique na polyline para inserir via ──────────────────────────────
+function _mvBindPolylineClick(pl, segIdx, sequencia) {
+  // Cursor crosshair ao hover
+  pl.on('mouseover', () => { document.getElementById('mv-mapa').style.cursor = 'crosshair'; });
+  pl.on('mouseout',  () => { document.getElementById('mv-mapa').style.cursor = 'default'; });
+
+  pl.on('click', (e) => {
+    L.DomEvent.stopPropagation(e);
+    // Descobrir em qual segmento fixo estamos
+    // segIdx é o índice na sequência completa; mapear para segmento fixo
+    const segFixo = _mvMapearSegmentoFixo(segIdx, sequencia);
+    const ordem = _mvUserWaypoints.filter(uw => uw.segmento === segFixo).length;
+    const via = {
+      lat: e.latlng.lat,
+      lon: e.latlng.lng,
+      segmento: segFixo,
+      ordem,
+      marker: null
+    };
+    _mvUserWaypoints.push(via);
+    _mvAtualizarBadgeVias();
+    mvDesenharRota();
+  });
+}
+
+// ─── Mapear índice da sequência completa para segmento fixo ──────────────
+function _mvMapearSegmentoFixo(seqIdx, sequencia) {
+  // Conta quantos waypoints fixos passamos até seqIdx
+  let fixos = 0;
+  for (let i = 0; i <= seqIdx && i < sequencia.length; i++) {
+    if (_mvWaypoints.includes(sequencia[i])) fixos++;
+  }
+  return Math.max(0, fixos - 1);
+}
+
+// ─── Desenhar marcador de via (arrastável, removível) ─────────────────────
+function _mvDesenharMarcadorVia(via) {
+  const iconHtml = `<div style="
+    width:18px;height:18px;
+    background:#4F46E5;border:2.5px solid #fff;
+    border-radius:4px;transform:rotate(45deg);
+    box-shadow:0 2px 6px rgba(0,0,0,0.4);
+    cursor:grab;
+  "></div>`;
+  const icon = L.divIcon({ className: '', html: iconHtml, iconSize:[18,18], iconAnchor:[9,9] });
+  const marker = L.marker([via.lat, via.lon], { icon, draggable: true, zIndexOffset: 1000 })
+    .addTo(camadaViagem);
+
+  marker.bindTooltip('Arraste para ajustar · Clique para remover', { direction:'top', offset:[0,-12] });
+
+  marker.on('drag', (e) => {
+    via.lat = e.latlng.lat;
+    via.lon = e.latlng.lng;
+  });
+  marker.on('dragend', () => {
+    mvDesenharRota();
+  });
+  marker.on('click', (e) => {
+    L.DomEvent.stopPropagation(e);
+    _mvUserWaypoints = _mvUserWaypoints.filter(uw => uw !== via);
+    try { camadaViagem.removeLayer(marker); } catch(e2){}
+    _mvAtualizarBadgeVias();
+    mvDesenharRota();
+  });
+
+  via.marker = marker;
+}
+
+// ─── Badge de vias ─────────────────────────────────────────────────────────
+function _mvAtualizarBadgeVias() {
+  const badge = document.getElementById('mv-vias-badge');
+  if (!badge) return;
+  const n = _mvUserWaypoints.length;
+  if (n === 0) { badge.style.display = 'none'; return; }
+  badge.style.display = 'inline-block';
+  badge.textContent = `${n} via(s)`;
+}
+
+// ─── Recalcular distância total ────────────────────────────────────────────
+async function mvRecalcularDistancia(token = null) {
+  const myToken = token != null ? token : ++_mvRenderToken;
   const el = document.getElementById('mv-dist-total');
   if (!el) return;
   el.style.display = 'inline-block';
   el.textContent = '📏 calculando…';
 
-  // Coleta todos os pontos na ordem: origem → waypoints intermediários → destino
-  const pontos = _mvWaypoints.map(w => ({ lat: w.lat, lon: w.lon }));
-  // Insere waypoints intermediários (arrastados) entre os pontos originais
-  // Por simplicidade recalcula a rota completa pelos pontos originais (mesma lógica do osrmRoute)
+  const seq = _mvMontarSequencia();
   let totalKm = 0;
-  for (let i = 0; i < pontos.length - 1; i++) {
+  for (let i = 0; i < seq.length - 1; i++) {
     try {
-      const res = await osrmFetchSegmento(pontos[i], pontos[i+1]);
+      const res = await osrmFetchSegmento(seq[i], seq[i+1]);
       totalKm += res.distKm;
     } catch(e) {}
   }
+
+  if (myToken !== _mvRenderToken) return; // outra atualização mais recente já está em curso
+
+  // Atualiza o texto exibido primeiro — é a parte mais importante para o usuário
+  // e não deve depender do sucesso das etapas de persistência abaixo.
   el.textContent = `📏 ${totalKm.toFixed(1)} km`;
-}
 
-// Adiciona marcadores arrastáveis nos pontos de parada
-function mvAdicionarWaypointArrastavel(p, idx) {
-  const isOrigem  = p.tipo === 'origem';
-  const isRetorno = p.tipo === 'retorno';
-  const draggable = true;
+  try {
+    // Salvar km e vias na viagem do resultado (para que o card de resultados atualize)
+    const chave = _mvChaveViagem();
+    _mvRotasSalvas[chave] = {
+      userWaypoints: _mvUserWaypoints.map(uw => ({ lat: uw.lat, lon: uw.lon, segmento: uw.segmento, ordem: uw.ordem })),
+      kmAjustado: totalKm
+    };
 
-  const iconHtml = `<div style="
-    width:22px;height:22px;border-radius:50%;
-    background:${isOrigem ? '#111827' : isRetorno ? '#6B7280' : '#4F46E5'};
-    color:#fff;font-size:10px;font-weight:700;
-    display:flex;align-items:center;justify-content:center;
-    border:2.5px solid #fff;
-    box-shadow:0 2px 8px rgba(0,0,0,0.4);
-    cursor:grab;font-family:Inter,sans-serif;
-  ">${isOrigem ? '⬤' : isRetorno ? '↩' : String(idx)}</div>`;
-
-  const icon = L.divIcon({ className: '', html: iconHtml, iconSize: [22,22], iconAnchor: [11,11] });
-  const marker = L.marker([p.lat, p.lon], { icon, draggable }).addTo(camadaViagem);
-
-  marker.on('dragend', async (e) => {
-    const latlng = e.target.getLatLng();
-    _mvWaypoints[idx].lat = latlng.lat;
-    _mvWaypoints[idx].lon = latlng.lng;
-    // Redesenha a rota com o novo ponto
-    await mvDesenharRota();
-  });
-
-  _mvWaypoints[idx].marker = marker;
-}
-
-// Redesenha toda a rota baseado nos waypoints atuais
-async function mvDesenharRota() {
-  // Remove polylines antigas
-  _mvPolylines.forEach(pl => { try { camadaViagem.removeLayer(pl); } catch(e){} });
-  _mvPolylines = [];
-
-  const pontos = _mvWaypoints;
-  for (let i = 0; i < pontos.length - 1; i++) {
-    try {
-      const { coords } = await osrmFetchSegmento(pontos[i], pontos[i+1]);
-      const pl = L.polyline(coords, { color: '#00A499', weight: 4, opacity: 0.9 }).addTo(camadaViagem);
-      _mvPolylines.push(pl);
-    } catch(e) {
-      const pl = L.polyline([[pontos[i].lat, pontos[i].lon],[pontos[i+1].lat, pontos[i+1].lon]], { color: '#00A499', weight: 3, opacity: 0.6, dashArray: '6,4' }).addTo(camadaViagem);
-      _mvPolylines.push(pl);
+    // Atualizar distanciaKm na viagem do ultimoResultado se estiver disponível
+    const vId = window._mvVeiculoId;
+    const iV  = window._mvIdxViagem;
+    if (vId != null && iV != null && ultimoResultado?.[vId]?.[iV]) {
+      ultimoResultado[vId][iV]._kmAjustado = totalKm;
+      ultimoResultado[vId][iV]._userWaypoints = _mvRotasSalvas[chave].userWaypoints;
     }
+  } catch (e) {
+    console.error('mvRecalcularDistancia: erro ao persistir km/vias', e);
   }
-  mvRecalcularDistancia();
 }
 
-// Reseta para a rota original
+// ─── Resetar para rota original ────────────────────────────────────────────
 async function mvResetarRota() {
-  if (!dadosMapaAtual) return;
-  _mvWaypoints.forEach((w,i) => {
-    const orig = dadosMapaAtual[i];
-    if (!orig) return;
-    w.lat = orig.lat; w.lon = orig.lon;
-    if (w.marker) w.marker.setLatLng([orig.lat, orig.lon]);
-  });
+  _mvUserWaypoints.forEach(uw => { try { camadaViagem.removeLayer(uw.marker); } catch(e){} });
+  _mvUserWaypoints = [];
+  _mvAtualizarBadgeVias();
+
+  // Limpar rota salva para esta viagem
+  const chave = _mvChaveViagem();
+  delete _mvRotasSalvas[chave];
+  if (window._mvVeiculoId != null && window._mvIdxViagem != null && ultimoResultado?.[window._mvVeiculoId]?.[window._mvIdxViagem]) {
+    delete ultimoResultado[window._mvVeiculoId][window._mvIdxViagem]._kmAjustado;
+    delete ultimoResultado[window._mvVeiculoId][window._mvIdxViagem]._userWaypoints;
+  }
   await mvDesenharRota();
 }
 
-// Exporta o mapa como imagem PNG
+// ─── Compartilhar via Google Maps ──────────────────────────────────────────
+function mvCompartilharGoogleMaps() {
+  const seq = _mvMontarSequencia();
+  if (!seq || seq.length < 2) { showToast('Nenhuma rota para compartilhar.', false); return; }
+
+  const origem  = seq[0];
+  const destino = seq[seq.length - 1];
+  const mids = seq.slice(1, -1);
+  const waypointStr = mids.map(p => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join('|');
+  const url = `https://www.google.com/maps/dir/?api=1`
+    + `&origin=${origem.lat.toFixed(6)},${origem.lon.toFixed(6)}`
+    + `&destination=${destino.lat.toFixed(6)},${destino.lon.toFixed(6)}`
+    + `&travelmode=driving`
+    + (waypointStr ? `&waypoints=${encodeURIComponent(waypointStr)}` : '');
+
+  // Copiar para clipboard
+  navigator.clipboard.writeText(url).then(() => {
+    showToast('Link copiado! Cole no WhatsApp para enviar ao motorista ✓');
+  }).catch(() => {
+    window.open(url, '_blank');
+  });
+}
+
+// ─── Exportar mapa ─────────────────────────────────────────────────────────
 function mvExportarMapa() {
   if (!mapaViagem) return;
-  if (typeof leafletImage === 'undefined') {
-    // Fallback: abre Google Maps
-    showToast('Biblioteca de exportação não carregada. Use "Abrir no Google Maps".', false);
+  const mapaEl = document.getElementById('mv-mapa');
+  if (!mapaEl) return;
+
+  if (typeof html2canvas === 'undefined') {
+    // Fallback: abrir Google Maps compartilhável
+    mvCompartilharGoogleMaps();
+    showToast('Para salvar como imagem, use a impressão do navegador (Ctrl+P → Salvar como PDF).', true);
     return;
   }
-  showToast('Gerando imagem do mapa…', true);
-  leafletImage(mapaViagem, (err, canvas) => {
-    if (err) { showToast('Erro ao gerar imagem: ' + err, false); return; }
-    const titulo = document.getElementById('mv-titulo')?.textContent || 'Mapa_Viagem';
-    const a = document.createElement('a');
-    a.download = titulo.replace(/[^a-zA-Z0-9]/g,'_') + '.png';
-    a.href = canvas.toDataURL('image/png');
-    a.click();
-    showToast('Mapa exportado! ✅', true);
+
+  showToast('Gerando imagem…', true);
+
+  // Watchdog: garante feedback claro mesmo se algo inesperado travar o processo,
+  // em vez de deixar o toast "Gerando…" como única pista para o usuário.
+  let respondeu = false;
+  const watchdog = setTimeout(() => {
+    if (!respondeu) {
+      respondeu = true;
+      showToast('Não foi possível gerar a imagem (tempo esgotado). Tente novamente ou use Ctrl+P → Salvar como PDF.', false);
+    }
+  }, 15000);
+
+  // Esconde temporariamente os controles de zoom (+/-) para não aparecerem na imagem exportada
+  const zoomCtrl = mapaEl.querySelector('.leaflet-control-zoom');
+  const zoomCtrlDisplayOriginal = zoomCtrl ? zoomCtrl.style.display : null;
+  if (zoomCtrl) zoomCtrl.style.display = 'none';
+
+  html2canvas(mapaEl, {
+    useCORS: true,
+    allowTaint: false,
+    backgroundColor: '#ffffff',
+    scale: 2, // melhor qualidade na imagem exportada
+    logging: false
+  }).then(canvas => {
+    if (respondeu) return; // watchdog já disparou, ignora resposta tardia
+    respondeu = true;
+    clearTimeout(watchdog);
+    if (zoomCtrl) zoomCtrl.style.display = zoomCtrlDisplayOriginal;
+
+    try {
+      const titulo = (document.getElementById('mv-titulo')?.textContent || 'Mapa_Viagem').replace(/[^a-zA-Z0-9]/g,'_');
+      const a = document.createElement('a');
+      a.download = titulo + '.png';
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+      showToast('Mapa exportado! ✅');
+    } catch (e2) {
+      // toDataURL pode lançar SecurityError se algum tile ficou "tainted" por CORS
+      showToast('Não foi possível salvar a imagem (restrição do navegador). Use Ctrl+P → Salvar como PDF.', false);
+    }
+  }).catch(() => {
+    if (respondeu) return;
+    respondeu = true;
+    clearTimeout(watchdog);
+    if (zoomCtrl) zoomCtrl.style.display = zoomCtrlDisplayOriginal;
+    showToast('Erro ao gerar imagem. Tente Ctrl+P → Salvar como PDF.', false);
   });
 }
 
