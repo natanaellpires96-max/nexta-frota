@@ -1430,8 +1430,14 @@ async function renderCarrier(carrier){
     const timeDisabled=(!cur||isIndisp)?'disabled':'';
     const opDrvAtivos   = (allDrivers[carrier]||[]).filter(d=>d.ativo!==false&&d.operacao===p.operacao);
     const opDrvInativos = (allDrivers[carrier]||[]).filter(d=>d.ativo===false&&d.operacao===p.operacao);
-    const savedMotD = (rec&&rec.motoristaDiurno) || p.motoristaDiurno || '';
-    const savedMotN = (rec&&rec.motoristaNoturno) || p.motoristaNoturno || '';
+    // Função: retorna nome apenas se motorista estiver ativo (oculta inativos na exibição)
+    function filtrarMotoristaSalvo(nome){
+      if(!nome) return '';
+      const inativo=opDrvInativos.find(d=>d.nome===nome);
+      return inativo ? '' : nome;
+    }
+    const savedMotD = filtrarMotoristaSalvo((rec&&rec.motoristaDiurno) || p.motoristaDiurno || '');
+    const savedMotN = filtrarMotoristaSalvo((rec&&rec.motoristaNoturno) || p.motoristaNoturno || '');
     function buildDriverOpts(savedVal, turno){
       const ativos   = opDrvAtivos.filter(d=>d.turno===turno);
       const inativos = opDrvInativos.filter(d=>d.turno===turno);
@@ -2459,7 +2465,15 @@ async function saveCutoffHour(){
 async function renderToday(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   const ds=dateStr(S.dateOffset);
-  const allP=await dbGetPlates();
+  const [allP, allDrivers]=await Promise.all([dbGetPlates(), dbGetDrivers().catch(()=>({}))]);
+  // Retorna nome do motorista somente se ele estiver ativo (ou não estiver cadastrado — legado)
+  function driverAtivoNome(carrier, operacao, nome){
+    if(!nome) return '';
+    const driversCarrier=(allDrivers[carrier]||[]);
+    const cadastro=driversCarrier.find(d=>d.nome===nome&&d.operacao===operacao);
+    if(cadastro && cadastro.ativo===false) return ''; // inativo → oculta
+    return nome; // ativo ou não cadastrado (legado) → exibe
+  }
   const _uOps2=userOperacoes(USERS_DB[S.user]);
   const pendingAlerts = await buildPendingAlerts(allP,_uOps2);
   const opFilter=S.todayOp||"";
@@ -2484,9 +2498,9 @@ async function renderToday(body){
       const v=rec?rec.status:null;
       if(v){ counts[v]=(counts[v]||0)+1; } counts.total++;
       const st=v?getSt(v):null;
-      // Only show drivers if availability was actually filled
-      const motDToday=v?((rec&&rec.motoristaDiurno)||p.motoristaDiurno||''):'';
-      const motNToday=v?((rec&&rec.motoristaNoturno)||p.motoristaNoturno||''):'';
+      // Only show drivers if availability was actually filled, and only if driver is active
+      const motDToday=v?driverAtivoNome(carrier, p.operacao, (rec&&rec.motoristaDiurno)||p.motoristaDiurno||''):'';
+      const motNToday=v?driverAtivoNome(carrier, p.operacao, (rec&&rec.motoristaNoturno)||p.motoristaNoturno||''):'';
       const unlockPlateBtn=(v&&isAdmin2)?`<button class="btn-unlock-plate" onclick="adminUnlockPlate('${attr(jsArg(carrier))}','${attr(jsArg(p.placa))}','${attr(jsArg(ds))}')" title="Desbloquear apenas esta placa">🔓</button>`:''
       return `<tr>
         <td style="font-weight:500;font-family:'DM Mono',monospace">${esc(p.placa)}</td>
@@ -2569,7 +2583,13 @@ async function renderHistory(body){
     <div id="hist-result"><div class="loading"><span class="spin"></span>Buscando registros...</div></div>`;
 
   const dates=getDates(S.histDays);
-  const allP=await dbGetPlates();
+  const [allP, allDrivers]=await Promise.all([dbGetPlates(), dbGetDrivers().catch(()=>({}))]);
+  // Retorna nome apenas se motorista ativo (ou não cadastrado — legado)
+  function driverAtivoHist(carrier, operacao, nome){
+    if(!nome) return '';
+    const d=(allDrivers[carrier]||[]).find(d=>d.nome===nome&&d.operacao===operacao);
+    return (d&&d.ativo===false) ? '' : nome;
+  }
   const carriersToShow=cf?[cf]:CARRIERS;
   const allPairs=[];
   for(const carrier of carriersToShow)
@@ -2602,7 +2622,7 @@ async function renderHistory(body){
           <td>${statusBadge}</td>
           <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(t)}</td>
           <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?esc(rec.hodometro):'Não preenchido'}</td>
-          <td>${renderDriverCell(!isBlank&&((rec&&rec.motoristaDiurno)||p.motoristaDiurno)?((rec&&rec.motoristaDiurno)||p.motoristaDiurno):'',!isBlank&&((rec&&rec.motoristaNoturno)||p.motoristaNoturno)?((rec&&rec.motoristaNoturno)||p.motoristaNoturno):'')}</td>
+          <td>${renderDriverCell(!isBlank?driverAtivoHist(carrier, p.operacao, (rec&&rec.motoristaDiurno)||p.motoristaDiurno||''):'', !isBlank?driverAtivoHist(carrier, p.operacao, (rec&&rec.motoristaNoturno)||p.motoristaNoturno||''):'')}</td>
         </tr>`;
         const g=groups[ds];
         g.rows.push(row);
@@ -4761,7 +4781,7 @@ window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates; window.exportPdf=exportPdf;
 window.renderTabBody=renderTabBody; window.buildStatusBoardAlert=buildStatusBoardAlert; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.saveMetaDisp=saveMetaDisp; window.S=S; window.renderKpisMensais=renderKpisMensais;
-window.showToast=showToast; window.dateStr=dateStr; window.sincronizarDisponibilidadeVeiculos=sincronizarDisponibilidadeVeiculos;
+window.showToast=showToast; window.dateStr=dateStr; window.sincronizarDisponibilidadeVeiculos=sincronizarDisponibilidadeVeiculos; window.USERS_DB=USERS_DB;
 
 window.addEventListener("resize", _debouncedViewportQualityRefresh, { passive:true });
 window.visualViewport?.addEventListener("resize", _debouncedViewportQualityRefresh, { passive:true });
@@ -6832,10 +6852,31 @@ let _sugestoesSplitDedicado = []; // sugestões de quebra manual pós-otimizaç�
 const _motoristasOverride = {}; // { petId: nome } — override manual por viagem, ignora regra diurno/noturno
 let lockedTerminals = new Set(); // terminais com ajustes travados (não re-otimizados)
 
-// ── Contador de IDs de viagem (P + MM + YY + DD + seq 3 dígitos) ─────────────
+// ── Contador de IDs de viagem (P + MM + YY + seq 3 dígitos) ─────────────────
+// Formato: P{MM}{YY}{NNN} ex: P0626001
+// Chave interna: MM+YY ex: "0626" — sequência global por mês/ano, sem repetição
 function _getPetSeq(chave) {
   try { return JSON.parse(localStorage.getItem('petSeq') || '{}')[chave] || 0; } catch { return 0; }
 }
+// Migra chaves legadas (MM+YY+DD = 6 dígitos) para o novo formato (MM+YY = 4 dígitos)
+(function _migrarPetSeqLegado() {
+  try {
+    const stored = JSON.parse(localStorage.getItem('petSeq') || '{}');
+    let changed = false;
+    const merged = {};
+    for (const [chave, seq] of Object.entries(stored)) {
+      if (chave.length === 6) {
+        // legado: MM+YY+DD → nova chave: MM+YY (primeiros 4 dígitos)
+        const novaChave = chave.slice(0, 4);
+        merged[novaChave] = Math.max(merged[novaChave] || 0, seq);
+        changed = true;
+      } else {
+        merged[chave] = Math.max(merged[chave] || 0, seq);
+      }
+    }
+    if (changed) localStorage.setItem('petSeq', JSON.stringify(merged));
+  } catch(e) {}
+})();
 // Atribui petId a qualquer viagem real que ainda não tenha um
 function atribuirPetIds(resultado, dataRef) {
   if (!resultado) return;
@@ -6855,22 +6896,21 @@ function atribuirPetIds(resultado, dataRef) {
       }
     }
   }
-  const mm  = String(dataRef.getMonth()+1).padStart(2,'0');
-  const yy  = String(dataRef.getFullYear()).slice(-2);
-  const dd  = String(dataRef.getDate()).padStart(2,'0');
-  const chave = mm + yy + dd;   // ex: "052612"
+  const mm    = String(dataRef.getMonth()+1).padStart(2,'0');
+  const yy    = String(dataRef.getFullYear()).slice(-2);
+  const chave = mm + yy;   // ex: "0626" — chave por mês/ano (sem dia)
   let seq = _getPetSeq(chave);
   // Garante que nunca reutilize um ID já existente no resultado atual
   // (cobre viagens travadas de rodadas anteriores que mantêm seus IDs)
   Object.values(resultado).filter(Array.isArray).forEach(viagens => viagens.forEach(vi => {
-    const m = (vi.petId||'').match(/^P(\d{6})(\d{3,})$/);
+    const m = (vi.petId||'').match(/^P(\d{4})(\d{3,})$/);
     if (m && m[1] === chave) seq = Math.max(seq, parseInt(m[2]));
   }));
   for (const viagens of Object.values(resultado)) {
     if (!Array.isArray(viagens)) continue;
     for (const vi of viagens) {
       if (vi._vazio || !(vi.paradas||[]).length) continue;
-      if (!vi.petId) { seq++; vi.petId = `P${mm}${yy}${dd}${String(seq).padStart(3,'0')}`; }
+      if (!vi.petId) { seq++; vi.petId = `P${mm}${yy}${String(seq).padStart(3,'0')}`; }
     }
   }
   // NÃO persiste o contador aqui — só persiste ao salvar no histórico,
@@ -6884,7 +6924,14 @@ function _atualizarPetSeq(resultado) {
   Object.values(resultado).forEach(viagens => {
     if (!Array.isArray(viagens)) return;
     viagens.forEach(vi => {
-      const m = (vi.petId || '').match(/^P(\d{6})(\d{3,})$/);
+      // Suporta formato novo P{MM}{YY}{NNN} (4 dígitos de chave)
+      // e legado P{MM}{YY}{DD}{NNN} (6 dígitos) — migra chave legada para MM+YY
+      let m = (vi.petId || '').match(/^P(\d{4})(\d{3,})$/);
+      if (!m) {
+        // tentativa de leitura do formato legado: extrai MM+YY dos primeiros 4 dígitos
+        const ml = (vi.petId || '').match(/^P(\d{2})(\d{2})\d{2}(\d{3,})$/);
+        if (ml) m = [null, ml[1] + ml[2], ml[3]];
+      }
       if (!m) return;
       const [, chave, seq] = m;
       if (!stored[chave] || parseInt(seq) > stored[chave]) stored[chave] = parseInt(seq);
@@ -7823,9 +7870,19 @@ function renderMapaGeral() {
       if (terminal) {
         pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon), tipo: 'origem', nome: terminal.nome });
       }
+
+      // Monta sequência intercalando waypoints manuais (vi._userWaypoints) salvos
+      // pelo usuário ao ajustar a rota no mapa individual da viagem.
+      // A estrutura é idêntica à usada em _mvMontarSequencia() no mapa de viagem:
+      // cada ponto fixo (origem→parada1→parada2→…) pode ter vias intermediárias
+      // inseridas pelo usuário (segmento = índice do ponto fixo de origem do segmento).
+      const userWps = Array.isArray(vi._userWaypoints) ? vi._userWaypoints : [];
+
+      // pontos fixos: índice 0 = terminal (origem), 1…n = paradas, último = retorno
+      const pontosFixos = pontos; // reutiliza o array já iniciado com a origem acima
       paradas.forEach((p, pi) => {
         const _coord = latLonEfetivo(p.pedido);
-        pontos.push({
+        pontosFixos.push({
           lat: _coord.lat,
           lon: _coord.lon,
           isCentroide: _coord.isCentroide,
@@ -7835,15 +7892,27 @@ function renderMapaGeral() {
         });
       });
       if (terminal && ((paradas[paradas.length - 1]?.deslocVazioMin || 0) > 0)) {
-        pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon), tipo: 'retorno', nome: `Retorno ${terminal.nome}` });
+        pontosFixos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon), tipo: 'retorno', nome: `Retorno ${terminal.nome}` });
       }
-      if (pontos.length < 2) return;
+      if (pontosFixos.length < 2) return;
+
+      // Intercalar vias manuais do usuário entre os pontos fixos para desenho da rota
+      const pontosRota = [];
+      for (let fi = 0; fi < pontosFixos.length; fi++) {
+        pontosRota.push(pontosFixos[fi]);
+        const viasDoSegmento = userWps
+          .filter(uw => uw.segmento === fi)
+          .sort((a, b) => a.ordem - b.ordem);
+        viasDoSegmento.forEach(uw => pontosRota.push({ lat: uw.lat, lon: uw.lon, tipo: 'via' }));
+      }
+      // pontosRota → desenho da linha (inclui desvios manuais)
+      // pontos / pontosFixos → marcadores dos clientes (sem vias intermediárias)
 
       const _paletaViagem = ['#00A499','#20419A','#763F98','#f28e2b','#e15759','#59a14f','#edc948','#4e79a7','#9c755f','#ff9da7','#e76f51','#2f4b7c','#a8dadc','#e63946','#06d6a0','#118ab2'];
       const cor = _paletaViagem[_idxViagemGlobal % _paletaViagem.length];
       _idxViagemGlobal++;
       const volViagem = paradas.reduce((s, p) => s + (p.volumeTotal || 0), 0);
-      viagensMapa.push({ v, idx, pontos, cor, volViagem, terminalNome, destinos: paradas.length, viagem: vi, paradas });
+      viagensMapa.push({ v, idx, pontos, pontosRota, cor, volViagem, terminalNome, destinos: paradas.length, viagem: vi, paradas });
       const cur = porPlaca.get(v.placa) || { cor, ciclos: 0, destinos: 0, volume: 0, transportadora: v.transportadora || '-' };
       cur.ciclos += 1;
       cur.destinos += paradas.length;
@@ -7955,7 +8024,10 @@ function renderMapaGeral() {
   }
 
   viagensVisiveis.forEach(item => {
-    osrmRoute(item.pontos, camadaMapaGeral, item.cor, 4, 0.86).catch(()=>{});
+    // pontosRota inclui as vias manuais inseridas pelo usuário no mapa da viagem
+    // individual; item.pontos são os pontos fixos (terminal + clientes), usados
+    // abaixo apenas para posicionar os marcadores, sem as vias intermediárias.
+    osrmRoute(item.pontosRota || item.pontos, camadaMapaGeral, item.cor, 4, 0.86).catch(()=>{});
 
     // Calcula clock de chegada para cada parada desta viagem
     const v_item = item.v;
@@ -11292,7 +11364,7 @@ function renderTemplateOperacao() {
         <td>${ld.postoCidade}</td>
         <td style="text-align:center;font-weight:700;">${ld.cpt || ''}</td>
         <td>${ld.produto || ''}</td>
-        <td style="text-align:right;">${ld.volumeL.toLocaleString('pt-BR')}</td>
+        <td style="text-align:right;white-space:nowrap;">${ld.volumeL.toLocaleString('pt-BR')}</td>
       </tr>`).join('');
 
     const linhasFinal = linhas;
@@ -11352,7 +11424,7 @@ function renderTemplateOperacao() {
             <col/>
             <col style="width:44px"/>
             <col style="width:220px"/>
-            <col style="width:80px"/>
+            <col style="width:76px"/>
           </colgroup>
           <thead>
             <tr>
@@ -11362,7 +11434,7 @@ function renderTemplateOperacao() {
               <th>Posto de entrega</th>
               <th style="text-align:center;">CPT</th>
               <th>Cód. Produto — Descrição</th>
-              <th style="text-align:right;">Volume (L)</th>
+              <th style="text-align:right;white-space:nowrap;">Volume (L)</th>
             </tr>
           </thead>
           <tbody>
@@ -11938,7 +12010,13 @@ async function _reconstruirPetSeqDoHistorico() {
       if (!resultado) continue;
       Object.values(resultado).forEach(viagens => {
         (viagens || []).forEach(vi => {
-          const m = (vi.petId || '').match(/^P(\d{6})(\d{3,})$/);
+          // Formato novo: P{MM}{YY}{NNN} → chave = 4 dígitos
+          let m = (vi.petId || '').match(/^P(\d{4})(\d{3,})$/);
+          if (!m) {
+            // Formato legado: P{MM}{YY}{DD}{NNN} → migra chave para MM+YY
+            const ml = (vi.petId || '').match(/^P(\d{2})(\d{2})\d{2}(\d{3,})$/);
+            if (ml) m = [null, ml[1] + ml[2], ml[3]];
+          }
           if (!m) return;
           const [, chave, seq] = m;
           const n = parseInt(seq);
@@ -11985,7 +12063,16 @@ function editarHorarioCarga(vid, ti, hhmm) {
 
 function renderResultado(resultado, controleTempo={}) {
   // Garante que toda viagem real tenha petId (cobre ajustes manuais pós-otimização)
-  atribuirPetIds(resultado);
+  // Recria o contador a partir do histórico ANTES de atribuir IDs — evita repetições
+  _reconstruirPetSeqDoHistorico().then(() => {
+    atribuirPetIds(resultado);
+    _renderResultadoInterno(resultado, controleTempo);
+  }).catch(() => {
+    atribuirPetIds(resultado);
+    _renderResultadoInterno(resultado, controleTempo);
+  });
+}
+function _renderResultadoInterno(resultado, controleTempo={}) {
   let entregueVol=0, totalQuebras=0, veicsUsados=0;
   const filtroResCliente = valId('f-res-cliente');
   const filtroResCidade = valId('f-res-cidade');
@@ -12855,8 +12942,8 @@ async function salvarNoHistorico(silencioso = false) {
 
   // Usuário logado vem sempre do app principal (Firebase Auth) — é a única
   // forma de acessar o Roteirizador (ver setTab() / controle de acesso).
-  const usuarioLogado = (S && S.user && USERS_DB && USERS_DB[S.user])
-    ? (USERS_DB[S.user].name || USERS_DB[S.user].login || S.user)
+  const usuarioLogado = (S && S.user && window.USERS_DB && window.USERS_DB[S.user])
+    ? (window.USERS_DB[S.user].name || window.USERS_DB[S.user].login || S.user)
     : (S?.user || 'Desconhecido');
   const snapshot = {
     versao: 1,
@@ -12940,7 +13027,7 @@ async function carregarListaHistorico() {
       <div class="hist-entry">
         <div class="hist-entry-info">
           <div class="hist-entry-date">${dtStr}</div>
-          <div class="hist-entry-meta">Entrega: <strong>${entrega}</strong>${data.salvoPor ? ` &nbsp;·&nbsp; Salvo por: <strong>${data.salvoPor === 'Desconhecido' ? ((S && S.user && USERS_DB && USERS_DB[S.user]) ? (USERS_DB[S.user].name || S.user) : data.salvoPor) : data.salvoPor}</strong>` : ''}</div>
+          <div class="hist-entry-meta">Entrega: <strong>${entrega}</strong>${data.salvoPor ? ` &nbsp;·&nbsp; Salvo por: <strong>${data.salvoPor === 'Desconhecido' ? ((S && S.user && window.USERS_DB && window.USERS_DB[S.user]) ? (window.USERS_DB[S.user].name || S.user) : data.salvoPor) : data.salvoPor}</strong>` : ''}</div>
           <div class="hist-entry-chips">
             <span class="tag tag-green">${totalRotas} rota${totalRotas !== 1 ? 's' : ''}</span>
             <span class="tag tag-blue">${totalViagens} ${totalViagens !== 1 ? 'viagens' : 'viagem'}</span>
@@ -13292,6 +13379,7 @@ let _mvDistSpan = null;
 let _mvDragMarker = null;    // marcador fantasma que aparece ao hover na linha
 let _mvRenderToken = 0;      // token incremental — evita que uma chamada antiga de mvDesenharRota
                               // sobrescreva o resultado de uma chamada mais recente (race condition)
+let _mvCanvasRenderer = null; // renderer Canvas dedicado para a polyline (evita bug de SVG no html2canvas)
 
 // ─── State para salvar rota ajustada na viagem ────────────────────────────
 // Salva os waypoints do usuário por chave "vId||iV" para persistir durante a sessão
@@ -13310,6 +13398,12 @@ function garantirMapaViagem() {
       attribution: '&copy; OpenStreetMap &copy; CARTO',
       crossOrigin: true // permite que o html2canvas leia os tiles sem "tainted canvas" (CORS)
     }).addTo(mapaViagem);
+    // Renderer Canvas dedicado para a linha da rota. O Leaflet, por padrão, desenha
+    // polylines em SVG — e o html2canvas tem um bug documentado e conhecido onde o
+    // SVG do Leaflet fica deslocado/cortado na imagem exportada (_updateSvgViewport
+    // não é interpretado corretamente). Usar Canvas para esta camada evita o problema
+    // por completo, já que <canvas> é capturado de forma direta e fiel pelo html2canvas.
+    _mvCanvasRenderer = null; // não usado (polylines usam SVG padrão do Leaflet)
   }
   if (camadaViagem) camadaViagem.remove();
   camadaViagem = L.layerGroup().addTo(mapaViagem);
@@ -13616,8 +13710,6 @@ function mvExportarMapa() {
 
   showToast('Gerando imagem…', true);
 
-  // Watchdog: garante feedback claro mesmo se algo inesperado travar o processo,
-  // em vez de deixar o toast "Gerando…" como única pista para o usuário.
   let respondeu = false;
   const watchdog = setTimeout(() => {
     if (!respondeu) {
@@ -13626,7 +13718,7 @@ function mvExportarMapa() {
     }
   }, 15000);
 
-  // Esconde temporariamente os controles de zoom (+/-) para não aparecerem na imagem exportada
+  // Esconde temporariamente os controles de zoom para não aparecerem na imagem
   const zoomCtrl = mapaEl.querySelector('.leaflet-control-zoom');
   const zoomCtrlDisplayOriginal = zoomCtrl ? zoomCtrl.style.display : null;
   if (zoomCtrl) zoomCtrl.style.display = 'none';
@@ -13635,10 +13727,107 @@ function mvExportarMapa() {
     useCORS: true,
     allowTaint: false,
     backgroundColor: '#ffffff',
-    scale: 2, // melhor qualidade na imagem exportada
-    logging: false
+    scale: 2,
+    logging: false,
+    // ── Correção do deslocamento de polylines/marcadores no html2canvas ────────
+    // O Leaflet usa um sistema de "world offset": o leaflet-map-pane é movido para
+    // uma posição negativa grande (ex: translate3d(-5000px, -3000px, 0)) e cada
+    // tile/pane filho recebe um offset positivo equivalente para compensar.
+    // O html2canvas não consegue interpretar essa álgebra de transforms aninhados
+    // corretamente, resultando em polylines e marcadores deslocados em relação
+    // ao mapa de fundo na imagem exportada.
+    //
+    // Solução: no clone DOM, extraímos o offset do leaflet-map-pane (que é o
+    // deslocamento acumulado de pan do Leaflet) e zeramos seu transform.
+    // Em seguida, aplicamos esse mesmo delta a cada filho direto do map-pane
+    // (leaflet-tile-pane, leaflet-overlay-pane, leaflet-marker-pane, etc.),
+    // somando ao transform já existente — assim todos os elementos ficam com
+    // posição absoluta correta dentro do elemento #mv-mapa, sem dependência
+    // do transform do pai, e o html2canvas os captura fielmente.
+    onclone: (clonedDoc) => {
+      const clonedMapa = clonedDoc.getElementById('mv-mapa');
+      if (!clonedMapa) return;
+
+      // Helper: converte translate3d(x, y, z) → { x, y } em pixels
+      function parseTranslate(transform) {
+        if (!transform) return { x: 0, y: 0 };
+        const m3d = transform.match(/translate3d\(\s*([^,]+),\s*([^,]+),\s*[^)]+\)/);
+        if (m3d) return { x: parseFloat(m3d[1]) || 0, y: parseFloat(m3d[2]) || 0 };
+        const m2d = transform.match(/translate\(\s*([^,]+),\s*([^)]+)\)/);
+        if (m2d) return { x: parseFloat(m2d[1]) || 0, y: parseFloat(m2d[2]) || 0 };
+        return { x: 0, y: 0 };
+      }
+
+      // Helper: compõe translate(x, y) como string CSS, preservando outros transforms
+      function setTranslate(el, dx, dy) {
+        const t = el.style.transform || '';
+        // Remove qualquer translate/translate3d existente
+        const stripped = t
+          .replace(/translate3d\([^)]+\)/g, '')
+          .replace(/translate\([^)]+\)/g, '')
+          .trim();
+        const newT = `translate(${dx}px,${dy}px)${stripped ? ' ' + stripped : ''}`;
+        el.style.transform = newT;
+        el.style.webkitTransform = newT;
+      }
+
+      // 1. Pega o offset do leaflet-map-pane (deslocamento global do pan)
+      const mapPane = clonedMapa.querySelector('.leaflet-map-pane');
+      if (!mapPane) {
+        // Fallback simples: converte translate3d → translate em todos os panes
+        clonedMapa.querySelectorAll('[style*="translate3d"]').forEach(el => {
+          const t = el.style.transform;
+          el.style.transform = t.replace(
+            /translate3d\(([^,]+),([^,]+),[^)]+\)/,
+            'translate($1,$2)'
+          );
+        });
+        return;
+      }
+
+      const mapPaneOffset = parseTranslate(mapPane.style.transform);
+
+      // 2. Zera o transform do map-pane — o html2canvas agora vai tratá-lo como (0,0)
+      mapPane.style.transform = 'translate(0px,0px)';
+      mapPane.style.webkitTransform = 'translate(0px,0px)';
+
+      // 3. Cada filho direto do map-pane (tile-pane, overlay-pane, marker-pane, etc.)
+      //    já tem seu próprio transform relativo ao map-pane. Precisamos somar
+      //    o offset do map-pane ao deles para manter a posição visual correta.
+      Array.from(mapPane.children).forEach(child => {
+        const childOffset = parseTranslate(child.style.transform);
+        const newX = childOffset.x + mapPaneOffset.x;
+        const newY = childOffset.y + mapPaneOffset.y;
+        setTranslate(child, newX, newY);
+
+        // 4. Dentro do overlay-pane (SVG das polylines), o próprio SVG pode ter
+        //    um viewBox ou transform que precisa ser corrigido também.
+        //    Garante que o SVG filho não herde transforms problemáticos.
+        child.querySelectorAll('[style*="translate3d"]').forEach(el => {
+          const t = el.style.transform;
+          if (t && t.includes('translate3d')) {
+            el.style.transform = t.replace(
+              /translate3d\(([^,]+),([^,]+),[^)]+\)/,
+              'translate($1,$2)'
+            );
+          }
+        });
+      });
+
+      // 5. Qualquer outro pane fora do map-pane (ex: leaflet-control-container)
+      //    que ainda use translate3d → converte para translate simples
+      clonedMapa.querySelectorAll('[style*="translate3d"]').forEach(el => {
+        const t = el.style.transform;
+        if (t && t.includes('translate3d')) {
+          el.style.transform = t.replace(
+            /translate3d\(([^,]+),([^,]+),[^)]+\)/,
+            'translate($1,$2)'
+          );
+        }
+      });
+    }
   }).then(canvas => {
-    if (respondeu) return; // watchdog já disparou, ignora resposta tardia
+    if (respondeu) return;
     respondeu = true;
     clearTimeout(watchdog);
     if (zoomCtrl) zoomCtrl.style.display = zoomCtrlDisplayOriginal;
@@ -13651,7 +13840,6 @@ function mvExportarMapa() {
       a.click();
       showToast('Mapa exportado! ✅');
     } catch (e2) {
-      // toDataURL pode lançar SecurityError se algum tile ficou "tainted" por CORS
       showToast('Não foi possível salvar a imagem (restrição do navegador). Use Ctrl+P → Salvar como PDF.', false);
     }
   }).catch(() => {
