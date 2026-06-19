@@ -13907,63 +13907,77 @@ function dashChaveLabel(k) {
 
 // ── Lê snapshots do histórico em disco (dirHandleHistorico) ─────────────────
 async function dashLerHistoricoDisco() {
-  if (!window.dirHandleHistorico) return {};
-  let permOk = false;
-  try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted'; } catch(e) {}
-  if (!permOk) {
-    try { permOk = (await window.dirHandleHistorico.requestPermission({ mode: 'read' })) === 'granted'; } catch(e) {}
+  console.log('[DASH] dashLerHistoricoDisco iniciado. dirHandleHistorico=', window.dirHandleHistorico);
+  if (!window.dirHandleHistorico) {
+    console.warn('[DASH] dirHandleHistorico não definido — pasta do histórico não selecionada.');
+    return {};
   }
+  let permOk = false;
+  try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted'; } catch(e) { console.warn('[DASH] queryPermission erro:', e); }
+  if (!permOk) {
+    try { permOk = (await window.dirHandleHistorico.requestPermission({ mode: 'read' })) === 'granted'; } catch(e) { console.warn('[DASH] requestPermission erro:', e); }
+  }
+  console.log('[DASH] permissão leitura:', permOk);
   if (!permOk) return {};
 
   const store = {};
+  let total = 0, aceitos = 0, rejeitados = 0;
   for await (const [name, handle] of window.dirHandleHistorico.entries()) {
     if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+    total++;
     try {
-      const data = JSON.parse(await (await handle.getFile()).text());
+      const text = await (await handle.getFile()).text();
+      const data = JSON.parse(text);
+      console.log(`[DASH] arquivo: ${name} | versao=${data.versao} | savedAt=${data.savedAt} | temResultado=${!!data.resultado} | datasEntrega=`, data.datasEntrega);
 
-      // Aceita qualquer arquivo que tenha pelo menos versao + savedAt
-      // (resultado pode estar ausente em arquivos legados incompletos)
-      if (!data.versao || !data.savedAt) continue;
+      if (!data.versao || !data.savedAt) {
+        console.warn(`[DASH] rejeitado (sem versao/savedAt): ${name}`);
+        rejeitados++;
+        continue;
+      }
 
-      // Usa dataEntrega para definir o mês (igual ao Histórico),
-      // com fallback para savedAt se não houver datas de entrega
       const dataRef = (() => {
         const de = data.datasEntrega && data.datasEntrega[0];
         if (de) {
-          // Formato DD/MM/YYYY
           const pts = de.split('/');
           if (pts.length === 3) {
             const d = new Date(parseInt(pts[2]), parseInt(pts[1])-1, parseInt(pts[0]));
             if (!isNaN(d.getTime())) return d;
           }
-          // Formato ISO
           const d2 = new Date(de);
           if (!isNaN(d2.getTime())) return d2;
         }
         return new Date(data.savedAt);
       })();
 
+      const chave = `${dataRef.getFullYear()}${String(dataRef.getMonth()+1).padStart(2,'0')}`;
+      console.log(`[DASH] aceito: ${name} → chave ${chave}`);
+      aceitos++;
+
       const snap = {
-        versao:      data.versao,
-        savedAt:     data.savedAt,
-        salvoPor:    data.salvoPor || 'Desconhecido',
+        versao:       data.versao,
+        savedAt:      data.savedAt,
+        salvoPor:     data.salvoPor || 'Desconhecido',
         datasEntrega: data.datasEntrega || [],
-        resumo:      data.resumo || {},
-        pedidos:     data.pedidos   || [],
-        terminais:   data.terminais || [],
-        veiculos:    data.veiculos  || [],
-        resultado:   data.resultado || {},
+        resumo:       data.resumo || {},
+        pedidos:      data.pedidos   || [],
+        terminais:    data.terminais || [],
+        veiculos:     data.veiculos  || [],
+        resultado:    data.resultado || {},
         controleTempo: data.controleTempo || {},
-        _fonte:      'disco',
-        _filename:   name,
+        _fonte:       'disco',
+        _filename:    name,
       };
 
-      // Chave por mês/ano da data de entrega
-      const chave = `${dataRef.getFullYear()}${String(dataRef.getMonth()+1).padStart(2,'0')}`;
       if (!store[chave]) store[chave] = [];
       store[chave].push(snap);
-    } catch(e) { /* arquivo inválido — ignora */ }
+    } catch(e) {
+      console.error(`[DASH] erro ao ler ${name}:`, e);
+      rejeitados++;
+    }
   }
+  console.log(`[DASH] total arquivos json: ${total} | aceitos: ${aceitos} | rejeitados: ${rejeitados}`);
+  console.log('[DASH] chaves geradas:', Object.keys(store));
   return store;
 }
 
@@ -14395,6 +14409,20 @@ window.dashSincronizar = async function() {
   const btn = document.getElementById('dash-sync-btn');
   if (btn) { btn.textContent = '⏳ Sincronizando...'; btn.disabled = true; }
   try {
+    // Se a pasta do histórico ainda não foi selecionada, pede ao usuário
+    if (!window.dirHandleHistorico) {
+      if (!window.showDirectoryPicker) {
+        showToast('Seu navegador não suporta acesso a pastas. Use Chrome ou Edge.', false);
+        return;
+      }
+      try {
+        const handle = await window.showDirectoryPicker({ mode: 'read' });
+        window.dirHandleHistorico = handle;
+      } catch(e) {
+        if (e.name !== 'AbortError') showToast('Pasta não selecionada.', false);
+        return;
+      }
+    }
     await dashPopularMeses();
     const sel = document.getElementById('dash-mes-sel');
     if (sel && sel.value) {
