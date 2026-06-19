@@ -584,9 +584,17 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
       // Regras 3-5: status do painel do dia
       const key = `${carrier}||${plate}||${dateStr}`;
       const rec = bulk[key];
+
+      // Sempre reseta para os valores do cadastro antes de aplicar o painel —
+      // garante que uma troca de data não deixe motorista "fantasma" de outro dia.
+      v.motoristaDiurno  = registroFirestore.motoristaDiurno  || '';
+      v.motoristaNt      = registroFirestore.motoristaNoturno || '';
+      v._motoristaPainel = false;
+
       if (rec && rec.status) {
         v.disponibilidade    = rec.status === 'disponivel' ? 'Disponível' : 'Indisponível';
         v._motivoIndisponivel = rec.status !== 'disponivel' ? rec.status : null;
+        // Painel tem motorista? Sobrescreve o do cadastro
         if (rec.motoristaDiurno)  { v.motoristaDiurno = rec.motoristaDiurno; v._motoristaPainel = true; }
         if (rec.motoristaNoturno) { v.motoristaNt      = rec.motoristaNoturno; v._motoristaPainel = true; }
       } else {
@@ -6353,7 +6361,7 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
       <button class="btn btn-sm" onclick="exportarRelatorioRoteirizacao()" style="background:#EEF2FF;color:#3730A3;border-color:#C7D2FE;">
         📊 Relatório Excel
       </button>
-      <button class="btn btn-green btn-sm" onclick="salvarNoHistorico()">Salvar no histórico</button>
+
     </div>
     <div class="filter-bar">
       <div class="field" style="flex:2;min-width:200px;">
@@ -6429,7 +6437,7 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
             </select>
           </div>
           <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:11px;padding:6px 14px;">Todos os periodos</button>
-          <button class="btn btn-sm" onclick="dashSalvarAtual()" style="background:var(--surface);border:1px solid var(--border-dk);color:var(--text-2);font-size:11px;padding:6px 14px;" title="Salva roteirizacao atual no Dashboard">Salvar no Dashboard</button>
+
         </div>
       </div>
       <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px;">
@@ -8046,9 +8054,10 @@ function renderMapaGeral() {
     });
     function absMinToHM(m) {
       if (m == null || isNaN(m)) return null;
-      const hm = ((m%1440)+1440)%1440;
-      const d = Math.floor(m/1440);
-      return String(Math.floor(hm/60)).padStart(2,'0')+':'+String(hm%60).padStart(2,'00')+(d>0?` (+${d}d)`:'');
+      const mRound = Math.round(m); // garante inteiro — evita decimais no resultado
+      const hm = ((mRound%1440)+1440)%1440;
+      const d = Math.floor(mRound/1440);
+      return String(Math.floor(hm/60)).padStart(2,'0')+':'+String(hm%60).padStart(2,'0')+(d>0?` (+${d}d)`:'');
     }
 
     item.pontos.forEach((p, i) => {
@@ -9864,6 +9873,12 @@ function removerVeiculo(id) {
 }
 
 function renderVeiculos() {
+  // Sempre re-sincroniza motoristas e disponibilidade do painel do dia antes de renderizar,
+  // garantindo que o card mostre o motorista do painel (não o do cadastro da placa).
+  const ds = dateStr(S.dateOffset);
+  sincronizarDisponibilidadeVeiculos(ds).then(_renderVeiculosInterno).catch(_renderVeiculosInterno);
+}
+function _renderVeiculosInterno() {
   atualizarFiltroMapaTransportadora();
   const el = document.getElementById('veiculos-list');
   if (!veiculos.length) { el.innerHTML = ''; return; }
@@ -9928,7 +9943,7 @@ function renderVeiculos() {
         </div>
       </div>
     </div>`).join('');
-}
+} // fim _renderVeiculosInterno
 
 // EXEMPLOS
 function carregarExemplos() {
@@ -13702,7 +13717,6 @@ function mvExportarMapa() {
   if (!mapaEl) return;
 
   if (typeof html2canvas === 'undefined') {
-    // Fallback: abrir Google Maps compartilhável
     mvCompartilharGoogleMaps();
     showToast('Para salvar como imagem, use a impressão do navegador (Ctrl+P → Salvar como PDF).', true);
     return;
@@ -13718,135 +13732,137 @@ function mvExportarMapa() {
     }
   }, 15000);
 
-  // Esconde temporariamente os controles de zoom para não aparecerem na imagem
+  // Esconde controles de zoom e atribuição para imagem limpa
   const zoomCtrl = mapaEl.querySelector('.leaflet-control-zoom');
-  const zoomCtrlDisplayOriginal = zoomCtrl ? zoomCtrl.style.display : null;
+  const zoomOrig = zoomCtrl ? zoomCtrl.style.display : null;
   if (zoomCtrl) zoomCtrl.style.display = 'none';
 
+  // ── Estratégia: html2canvas captura tiles + marcadores (DOM/divIcon).
+  //    A polyline SVG do Leaflet é problemática no html2canvas (SVG enorme
+  //    com viewBox mal recalculado após pan). Solução: após capturar o DOM,
+  //    redesenhar a polyline diretamente no canvas resultado usando a projeção
+  //    geográfica do Leaflet — assim o traçado fica perfeitamente alinhado
+  //    com os tiles capturados.
   html2canvas(mapaEl, {
     useCORS: true,
     allowTaint: false,
     backgroundColor: '#ffffff',
     scale: 2,
     logging: false,
-    // ── Correção do deslocamento de polylines/marcadores no html2canvas ────────
-    // O Leaflet usa um sistema de "world offset": o leaflet-map-pane é movido para
-    // uma posição negativa grande (ex: translate3d(-5000px, -3000px, 0)) e cada
-    // tile/pane filho recebe um offset positivo equivalente para compensar.
-    // O html2canvas não consegue interpretar essa álgebra de transforms aninhados
-    // corretamente, resultando em polylines e marcadores deslocados em relação
-    // ao mapa de fundo na imagem exportada.
-    //
-    // Solução: no clone DOM, extraímos o offset do leaflet-map-pane (que é o
-    // deslocamento acumulado de pan do Leaflet) e zeramos seu transform.
-    // Em seguida, aplicamos esse mesmo delta a cada filho direto do map-pane
-    // (leaflet-tile-pane, leaflet-overlay-pane, leaflet-marker-pane, etc.),
-    // somando ao transform já existente — assim todos os elementos ficam com
-    // posição absoluta correta dentro do elemento #mv-mapa, sem dependência
-    // do transform do pai, e o html2canvas os captura fielmente.
+    // No onclone: ocultar o SVG das polylines (será redesenhado manualmente)
+    // e corrigir translate3d → translate nos panes de marcadores/tiles
     onclone: (clonedDoc) => {
       const clonedMapa = clonedDoc.getElementById('mv-mapa');
       if (!clonedMapa) return;
 
-      // Helper: converte translate3d(x, y, z) → { x, y } em pixels
-      function parseTranslate(transform) {
-        if (!transform) return { x: 0, y: 0 };
-        const m3d = transform.match(/translate3d\(\s*([^,]+),\s*([^,]+),\s*[^)]+\)/);
-        if (m3d) return { x: parseFloat(m3d[1]) || 0, y: parseFloat(m3d[2]) || 0 };
-        const m2d = transform.match(/translate\(\s*([^,]+),\s*([^)]+)\)/);
-        if (m2d) return { x: parseFloat(m2d[1]) || 0, y: parseFloat(m2d[2]) || 0 };
-        return { x: 0, y: 0 };
-      }
+      // Oculta o pane SVG (polylines) — será re-desenhado manualmente
+      const overlayPane = clonedMapa.querySelector('.leaflet-overlay-pane');
+      if (overlayPane) overlayPane.style.display = 'none';
 
-      // Helper: compõe translate(x, y) como string CSS, preservando outros transforms
-      function setTranslate(el, dx, dy) {
-        const t = el.style.transform || '';
-        // Remove qualquer translate/translate3d existente
-        const stripped = t
-          .replace(/translate3d\([^)]+\)/g, '')
-          .replace(/translate\([^)]+\)/g, '')
-          .trim();
-        const newT = `translate(${dx}px,${dy}px)${stripped ? ' ' + stripped : ''}`;
-        el.style.transform = newT;
-        el.style.webkitTransform = newT;
-      }
-
-      // 1. Pega o offset do leaflet-map-pane (deslocamento global do pan)
+      // Corrige translate3d → translate em todos os panes (tiles, marcadores)
+      // O leaflet-map-pane tem offset enorme — zeramos e compensamos nos filhos
       const mapPane = clonedMapa.querySelector('.leaflet-map-pane');
-      if (!mapPane) {
-        // Fallback simples: converte translate3d → translate em todos os panes
-        clonedMapa.querySelectorAll('[style*="translate3d"]').forEach(el => {
-          const t = el.style.transform;
-          el.style.transform = t.replace(
-            /translate3d\(([^,]+),([^,]+),[^)]+\)/,
-            'translate($1,$2)'
-          );
-        });
-        return;
+      function parseXY(t) {
+        if (!t) return { x: 0, y: 0 };
+        const m = t.match(/translate3d\(\s*([^,]+),\s*([^,]+)/) ||
+                  t.match(/translate\(\s*([^,]+),\s*([^)]+)/);
+        return m ? { x: parseFloat(m[1]) || 0, y: parseFloat(m[2]) || 0 } : { x: 0, y: 0 };
       }
-
-      const mapPaneOffset = parseTranslate(mapPane.style.transform);
-
-      // 2. Zera o transform do map-pane — o html2canvas agora vai tratá-lo como (0,0)
-      mapPane.style.transform = 'translate(0px,0px)';
-      mapPane.style.webkitTransform = 'translate(0px,0px)';
-
-      // 3. Cada filho direto do map-pane (tile-pane, overlay-pane, marker-pane, etc.)
-      //    já tem seu próprio transform relativo ao map-pane. Precisamos somar
-      //    o offset do map-pane ao deles para manter a posição visual correta.
-      Array.from(mapPane.children).forEach(child => {
-        const childOffset = parseTranslate(child.style.transform);
-        const newX = childOffset.x + mapPaneOffset.x;
-        const newY = childOffset.y + mapPaneOffset.y;
-        setTranslate(child, newX, newY);
-
-        // 4. Dentro do overlay-pane (SVG das polylines), o próprio SVG pode ter
-        //    um viewBox ou transform que precisa ser corrigido também.
-        //    Garante que o SVG filho não herde transforms problemáticos.
-        child.querySelectorAll('[style*="translate3d"]').forEach(el => {
-          const t = el.style.transform;
-          if (t && t.includes('translate3d')) {
-            el.style.transform = t.replace(
-              /translate3d\(([^,]+),([^,]+),[^)]+\)/,
-              'translate($1,$2)'
-            );
-          }
+      if (mapPane) {
+        const off = parseXY(mapPane.style.transform);
+        mapPane.style.transform = 'translate(0px,0px)';
+        mapPane.style.webkitTransform = 'translate(0px,0px)';
+        Array.from(mapPane.children).forEach(child => {
+          if (child === overlayPane) return; // já oculto
+          const c = parseXY(child.style.transform);
+          const nx = c.x + off.x, ny = c.y + off.y;
+          child.style.transform = `translate(${nx}px,${ny}px)`;
+          child.style.webkitTransform = `translate(${nx}px,${ny}px)`;
+          // Corrige translate3d residuais em netos (ex: tiles individuais)
+          child.querySelectorAll('[style*="translate3d"]').forEach(el => {
+            el.style.transform = (el.style.transform || '').replace(
+              /translate3d\(([^,]+),([^,]+),[^)]+\)/, 'translate($1,$2)');
+          });
         });
-      });
-
-      // 5. Qualquer outro pane fora do map-pane (ex: leaflet-control-container)
-      //    que ainda use translate3d → converte para translate simples
-      clonedMapa.querySelectorAll('[style*="translate3d"]').forEach(el => {
-        const t = el.style.transform;
-        if (t && t.includes('translate3d')) {
-          el.style.transform = t.replace(
-            /translate3d\(([^,]+),([^,]+),[^)]+\)/,
-            'translate($1,$2)'
-          );
-        }
-      });
+      } else {
+        clonedMapa.querySelectorAll('[style*="translate3d"]').forEach(el => {
+          el.style.transform = (el.style.transform || '').replace(
+            /translate3d\(([^,]+),([^,]+),[^)]+\)/, 'translate($1,$2)');
+        });
+      }
     }
   }).then(canvas => {
     if (respondeu) return;
     respondeu = true;
     clearTimeout(watchdog);
-    if (zoomCtrl) zoomCtrl.style.display = zoomCtrlDisplayOriginal;
+    if (zoomCtrl) zoomCtrl.style.display = zoomOrig;
 
     try {
-      const titulo = (document.getElementById('mv-titulo')?.textContent || 'Mapa_Viagem').replace(/[^a-zA-Z0-9]/g,'_');
+      const scale = 2; // deve coincidir com o scale do html2canvas
+      const ctx = canvas.getContext('2d');
+      const mapRect = mapaEl.getBoundingClientRect();
+
+      // ── Redesenha cada polyline da rota usando projeção Leaflet → pixel ──
+      // _mvPolylines contém os objetos L.polyline ativos no mapa.
+      if (Array.isArray(_mvPolylines) && _mvPolylines.length > 0) {
+        _mvPolylines.forEach(pl => {
+          if (!pl || !pl.getLatLngs) return;
+          let latlngs = pl.getLatLngs();
+          // Achata arrays aninhados (multipolyline)
+          if (latlngs.length && Array.isArray(latlngs[0])) latlngs = latlngs.flat();
+          if (latlngs.length < 2) return;
+
+          const opts = pl.options || {};
+          const cor = opts.color || '#00A499';
+          const peso = (opts.weight || 5) * scale;
+
+          ctx.beginPath();
+          ctx.strokeStyle = cor;
+          ctx.lineWidth = peso;
+          ctx.lineCap = opts.lineCap || 'round';
+          ctx.lineJoin = opts.lineJoin || 'round';
+          ctx.globalAlpha = opts.opacity !== undefined ? opts.opacity : 0.85;
+
+          if (opts.dashArray) {
+            const parts = String(opts.dashArray).split(/[\s,]+/).map(n => parseFloat(n) * scale);
+            ctx.setLineDash(parts);
+          } else {
+            ctx.setLineDash([]);
+          }
+
+          latlngs.forEach((ll, i) => {
+            // containerPointToLatLng inverso: latLngToContainerPoint
+            const pt = mapaViagem.latLngToContainerPoint(ll);
+            const px = pt.x * scale;
+            const py = pt.y * scale;
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          });
+
+          ctx.stroke();
+        });
+
+        ctx.globalAlpha = 1;
+        ctx.setLineDash([]);
+      }
+
+      const titulo = (document.getElementById('mv-titulo')?.textContent || 'Mapa_Viagem')
+        .replace(/[^a-zA-Z0-9]/g, '_');
       const a = document.createElement('a');
       a.download = titulo + '.png';
       a.href = canvas.toDataURL('image/png');
       a.click();
       showToast('Mapa exportado! ✅');
     } catch (e2) {
+      console.error('mvExportarMapa canvas draw:', e2);
       showToast('Não foi possível salvar a imagem (restrição do navegador). Use Ctrl+P → Salvar como PDF.', false);
     }
-  }).catch(() => {
+  }).catch(err => {
     if (respondeu) return;
     respondeu = true;
     clearTimeout(watchdog);
-    if (zoomCtrl) zoomCtrl.style.display = zoomCtrlDisplayOriginal;
+    if (zoomCtrl) zoomCtrl.style.display = zoomOrig;
+    console.error('mvExportarMapa html2canvas:', err);
     showToast('Erro ao gerar imagem. Tente Ctrl+P → Salvar como PDF.', false);
   });
 }
@@ -13889,6 +13905,78 @@ function dashChaveLabel(k) {
   return `${meses[parseInt(k.slice(4))-1]}/${k.slice(0,4)}`;
 }
 
+// ── Lê snapshots do histórico em disco (dirHandleHistorico) ─────────────────
+async function dashLerHistoricoDisco() {
+  if (!window.dirHandleHistorico) return {};
+  let permOk = false;
+  try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted'; } catch(e) {}
+  if (!permOk) {
+    try { permOk = (await window.dirHandleHistorico.requestPermission({ mode: 'read' })) === 'granted'; } catch(e) {}
+  }
+  if (!permOk) return {};
+
+  const store = {};
+  for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+    if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+    try {
+      const data = JSON.parse(await (await handle.getFile()).text());
+      if (!data.versao || !data.savedAt || !data.resultado) continue;
+      // Converte o formato de arquivo histórico para snapshot do dashboard
+      const snap = {
+        versao: data.versao,
+        savedAt: data.savedAt,
+        datasEntrega: data.datasEntrega || [],
+        pedidos:   data.pedidos   || [],
+        terminais: data.terminais || [],
+        veiculos:  data.veiculos  || [],
+        resultado: data.resultado || {},
+        _fonte: 'disco', // marca para evitar duplicação com localStorage
+        _filename: name,
+      };
+      const chave = dashChave(snap);
+      if (!store[chave]) store[chave] = [];
+      store[chave].push(snap);
+    } catch(e) { /* arquivo inválido — ignora */ }
+  }
+  return store;
+}
+
+// ── Mescla localStorage + disco, deduplicando por savedAt ────────────────
+async function dashGetStoreMerged() {
+  const local = dashGetStore();
+  const disco  = await dashLerHistoricoDisco();
+
+  const merged = {};
+
+  // Indexa todos os savedAt já vindos do localStorage para deduplicar
+  const vistosLocal = new Set();
+  for (const snaps of Object.values(local)) {
+    for (const s of snaps) if (s.savedAt) vistosLocal.add(s.savedAt);
+  }
+
+  // Copia localStorage
+  for (const [k, snaps] of Object.entries(local)) {
+    merged[k] = [...snaps];
+  }
+
+  // Adiciona do disco apenas se não já existe no localStorage (mesmo savedAt)
+  for (const [k, snaps] of Object.entries(disco)) {
+    if (!merged[k]) merged[k] = [];
+    for (const s of snaps) {
+      if (!s.savedAt || !vistosLocal.has(s.savedAt)) {
+        merged[k].push(s);
+      }
+    }
+  }
+
+  // Ordena cada chave por data decrescente
+  for (const k of Object.keys(merged)) {
+    merged[k].sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
+  }
+
+  return merged;
+}
+
 // ── Salvar roteirização atual no Dashboard ─────────────────────────────────
 window.dashSalvarAtual = function() {
   if (!ultimoResultado) { showToast('Execute a otimização primeiro.', false); return; }
@@ -13911,10 +13999,10 @@ window.dashSalvarAtual = function() {
 };
 
 // ── Popular select de meses ────────────────────────────────────────────────
-window.dashPopularMeses = function() {
+window.dashPopularMeses = async function() {
   const sel = document.getElementById('dash-mes-sel');
   if (!sel) return;
-  const store = dashGetStore();
+  const store = await dashGetStoreMerged();
   const chaves = Object.keys(store).sort().reverse();
   sel.innerHTML = '<option value="">Selecionar</option>';
   chaves.forEach(k => {
@@ -14277,15 +14365,15 @@ function dashRenderMapa(rotasMap) {
 }
 
 // ── Carregar por mês selecionado ───────────────────────────────────────────
-window.dashCarregarMes = function(chave) {
+window.dashCarregarMes = async function(chave) {
   if (!chave) return;
-  const store = dashGetStore();
+  const store = await dashGetStoreMerged();
   dashRender(store[chave] || []);
 };
 
 // ── Carregar todos os períodos ─────────────────────────────────────────────
-window.dashCarregarTodos = function() {
-  const store = dashGetStore();
+window.dashCarregarTodos = async function() {
+  const store = await dashGetStoreMerged();
   const todos = Object.values(store).flat();
   dashRender(todos);
 };
@@ -14298,6 +14386,20 @@ window.showTab = function(tab) {
     dashPopularMeses();
     // Invalidar mapa se já existir
     setTimeout(() => { if (_dashMap) _dashMap.invalidateSize(); }, 300);
+  }
+};
+
+// ── Refresh do dashboard ao excluir entrada do histórico ──────────────────
+// Intercepta excluirEntradaHistorico para re-popular meses e re-renderizar
+const _origExcluir = window.excluirEntradaHistorico;
+window.excluirEntradaHistorico = async function(filename, btn) {
+  if (_origExcluir) await _origExcluir(filename, btn);
+  // Atualiza o select de meses com os dados restantes
+  await dashPopularMeses();
+  // Se há dados carregados no dashboard, recarrega automaticamente
+  const selMes = document.getElementById('dash-mes-sel');
+  if (selMes && selMes.value) {
+    await window.dashCarregarMes(selMes.value);
   }
 };
 
