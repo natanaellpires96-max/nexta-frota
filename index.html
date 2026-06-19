@@ -6437,7 +6437,7 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
             </select>
           </div>
           <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:11px;padding:6px 14px;">Todos os periodos</button>
-
+          <button class="btn btn-sm" onclick="dashSincronizar()" id="dash-sync-btn" style="background:rgba(0,164,153,0.12);color:#00A499;border:1px solid rgba(0,164,153,0.35);font-size:11px;padding:6px 14px;">🔄 Sincronizar</button>
         </div>
       </div>
       <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px;">
@@ -13920,20 +13920,46 @@ async function dashLerHistoricoDisco() {
     if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
     try {
       const data = JSON.parse(await (await handle.getFile()).text());
-      if (!data.versao || !data.savedAt || !data.resultado) continue;
-      // Converte o formato de arquivo histórico para snapshot do dashboard
+
+      // Aceita qualquer arquivo que tenha pelo menos versao + savedAt
+      // (resultado pode estar ausente em arquivos legados incompletos)
+      if (!data.versao || !data.savedAt) continue;
+
+      // Usa dataEntrega para definir o mês (igual ao Histórico),
+      // com fallback para savedAt se não houver datas de entrega
+      const dataRef = (() => {
+        const de = data.datasEntrega && data.datasEntrega[0];
+        if (de) {
+          // Formato DD/MM/YYYY
+          const pts = de.split('/');
+          if (pts.length === 3) {
+            const d = new Date(parseInt(pts[2]), parseInt(pts[1])-1, parseInt(pts[0]));
+            if (!isNaN(d.getTime())) return d;
+          }
+          // Formato ISO
+          const d2 = new Date(de);
+          if (!isNaN(d2.getTime())) return d2;
+        }
+        return new Date(data.savedAt);
+      })();
+
       const snap = {
-        versao: data.versao,
-        savedAt: data.savedAt,
+        versao:      data.versao,
+        savedAt:     data.savedAt,
+        salvoPor:    data.salvoPor || 'Desconhecido',
         datasEntrega: data.datasEntrega || [],
-        pedidos:   data.pedidos   || [],
-        terminais: data.terminais || [],
-        veiculos:  data.veiculos  || [],
-        resultado: data.resultado || {},
-        _fonte: 'disco', // marca para evitar duplicação com localStorage
-        _filename: name,
+        resumo:      data.resumo || {},
+        pedidos:     data.pedidos   || [],
+        terminais:   data.terminais || [],
+        veiculos:    data.veiculos  || [],
+        resultado:   data.resultado || {},
+        controleTempo: data.controleTempo || {},
+        _fonte:      'disco',
+        _filename:   name,
       };
-      const chave = dashChave(snap);
+
+      // Chave por mês/ano da data de entrega
+      const chave = `${dataRef.getFullYear()}${String(dataRef.getMonth()+1).padStart(2,'0')}`;
       if (!store[chave]) store[chave] = [];
       store[chave].push(snap);
     } catch(e) { /* arquivo inválido — ignora */ }
@@ -14363,6 +14389,26 @@ function dashRenderMapa(rotasMap) {
   // Forçar resize após render
   setTimeout(() => _dashMap && _dashMap.invalidateSize(), 200);
 }
+
+// ── Sincronizar: relê o histórico em disco e atualiza tudo ────────────────
+window.dashSincronizar = async function() {
+  const btn = document.getElementById('dash-sync-btn');
+  if (btn) { btn.textContent = '⏳ Sincronizando...'; btn.disabled = true; }
+  try {
+    await dashPopularMeses();
+    const sel = document.getElementById('dash-mes-sel');
+    if (sel && sel.value) {
+      await window.dashCarregarMes(sel.value);
+    } else {
+      await window.dashCarregarTodos();
+    }
+    showToast('Dashboard sincronizado com o histórico ✅');
+  } catch(e) {
+    showToast('Erro ao sincronizar: ' + e.message, false);
+  } finally {
+    if (btn) { btn.textContent = '🔄 Sincronizar'; btn.disabled = false; }
+  }
+};
 
 // ── Carregar por mês selecionado ───────────────────────────────────────────
 window.dashCarregarMes = async function(chave) {
