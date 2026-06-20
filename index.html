@@ -549,14 +549,30 @@ async function dbLoadStatusBulk(pairs) {
 async function sincronizarDisponibilidadeVeiculos(dateStr) {
   if (!veiculos.length) return;
   try {
-    const [allPlates, bulk] = await Promise.all([
+    const [allPlates, bulk, allDriversCad] = await Promise.all([
       dbGetPlates(),
       dbLoadStatusBulk(veiculos.map(v => ({
         carrier: v.transportadora || '',
         plate:   v.placa          || '',
         dateStr
-      })))
+      }))),
+      dbGetDrivers().catch(() => ({}))
     ]);
+
+    // Retorna o nome do motorista apenas se ele estiver ativo no cadastro de
+    // motoristas do transportador (allDriversCad). Motoristas não cadastrados
+    // (legado) são mantidos por compatibilidade. Esta é a mesma regra já usada
+    // no Painel de Disponibilidade (driverAtivoNome / filtrarMotoristaSalvo) —
+    // sem ela, um motorista inativado continuava "vazando" para Veículos &
+    // Turnos, Otimização Rotas e Envio Transportadora, pois esses três módulos
+    // leem v.motoristaDiurno/v.motoristaNt, que eram preenchidos sem checar a
+    // flag "ativo" do cadastro de motoristas.
+    function motoristaAtivoOuVazio(carrier, operacao, nome) {
+      if (!nome) return '';
+      const cadastro = (allDriversCad[carrier] || []).find(d => d.nome === nome && d.operacao === operacao);
+      if (cadastro && cadastro.ativo === false) return ''; // inativo → some de todos os módulos
+      return nome;
+    }
 
     veiculos.forEach(v => {
       const carrier = v.transportadora || '';
@@ -581,22 +597,27 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
         return;
       }
 
+      const operacao = registroFirestore.operacao || v.terminal || '';
+
       // Regras 3-5: status do painel do dia
       const key = `${carrier}||${plate}||${dateStr}`;
       const rec = bulk[key];
 
       // Sempre reseta para os valores do cadastro antes de aplicar o painel —
       // garante que uma troca de data não deixe motorista "fantasma" de outro dia.
-      v.motoristaDiurno  = registroFirestore.motoristaDiurno  || '';
-      v.motoristaNt      = registroFirestore.motoristaNoturno || '';
+      // Filtra motorista inativo já aqui, na origem (cadastro da placa).
+      v.motoristaDiurno  = motoristaAtivoOuVazio(carrier, operacao, registroFirestore.motoristaDiurno  || '');
+      v.motoristaNt      = motoristaAtivoOuVazio(carrier, operacao, registroFirestore.motoristaNoturno || '');
       v._motoristaPainel = false;
 
       if (rec && rec.status) {
         v.disponibilidade    = rec.status === 'disponivel' ? 'Disponível' : 'Indisponível';
         v._motivoIndisponivel = rec.status !== 'disponivel' ? rec.status : null;
-        // Painel tem motorista? Sobrescreve o do cadastro
-        if (rec.motoristaDiurno)  { v.motoristaDiurno = rec.motoristaDiurno; v._motoristaPainel = true; }
-        if (rec.motoristaNoturno) { v.motoristaNt      = rec.motoristaNoturno; v._motoristaPainel = true; }
+        // Painel tem motorista? Sobrescreve o do cadastro — também filtrado por ativo.
+        const motDPainel = motoristaAtivoOuVazio(carrier, operacao, rec.motoristaDiurno  || '');
+        const motNPainel = motoristaAtivoOuVazio(carrier, operacao, rec.motoristaNoturno || '');
+        if (motDPainel) { v.motoristaDiurno = motDPainel; v._motoristaPainel = true; }
+        if (motNPainel) { v.motoristaNt      = motNPainel; v._motoristaPainel = true; }
       } else {
         // Sem registro no painel para este dia → não marcou disponível → bloqueia
         v.disponibilidade    = 'Indisponível';
@@ -6675,7 +6696,7 @@ canvas{display:block;width:100%!important;max-width:100%;contain:size layout pai
 // (hash local sem salt) mas foi removido por ser redundante e inseguro.
 
 // ── Modal data de carregamento ────────────────────────────────────────────────
-let _modoOtimizarPendente = null;
+var _modoOtimizarPendente = null;
 
 function abrirModalDataCarga(modo) {
   _modoOtimizarPendente = modo;
@@ -6706,8 +6727,8 @@ function confirmarOtimizar() {
 }
 
 // ─── Upload overlay pós-login ─────────────────────────────────────────────────
-let _cadastralCarregado = false;
-let _pedidosCarregados  = false;
+var _cadastralCarregado = false;
+var _pedidosCarregados  = false;
 
 function abrirUploadOverlay() {
   _cadastralCarregado = false;
@@ -6852,13 +6873,20 @@ async function uploadPedDrop(e) {
 }
 
 // ─── Estado global ────────────────────────────────────────────────────────────
-let pedidos = [], veiculos = [], terminaisCad = [], clientes = [];
-let numComps = 0, numProdForm = 0;
-let editandoTerminalId = null, editandoPedidoId = null, editandoClienteId = null, editandoVeiculoId = null;
-let ultimoResultado = null, ultimoControleTempo = null;
-let _sugestoesSplitDedicado = []; // sugestões de quebra manual pós-otimização modo dedicado
-const _motoristasOverride = {}; // { petId: nome } — override manual por viagem, ignora regra diurno/noturno
-let lockedTerminals = new Set(); // terminais com ajustes travados (não re-otimizados)
+// IMPORTANTE: usar var (não let/const) em todo este bloco. Este <script> e o
+// <script> do Dashboard (mais abaixo no documento) são dois escopos de script
+// separados — "let"/"const" no nível de topo NÃO viram propriedades de window
+// e portanto não atravessam para o outro <script> (ReferenceError silencioso,
+// mascarado por try/catch). "var" no nível de topo vira window.X, visível dos
+// dois lados. Isto já causou bugs reais: mapaViagem, pedidos e ultimoResultado
+// eram usados pelo módulo do mapa de viagem / Dashboard sem estarem acessíveis.
+var pedidos = [], veiculos = [], terminaisCad = [], clientes = [];
+var numComps = 0, numProdForm = 0;
+var editandoTerminalId = null, editandoPedidoId = null, editandoClienteId = null, editandoVeiculoId = null;
+var ultimoResultado = null, ultimoControleTempo = null;
+var _sugestoesSplitDedicado = []; // sugestões de quebra manual pós-otimização modo dedicado
+var _motoristasOverride = {}; // { petId: nome } — override manual por viagem, ignora regra diurno/noturno
+var lockedTerminals = new Set(); // terminais com ajustes travados (não re-otimizados)
 
 // ── Contador de IDs de viagem (P + MM + YY + seq 3 dígitos) ─────────────────
 // Formato: P{MM}{YY}{NNN} ex: P0626001
@@ -6947,16 +6975,17 @@ function _atualizarPetSeq(resultado) {
   });
   try { localStorage.setItem('petSeq', JSON.stringify(stored)); } catch {}
 }
-let resultadoOriginal    = null;   // cópia do resultado puro da otimização
-let historicoManual      = [];     // pilha de estados para desfazer
-let dragInfo             = null;   // { tipo, veiculoId, tripIndex, ... } durante drag
-let dirHandleHistorico = null;
-let estadoAtual = null;
-let ultimoItensOtimizacao = [];
-let mapaViagem = null, camadaViagem = null, dadosMapaAtual = null;
-let mapaGeral = null, camadaMapaGeral = null;
-let filtroMapaPlaca = '';
-let filtroMapaTerminais = new Set(); // terminais selecionados no filtro do resumo (vazio = todos)
+var resultadoOriginal    = null;   // cópia do resultado puro da otimização
+var historicoManual      = [];     // pilha de estados para desfazer
+var dragInfo             = null;   // { tipo, veiculoId, tripIndex, ... } durante drag
+var dirHandleHistorico = null; // precisa ficar em window para ser
+                                // acessível pelo módulo do Dashboard, em outro <script>.
+var estadoAtual = null;
+var ultimoItensOtimizacao = [];
+var mapaViagem = null, camadaViagem = null, dadosMapaAtual = null;
+var mapaGeral = null, camadaMapaGeral = null;
+var filtroMapaPlaca = '';
+var filtroMapaTerminais = new Set(); // terminais selecionados no filtro do resumo (vazio = todos)
 
 const DIAS_NOMES     = ['DOM','SEG','TER','QUA','QUI','SEX','SÁB'];
 const PRODUTOS = [
@@ -7552,19 +7581,13 @@ function fecharModalViagem(ev=null) {
   if (ultimoResultado) renderResultado(ultimoResultado, ultimoControleTempo || {});
 }
 
-function garantirMapaViagem() {
-  if (!mapaViagem) {
-    mapaViagem = L.map('mv-mapa');
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
-      crossOrigin: true
-    }).addTo(mapaViagem);
-  }
-  if (camadaViagem) camadaViagem.remove();
-  camadaViagem = L.layerGroup().addTo(mapaViagem);
-  setTimeout(() => mapaViagem.invalidateSize(), 50);
-}
+// NOTA: garantirMapaViagem() está definida no <script> do Dashboard (mais abaixo
+// no documento), não aqui. Como function declarations no nível de topo de
+// <script> não-module são propriedades de window, e o script do Dashboard
+// carrega depois deste, window.garantirMapaViagem aponta para aquela versão
+// (mais completa: zoomControl, limpeza de _mvPolylines/_mvUserWaypoints/
+// _mvWaypoints e do badge de vias). Mantida apenas uma definição para evitar
+// ambiguidade.
 
 function abrirModalViagem(veiculoId, idxViagem) {
   if (!ultimoResultado || !ultimoResultado[veiculoId]) return;
@@ -9394,7 +9417,7 @@ function renderPedidos() {
 }
 
 // ─── Quebrar Pedido ────────────────────────────────────────────────────────────
-let _quebraIdAtual = null;
+var _quebraIdAtual = null;
 
 function abrirQuebraPedido(id) {
   const p = pedidos.find(x => x.id === id);
@@ -11786,7 +11809,7 @@ function dropNaViagem(event, veiculoId, tripIndex) {
 }
 
 // ── Troca de placa (veículo) ──────────────────────────────────────────────────
-let _placaDropOrigId = null;
+var _placaDropOrigId = null;
 
 function abrirTrocaPlaca(veiculoId, btn, event) {
   event.stopPropagation();
@@ -13202,7 +13225,14 @@ async function excluirEntradaHistorico(filename, btn) {
 if (document.getElementById('horario-grid')) gerarHorarioGrid([0,1,2,3,4,5], null);
 if (document.getElementById('cl-tipos-btns')) renderTipoBtns('cl-tipos-btns', []);
 if (document.getElementById('p-tipos-btns')) renderTipoBtns('p-tipos-btns', []);
-recuperarHandleHistorico();
+// Exposta em window para que o script do Dashboard (carregado depois) possa
+// aguardar a restauração do handle salvo no IndexedDB antes de tentar ler o
+// histórico em disco — sem isso, dashPopularMeses() no boot do Dashboard corria
+// em paralelo com esta função e quase sempre "ganhava" a corrida, lendo
+// window.dirHandleHistorico ainda como null mesmo quando uma pasta já tinha
+// sido selecionada em uma sessão anterior (o handle só não tinha chegado a
+// tempo do IndexedDB).
+window.recuperarHandleHistoricoPromise = recuperarHandleHistorico();
 window.initRoteirizadorIntegrado = async function(){
   const root = document.getElementById('roteirizador-shell');
   if(!root) return;
@@ -13387,18 +13417,26 @@ window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() 
 /* ══════════════════════════════════════════════════════
    MAPA DE VIAGEM — waypoints arrastáveis + exportação
 ══════════════════════════════════════════════════════ */
-let _mvWaypoints = [];       // [{lat,lon,marker,tipo,nome}] pontos originais (origem, paradas, retorno)
-let _mvPolylines = [];       // polylines desenhadas (uma por segmento)
-let _mvUserWaypoints = [];   // waypoints intermediários inseridos pelo usuário arrastando a linha
-let _mvDistSpan = null;
-let _mvDragMarker = null;    // marcador fantasma que aparece ao hover na linha
-let _mvRenderToken = 0;      // token incremental — evita que uma chamada antiga de mvDesenharRota
+// IMPORTANTE: var (não let/const). abrirModalViagem() — que inicia o mapa de
+// viagem — está definida no <script> do Roteirizador, um escopo de script
+// SEPARADO deste. Ela lê/escreve estas variáveis sem prefixo "window." (ex.:
+// "_mvWaypoints = [...]"), o que só funciona se elas forem propriedades reais
+// de window — daí "var" em vez de "let/const" aqui. Com let/const, essa escrita
+// criava uma variável global *desconectada* (non-strict) ou lançava
+// ReferenceError, e o mapa de viagem nunca via os dados que abrirModalViagem
+// pensava ter preenchido — causa raiz de "traçado não aparece"/"km não atualiza".
+var _mvWaypoints = [];       // [{lat,lon,marker,tipo,nome}] pontos originais (origem, paradas, retorno)
+var _mvPolylines = [];       // polylines desenhadas (uma por segmento)
+var _mvUserWaypoints = [];   // waypoints intermediários inseridos pelo usuário arrastando a linha
+var _mvDistSpan = null;
+var _mvDragMarker = null;    // marcador fantasma que aparece ao hover na linha
+var _mvRenderToken = 0;      // token incremental — evita que uma chamada antiga de mvDesenharRota
                               // sobrescreva o resultado de uma chamada mais recente (race condition)
-let _mvCanvasRenderer = null; // renderer Canvas dedicado para a polyline (evita bug de SVG no html2canvas)
+var _mvCanvasRenderer = null; // renderer Canvas dedicado para a polyline (evita bug de SVG no html2canvas)
 
 // ─── State para salvar rota ajustada na viagem ────────────────────────────
 // Salva os waypoints do usuário por chave "vId||iV" para persistir durante a sessão
-const _mvRotasSalvas = {};
+var _mvRotasSalvas = {};
 
 function _mvChaveViagem() {
   return `${window._mvVeiculoId || ''}||${window._mvIdxViagem ?? ''}`;
@@ -14418,6 +14456,12 @@ window.dashSincronizar = async function() {
       try {
         const handle = await window.showDirectoryPicker({ mode: 'read' });
         window.dirHandleHistorico = handle;
+        // Persiste no mesmo IndexedDB usado pela aba "Histórico" — assim a
+        // pasta escolhida aqui também é lembrada em sessões futuras (sujeito
+        // à reconfirmação de permissão do navegador).
+        if (typeof _histSalvarHandle === 'function') {
+          try { await _histSalvarHandle(handle); } catch(e) {}
+        }
       } catch(e) {
         if (e.name !== 'AbortError') showToast('Pasta não selecionada.', false);
         return;
@@ -14477,8 +14521,17 @@ window.excluirEntradaHistorico = async function(filename, btn) {
   }
 };
 
-// Popular na inicialização
-dashPopularMeses();
+// Popular na inicialização — aguarda primeiro a restauração do handle salvo
+// no IndexedDB (window.recuperarHandleHistoricoPromise, definida no script do
+// Roteirizador) para não tentar ler o disco antes do handle estar disponível.
+(async () => {
+  try {
+    if (window.recuperarHandleHistoricoPromise) {
+      await window.recuperarHandleHistoricoPromise;
+    }
+  } catch (e) { /* segue mesmo se a restauração falhar */ }
+  dashPopularMeses();
+})();
 
 })(); // fim IIFE dashboard
 
