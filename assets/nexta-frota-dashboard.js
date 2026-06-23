@@ -682,7 +682,7 @@ function dashAgregar(snapshots) {
           clientes[chave].entregas++;
           clientes[chave].volume += vol;
           clientes[chave].capTotal += capV > 0 ? capV : 0;
-          clientes[chave].km = Math.max(clientes[chave].km, km); // km médio = maior distância do terminal
+          clientes[chave].km += km; // acumula km de todas as entregas ao cliente
           totalVol += vol;
           volViagem += vol;
           totalKm += km;
@@ -702,7 +702,11 @@ function dashAgregar(snapshots) {
   // Ocupação por cliente: volume do cliente / capacidade acumulada dos veículos que o atenderam
   const clientes_ocup = Object.values(clientes)
     .filter(c => c.capTotal > 0)
-    .map(c => ({ nome: c.nome, ocup: Math.min(100, Math.round((c.volume / c.capTotal) * 100)) }))
+    .map(c => ({
+      nome: c.nome,
+      ocup: Math.min(100, Math.round((c.volume / c.capTotal) * 100)),
+      volMedio: parseFloat((c.volume / c.entregas).toFixed(1))
+    }))
     .sort((a, b) => b.ocup - a.ocup);
   return {
     clientes: Object.values(clientes).sort((a,b)=>b.volume-a.volume),
@@ -827,10 +831,14 @@ function dashOcupClienteChart(containerId, itens) {
   el.innerHTML = itens.map(function(item) {
     const pct = Math.min(item.ocup, 100);
     const cor = pct >= 90 ? '#4caf50' : pct >= 60 ? '#f0be40' : '#f06060';
+    const vol = item.volMedio != null ? item.volMedio : null;
     return '<div style="margin-bottom:12px;">'
       + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;">'
       + '<span style="font-size:12px;font-weight:700;color:#000000;">' + item.nome + '</span>'
-      + '<span style="font-size:13px;font-weight:700;color:#000000;white-space:nowrap;margin-left:10px;">' + pct + '%</span>'
+      + '<span style="display:flex;gap:10px;align-items:baseline;white-space:nowrap;margin-left:10px;">'
+      + (vol != null ? '<span style="font-size:11px;font-weight:600;color:#555;">' + vol + ' m³/ent.</span>' : '')
+      + '<span style="font-size:13px;font-weight:700;color:#000000;">' + pct + '%</span>'
+      + '</span>'
       + '</div>'
       + '<div style="position:relative;height:12px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">'
       + '<div style="width:' + pct + '%;height:100%;background:' + cor + ';border-radius:99px;transition:width .5s ease;"></div>'
