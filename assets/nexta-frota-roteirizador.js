@@ -897,21 +897,6 @@ function abrirModalViagem(veiculoId, idxViagem) {
   }];
   viagem.paradas.forEach((p, i) => {
     const _coord = latLonEfetivo(p.pedido);
-    // Se esta parada sai de base diferente da anterior, insere marcador de base intermediário
-    const termParadaNome   = p.terminalOrigem || terminalNomeOrigem;
-    const termAnteriorNome = i === 0 ? terminalNomeOrigem
-      : (viagem.paradas[i-1]?.terminalOrigem || terminalNomeOrigem);
-    if (i > 0 && termParadaNome && termParadaNome !== termAnteriorNome) {
-      const termIntermediario = terminaisCad.find(t => t.nome === termParadaNome);
-      if (termIntermediario) {
-        pontos.push({
-          nome: `Base: ${termIntermediario.nome}`,
-          lat: termIntermediario.lat,
-          lon: termIntermediario.lon,
-          tipo: 'origem',
-        });
-      }
-    }
     pontos.push({
       nome: `${i+1}. ${p.pedido.cliente}`,
       lat: _coord.lat,
@@ -924,7 +909,7 @@ function abrirModalViagem(veiculoId, idxViagem) {
     });
   });
   const ultimo = viagem.paradas[viagem.paradas.length - 1];
-  if ((ultimo?.deslocVazioMin || 0) > 0) {
+  if ((ultimo?.deslocVazioMin || 0) > 0 && !ultimo?.isLongaDistancia) {
     const termUltimoNome = ultimo?.terminalOrigem || terminalNomeOrigem;
     const termUltimo = terminaisCad.find(t => t.nome === termUltimoNome) || terminal;
     pontos.push({
@@ -938,10 +923,8 @@ function abrirModalViagem(veiculoId, idxViagem) {
   if (validos.length < 2) { alert('Coordenadas insuficientes para montar o mapa da viagem.'); return; }
   document.getElementById('mv-titulo').textContent = `${v.placa} · Viagem ${idxViagem+1}${v.transportadora ? ' · '+v.transportadora : ''}`;
   const vol = viagem.paradas.reduce((s,p)=>s+(p.volumeTotal||0),0);
-  const _basesUnicas = [...new Set(viagem.paradas.map(p => p.terminalOrigem || terminalNomeOrigem).filter(Boolean))];
-  const _basesLabel = _basesUnicas.length > 1 ? _basesUnicas.join(' + ') : (terminalNomeOrigem || '-');
   document.getElementById('mv-resumo').innerHTML =
-    `Base: <strong>${_basesLabel}</strong> · Destinos: <strong>${viagem.paradas.length}</strong> · Volume: <strong>${vol.toFixed(1)} m³</strong> · Tempo: <strong>${(viagem.tempoConsumidoMin||0).toFixed(0)} min</strong>`;
+    `Terminal: <strong>${terminalNomeOrigem || '-'}</strong> · Destinos: <strong>${viagem.paradas.length}</strong> · Volume: <strong>${vol.toFixed(1)} m³</strong> · Tempo: <strong>${(viagem.tempoConsumidoMin||0).toFixed(0)} min</strong>`;
   document.getElementById('mv-lista').innerHTML = viagem.paradas.map((p,i) => `
     <div class="card" style="margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -1690,27 +1673,17 @@ function recalcularTimingViagem(viagem, v) {
     // Corrige origemDeslocamento de acordo com a posição real na viagem
     p.origemDeslocamento = idxP === 0 ? 'Terminal' : 'Entrega anterior';
     if (idxP === 0) {
-      // Primeira parada: recalcula a partir do terminal desta parada
+      // Primeira parada sem tempoCarregamento (stop vindo de posição não-primeira)
+      // → recalcula distâncias a partir do terminal atual
       if (!(p.tempoCarregamentoMin > 0)) {
-        const termParada = p.terminalOrigem || viagem.terminalOrigem;
-        const base = dadosCiclo(v, p.pedido, termParada);
+        const base = dadosCiclo(v, p.pedido, viagem.terminalOrigem);
         p.tempoCarregamentoMin = base.tempoCarregamentoMin;
         p.deslocCarregadoMin   = base.deslocCarregadoMin;
         p.deslocVazioMin       = base.deslocVazioMin;
       }
     } else {
-      // Paradas não-primeiras: verifica se vêm de base diferente da anterior
-      const termParada    = p.terminalOrigem || viagem.terminalOrigem;
-      const termAnterior  = viagem.paradas[idxP - 1]?.terminalOrigem || viagem.terminalOrigem;
-      if (termParada !== termAnterior) {
-        // Base diferente — recalcula distâncias e carregamento a partir da nova base
-        const base = dadosCiclo(v, p.pedido, termParada);
-        p.tempoCarregamentoMin = base.tempoCarregamentoMin;
-        p.deslocCarregadoMin   = base.deslocCarregadoMin;
-        p.deslocVazioMin       = base.deslocVazioMin;
-      } else {
-        p.tempoCarregamentoMin = 0;
-      }
+      // Paradas não-primeiras nunca têm carregamento no terminal
+      p.tempoCarregamentoMin = 0;
     }
     // Carga: apenas na 1ª parada
     const carga = idxP === 0 ? (p.tempoCarregamentoMin || 0) : 0;
@@ -1803,10 +1776,15 @@ function calcOvernightViagem(v, item, clockAbsMin, terminalNome, diaAlvoEntrega=
   const targetDepartureAbs  = targetArrivalAbs - deslocCarregadoMin;
   const waitAfterLoadingMin = Math.max(0, targetDepartureAbs - loadEndAbs);
   const waitBeforeLoadingMin = Math.max(0, loadStartAbs - clockAbsMin);
-  const productiveMin    = tempoCarregamentoMin + deslocCarregadoMin + tempoDescargaMin + deslocVazioMin;
-  const totalElapsedMin  = waitBeforeLoadingMin + tempoCarregamentoMin + waitAfterLoadingMin + deslocCarregadoMin + tempoDescargaMin + deslocVazioMin;
+  // Para entregas de longa distância (diaAlvo >= 1 = entrega em dia diferente do carregamento),
+  // o motorista pernoita no destino e o retorno à base ocorre fora desta roteirização.
+  // O deslocVazioMin NÃO entra no produtivo nem no elapsed — o veículo não volta no mesmo ciclo.
+  const isLongaDistancia = Number.isInteger(diaAlvoEntrega) && diaAlvoEntrega >= 1;
+  const retornoMin = isLongaDistancia ? 0 : deslocVazioMin;
+  const productiveMin    = tempoCarregamentoMin + deslocCarregadoMin + tempoDescargaMin + retornoMin;
+  const totalElapsedMin  = waitBeforeLoadingMin + tempoCarregamentoMin + waitAfterLoadingMin + deslocCarregadoMin + tempoDescargaMin + retornoMin;
   if (waitAfterLoadingMin < 0 || totalElapsedMin <= 0) return null;
-  return { ...base, waitBeforeLoadingMin, waitAfterLoadingMin, productiveMin, totalElapsedMin };
+  return { ...base, deslocVazioMin: retornoMin, waitBeforeLoadingMin, waitAfterLoadingMin, productiveMin, totalElapsedMin, isLongaDistancia };
 }
 function chegadaPrevistaAbsMin(viagem, detalheParada, viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin = 0, numMaxBreaks = 1) {
   let t = inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin, numMaxBreaks);
@@ -3331,11 +3309,9 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       : controleTempo[v.id].limiteMin;
     for (const pos of posicoesCandidatas(viagem, v, pedido)) {
       const isEnd = pos.idx >= n;
-      // Usa o terminal do pedido para calcular distâncias — cada parada sai de sua própria base
-      const _termCalc = pedido.terminal || viagem.terminalOrigem;
       const det   = isEnd
-        ? dadosIncrementoParada(viagem, v, pedido, _termCalc)
-        : dadosInsercaoEmPosicao(viagem, v, pedido, _termCalc, pos.idx);
+        ? dadosIncrementoParada(viagem, v, pedido, viagem.terminalOrigem)
+        : dadosInsercaoEmPosicao(viagem, v, pedido, viagem.terminalOrigem, pos.idx);
       const _nmb = doisTurnos(v) ? 2 : 1;
       const chegAbs = isEnd
         ? chegadaPrevistaAbsMin(viagem, det, resultado[v.id], idxV, jIni(v), v.tempoPerdidoMin || 0, _nmb)
@@ -3421,6 +3397,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         overnight: true,
         waitAfterLoadingMin: ov.waitAfterLoadingMin,
         origemDeslocamento: 'Terminal',
+        isLongaDistancia: !!ov.isLongaDistancia,
       };
       const vi = novaViagem(v, terminalEfetivo, ov.waitBeforeLoadingMin);
       return { vi, detalhe: ovDet, custoRelogio: ov.totalElapsedMin, custoProdutivo: ov.productiveMin + prodRefeicao };
@@ -4018,10 +3995,8 @@ function alocarItem(viagem, item, entrega, detalheParada=null, tempoAdicionalMin
     tempoEsperaRestricaoMin: detalheParada?.tempoEsperaRestricaoMin || 0,
     waitAfterLoadingMin: detalheParada?.waitAfterLoadingMin || 0,
     overnight: !!detalheParada?.overnight,
+    isLongaDistancia: !!detalheParada?.isLongaDistancia,
     origemDeslocamento: detalheParada?.origemDeslocamento || 'Terminal',
-    // Terminal de origem desta parada (pode diferir do terminalOrigem da viagem
-    // quando a viagem agrega pedidos de bases distintas)
-    terminalOrigem: item.pedido?.terminal || viagem.terminalOrigem || '',
     };
     if (insertIdx !== null) {
       viagem.paradas.splice(insertIdx, 0, novaParada);
@@ -5497,7 +5472,9 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           const tiposStop = p.pedido.tiposCaminhao && p.pedido.tiposCaminhao.length
             ? p.pedido.tiposCaminhao.map(t=>`<span class="tag tag-purple" style="font-size:9px;">${t}</span>`).join(' ')
             : '';
-          const retornoTexto = (p.deslocVazioMin || 0) > 0 ? fmtDT(retornoTerminalMin) : 'segue rota';
+          const retornoTexto = p.isLongaDistancia
+            ? 'Pernoite no destino'
+            : ((p.deslocVazioMin || 0) > 0 ? fmtDT(retornoTerminalMin) : 'segue rota');
           const origemDesloc = p.origemDeslocamento || 'Terminal';
           const cronogramaPartes = [];
           if (fimCargaMin > inicioCargaMin) {
