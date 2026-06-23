@@ -897,6 +897,22 @@ function abrirModalViagem(veiculoId, idxViagem) {
   }];
   viagem.paradas.forEach((p, i) => {
     const _coord = latLonEfetivo(p.pedido);
+    // Se esta parada sai de uma base diferente da parada anterior (ou da origem),
+    // insere um marcador de "Origem" intermediário antes da parada
+    const termParadaNome = p.terminalOrigem || terminalNomeOrigem;
+    const termAnteriorNome = i === 0 ? terminalNomeOrigem
+      : (viagem.paradas[i-1]?.terminalOrigem || terminalNomeOrigem);
+    if (i > 0 && termParadaNome && termParadaNome !== termAnteriorNome) {
+      const termParada = terminaisCad.find(t => t.nome === termParadaNome);
+      if (termParada) {
+        pontos.push({
+          nome: `Base: ${termParada.nome}`,
+          lat: termParada.lat,
+          lon: termParada.lon,
+          tipo: 'origem',
+        });
+      }
+    }
     pontos.push({
       nome: `${i+1}. ${p.pedido.cliente}`,
       lat: _coord.lat,
@@ -906,14 +922,18 @@ function abrirModalViagem(veiculoId, idxViagem) {
       volume: p.volumeTotal || 0,
       cidade: p.pedido.cidade || '-',
       restricao: p.pedido.restricao || '',
+      terminalOrigem: termParadaNome,
     });
   });
   const ultimo = viagem.paradas[viagem.paradas.length - 1];
   if ((ultimo?.deslocVazioMin || 0) > 0) {
+    // Retorna ao terminal correto da última parada
+    const termUltimoNome = ultimo?.terminalOrigem || terminalNomeOrigem;
+    const termUltimo = terminaisCad.find(t => t.nome === termUltimoNome) || terminal;
     pontos.push({
-      nome: `Retorno: ${terminal.nome}`,
-      lat: terminal.lat,
-      lon: terminal.lon,
+      nome: `Retorno: ${termUltimo.nome}`,
+      lat: termUltimo.lat,
+      lon: termUltimo.lon,
       tipo: 'retorno'
     });
   }
@@ -921,8 +941,13 @@ function abrirModalViagem(veiculoId, idxViagem) {
   if (validos.length < 2) { alert('Coordenadas insuficientes para montar o mapa da viagem.'); return; }
   document.getElementById('mv-titulo').textContent = `${v.placa} · Viagem ${idxViagem+1}${v.transportadora ? ' · '+v.transportadora : ''}`;
   const vol = viagem.paradas.reduce((s,p)=>s+(p.volumeTotal||0),0);
+  // Coleta bases únicas usadas nas paradas
+  const basesUnicas = [...new Set(viagem.paradas.map(p => p.terminalOrigem || terminalNomeOrigem).filter(Boolean))];
+  const basesLabel = basesUnicas.length > 1
+    ? basesUnicas.join(' + ')
+    : (terminalNomeOrigem || '-');
   document.getElementById('mv-resumo').innerHTML =
-    `Terminal: <strong>${terminalNomeOrigem || '-'}</strong> · Destinos: <strong>${viagem.paradas.length}</strong> · Volume: <strong>${vol.toFixed(1)} m³</strong> · Tempo: <strong>${(viagem.tempoConsumidoMin||0).toFixed(0)} min</strong>`;
+    `Base: <strong>${basesLabel}</strong> · Destinos: <strong>${viagem.paradas.length}</strong> · Volume: <strong>${vol.toFixed(1)} m³</strong> · Tempo: <strong>${(viagem.tempoConsumidoMin||0).toFixed(0)} min</strong>`;
   document.getElementById('mv-lista').innerHTML = viagem.paradas.map((p,i) => `
     <div class="card" style="margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -1671,17 +1696,29 @@ function recalcularTimingViagem(viagem, v) {
     // Corrige origemDeslocamento de acordo com a posição real na viagem
     p.origemDeslocamento = idxP === 0 ? 'Terminal' : 'Entrega anterior';
     if (idxP === 0) {
-      // Primeira parada sem tempoCarregamento (stop vindo de posição não-primeira)
-      // → recalcula distâncias a partir do terminal atual
+      // Primeira parada: recalcula distâncias a partir do terminal desta parada
+      // (pode ser diferente do terminalOrigem da viagem quando há pedidos de bases distintas)
       if (!(p.tempoCarregamentoMin > 0)) {
-        const base = dadosCiclo(v, p.pedido, viagem.terminalOrigem);
+        const termParada = p.terminalOrigem || viagem.terminalOrigem;
+        const base = dadosCiclo(v, p.pedido, termParada);
         p.tempoCarregamentoMin = base.tempoCarregamentoMin;
         p.deslocCarregadoMin   = base.deslocCarregadoMin;
         p.deslocVazioMin       = base.deslocVazioMin;
       }
     } else {
-      // Paradas não-primeiras nunca têm carregamento no terminal
-      p.tempoCarregamentoMin = 0;
+      // Paradas não-primeiras: verifica se saem de base diferente da parada anterior.
+      // Se sim, recalcula deslocCarregadoMin e deslocVazioMin a partir do terminal correto.
+      const termParada = p.terminalOrigem || viagem.terminalOrigem;
+      const termAnterior = viagem.paradas[idxP - 1]?.terminalOrigem || viagem.terminalOrigem;
+      if (p.origemDeslocamento === 'Terminal' || termParada !== termAnterior) {
+        // Esta parada sai de uma base diferente da anterior — recalcula distâncias
+        const base = dadosCiclo(v, p.pedido, termParada);
+        p.tempoCarregamentoMin = base.tempoCarregamentoMin;
+        p.deslocCarregadoMin   = base.deslocCarregadoMin;
+        p.deslocVazioMin       = base.deslocVazioMin;
+      } else {
+        p.tempoCarregamentoMin = 0;
+      }
     }
     // Carga: apenas na 1ª parada
     const carga = idxP === 0 ? (p.tempoCarregamentoMin || 0) : 0;
@@ -3988,6 +4025,9 @@ function alocarItem(viagem, item, entrega, detalheParada=null, tempoAdicionalMin
     waitAfterLoadingMin: detalheParada?.waitAfterLoadingMin || 0,
     overnight: !!detalheParada?.overnight,
     origemDeslocamento: detalheParada?.origemDeslocamento || 'Terminal',
+    // Terminal de origem específico desta parada (pode diferir do terminalOrigem da viagem
+    // quando a viagem agrega pedidos de bases distintas)
+    terminalOrigem: item.pedido?.terminal || viagem.terminalOrigem || '',
     };
     if (insertIdx !== null) {
       viagem.paradas.splice(insertIdx, 0, novaParada);
