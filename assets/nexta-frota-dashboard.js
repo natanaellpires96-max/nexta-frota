@@ -625,6 +625,27 @@ window.dashPopularMeses = async function() {
   });
 };
 // ── Extrair dados agregados de snapshots ───────────────────────────────────
+// ── Chave de unificação de cliente ────────────────────────────────────────
+// Prioridade: codigoSAP > nome normalizado (sem acentos, sem sufixo jurídico, maiúsculo)
+function dashChaveCliente(ped) {
+  const sap = (ped.codigoSAP || ped.codSAP || ped.sap || '').toString().trim();
+  if (sap) return 'SAP:' + sap;
+  // Fallback: normaliza o nome removendo acentos, sufixos jurídicos e espaços extras
+  const nome = (ped.cliente || ped.nomeCliente || ped.nome || '?').toString();
+  return 'NM:' + nome
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+    .toUpperCase()
+    .replace(/\b(LTDA|EIRELI|ME|EPP|SA|S\.A\.|COMERCIO|COMERCIAL|INDUSTRIA|IND|COM)\b\.?/g, '')
+    .replace(/[^A-Z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+// ── Nome canônico preferido (mais curto = menos abreviado) ─────────────────
+function dashNomeCanônico(atual, novo) {
+  if (!atual) return novo;
+  // Prefere o nome mais longo (mais completo), sem truncamentos
+  return novo.length > atual.length ? novo : atual;
+}
 function dashAgregar(snapshots) {
   const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade, capTotal}
   const viagens_ocup = []; // {label, ocup}
@@ -655,11 +676,13 @@ function dashAgregar(snapshots) {
           const lon = coords?.lon || par.lon;
           const km = (tLat && tLon && lat && lon)
             ? haversine(tLat, tLon, lat, lon) : 0;
-          if (!clientes[nome]) clientes[nome] = { nome, cidade, entregas:0, volume:0, km:0, lat, lon, capTotal:0 };
-          clientes[nome].entregas++;
-          clientes[nome].volume += vol;
-          clientes[nome].capTotal += capV > 0 ? capV : 0;
-          clientes[nome].km = Math.max(clientes[nome].km, km); // km médio = maior distância do terminal
+          const chave = dashChaveCliente(ped);
+          if (!clientes[chave]) clientes[chave] = { nome, cidade, entregas:0, volume:0, km:0, lat, lon, capTotal:0 };
+          clientes[chave].nome = dashNomeCanônico(clientes[chave].nome, nome);
+          clientes[chave].entregas++;
+          clientes[chave].volume += vol;
+          clientes[chave].capTotal += capV > 0 ? capV : 0;
+          clientes[chave].km = Math.max(clientes[chave].km, km); // km médio = maior distância do terminal
           totalVol += vol;
           volViagem += vol;
           totalKm += km;
