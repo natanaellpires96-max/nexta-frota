@@ -706,10 +706,10 @@ function dashRender(snapshots) {
   set('dk-km',       d.totalKm.toLocaleString('pt-BR') + ' km');
   set('dk-clientes', d.totalClientes);
   // Gráfico de barras: volume por cliente
-  dashBarChart('dash-chart-vol', d.clientes.slice(0,20), c=>c.volume.toFixed(1),
+  dashBarChart('dash-chart-vol', d.clientes.slice(0,30), c=>c.volume.toFixed(1),
     '#f0be40', 'm³', c=>c.nome);
   // Gráfico de barras: entregas por cliente
-  dashBarChart('dash-chart-ent', d.clientes.slice(0,20).sort((a,b)=>b.entregas-a.entregas),
+  dashBarChart('dash-chart-ent', d.clientes.slice(0,30).sort((a,b)=>b.entregas-a.entregas),
     c=>c.entregas, '#70a8f0', 'ent.', c=>c.nome);
   // Gráfico Km vs Volume
   dashKmVolChart('dash-chart-km', d.clientes.slice(0,20));
@@ -740,20 +740,21 @@ function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
   if (!el) return;
   if (!itens.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:12px">Sem dados</div>'; return; }
   const maxV = Math.max(...itens.map(i => parseFloat(valFn(i)) || 0), 1);
-  el.innerHTML = itens.map(item => {
+  el.innerHTML = itens.map(function(item) {
     const v = parseFloat(valFn(item)) || 0;
     const pct = Math.round((v / maxV) * 100);
     const label = labelFn(item);
-    const short = label.length > 28 ? label.slice(0,26)+'…' : label;
-    return `<div style="margin-bottom:6px;">
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-3);margin-bottom:2px;">
-        <span title="${label}">${short}</span>
-        <span style="color:var(--text-2);font-weight:600">${v} ${sufixo}</span>
-      </div>
-      <div style="height:7px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
-        <div style="width:${pct}%;height:100%;background:${cor};border-radius:99px;transition:width .4s;"></div>
-      </div>
-    </div>`;
+    const short = label.length > 32 ? label.slice(0,30)+'\u2026' : label;
+    const display = Number.isInteger(v) ? v : parseFloat(v).toFixed(1);
+    return '<div style="margin-bottom:12px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;font-size:12px;margin-bottom:5px;">'
+      + '<span style="color:var(--text-3);font-weight:500;" title="' + label + '">' + short + '</span>'
+      + '<span style="color:var(--text-2);font-weight:700;font-size:13px;white-space:nowrap;margin-left:10px;">' + display + ' ' + sufixo + '</span>'
+      + '</div>'
+      + '<div style="position:relative;height:10px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">'
+      + '<div style="width:' + pct + '%;height:100%;background:' + cor + ';border-radius:99px;transition:width .5s ease;"></div>'
+      + '</div>'
+      + '</div>';
   }).join('');
 }
 // ── Gráfico Km vs Volume ───────────────────────────────────────────────────
