@@ -8,10 +8,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-<script type="module" src="./nexta-frota-main.js"></script>
-<link rel="stylesheet" href="./nexta-frota-main.css">
+<script type="module" src="assets/nexta-frota-main.js"></script>
+<link rel="stylesheet" href="assets/nexta-frota-main.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-<link rel="stylesheet" href="./nexta-frota-roteirizador.css">
+<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css">
 </head>
 <body>
 <div class="app" id="app"><div class="loading" style="min-height:100vh"><span class="spin"></span>Iniciando o sistema...</div></div>
@@ -443,12 +443,12 @@
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <div style="display:flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;">
-            <span style="font-size:11px;color:var(--text-3);letter-spacing:0.06em;">MES</span>
-            <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--pet-green);font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;">
-              <option value="">Selecionar</option>
+            <span style="font-size:11px;color:var(--text-3);letter-spacing:0.06em;">MÊS</span>
+            <select id="dash-mes-sel" multiple size="3" onchange="dashCarregarMesesSelecionados()" style="background:var(--surface);border:none;color:var(--pet-green);font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;max-height:72px;border-radius:4px;">
+              <option value="" disabled>Selecionar</option>
             </select>
           </div>
-          <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:11px;padding:6px 14px;">Todos os periodos</button>
+          <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:11px;padding:6px 14px;">Todos os períodos</button>
           <button class="btn btn-sm" onclick="dashSincronizar()" id="dash-sync-btn" style="background:rgba(0,164,153,0.12);color:#00A499;border:1px solid rgba(0,164,153,0.35);font-size:11px;padding:6px 14px;">🔄 Sincronizar</button>
         </div>
       </div>
@@ -462,21 +462,21 @@
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Volume por Cliente (m3)</div>
-          <div id="dash-chart-vol" style="max-height:280px;overflow-y:auto;"></div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Volume por Cliente (m³)</div>
+          <div id="dash-chart-vol" style="max-height:520px;overflow-y:auto;"></div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Entregas por Cliente</div>
-          <div id="dash-chart-ent" style="max-height:280px;overflow-y:auto;"></div>
+          <div id="dash-chart-ent" style="max-height:520px;overflow-y:auto;"></div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Km Rodado vs Volume por Cliente</div>
-          <div id="dash-chart-km" style="max-height:280px;overflow-y:auto;"></div>
+          <div id="dash-chart-km" style="max-height:520px;overflow-y:auto;"></div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Taxa de Ocupacao por Viagem (%)</div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Taxa de Ocupação por Viagem (%)</div>
           <canvas id="dash-chart-ocup" height="260"></canvas>
         </div>
       </div>
@@ -493,17 +493,17 @@
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
         <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Tabela Detalhada por Cliente</div>
         <div class="tscroll">
-          <table style="min-width:700px;width:100%;border-collapse:collapse;background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;">
-            <thead><tr style="background:#F9FAFB;">
-              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:left;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">CLIENTE</th>
-              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:left;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">CIDADE</th>
-              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:center;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">ENTREGAS</th>
-              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:center;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">VOLUME (m³)</th>
-              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:center;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">KM MÉDIO</th>
-              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:#374151;text-align:center;border-bottom:1px solid #E5E7EB;letter-spacing:0.04em;white-space:nowrap;">VOL/KM</th>
+          <table style="min-width:700px;width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;overflow:hidden;">
+            <thead><tr style="background:rgba(200,240,50,0.06);">
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-2);text-align:left;border-bottom:1px solid var(--border-dk);letter-spacing:0.04em;white-space:nowrap;">CLIENTE</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-2);text-align:left;border-bottom:1px solid var(--border-dk);letter-spacing:0.04em;white-space:nowrap;">CIDADE</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-2);text-align:center;border-bottom:1px solid var(--border-dk);letter-spacing:0.04em;white-space:nowrap;">ENTREGAS</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-2);text-align:center;border-bottom:1px solid var(--border-dk);letter-spacing:0.04em;white-space:nowrap;">VOLUME (m³)</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-2);text-align:center;border-bottom:1px solid var(--border-dk);letter-spacing:0.04em;white-space:nowrap;">KM MÉDIO</th>
+              <th style="padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-2);text-align:center;border-bottom:1px solid var(--border-dk);letter-spacing:0.04em;white-space:nowrap;">VOL/KM</th>
             </tr></thead>
             <tbody id="dash-tabela-cli-body">
-              <tr><td colspan="6" style="color:#9CA3AF;text-align:center;padding:32px;font-size:13px;">Selecione um mes ou clique em Todos os periodos</td></tr>
+              <tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:32px;font-size:13px;">Selecione um mês ou clique em Todos os períodos</td></tr>
             </tbody>
           </table>
         </div>
@@ -620,9 +620,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script src="./nexta-frota-roteirizador.js"></script>
+<script src="assets/nexta-frota-roteirizador.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script src="./nexta-frota-dashboard.js"></script>
+<script src="assets/nexta-frota-dashboard.js"></script>
 </body>
 </html>
