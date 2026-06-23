@@ -774,14 +774,14 @@ function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
     const v = parseFloat(valFn(item)) || 0;
     const pct = Math.round((v / maxV) * 100);
     const label = labelFn(item);
-    const short = label.length > 28 ? label.slice(0,26)+'…' : label;
-    return `<div style="margin-bottom:6px;">
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-3);margin-bottom:2px;">
-        <span title="${label}">${short}</span>
-        <span style="color:var(--text-2);font-weight:600">${v} ${sufixo}</span>
+    const display = Number.isInteger(v) ? v : parseFloat(v).toFixed(1);
+    return `<div style="margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;">
+        <span style="font-size:12px;font-weight:700;color:#000000;" title="${label}">${label}</span>
+        <span style="font-size:13px;font-weight:700;color:#000000;white-space:nowrap;margin-left:10px;">${display} ${sufixo}</span>
       </div>
-      <div style="height:7px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
-        <div style="width:${pct}%;height:100%;background:${cor};border-radius:99px;transition:width .4s;"></div>
+      <div style="height:10px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:${cor};border-radius:99px;transition:width .5s ease;"></div>
       </div>
     </div>`;
   }).join('');
@@ -797,22 +797,21 @@ function dashKmVolChart(containerId, clientes) {
   el.innerHTML = itens.map(c => {
     const pctKm = Math.round((c.km / maxKm) * 100);
     const pctVol = Math.round((c.volume / maxVol) * 100);
-    const short = c.nome.length > 22 ? c.nome.slice(0,20)+'…' : c.nome;
-    return `<div style="margin-bottom:8px;">
-      <div style="font-size:10px;color:var(--text-3);margin-bottom:2px;" title="${c.nome}">${short}</div>
+    return `<div style="margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:700;color:#000000;margin-bottom:5px;" title="${c.nome}">${c.nome}</div>
       <div style="display:flex;gap:4px;align-items:center;">
-        <span style="font-size:9px;color:var(--text-3);width:20px;text-align:right;">km</span>
-        <div style="flex:1;height:5px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
+        <span style="font-size:10px;font-weight:700;color:#000000;width:22px;text-align:right;">km</span>
+        <div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
           <div style="width:${pctKm}%;height:100%;background:#6ee04a;border-radius:99px;"></div>
         </div>
-        <span style="font-size:9px;color:#6ee04a;width:36px;">${c.km.toFixed(0)}km</span>
+        <span style="font-size:10px;font-weight:700;color:#000000;width:44px;">${c.km.toFixed(0)} km</span>
       </div>
-      <div style="display:flex;gap:4px;align-items:center;margin-top:2px;">
-        <span style="font-size:9px;color:var(--text-3);width:20px;text-align:right;">m³</span>
-        <div style="flex:1;height:5px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
+      <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
+        <span style="font-size:10px;font-weight:700;color:#000000;width:22px;text-align:right;">m³</span>
+        <div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
           <div style="width:${pctVol}%;height:100%;background:#f0be40;border-radius:99px;"></div>
         </div>
-        <span style="font-size:9px;color:#f0be40;width:36px;">${c.volume.toFixed(1)}</span>
+        <span style="font-size:10px;font-weight:700;color:#000000;width:44px;">${c.volume.toFixed(1)} m³</span>
       </div>
     </div>`;
   }).join('');
@@ -828,10 +827,9 @@ function dashOcupClienteChart(containerId, itens) {
   el.innerHTML = itens.map(function(item) {
     const pct = Math.min(item.ocup, 100);
     const cor = pct >= 90 ? '#4caf50' : pct >= 60 ? '#f0be40' : '#f06060';
-    const label = item.nome.length > 32 ? item.nome.slice(0, 30) + '\u2026' : item.nome;
     return '<div style="margin-bottom:12px;">'
       + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;">'
-      + '<span style="font-size:12px;font-weight:500;color:#000000;" title="' + item.nome + '">' + label + '</span>'
+      + '<span style="font-size:12px;font-weight:700;color:#000000;">' + item.nome + '</span>'
       + '<span style="font-size:13px;font-weight:700;color:#000000;white-space:nowrap;margin-left:10px;">' + pct + '%</span>'
       + '</div>'
       + '<div style="position:relative;height:12px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">'
