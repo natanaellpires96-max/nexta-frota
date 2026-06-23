@@ -748,8 +748,8 @@ function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
     const display = Number.isInteger(v) ? v : parseFloat(v).toFixed(1);
     return '<div style="margin-bottom:12px;">'
       + '<div style="display:flex;justify-content:space-between;align-items:baseline;font-size:12px;margin-bottom:5px;">'
-      + '<span style="color:var(--text-3);font-weight:500;" title="' + label + '">' + short + '</span>'
-      + '<span style="color:var(--text-2);font-weight:700;font-size:13px;white-space:nowrap;margin-left:10px;">' + display + ' ' + sufixo + '</span>'
+      + '<span style="color:#000000;font-weight:500;" title="' + label + '">' + short + '</span>'
+      + '<span style="color:#000000;font-weight:700;font-size:13px;white-space:nowrap;margin-left:10px;">' + display + ' ' + sufixo + '</span>'
       + '</div>'
       + '<div style="position:relative;height:10px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">'
       + '<div style="width:' + pct + '%;height:100%;background:' + cor + ';border-radius:99px;transition:width .5s ease;"></div>'
