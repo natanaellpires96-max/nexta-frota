@@ -909,13 +909,11 @@ function abrirModalViagem(veiculoId, idxViagem) {
     });
   });
   const ultimo = viagem.paradas[viagem.paradas.length - 1];
-  if ((ultimo?.deslocVazioMin || 0) > 0 && !ultimo?.isLongaDistancia) {
-    const termUltimoNome = ultimo?.terminalOrigem || terminalNomeOrigem;
-    const termUltimo = terminaisCad.find(t => t.nome === termUltimoNome) || terminal;
+  if ((ultimo?.deslocVazioMin || 0) > 0) {
     pontos.push({
-      nome: `Retorno: ${termUltimo.nome}`,
-      lat: termUltimo.lat,
-      lon: termUltimo.lon,
+      nome: `Retorno: ${terminal.nome}`,
+      lat: terminal.lat,
+      lon: terminal.lon,
       tipo: 'retorno'
     });
   }
@@ -1776,15 +1774,10 @@ function calcOvernightViagem(v, item, clockAbsMin, terminalNome, diaAlvoEntrega=
   const targetDepartureAbs  = targetArrivalAbs - deslocCarregadoMin;
   const waitAfterLoadingMin = Math.max(0, targetDepartureAbs - loadEndAbs);
   const waitBeforeLoadingMin = Math.max(0, loadStartAbs - clockAbsMin);
-  // Para entregas de longa distância (diaAlvo >= 1 = entrega em dia diferente do carregamento),
-  // o motorista pernoita no destino e o retorno à base ocorre fora desta roteirização.
-  // O deslocVazioMin NÃO entra no produtivo nem no elapsed — o veículo não volta no mesmo ciclo.
-  const isLongaDistancia = Number.isInteger(diaAlvoEntrega) && diaAlvoEntrega >= 1;
-  const retornoMin = isLongaDistancia ? 0 : deslocVazioMin;
-  const productiveMin    = tempoCarregamentoMin + deslocCarregadoMin + tempoDescargaMin + retornoMin;
-  const totalElapsedMin  = waitBeforeLoadingMin + tempoCarregamentoMin + waitAfterLoadingMin + deslocCarregadoMin + tempoDescargaMin + retornoMin;
+  const productiveMin    = tempoCarregamentoMin + deslocCarregadoMin + tempoDescargaMin + deslocVazioMin;
+  const totalElapsedMin  = waitBeforeLoadingMin + tempoCarregamentoMin + waitAfterLoadingMin + deslocCarregadoMin + tempoDescargaMin + deslocVazioMin;
   if (waitAfterLoadingMin < 0 || totalElapsedMin <= 0) return null;
-  return { ...base, deslocVazioMin: retornoMin, waitBeforeLoadingMin, waitAfterLoadingMin, productiveMin, totalElapsedMin, isLongaDistancia };
+  return { ...base, waitBeforeLoadingMin, waitAfterLoadingMin, productiveMin, totalElapsedMin };
 }
 function chegadaPrevistaAbsMin(viagem, detalheParada, viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin = 0, numMaxBreaks = 1) {
   let t = inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin, numMaxBreaks);
@@ -3397,7 +3390,6 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         overnight: true,
         waitAfterLoadingMin: ov.waitAfterLoadingMin,
         origemDeslocamento: 'Terminal',
-        isLongaDistancia: !!ov.isLongaDistancia,
       };
       const vi = novaViagem(v, terminalEfetivo, ov.waitBeforeLoadingMin);
       return { vi, detalhe: ovDet, custoRelogio: ov.totalElapsedMin, custoProdutivo: ov.productiveMin + prodRefeicao };
@@ -3995,7 +3987,6 @@ function alocarItem(viagem, item, entrega, detalheParada=null, tempoAdicionalMin
     tempoEsperaRestricaoMin: detalheParada?.tempoEsperaRestricaoMin || 0,
     waitAfterLoadingMin: detalheParada?.waitAfterLoadingMin || 0,
     overnight: !!detalheParada?.overnight,
-    isLongaDistancia: !!detalheParada?.isLongaDistancia,
     origemDeslocamento: detalheParada?.origemDeslocamento || 'Terminal',
     };
     if (insertIdx !== null) {
@@ -4978,6 +4969,10 @@ function motoristaDaViagem(v, cargaAbsMin, vi) {
   if (vi?.petId && _motoristasOverride[vi.petId] !== undefined) return _motoristasOverride[vi.petId];
   const hod = ((Math.round(cargaAbsMin) % 1440) + 1440) % 1440; // hora do dia em min
   const ehNoturno = hod >= 18 * 60 || hod < 6 * 60;
+  // Para viagens overnight/longa distância, prioriza o motorista disponível
+  // independente do turno — se apenas um foi informado no painel, usa ele
+  const isOv = !!(vi?.paradas || []).find(p => p.overnight || p.isLongaDistancia);
+  if (isOv) return v.motoristaDiurno || v.motoristaNt || '';
   if (ehNoturno && v.motoristaNt)      return v.motoristaNt;
   if (!ehNoturno && v.motoristaDiurno) return v.motoristaDiurno;
   return v.motoristaDiurno || v.motoristaNt || '';
@@ -5444,9 +5439,12 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           const hod = ((Math.round(cargaMin) % 1440) + 1440) % 1440;
           const ehNoturno = hod >= 18 * 60 || hod < 6 * 60;
           const _petIdViagem = viagem.petId || '';
+          const _isOvViagem = !!(paradasComHorario || []).find(ph => ph.p?.overnight || ph.p?.isLongaDistancia);
           const nomeMotor = (_petIdViagem && _motoristasOverride[_petIdViagem] !== undefined)
             ? _motoristasOverride[_petIdViagem]
-            : (ehNoturno ? (v.motoristaNt||'') : (v.motoristaDiurno||''));
+            : _isOvViagem
+              ? (v.motoristaDiurno || v.motoristaNt || '')
+              : (ehNoturno ? (v.motoristaNt||'') : (v.motoristaDiurno||''));
           const onInput = `_editMotoristaViagem('${_petIdViagem}',this.value)`;
             const cargaHHMM = (() => {
             const m = Math.round(cargaMin); const md = ((m%1440)+1440)%1440;
@@ -5472,9 +5470,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           const tiposStop = p.pedido.tiposCaminhao && p.pedido.tiposCaminhao.length
             ? p.pedido.tiposCaminhao.map(t=>`<span class="tag tag-purple" style="font-size:9px;">${t}</span>`).join(' ')
             : '';
-          const retornoTexto = p.isLongaDistancia
-            ? 'Pernoite no destino'
-            : ((p.deslocVazioMin || 0) > 0 ? fmtDT(retornoTerminalMin) : 'segue rota');
+          const retornoTexto = (p.deslocVazioMin || 0) > 0 ? fmtDT(retornoTerminalMin) : 'segue rota';
           const origemDesloc = p.origemDeslocamento || 'Terminal';
           const cronogramaPartes = [];
           if (fimCargaMin > inicioCargaMin) {
