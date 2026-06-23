@@ -16,7 +16,7 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 ::-webkit-scrollbar-track{background:var(--dark);}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
 .app{min-height:100vh;display:flex;flex-direction:column;}
-.topbar{background:var(--mid);border-bottom:1px solid var(--border);padding:0 1.5rem;height:54px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:200;}
+.topbar{background:var(--mid);border-bottom:1px solid var(--border);padding:0 1.5rem;height:54px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:1100;}
 .topbar-left{display:flex;align-items:center;gap:14px;}
 .wordmark{font-size:19px;font-weight:600;letter-spacing:.16em;color:var(--lime);}
 .topbar-div{width:1px;height:18px;background:var(--border2);}

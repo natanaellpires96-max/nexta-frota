@@ -8,10 +8,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-<script type="module" src="./nexta-frota-main.js"></script>
-<link rel="stylesheet" href="./nexta-frota-main.css">
+<script type="module" src="assets/nexta-frota-main.js"></script>
+<link rel="stylesheet" href="assets/nexta-frota-main.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-<link rel="stylesheet" href="./nexta-frota-roteirizador.css">
+<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css">
 </head>
 <body>
 <div class="app" id="app"><div class="loading" style="min-height:100vh"><span class="spin"></span>Iniciando o sistema...</div></div>
@@ -461,19 +461,19 @@
         <div class="sum-card"><div class="sum-num" id="dk-clientes" style="color:#f06060">-</div><div class="sum-label">Clientes</div></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
-        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Volume por Cliente (m3)</div>
-          <div id="dash-chart-vol" style="max-height:280px;overflow-y:auto;"></div>
+          <div id="dash-chart-vol" style="max-height:280px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
-        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Entregas por Cliente</div>
-          <div id="dash-chart-ent" style="max-height:280px;overflow-y:auto;"></div>
+          <div id="dash-chart-ent" style="max-height:280px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
-        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Km Rodado vs Volume por Cliente</div>
-          <div id="dash-chart-km" style="max-height:280px;overflow-y:auto;"></div>
+          <div id="dash-chart-km" style="max-height:280px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Taxa de Ocupacao por Viagem (%)</div>
@@ -488,7 +488,7 @@
             <span><span style="display:inline-block;width:10px;height:10px;background:#4F46E5;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Cliente</span>
           </div>
         </div>
-        <div id="dash-mapa" style="height:420px;border-radius:8px;background:#E5E7EB;"></div>
+        <div id="dash-mapa" style="height:420px;border-radius:8px;background:#E5E7EB;isolation:isolate;position:relative;z-index:0;"></div>
       </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
         <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Tabela Detalhada por Cliente</div>
@@ -620,9 +620,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script src="./nexta-frota-roteirizador.js"></script>
+<script src="assets/nexta-frota-roteirizador.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script src="./nexta-frota-dashboard.js"></script>
+<script src="assets/nexta-frota-dashboard.js"></script>
 </body>
 </html>
