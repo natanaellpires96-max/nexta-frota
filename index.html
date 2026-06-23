@@ -460,23 +460,21 @@
         <div class="sum-card"><div class="sum-num" id="dk-km" style="color:#6ee04a">-</div><div class="sum-label">Km Total</div></div>
         <div class="sum-card"><div class="sum-num" id="dk-clientes" style="color:#f06060">-</div><div class="sum-label">Clientes</div></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+      <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:20px;overflow:hidden;">
-          <div style="font-size:13px;font-weight:700;color:var(--text-2);margin-bottom:16px;letter-spacing:0.02em;">Volume por Cliente (m³)</div>
-          <div id="dash-chart-vol" style="max-height:520px;overflow-y:auto;overflow-x:hidden;padding-right:4px;"></div>
+          <div style="font-size:13px;font-weight:700;color:#000000;margin-bottom:16px;letter-spacing:0.02em;text-align:center;">Volume por Cliente (m³)</div>
+          <div id="dash-chart-vol" style="overflow-y:auto;overflow-x:hidden;padding-right:4px;"></div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:20px;overflow:hidden;">
-          <div style="font-size:13px;font-weight:700;color:var(--text-2);margin-bottom:16px;letter-spacing:0.02em;">Entregas por Cliente</div>
-          <div id="dash-chart-ent" style="max-height:520px;overflow-y:auto;overflow-x:hidden;padding-right:4px;"></div>
+          <div style="font-size:13px;font-weight:700;color:#000000;margin-bottom:16px;letter-spacing:0.02em;text-align:center;">Entregas por Cliente</div>
+          <div id="dash-chart-ent" style="overflow-y:auto;overflow-x:hidden;padding-right:4px;"></div>
         </div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:20px;overflow:hidden;">
-          <div style="font-size:13px;font-weight:700;color:var(--text-2);margin-bottom:16px;letter-spacing:0.02em;">Km Rodado vs Volume por Cliente</div>
-          <div id="dash-chart-km" style="max-height:520px;overflow-y:auto;overflow-x:hidden;padding-right:4px;"></div>
+          <div style="font-size:13px;font-weight:700;color:#000000;margin-bottom:16px;letter-spacing:0.02em;text-align:center;">Km Rodado vs Volume por Cliente</div>
+          <div id="dash-chart-km" style="overflow-y:auto;overflow-x:hidden;padding-right:4px;"></div>
         </div>
-        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Taxa de Ocupacao por Viagem (%)</div>
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:20px;">
+          <div style="font-size:13px;font-weight:700;color:#000000;margin-bottom:16px;letter-spacing:0.02em;text-align:center;">Taxa de Ocupação por Viagem (%)</div>
           <canvas id="dash-chart-ocup" height="260"></canvas>
         </div>
       </div>
