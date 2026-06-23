@@ -706,13 +706,13 @@ function dashRender(snapshots) {
   set('dk-km',       d.totalKm.toLocaleString('pt-BR') + ' km');
   set('dk-clientes', d.totalClientes);
   // Gráfico de barras: volume por cliente
-  dashBarChart('dash-chart-vol', d.clientes.slice(0,30), c=>c.volume,
+  dashBarChart('dash-chart-vol', d.clientes.slice(0,20), c=>c.volume.toFixed(1),
     '#f0be40', 'm³', c=>c.nome);
   // Gráfico de barras: entregas por cliente
-  dashBarChart('dash-chart-ent', d.clientes.slice(0,30).sort((a,b)=>b.entregas-a.entregas),
+  dashBarChart('dash-chart-ent', d.clientes.slice(0,20).sort((a,b)=>b.entregas-a.entregas),
     c=>c.entregas, '#70a8f0', 'ent.', c=>c.nome);
   // Gráfico Km vs Volume
-  dashKmVolChart('dash-chart-km', d.clientes.slice(0,30));
+  dashKmVolChart('dash-chart-km', d.clientes.slice(0,20));
   // Gráfico de ocupação
   dashOcupChart('dash-chart-ocup', d.viagens_ocup.slice(0,30));
   // Mapa
@@ -722,14 +722,14 @@ function dashRender(snapshots) {
   if (tbody) {
     tbody.innerHTML = d.clientes.map((c, i) => {
       const kmVol = c.km > 0 ? (c.volume / c.km).toFixed(2) : '-';
-      const bg = i % 2 === 0 ? 'transparent' : 'rgba(200,240,50,0.03)';
-      return `<tr style="background:${bg};border-bottom:1px solid var(--border-dk);">
-        <td style="padding:10px 14px;font-size:13px;font-weight:500;color:var(--text);">${c.nome}</td>
-        <td style="padding:10px 14px;font-size:12px;color:var(--text-3);">${c.cidade}</td>
-        <td style="padding:10px 14px;font-size:13px;color:var(--text-2);text-align:center;">${c.entregas}</td>
-        <td style="padding:10px 14px;font-size:13px;color:#f0be40;text-align:center;font-weight:600;">${c.volume.toFixed(1)}</td>
-        <td style="padding:10px 14px;font-size:13px;color:var(--text-2);text-align:center;">${c.km > 0 ? c.km.toFixed(0)+' km' : '-'}</td>
-        <td style="padding:10px 14px;font-size:13px;color:var(--text-2);text-align:center;">${kmVol !== '-' ? kmVol+' m³/km' : '-'}</td>
+      const bg = i % 2 === 0 ? '#FFFFFF' : '#F9FAFB';
+      return `<tr style="background:${bg};border-bottom:1px solid #E5E7EB;">
+        <td style="padding:10px 14px;font-size:13px;font-weight:500;color:#111827;">${c.nome}</td>
+        <td style="padding:10px 14px;font-size:12px;color:#6B7280;">${c.cidade}</td>
+        <td style="padding:10px 14px;font-size:13px;color:#111827;text-align:center;">${c.entregas}</td>
+        <td style="padding:10px 14px;font-size:13px;color:#111827;text-align:center;">${c.volume.toFixed(1)}</td>
+        <td style="padding:10px 14px;font-size:13px;color:#111827;text-align:center;">${c.km > 0 ? c.km.toFixed(0)+' km' : '-'}</td>
+        <td style="padding:10px 14px;font-size:13px;color:#111827;text-align:center;">${kmVol !== '-' ? kmVol+' m³/km' : '-'}</td>
       </tr>`;
     }).join('');
   }
@@ -739,21 +739,18 @@ function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
   const el = document.getElementById(containerId);
   if (!el) return;
   if (!itens.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:12px">Sem dados</div>'; return; }
-  // valFn pode retornar string (ex: toFixed) ou número — sempre converter para float
-  const numFn = (item) => parseFloat(valFn(item)) || 0;
-  const maxV = Math.max(...itens.map(numFn), 1);
+  const maxV = Math.max(...itens.map(i => parseFloat(valFn(i)) || 0), 1);
   el.innerHTML = itens.map(item => {
-    const v = numFn(item);
+    const v = parseFloat(valFn(item)) || 0;
     const pct = Math.round((v / maxV) * 100);
     const label = labelFn(item);
-    const short = label.length > 30 ? label.slice(0,28)+'…' : label;
-    const display = Number.isInteger(v) ? v : v.toFixed(1);
-    return `<div style="margin-bottom:9px;">
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-3);margin-bottom:3px;">
+    const short = label.length > 28 ? label.slice(0,26)+'…' : label;
+    return `<div style="margin-bottom:6px;">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-3);margin-bottom:2px;">
         <span title="${label}">${short}</span>
-        <span style="color:var(--text-2);font-weight:600;white-space:nowrap;margin-left:8px;">${display} ${sufixo}</span>
+        <span style="color:var(--text-2);font-weight:600">${v} ${sufixo}</span>
       </div>
-      <div style="height:9px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
+      <div style="height:7px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
         <div style="width:${pct}%;height:100%;background:${cor};border-radius:99px;transition:width .4s;"></div>
       </div>
     </div>`;
@@ -980,21 +977,6 @@ window.dashCarregarMes = async function(chave) {
   if (!chave) return;
   const store = await dashGetStoreMerged();
   dashRender(store[chave] || []);
-};
-// ── Carregar múltiplos meses selecionados no <select multiple> ─────────────
-window.dashCarregarMesesSelecionados = async function() {
-  const sel = document.getElementById('dash-mes-sel');
-  if (!sel) return;
-  const selecionados = Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean);
-  if (!selecionados.length) return;
-  if (selecionados.length === 1) {
-    await window.dashCarregarMes(selecionados[0]);
-    return;
-  }
-  const store = await dashGetStoreMerged();
-  // Concatena snapshots de todos os meses selecionados
-  const snapshots = selecionados.flatMap(chave => store[chave] || []);
-  dashRender(snapshots);
 };
 // ── Carregar todos os períodos ─────────────────────────────────────────────
 window.dashCarregarTodos = async function() {
