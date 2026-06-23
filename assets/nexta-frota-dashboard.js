@@ -626,7 +626,7 @@ window.dashPopularMeses = async function() {
 };
 // ── Extrair dados agregados de snapshots ───────────────────────────────────
 function dashAgregar(snapshots) {
-  const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade}
+  const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade, capTotal}
   const viagens_ocup = []; // {label, ocup}
   let totalViagens = 0, totalKm = 0, totalVol = 0, totalCap = 0;
   const rotasMap = [];   // para o mapa: [{termLat,termLon,paradas:[{lat,lon,nome}]}]
@@ -655,9 +655,10 @@ function dashAgregar(snapshots) {
           const lon = coords?.lon || par.lon;
           const km = (tLat && tLon && lat && lon)
             ? haversine(tLat, tLon, lat, lon) : 0;
-          if (!clientes[nome]) clientes[nome] = { nome, cidade, entregas:0, volume:0, km:0, lat, lon };
+          if (!clientes[nome]) clientes[nome] = { nome, cidade, entregas:0, volume:0, km:0, lat, lon, capTotal:0 };
           clientes[nome].entregas++;
           clientes[nome].volume += vol;
+          clientes[nome].capTotal += capV > 0 ? capV : 0;
           clientes[nome].km = Math.max(clientes[nome].km, km); // km médio = maior distância do terminal
           totalVol += vol;
           volViagem += vol;
@@ -675,9 +676,15 @@ function dashAgregar(snapshots) {
   });
   const totalVec = totalCap > 0 ? Math.round((totalVol / totalCap) * 100) : 0;
   const totalEntregas = Object.values(clientes).reduce((s,c)=>s+c.entregas, 0);
+  // Ocupação por cliente: volume do cliente / capacidade acumulada dos veículos que o atenderam
+  const clientes_ocup = Object.values(clientes)
+    .filter(c => c.capTotal > 0)
+    .map(c => ({ nome: c.nome, ocup: Math.min(100, Math.round((c.volume / c.capTotal) * 100)) }))
+    .sort((a, b) => b.ocup - a.ocup);
   return {
     clientes: Object.values(clientes).sort((a,b)=>b.volume-a.volume),
     viagens_ocup,
+    clientes_ocup,
     totalViagens,
     totalEntregas,
     totalVol: parseFloat(totalVol.toFixed(1)),
@@ -706,15 +713,15 @@ function dashRender(snapshots) {
   set('dk-km',       d.totalKm.toLocaleString('pt-BR') + ' km');
   set('dk-clientes', d.totalClientes);
   // Gráfico de barras: volume por cliente
-  dashBarChart('dash-chart-vol', d.clientes.slice(0,30), c=>c.volume.toFixed(1),
+  dashBarChart('dash-chart-vol', d.clientes.slice(0,20), c=>c.volume.toFixed(1),
     '#f0be40', 'm³', c=>c.nome);
   // Gráfico de barras: entregas por cliente
-  dashBarChart('dash-chart-ent', d.clientes.slice(0,30).sort((a,b)=>b.entregas-a.entregas),
+  dashBarChart('dash-chart-ent', d.clientes.slice(0,20).sort((a,b)=>b.entregas-a.entregas),
     c=>c.entregas, '#70a8f0', 'ent.', c=>c.nome);
   // Gráfico Km vs Volume
   dashKmVolChart('dash-chart-km', d.clientes.slice(0,20));
-  // Gráfico de ocupação
-  dashOcupChart('dash-chart-ocup', d.viagens_ocup.slice(0,30));
+  // Gráfico de ocupação por cliente
+  dashOcupClienteChart('dash-chart-ocup', d.clientes_ocup.slice(0,30));
   // Mapa
   dashRenderMapa(d.rotasMap);
   // Tabela
@@ -740,21 +747,20 @@ function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
   if (!el) return;
   if (!itens.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:12px">Sem dados</div>'; return; }
   const maxV = Math.max(...itens.map(i => parseFloat(valFn(i)) || 0), 1);
-  el.innerHTML = itens.map(function(item) {
+  el.innerHTML = itens.map(item => {
     const v = parseFloat(valFn(item)) || 0;
     const pct = Math.round((v / maxV) * 100);
     const label = labelFn(item);
-    const short = label.length > 32 ? label.slice(0,30)+'\u2026' : label;
-    const display = Number.isInteger(v) ? v : parseFloat(v).toFixed(1);
-    return '<div style="margin-bottom:12px;">'
-      + '<div style="display:flex;justify-content:space-between;align-items:baseline;font-size:12px;margin-bottom:5px;">'
-      + '<span style="color:#000000;font-weight:500;" title="' + label + '">' + short + '</span>'
-      + '<span style="color:#000000;font-weight:700;font-size:13px;white-space:nowrap;margin-left:10px;">' + display + ' ' + sufixo + '</span>'
-      + '</div>'
-      + '<div style="position:relative;height:10px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">'
-      + '<div style="width:' + pct + '%;height:100%;background:' + cor + ';border-radius:99px;transition:width .5s ease;"></div>'
-      + '</div>'
-      + '</div>';
+    const short = label.length > 28 ? label.slice(0,26)+'…' : label;
+    return `<div style="margin-bottom:6px;">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-3);margin-bottom:2px;">
+        <span title="${label}">${short}</span>
+        <span style="color:var(--text-2);font-weight:600">${v} ${sufixo}</span>
+      </div>
+      <div style="height:7px;background:rgba(255,255,255,0.07);border-radius:99px;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:${cor};border-radius:99px;transition:width .4s;"></div>
+      </div>
+    </div>`;
   }).join('');
 }
 // ── Gráfico Km vs Volume ───────────────────────────────────────────────────
@@ -788,68 +794,32 @@ function dashKmVolChart(containerId, clientes) {
     </div>`;
   }).join('');
 }
-// ── Gráfico de ocupação (canvas) ───────────────────────────────────────────
+// ── Gráfico de ocupação por cliente (barras horizontais HTML) ──────────────
+function dashOcupClienteChart(containerId, itens) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!itens.length) {
+    el.innerHTML = '<div style="color:#000;font-size:12px;padding:12px">Sem dados de ocupação</div>';
+    return;
+  }
+  el.innerHTML = itens.map(function(item) {
+    const pct = Math.min(item.ocup, 100);
+    const cor = pct >= 90 ? '#4caf50' : pct >= 60 ? '#f0be40' : '#f06060';
+    const label = item.nome.length > 32 ? item.nome.slice(0, 30) + '\u2026' : item.nome;
+    return '<div style="margin-bottom:12px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;">'
+      + '<span style="font-size:12px;font-weight:500;color:#000000;" title="' + item.nome + '">' + label + '</span>'
+      + '<span style="font-size:13px;font-weight:700;color:#000000;white-space:nowrap;margin-left:10px;">' + pct + '%</span>'
+      + '</div>'
+      + '<div style="position:relative;height:12px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">'
+      + '<div style="width:' + pct + '%;height:100%;background:' + cor + ';border-radius:99px;transition:width .5s ease;"></div>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+// ── Gráfico de ocupação por viagem (canvas) — mantido para compatibilidade ──
 function dashOcupChart(canvasId, itens) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
-  const W = canvas.offsetWidth || 400;
-  canvas.width = W * (window.devicePixelRatio || 1);
-  canvas.height = 260 * (window.devicePixelRatio || 1);
-  canvas.style.width = W + 'px';
-  canvas.style.height = '260px';
-  const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, W, 260);
-  if (!itens.length) return;
-  const pad = { t:16, r:10, b:44, l:34 };
-  const W2 = W - pad.l - pad.r;
-  const H2 = 260 - pad.t - pad.b;
-  const barW = Math.max(6, Math.min(28, W2 / itens.length - 3));
-  const maxV = 100;
-  // Grid
-  ctx.strokeStyle = 'rgba(200,240,50,0.1)'; ctx.lineWidth = 1;
-  [0, 25, 50, 75, 100].forEach(pct => {
-    const y = pad.t + H2 - (pct / maxV) * H2;
-    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + W2, y); ctx.stroke();
-    ctx.fillStyle = 'rgba(228,242,200,0.35)'; ctx.font = `10px DM Mono,monospace`;
-    ctx.textAlign = 'right'; ctx.fillText(pct + '%', pad.l - 4, y + 3);
-  });
-  // Linha de 100%
-  ctx.strokeStyle = 'rgba(240,96,96,0.3)'; ctx.setLineDash([4,4]);
-  const y100 = pad.t;
-  ctx.beginPath(); ctx.moveTo(pad.l, y100); ctx.lineTo(pad.l + W2, y100); ctx.stroke();
-  ctx.setLineDash([]);
-  // Barras
-  itens.forEach((item, i) => {
-    const x = pad.l + i * (W2 / itens.length) + (W2 / itens.length - barW) / 2;
-    const h = (Math.min(item.ocup, 100) / maxV) * H2;
-    const y = pad.t + H2 - h;
-    const cor = item.ocup >= 90 ? '#6ee04a' : item.ocup >= 60 ? '#f0be40' : '#f06060';
-    ctx.fillStyle = cor;
-    ctx.beginPath();
-    ctx.roundRect(x, y, barW, h, [3,3,0,0]);
-    ctx.fill();
-    // Label do valor
-    if (barW >= 14) {
-      ctx.fillStyle = 'rgba(228,242,200,0.7)';
-      ctx.font = `bold 9px DM Sans,sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText(item.ocup + '%', x + barW/2, y - 3);
-    }
-    // Label placa no eixo X (diagonal)
-    if (itens.length <= 20) {
-      ctx.save();
-      ctx.translate(x + barW/2, pad.t + H2 + 6);
-      ctx.rotate(-Math.PI / 4);
-      ctx.fillStyle = 'rgba(228,242,200,0.4)';
-      ctx.font = '8px DM Sans,sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText(item.label, 0, 0);
-      ctx.restore();
-    }
-  });
-  ctx.textAlign = 'left';
+  dashOcupClienteChart(canvasId, itens.map(function(i){ return { nome: i.label, ocup: i.ocup }; }));
 }
 // ── Mapa Histórico ─────────────────────────────────────────────────────────
 let _dashMap = null;
