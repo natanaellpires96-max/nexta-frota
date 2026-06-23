@@ -897,18 +897,17 @@ function abrirModalViagem(veiculoId, idxViagem) {
   }];
   viagem.paradas.forEach((p, i) => {
     const _coord = latLonEfetivo(p.pedido);
-    // Se esta parada sai de uma base diferente da parada anterior (ou da origem),
-    // insere um marcador de "Origem" intermediário antes da parada
-    const termParadaNome = p.terminalOrigem || terminalNomeOrigem;
+    // Se esta parada sai de base diferente da anterior, insere marcador de base intermediário
+    const termParadaNome   = p.terminalOrigem || terminalNomeOrigem;
     const termAnteriorNome = i === 0 ? terminalNomeOrigem
       : (viagem.paradas[i-1]?.terminalOrigem || terminalNomeOrigem);
     if (i > 0 && termParadaNome && termParadaNome !== termAnteriorNome) {
-      const termParada = terminaisCad.find(t => t.nome === termParadaNome);
-      if (termParada) {
+      const termIntermediario = terminaisCad.find(t => t.nome === termParadaNome);
+      if (termIntermediario) {
         pontos.push({
-          nome: `Base: ${termParada.nome}`,
-          lat: termParada.lat,
-          lon: termParada.lon,
+          nome: `Base: ${termIntermediario.nome}`,
+          lat: termIntermediario.lat,
+          lon: termIntermediario.lon,
           tipo: 'origem',
         });
       }
@@ -922,12 +921,10 @@ function abrirModalViagem(veiculoId, idxViagem) {
       volume: p.volumeTotal || 0,
       cidade: p.pedido.cidade || '-',
       restricao: p.pedido.restricao || '',
-      terminalOrigem: termParadaNome,
     });
   });
   const ultimo = viagem.paradas[viagem.paradas.length - 1];
   if ((ultimo?.deslocVazioMin || 0) > 0) {
-    // Retorna ao terminal correto da última parada
     const termUltimoNome = ultimo?.terminalOrigem || terminalNomeOrigem;
     const termUltimo = terminaisCad.find(t => t.nome === termUltimoNome) || terminal;
     pontos.push({
@@ -941,13 +938,10 @@ function abrirModalViagem(veiculoId, idxViagem) {
   if (validos.length < 2) { alert('Coordenadas insuficientes para montar o mapa da viagem.'); return; }
   document.getElementById('mv-titulo').textContent = `${v.placa} · Viagem ${idxViagem+1}${v.transportadora ? ' · '+v.transportadora : ''}`;
   const vol = viagem.paradas.reduce((s,p)=>s+(p.volumeTotal||0),0);
-  // Coleta bases únicas usadas nas paradas
-  const basesUnicas = [...new Set(viagem.paradas.map(p => p.terminalOrigem || terminalNomeOrigem).filter(Boolean))];
-  const basesLabel = basesUnicas.length > 1
-    ? basesUnicas.join(' + ')
-    : (terminalNomeOrigem || '-');
+  const _basesUnicas = [...new Set(viagem.paradas.map(p => p.terminalOrigem || terminalNomeOrigem).filter(Boolean))];
+  const _basesLabel = _basesUnicas.length > 1 ? _basesUnicas.join(' + ') : (terminalNomeOrigem || '-');
   document.getElementById('mv-resumo').innerHTML =
-    `Base: <strong>${basesLabel}</strong> · Destinos: <strong>${viagem.paradas.length}</strong> · Volume: <strong>${vol.toFixed(1)} m³</strong> · Tempo: <strong>${(viagem.tempoConsumidoMin||0).toFixed(0)} min</strong>`;
+    `Base: <strong>${_basesLabel}</strong> · Destinos: <strong>${viagem.paradas.length}</strong> · Volume: <strong>${vol.toFixed(1)} m³</strong> · Tempo: <strong>${(viagem.tempoConsumidoMin||0).toFixed(0)} min</strong>`;
   document.getElementById('mv-lista').innerHTML = viagem.paradas.map((p,i) => `
     <div class="card" style="margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -1696,8 +1690,7 @@ function recalcularTimingViagem(viagem, v) {
     // Corrige origemDeslocamento de acordo com a posição real na viagem
     p.origemDeslocamento = idxP === 0 ? 'Terminal' : 'Entrega anterior';
     if (idxP === 0) {
-      // Primeira parada: recalcula distâncias a partir do terminal desta parada
-      // (pode ser diferente do terminalOrigem da viagem quando há pedidos de bases distintas)
+      // Primeira parada: recalcula a partir do terminal desta parada
       if (!(p.tempoCarregamentoMin > 0)) {
         const termParada = p.terminalOrigem || viagem.terminalOrigem;
         const base = dadosCiclo(v, p.pedido, termParada);
@@ -1706,12 +1699,11 @@ function recalcularTimingViagem(viagem, v) {
         p.deslocVazioMin       = base.deslocVazioMin;
       }
     } else {
-      // Paradas não-primeiras: verifica se saem de base diferente da parada anterior.
-      // Se sim, recalcula deslocCarregadoMin e deslocVazioMin a partir do terminal correto.
-      const termParada = p.terminalOrigem || viagem.terminalOrigem;
-      const termAnterior = viagem.paradas[idxP - 1]?.terminalOrigem || viagem.terminalOrigem;
-      if (p.origemDeslocamento === 'Terminal' || termParada !== termAnterior) {
-        // Esta parada sai de uma base diferente da anterior — recalcula distâncias
+      // Paradas não-primeiras: verifica se vêm de base diferente da anterior
+      const termParada    = p.terminalOrigem || viagem.terminalOrigem;
+      const termAnterior  = viagem.paradas[idxP - 1]?.terminalOrigem || viagem.terminalOrigem;
+      if (termParada !== termAnterior) {
+        // Base diferente — recalcula distâncias e carregamento a partir da nova base
         const base = dadosCiclo(v, p.pedido, termParada);
         p.tempoCarregamentoMin = base.tempoCarregamentoMin;
         p.deslocCarregadoMin   = base.deslocCarregadoMin;
@@ -3339,9 +3331,11 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       : controleTempo[v.id].limiteMin;
     for (const pos of posicoesCandidatas(viagem, v, pedido)) {
       const isEnd = pos.idx >= n;
+      // Usa o terminal do pedido para calcular distâncias — cada parada sai de sua própria base
+      const _termCalc = pedido.terminal || viagem.terminalOrigem;
       const det   = isEnd
-        ? dadosIncrementoParada(viagem, v, pedido, viagem.terminalOrigem)
-        : dadosInsercaoEmPosicao(viagem, v, pedido, viagem.terminalOrigem, pos.idx);
+        ? dadosIncrementoParada(viagem, v, pedido, _termCalc)
+        : dadosInsercaoEmPosicao(viagem, v, pedido, _termCalc, pos.idx);
       const _nmb = doisTurnos(v) ? 2 : 1;
       const chegAbs = isEnd
         ? chegadaPrevistaAbsMin(viagem, det, resultado[v.id], idxV, jIni(v), v.tempoPerdidoMin || 0, _nmb)
@@ -4025,7 +4019,7 @@ function alocarItem(viagem, item, entrega, detalheParada=null, tempoAdicionalMin
     waitAfterLoadingMin: detalheParada?.waitAfterLoadingMin || 0,
     overnight: !!detalheParada?.overnight,
     origemDeslocamento: detalheParada?.origemDeslocamento || 'Terminal',
-    // Terminal de origem específico desta parada (pode diferir do terminalOrigem da viagem
+    // Terminal de origem desta parada (pode diferir do terminalOrigem da viagem
     // quando a viagem agrega pedidos de bases distintas)
     terminalOrigem: item.pedido?.terminal || viagem.terminalOrigem || '',
     };
