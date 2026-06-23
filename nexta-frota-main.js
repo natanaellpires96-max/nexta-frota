@@ -4261,102 +4261,6 @@ async function saveChangePwd(){
 // ═══════════════════════════════════════════════════════════
 // RESET DE SENHA PELO ADMIN
 // ═══════════════════════════════════════════════════════════
-// Estratégia client-side sem backend:
-//   1. Admin define nova senha no modal
-//   2. Sistema deleta a conta Firebase Auth do usuário alvo
-//      via signIn na instância secundária (userCreateAuth) para obter
-//      o currentUser da conta alvo e então deletar com fbDeleteUser
-//   3. Recria a conta com a nova senha
-//   4. Perfil Firestore não é tocado — usuário não perde dados
-
-function randomTempPassword(){
-  return `Tmp${Math.random().toString(36).slice(2,12)}#`;
-}
-
-// Recria o acesso Auth do usuário: deleta a conta existente e recria
-// com a nova senha. Para deletar, precisamos logar na conta alvo via
-// instância secundária — mas não temos a senha atual.
-// Solução: usamos signInWithEmailAndPassword com uma senha "sonda" que
-// vai falhar, porém o Firebase retorna auth/wrong-password (conta existe)
-// ou auth/user-not-found (conta não existe). Com isso sabemos o estado.
-// Se a conta não existe → criamos direto.
-// Se existe → não conseguimos deletar sem a senha. Nesse caso, apagamos
-// o registro do Firestore e recriamos — a conta Auth "fantasma" fica
-// sem perfil e portanto bloqueada pelo sistema. Em seguida criamos nova
-// conta Auth com o mesmo e-mail, mas isso vai falhar com email-already-in-use.
-//
-// ✅ Única solução 100% funcional client-side:
-// Deletar via fbDeleteUser exige o currentUser da conta alvo.
-// Para obtê-lo, fazemos signIn com UMA SENHA CONHECIDA.
-// A senha conhecida existe: quando o admin cria o usuário, ela é salva
-// no campo `pwd` do Firestore (USERS_DB[uid].pwd).
-// Usamos essa senha para logar, deletar, e recriar com a nova senha.
-// Ao recriar, atualizamos USERS_DB[uid].pwd com a nova senha.
-
-async function recreateAuthAccount(uid, newPwd){
-  const email   = uidToEmail(uid);
-  const profile = USERS_DB[uid] || {};
-  const knownPwd = profile.pwd || null; // senha armazenada no Firestore
-
-  // Caso 1: conta Auth não existe ainda → cria direto
-  try {
-    await createUserWithEmailAndPassword(userCreateAuth, email, newPwd);
-    await signOut(userCreateAuth).catch(()=>{});
-    return { ok: true };
-  } catch(e){
-    if((e.code||'') !== 'auth/email-already-in-use') throw e;
-  }
-
-  // Caso 2: conta existe e temos a senha armazenada → delete + recreate
-  if(knownPwd){
-    let cred;
-    try {
-      cred = await signInWithEmailAndPassword(userCreateAuth, email, knownPwd);
-    } catch(e){
-      const c = e.code||'';
-      // Senha armazenada não bate mais (usuário trocou pelo 🔑)
-      // Cai no Caso 3 abaixo
-      if(c !== 'auth/wrong-password' && c !== 'auth/invalid-credential') throw e;
-      cred = null;
-    }
-    if(cred){
-      await fbDeleteUser(cred.user);
-      await createUserWithEmailAndPassword(userCreateAuth, email, newPwd);
-      await signOut(userCreateAuth).catch(()=>{});
-      return { ok: true };
-    }
-  }
-
-  // Caso 3: conta existe mas não temos a senha (nunca foi salva ou foi trocada).
-  // Sem Admin SDK não há como deletar. Retorna flag para o modal tratar.
-  return { ok: false };
-}
-
-function renderResetPwdResult(uid, newPwd){
-  const modal = document.getElementById('reset-pwd-modal');
-  if(!modal) return;
-  const u = USERS_DB[uid] || {};
-  modal.innerHTML = `
-    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:440px">
-      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">✅ Acesso recriado com sucesso</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">
-        Passe estas credenciais para <b style="color:var(--text)">${esc(u.name||uid)}</b>:
-      </p>
-      <div style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:1rem;margin-bottom:1rem;">
-        <span style="font-size:11px;color:var(--muted);letter-spacing:.06em;font-weight:500;display:block;margin-bottom:4px;">LOGIN</span>
-        <code style="font-size:13px;color:var(--text);font-family:monospace;">${esc(uid)}</code>
-        <span style="font-size:11px;color:var(--muted);letter-spacing:.06em;font-weight:500;display:block;margin-top:10px;margin-bottom:4px;">NOVA SENHA</span>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <code style="font-size:14px;color:var(--lime);font-family:monospace;word-break:break-all;">${esc(newPwd)}</code>
-          <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${attr(jsArg(newPwd))}').then(()=>showToast('Senha copiada!'))">Copiar</button>
-        </div>
-      </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn btn-lime" onclick="document.getElementById('reset-pwd-modal').remove()">Fechar</button>
-      </div>
-    </div>`;
-}
-
 function openResetPwd(uid){
   const u = USERS_DB[uid];
   if(!u){ showToast('Usuário não encontrado.', false); return; }
@@ -4366,70 +4270,81 @@ function openResetPwd(uid){
   modal.id = 'reset-pwd-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
   modal.innerHTML = `
-    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:440px">
-      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.25rem">🔑 Recriar acesso</p>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">
-        Usuário: <b style="color:var(--text)">${esc(u.name||uid)}</b>
-        <span style="color:var(--border2)"> · </span>
-        <span style="font-family:monospace;">${esc(uid)}</span>
-      </p>
-      <label style="font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;display:block;margin-bottom:4px;">NOVA SENHA</label>
-      <div style="display:flex;gap:6px;margin-bottom:1rem;">
-        <input id="reset-new-pwd" type="text" placeholder="Mín. 6 caracteres"
-          style="flex:1;background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:8px 10px;color:var(--text);font-size:13px;"
-          value="${attr(randomTempPassword())}"/>
-        <button class="btn btn-outline btn-sm" title="Gerar senha aleatória"
-          onclick="document.getElementById('reset-new-pwd').value='${attr(randomTempPassword())}'">🎲</button>
-      </div>
-      <div id="reset-pwd-msg" style="font-size:12px;margin-bottom:.75rem;min-height:18px;line-height:1.5;"></div>
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">🔑 Resetar senha</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:.75rem">Será criada uma senha temporária para <b style="color:var(--text)">${esc(uidToEmail(uid))}</b> e exibida para que você possa passá-la ao usuário.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1.25rem">O usuário deverá trocar essa senha assim que acessar o sistema.</p>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('reset-pwd-modal').remove()">Cancelar</button>
-        <button class="btn btn-lime" id="reset-pwd-submit" onclick="saveResetPwd('${attr(jsArg(uid))}')">Recriar acesso</button>
+        <button class="btn btn-lime" id="reset-pwd-submit" onclick="saveResetPwd('${attr(jsArg(uid))}')">Gerar senha temporária</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 }
-
-async function saveResetPwd(uid){
-  const newPwd = (document.getElementById('reset-new-pwd')?.value||'').trim();
-  const msgEl  = document.getElementById('reset-pwd-msg');
-  const btn    = document.getElementById('reset-pwd-submit');
-
-  if(!newPwd || newPwd.length < 6){
-    if(msgEl){ msgEl.textContent='Nova senha deve ter no mínimo 6 caracteres.'; msgEl.style.color='var(--red)'; }
-    return;
+function randomTempPassword(){
+  return `Tmp${Math.random().toString(36).slice(2,12)}#`;
+}
+async function ensureAuthAccountTempPwd(uid){
+  const email = uidToEmail(uid);
+  const tempPwd = randomTempPassword();
+  try{
+    await createUserWithEmailAndPassword(userCreateAuth, email, tempPwd);
+    await signOut(userCreateAuth).catch(()=>{});
+    return tempPwd;
+  } catch(e){
+    const code = e.code||"";
+    await signOut(userCreateAuth).catch(()=>{});
+    if(code==='auth/email-already-in-use'){
+      return null;
+    }
+    throw e;
   }
-  if(btn){ btn.disabled=true; btn.textContent='Recriando acesso...'; }
-  if(msgEl){ msgEl.textContent=''; }
-
-  try {
-    const result = await recreateAuthAccount(uid, newPwd);
-
-    if(result.ok){
-      // Atualiza a senha armazenada no Firestore para uso futuro
-      USERS_DB[uid] = { ...USERS_DB[uid], pwd: newPwd };
-      await dbSaveUsers(USERS_DB);
-      await dbAddAudit('admin_reset_pwd', { target: uid });
-      renderResetPwdResult(uid, newPwd);
-      showToast('Acesso recriado com sucesso!');
+}
+function renderResetPwdResult(uid, tempPwd){
+  const modal = document.getElementById('reset-pwd-modal');
+  if(!modal) return;
+  modal.innerHTML = `
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">✅ Senha temporária gerada</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Copie e entregue esta senha ao usuário. Ele deve alterá-la ao acessar o sistema.</p>
+      <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:1rem;margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;">
+        <code style="font-size:14px;color:var(--text);font-family:monospace;word-break:break-all;">${esc(tempPwd)}</code>
+        <button class="btn btn-outline" onclick="navigator.clipboard.writeText('${attr(jsArg(tempPwd))}').then(()=>showToast('Senha copiada!'))">Copiar</button>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-lime" onclick="document.getElementById('reset-pwd-modal').remove()">Fechar</button>
+      </div>
+    </div>`;
+}
+function renderResetPwdAccountExists(uid){
+  const modal = document.getElementById('reset-pwd-modal');
+  if(!modal) return;
+  modal.innerHTML = `
+    <div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2rem;width:100%;max-width:420px">
+      <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.4rem">⚠️ Conta já existe</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Esta conta já está registrada no Firebase Auth e não pode ter a senha alterada diretamente pelo cliente do navegador.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Use o console Firebase ou um endpoint administrativo para trocar a senha.</p>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('reset-pwd-modal').remove()">Fechar</button>
+      </div>
+    </div>`;
+}
+async function saveResetPwd(uid){
+  const btn = document.getElementById('reset-pwd-submit');
+  if(btn){ btn.disabled = true; btn.textContent = 'Gerando...'; }
+  try{
+    const tempPwd = await ensureAuthAccountTempPwd(uid);
+    if(tempPwd){
+      renderResetPwdResult(uid, tempPwd);
+      showToast('Senha temporária gerada com sucesso!');
       return;
     }
-
-    // Caso raro: conta existe e a senha armazenada não funciona mais
-    // (usuário usou o 🔑 para trocar e a senha no Firestore ficou desatualizada)
-    if(msgEl){
-      msgEl.innerHTML = `
-        <span style="color:var(--amber)">⚠️ Não foi possível recriar automaticamente.</span><br>
-        O usuário trocou a senha pelo sistema e ela não está mais sincronizada.<br>
-        <b>Solução:</b> delete o usuário pelo botão 🗑 e recrie-o com novo login e senha.
-        Os dados do usuário no Firestore não serão perdidos se usar o mesmo login.`;
-    }
-    if(btn){ btn.disabled=false; btn.textContent='Recriar acesso'; }
-
+    renderResetPwdAccountExists(uid);
+    showToast('Conta já existe no Auth; redefinição direta não é possível pelo cliente.', false);
   } catch(e){
-    console.error('Erro ao recriar acesso:', e);
-    if(msgEl){ msgEl.textContent=`Erro: ${e.code||e.message}`; msgEl.style.color='var(--red)'; }
-    if(btn){ btn.disabled=false; btn.textContent='Recriar acesso'; }
+    console.error('Erro ao gerar senha temporária', e);
+    showToast(`Falha ao gerar senha: ${e.code||e.message}`, false);
+    if(btn){ btn.disabled=false; btn.textContent='Gerar senha temporária'; }
   }
 }
 // ═══════════════════════════════════════════════════════════
