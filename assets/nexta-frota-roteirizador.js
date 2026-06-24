@@ -6593,44 +6593,37 @@ async function exportarBlocoPNG(blocoId, nomeArq, ev) {
 async function exportarTodasProgramacoesPDF() {
   const blocos = document.querySelectorAll('#operacao-content [data-bloco-id]');
   if (!blocos.length) { showToast('Nenhuma programação para exportar.', false); return; }
-  showToast(`Gerando PDF com ${blocos.length} programação(ões)…`, true);
-  try {
-    const { jsPDF } = window.jspdf;
-    const pdfW  = 595.28;
-    const margin = 20;
-    const maxW   = pdfW - margin * 2;
-    let pdf = null;
-    let paginaAtual = 0;
-
-    for (const blocoEl of blocos) {
-      const iframe = _clonarBlocoParaExport(blocoEl);
+  showToast(`Gerando ${blocos.length} PDF(s)…`, true);
+  const agora = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const prefixo = `Prog_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+  let i = 0;
+  for (const blocoEl of blocos) {
+    i++;
+    try {
+      const blocoId = blocoEl.getAttribute('data-bloco-id') || `bloco${i}`;
+      const iframe  = _clonarBlocoParaExport(blocoEl);
       await new Promise(r => setTimeout(r, 600));
-      const clone = iframe.contentDocument.querySelector('.op-bloco');
+      const clone  = iframe.contentDocument.querySelector('.op-bloco');
       const canvas = await _capturarCanvas(clone);
       document.body.removeChild(iframe);
 
+      const { jsPDF } = window.jspdf;
+      const pdfW  = 595.28;
+      const margin = 20;
+      const maxW  = pdfW - margin * 2;
       const ratio = maxW / canvas.width;
       const imgH  = canvas.height * ratio;
       const pageH = imgH + margin * 2;
-
-      if (!pdf) {
-        pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: [pdfW, Math.max(pageH, 100)] });
-      } else {
-        pdf.addPage([pdfW, Math.max(pageH, 100)], 'p');
-      }
+      const pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: [pdfW, Math.max(pageH, 100)] });
       pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, maxW, imgH);
-      paginaAtual++;
+      pdf.save(`${prefixo}_${String(i).padStart(2,'0')}_${blocoId.replace(/[^a-zA-Z0-9_-]/g,'')}.pdf`);
+      await new Promise(r => setTimeout(r, 400));
+    } catch(e) {
+      console.warn(`Erro ao exportar bloco ${i}:`, e);
     }
-
-    const agora = new Date();
-    const p2 = n => String(n).padStart(2, '0');
-    const fname = `Programacoes_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}.pdf`;
-    pdf.save(fname);
-    showToast(`PDF com ${paginaAtual} página(s) exportado ✅`, true);
-  } catch(e) {
-    console.error('Erro ao exportar PDF completo:', e);
-    showToast('Erro ao gerar PDF: ' + e.message, false);
   }
+  showToast(`${i} PDF(s) exportados ✅`, true);
 }
 
 /**
