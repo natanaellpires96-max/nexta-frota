@@ -57,10 +57,12 @@
 var _modoOtimizarPendente = null;
 function abrirModalDataCarga(modo) {
   _modoOtimizarPendente = modo;
-  // Usa data do seletor do header — roteiriza direto sem modal
+  // Usa data do seletor do header — preenche o campo e passa por confirmarOtimizar
+  // para garantir a verificação do histórico antes de roteirizar
   const dataOp = document.getElementById('rot-data-operacao')?.value;
   if (dataOp) {
-    otimizar(modo || 'padrao', new Date(dataOp + 'T00:00:00'));
+    document.getElementById('input-data-carga').value = dataOp;
+    confirmarOtimizar();
     return;
   }
   // Fallback: abre modal com hoje
@@ -83,13 +85,7 @@ async function confirmarOtimizar() {
   // viagem seja reutilizado. Sem a pasta disponível, a roteirização é bloqueada.
   if (!dirHandleHistorico) {
     const ir = confirm(
-      '⚠️ Pasta de histórico não selecionada.
-
-' +
-      'O sistema precisa acessar o histórico para garantir IDs de viagem únicos (sem duplicação).
-
-' +
-      'Clique em OK para selecionar a pasta agora, ou em Cancelar para abortar a roteirização.'
+      '⚠️ Pasta de histórico não selecionada.\n\nO sistema precisa acessar o histórico para garantir IDs de viagem únicos (sem duplicação).\n\nClique em OK para selecionar a pasta agora, ou em Cancelar para abortar a roteirização.'
     );
     if (!ir) return;
     fecharModalDataCarga();
@@ -109,13 +105,7 @@ async function confirmarOtimizar() {
   try { permOk = (await dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
   if (!permOk) {
     const ir = confirm(
-      '⚠️ Permissão da pasta de histórico expirou.
-
-' +
-      'O sistema precisa reautorizar o acesso para verificar os IDs de viagem existentes.
-
-' +
-      'Clique em OK para reautorizar agora, ou em Cancelar para abortar a roteirização.'
+      '⚠️ Permissão da pasta de histórico expirou.\n\nO sistema precisa reautorizar o acesso para verificar os IDs de viagem existentes.\n\nClique em OK para reautorizar agora, ou em Cancelar para abortar a roteirização.'
     );
     if (!ir) return;
     try {
@@ -127,8 +117,10 @@ async function confirmarOtimizar() {
     }
   }
 
+  const modoFinal = _modoOtimizarPendente || 'padrao';
+  const dataFinal = new Date(val + 'T00:00:00');
   fecharModalDataCarga();
-  otimizar(_modoOtimizarPendente || 'padrao', new Date(val + 'T00:00:00'));
+  otimizar(modoFinal, dataFinal);
 }
 // ─── Upload overlay pós-login ─────────────────────────────────────────────────
 var _cadastralCarregado = false;
@@ -3971,13 +3963,9 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   } catch(e) {
     // Erros específicos de pasta de histórico indisponível
     if (e.message === 'PASTA_NAO_SELECIONADA') {
-      alert('Roteirização cancelada: a pasta de histórico não está selecionada.
-
-Selecione a pasta na aba Histórico e tente novamente.');
+      alert('Roteirização cancelada: a pasta de histórico não está selecionada.\n\nSelecione a pasta na aba Histórico e tente novamente.');
     } else if (e.message === 'PERMISSAO_NEGADA') {
-      alert('Roteirização cancelada: permissão da pasta de histórico negada.
-
-Reautorize o acesso na aba Histórico e tente novamente.');
+      alert('Roteirização cancelada: permissão da pasta de histórico negada.\n\nReautorize o acesso na aba Histórico e tente novamente.');
     } else {
       throw e; // propaga outros erros normalmente
     }
