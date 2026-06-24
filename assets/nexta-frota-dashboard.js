@@ -748,12 +748,29 @@ function dashPopularListaClientes() {
   list.innerHTML = _dashTodosClientes.map(nome => {
     const sel = !_dashClientesSelecionados || _dashClientesSelecionados.has(nome);
     const nomeSafe = nome.replace(/"/g, '&quot;');
-    return `<label style="display:flex;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;font-size:12px;color:var(--text);">
-      <input type="checkbox" data-cli="${nomeSafe}" ${sel ? 'checked' : ''}
-        style="width:14px;height:14px;accent-color:var(--pet-green);cursor:pointer;flex-shrink:0;">
-      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${nome}</span>
+    return `<label data-label style="display:flex;align-items:center;gap:10px;padding:7px 14px;cursor:pointer;transition:background .12s;border-radius:6px;margin:0 4px;">
+      <span style="flex-shrink:0;width:16px;height:16px;border-radius:4px;border:2px solid ${sel ? 'var(--pet-green,#b5e51d)' : '#ccc'};background:${sel ? 'var(--pet-green,#b5e51d)' : 'transparent'};display:flex;align-items:center;justify-content:center;transition:all .12s;">
+        ${sel ? '<svg width="10" height="8" viewBox="0 0 10 8"><polyline points="1,4 4,7 9,1" stroke="#000" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' : ''}
+      </span>
+      <input type="checkbox" data-cli="${nomeSafe}" ${sel ? 'checked' : ''} style="display:none;">
+      <span style="font-size:12px;color:var(--text,#111);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3;">${nome}</span>
     </label>`;
   }).join('');
+  // Toggle visual ao clicar
+  list.querySelectorAll('label[data-label]').forEach(lbl => {
+    lbl.addEventListener('mouseenter', () => lbl.style.background = 'rgba(0,0,0,0.04)');
+    lbl.addEventListener('mouseleave', () => lbl.style.background = '');
+    lbl.addEventListener('click', () => {
+      const cb  = lbl.querySelector('input[type=checkbox]');
+      const box = lbl.querySelector('span');
+      cb.checked = !cb.checked;
+      box.style.borderColor  = cb.checked ? 'var(--pet-green,#b5e51d)' : '#ccc';
+      box.style.background   = cb.checked ? 'var(--pet-green,#b5e51d)' : 'transparent';
+      box.innerHTML = cb.checked
+        ? '<svg width="10" height="8" viewBox="0 0 10 8"><polyline points="1,4 4,7 9,1" stroke="#000" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        : '';
+    });
+  });
 }
 
 function dashFiltrarListaClientes(busca) {
