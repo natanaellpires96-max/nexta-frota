@@ -909,11 +909,9 @@ function abrirModalViagem(veiculoId, idxViagem) {
     });
   });
   const ultimo = viagem.paradas[viagem.paradas.length - 1];
-  if ((ultimo?.deslocVazioMin || 0) > 0 && !ultimo?.isLongaDistancia) {
-    const termUltimoNome = ultimo?.terminalOrigem || terminalNomeOrigem;
-    const termUltimo = terminaisCad.find(t => t.nome === termUltimoNome) || terminal;
+  if ((ultimo?.deslocVazioMin || 0) > 0) {
     pontos.push({
-      nome: `Retorno: ${termUltimo.nome}`,
+      nome: `Retorno: ${terminal.nome}`,
       lat: terminal.lat,
       lon: terminal.lon,
       tipo: 'retorno'
@@ -1742,11 +1740,9 @@ function calcOvernightViagem(v, item, clockAbsMin, terminalNome, diaAlvoEntrega=
   const tc = terminaisCad.find(t => t.nome === terminalNome);
   const janela = parseJanelaRestricao(item.pedido?.restricao);
   if (!janela || !tc) return null;
-  // Usa o fechamento cadastrado do terminal; se não houver, assume 18:00 como padrão.
-  // Sem esse fallback, entregas overnight são bloqueadas mesmo com terminal válido.
-  const feMin = parseHoraMin(tc.fechamentoPadrao || '') || parseHoraMin('18:00');
+  const feMin = parseHoraMin(tc.fechamentoPadrao || '');
   if (!feMin || feMin <= 0) return null;
-  const abMin = parseHoraMin(tc.aberturaPadrao || '') || parseHoraMin('06:00') || 0;
+  const abMin = parseHoraMin(tc.aberturaPadrao || '00:00') || 0;
   const base = dadosCiclo(v, item.pedido, terminalNome);
   const { tempoCarregamentoMin, deslocCarregadoMin, tempoDescargaMin, deslocVazioMin } = base;
   // Início do dia atual em minutos absolutos
@@ -1778,14 +1774,10 @@ function calcOvernightViagem(v, item, clockAbsMin, terminalNome, diaAlvoEntrega=
   const targetDepartureAbs  = targetArrivalAbs - deslocCarregadoMin;
   const waitAfterLoadingMin = Math.max(0, targetDepartureAbs - loadEndAbs);
   const waitBeforeLoadingMin = Math.max(0, loadStartAbs - clockAbsMin);
-  // Longa distância (entrega em dia diferente): motorista pernoita no destino,
-  // retorno não entra na jornada deste ciclo.
-  const isLongaDistancia = Number.isInteger(diaAlvoEntrega) && diaAlvoEntrega >= 1;
-  const retornoMin = isLongaDistancia ? 0 : deslocVazioMin;
-  const productiveMin    = tempoCarregamentoMin + deslocCarregadoMin + tempoDescargaMin + retornoMin;
-  const totalElapsedMin  = waitBeforeLoadingMin + tempoCarregamentoMin + waitAfterLoadingMin + deslocCarregadoMin + tempoDescargaMin + retornoMin;
+  const productiveMin    = tempoCarregamentoMin + deslocCarregadoMin + tempoDescargaMin + deslocVazioMin;
+  const totalElapsedMin  = waitBeforeLoadingMin + tempoCarregamentoMin + waitAfterLoadingMin + deslocCarregadoMin + tempoDescargaMin + deslocVazioMin;
   if (waitAfterLoadingMin < 0 || totalElapsedMin <= 0) return null;
-  return { ...base, deslocVazioMin: retornoMin, waitBeforeLoadingMin, waitAfterLoadingMin, productiveMin, totalElapsedMin, isLongaDistancia };
+  return { ...base, waitBeforeLoadingMin, waitAfterLoadingMin, productiveMin, totalElapsedMin };
 }
 function chegadaPrevistaAbsMin(viagem, detalheParada, viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin = 0, numMaxBreaks = 1) {
   let t = inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin, numMaxBreaks);
@@ -3396,7 +3388,6 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         ...ov,
         tempoEsperaRestricaoMin: 0,
         overnight: true,
-        isLongaDistancia: !!ov.isLongaDistancia,
         waitAfterLoadingMin: ov.waitAfterLoadingMin,
         origemDeslocamento: 'Terminal',
       };
@@ -3996,7 +3987,6 @@ function alocarItem(viagem, item, entrega, detalheParada=null, tempoAdicionalMin
     tempoEsperaRestricaoMin: detalheParada?.tempoEsperaRestricaoMin || 0,
     waitAfterLoadingMin: detalheParada?.waitAfterLoadingMin || 0,
     overnight: !!detalheParada?.overnight,
-    isLongaDistancia: !!detalheParada?.isLongaDistancia,
     origemDeslocamento: detalheParada?.origemDeslocamento || 'Terminal',
     };
     if (insertIdx !== null) {
@@ -4979,10 +4969,6 @@ function motoristaDaViagem(v, cargaAbsMin, vi) {
   if (vi?.petId && _motoristasOverride[vi.petId] !== undefined) return _motoristasOverride[vi.petId];
   const hod = ((Math.round(cargaAbsMin) % 1440) + 1440) % 1440; // hora do dia em min
   const ehNoturno = hod >= 18 * 60 || hod < 6 * 60;
-  // Para viagens overnight/longa distância, prioriza o motorista disponível
-  // independente do turno — se apenas um foi informado no painel, usa ele
-  const isOv = !!(vi?.paradas || []).find(p => p.overnight || p.isLongaDistancia);
-  if (isOv) return v.motoristaDiurno || v.motoristaNt || '';
   if (ehNoturno && v.motoristaNt)      return v.motoristaNt;
   if (!ehNoturno && v.motoristaDiurno) return v.motoristaDiurno;
   return v.motoristaDiurno || v.motoristaNt || '';
@@ -5449,12 +5435,9 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           const hod = ((Math.round(cargaMin) % 1440) + 1440) % 1440;
           const ehNoturno = hod >= 18 * 60 || hod < 6 * 60;
           const _petIdViagem = viagem.petId || '';
-          const _isOvViagem = !!(paradasComHorario || []).find(ph => ph.p?.overnight || ph.p?.isLongaDistancia);
           const nomeMotor = (_petIdViagem && _motoristasOverride[_petIdViagem] !== undefined)
             ? _motoristasOverride[_petIdViagem]
-            : _isOvViagem
-              ? (v.motoristaDiurno || v.motoristaNt || '')
-              : (ehNoturno ? (v.motoristaNt||'') : (v.motoristaDiurno||''));
+            : (ehNoturno ? (v.motoristaNt||'') : (v.motoristaDiurno||''));
           const onInput = `_editMotoristaViagem('${_petIdViagem}',this.value)`;
             const cargaHHMM = (() => {
             const m = Math.round(cargaMin); const md = ((m%1440)+1440)%1440;
@@ -5480,9 +5463,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           const tiposStop = p.pedido.tiposCaminhao && p.pedido.tiposCaminhao.length
             ? p.pedido.tiposCaminhao.map(t=>`<span class="tag tag-purple" style="font-size:9px;">${t}</span>`).join(' ')
             : '';
-          const retornoTexto = p.isLongaDistancia
-            ? 'Pernoite no destino'
-            : ((p.deslocVazioMin || 0) > 0 ? fmtDT(retornoTerminalMin) : 'segue rota');
+          const retornoTexto = (p.deslocVazioMin || 0) > 0 ? fmtDT(retornoTerminalMin) : 'segue rota';
           const origemDesloc = p.origemDeslocamento || 'Terminal';
           const cronogramaPartes = [];
           if (fimCargaMin > inicioCargaMin) {
@@ -5785,6 +5766,7 @@ async function recuperarHandleHistorico() {
     if (perm === 'granted') {
       el.textContent = handle.name;
       popularDropdownRoteirizacoes();
+      popularSeletorResumoDia().catch(()=>{});
     } else {
       el.textContent = handle.name + '  (clique em "Atualizar lista" para reautorizar)';
     }
@@ -5802,6 +5784,7 @@ async function selecionarPastaHistorico() {
     document.getElementById('hist-pasta-path').textContent = handle.name;
     await carregarListaHistorico();
     await popularDropdownRoteirizacoes();
+    popularSeletorResumoDia().catch(()=>{});
   } catch(e) {
     if (e.name !== 'AbortError') alert('Erro ao selecionar pasta: ' + e.message);
   }
@@ -5865,6 +5848,7 @@ async function salvarNoHistorico(silencioso = false) {
     _atualizarPetSeq(ultimoResultado); // persiste contador apenas ao salvar
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
+    popularSeletorResumoDia().catch(()=>{});
   } catch(e) {
     if (!silencioso) alert('Erro ao salvar: ' + e.message);
     else throw e; // propaga erro para o chamador tratar
@@ -6069,7 +6053,7 @@ window.initRoteirizadorIntegrado = async function(){
     try { await carregarDadosFixos(); } catch(e) { console.warn('Roteirizador: falha ao carregar dados fixos', e); }
     try { await carregarPedidosLiberados(); } catch(e) { console.warn('Roteirizador: falha ao carregar pedidos', e); }
   }
-  try { popularDropdownRoteirizacoes(); } catch(e) {}
+  try { popularDropdownRoteirizacoes(); popularSeletorResumoDia().catch(()=>{}); } catch(e) {}
   initDataOperacao();
   if(typeof invalidateSizeMapasRoteirizador === 'function') invalidateSizeMapasRoteirizador();
 };
@@ -6200,3 +6184,228 @@ window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() 
     _st('Erro ao gerar relatório: '+e.message, false);
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RESUMO DO DIA — agrega TODAS as roteirizações do dia selecionado
+// e gera texto formatado para WhatsApp
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Popula o seletor de datas no Envio Transportadora com os dias únicos do histórico
+async function popularSeletorResumoDia() {
+  const sel = document.getElementById('resumo-dia-sel');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— Selecionar data —</option>';
+  if (!dirHandleHistorico) return;
+  let permOk = false;
+  try { permOk = (await dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
+  if (!permOk) return;
+
+  // Coleta todas as entradas e agrupa por dia (YYYYMMDD = primeiros 8 chars do nome)
+  const diasMap = new Map(); // YYYYMMDD → { label, datasEntrega[] }
+  for await (const [name, handle] of dirHandleHistorico.entries()) {
+    if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+    const diaKey = name.slice(0, 8); // ex: "20260624"
+    if (!/^\d{8}$/.test(diaKey)) continue;
+    try {
+      const file = await handle.getFile();
+      const data = JSON.parse(await file.text());
+      if (!data.versao || !data.savedAt || !data.resumo) continue;
+      if (!diasMap.has(diaKey)) {
+        const y = diaKey.slice(0,4), m = diaKey.slice(4,6), d = diaKey.slice(6,8);
+        diasMap.set(diaKey, { label: `${d}/${m}/${y}`, datasEntrega: new Set() });
+      }
+      (data.datasEntrega || []).forEach(de => diasMap.get(diaKey).datasEntrega.add(de));
+    } catch(e) {}
+  }
+
+  // Ordena decrescente (mais recente primeiro)
+  const dias = [...diasMap.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  dias.forEach(([key, info]) => {
+    const opt = document.createElement('option');
+    opt.value = key;
+    const entrega = info.datasEntrega.size ? ` — Entrega: ${[...info.datasEntrega].join(', ')}` : '';
+    opt.textContent = `${info.label}${entrega}`;
+    sel.appendChild(opt);
+  });
+}
+
+async function gerarResumoDia() {
+  const sel    = document.getElementById('resumo-dia-sel');
+  const diaKey = sel?.value; // "YYYYMMDD" ou ""
+
+  let snaps = [];
+
+  if (diaKey) {
+    // Carrega TODOS os snapshots do dia selecionado
+    if (!await _histGarantirPermissao()) {
+      showToast('Permissão negada. Selecione a pasta do histórico novamente.', false);
+      return;
+    }
+    for await (const [name, handle] of dirHandleHistorico.entries()) {
+      if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+      if (!name.startsWith(diaKey)) continue;
+      try {
+        const file = await handle.getFile();
+        const data = JSON.parse(await file.text());
+        if (data.versao && data.savedAt && data.resumo) snaps.push(data);
+      } catch(e) {}
+    }
+    if (!snaps.length) {
+      showToast('Nenhuma roteirização encontrada para este dia.', false);
+      return;
+    }
+    // Ordena por hora (mais recente último — a última roteirização do dia tem prioridade
+    // para a lista de veículos disponíveis)
+    snaps.sort((a, b) => a.savedAt.localeCompare(b.savedAt));
+  } else if (ultimoResultado) {
+    // Usa a roteirização atual em memória
+    snaps = [{
+      savedAt: new Date().toISOString(),
+      datasEntrega: [],
+      resumo: {},
+      veiculos,
+      resultado: ultimoResultado,
+      controleTempo: ultimoControleTempo || {},
+      pedidos,
+    }];
+  } else {
+    showToast('Selecione uma data ou execute a otimização primeiro.', false);
+    return;
+  }
+
+  const texto = _montarTextoResumoDia(snaps);
+  try {
+    await navigator.clipboard.writeText(texto);
+  } catch(e) {
+    const ta = document.createElement('textarea');
+    ta.value = texto;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+  showToast('✅ Resumo do dia copiado! Cole no WhatsApp.', true);
+}
+
+// Agrega N snapshots do mesmo dia e monta o texto
+function _montarTextoResumoDia(snaps) {
+  const p2 = n => String(n).padStart(2, '0');
+
+  // Data de entrega: une todas as datas de entrega únicas de todos os snaps
+  const datasEntregaSet = new Set();
+  snaps.forEach(s => (s.datasEntrega || []).forEach(d => datasEntregaSet.add(d)));
+  const dataEntregaStr = datasEntregaSet.size
+    ? [...datasEntregaSet].sort().join(', ')
+    : (() => {
+        const d = new Date(snaps[snaps.length - 1].savedAt);
+        return `${p2(d.getDate())}/${p2(d.getMonth()+1)}/${d.getFullYear()}`;
+      })();
+
+  // ── Agrega métricas de todos os snapshots ────────────────────────────────
+  // Para placas: usa o snapshot mais recente como fonte de verdade
+  // Para volumes/viagens/pedidos/jornada: soma tudo
+  let totalVolume      = 0;
+  let totalViagens     = 0;
+  let totalPedidos     = 0;
+  let horasConsumidas  = 0;
+  let horasDisponiveis = 0;
+  let temEstouroJornada   = false;
+  const pedidosComProblema   = new Set();
+  const placasComProgramacao = new Set();
+  const placasDisponiveisMap = new Map(); // placa → { transportadora }
+
+  snaps.forEach(snap => {
+    const res   = snap.resultado || {};
+    const veics = snap.veiculos  || [];
+    const ct    = snap.controleTempo || {};
+
+    veics.forEach(v => {
+      // Registra placa disponível (o snap mais recente sobrescreve transportadora)
+      placasDisponiveisMap.set(v.placa, {
+        transportadora: v.transportadora || '',
+        capacidade: v.capacidade || 0,
+        terminal: v.terminal || '',
+      });
+
+      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      const ctV = ct[String(v.id)] || {};
+
+      viagens.forEach(vi => {
+        totalViagens++;
+        vi.paradas.forEach(p => {
+          totalVolume += p.volumeTotal || 0;
+          totalPedidos++;
+          if (p.tempoEsperaRestricaoMin > 0) {
+            pedidosComProblema.add(p.pedido?.cliente || p.pedido?.nomeCliente || '?');
+          }
+        });
+        placasComProgramacao.add(v.placa);
+      });
+
+      const limMin   = ctV.limiteMin  || 0;
+      const usadoMin = ctV.usadoMin   || 0;
+      horasDisponiveis += limMin;
+      horasConsumidas  += usadoMin;
+      if (usadoMin > limMin + 1) temEstouroJornada = true;
+    });
+  });
+
+  const placasSemProg = [...placasDisponiveisMap.entries()]
+    .filter(([placa]) => !placasComProgramacao.has(placa))
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  const horasConsH = (horasConsumidas  / 60).toFixed(1).replace('.', ',');
+  const horasDispH = (horasDisponiveis / 60).toFixed(1).replace('.', ',');
+  const volumeStr  = totalVolume.toFixed(1).replace('.', ',');
+  const semProblemas = pedidosComProblema.size === 0 && !temEstouroJornada;
+
+  // ── Monta texto ───────────────────────────────────────────────────────────
+  const L = [];
+  L.push(`*Resumo do Outbound - ${dataEntregaStr}*`);
+  L.push('');
+
+  if (semProblemas) {
+    L.push(
+      `A programação para o dia ${dataEntregaStr} foi concluída com bom nível de aproveitamento ` +
+      `da frota e atendimento integral da demanda prevista. A operação foi estruturada sem quebras ` +
+      `de pedido e as rotas foram importadas em lote para a Herrlog.`
+    );
+  } else {
+    const prob = [];
+    if (pedidosComProblema.size > 0) prob.push(`${pedidosComProblema.size} pedido(s) com restrição de horário`);
+    if (temEstouroJornada) prob.push('estouro de jornada em alguma programação');
+    L.push(
+      `A programação para o dia ${dataEntregaStr} foi concluída. ` +
+      `Foram identificados: ${prob.join(' e ')}.`
+    );
+  }
+  L.push('');
+
+  L.push(`• *Volume planejado:* ${volumeStr} m³`);
+  L.push(`• *Pedidos atendidos:* ${totalPedidos}`);
+  L.push(`• *Viagens geradas:* ${totalViagens} — importadas em lote para a Herrlog`);
+  L.push(`• *Estouro de jornada:* ${temEstouroJornada ? '⚠️ Sim' : '✅ Não'}`);
+  L.push(`• *Pedidos com problema:* ${pedidosComProblema.size > 0 ? '⚠️ ' + [...pedidosComProblema].join(', ') : '✅ Nenhum'}`);
+  L.push(`• *Jornada consumida:* ${horasConsH} h de ${horasDispH} h disponíveis`);
+  L.push('');
+
+  L.push(`*Veículos Disponíveis*`);
+  L.push('');
+  if (placasSemProg.length > 0) {
+    placasSemProg.forEach(([placa, info]) => {
+      const transp = info.transportadora ? ` · ${info.transportadora}` : '';
+      const cap    = info.capacidade ? ` · ${info.capacidade} m³` : '';
+      // Terminal: pega só a cidade/base (ex: "Paulínia TORRÃO Nexta" → "Paulínia")
+      const termRaw = info.terminal || '';
+      const termLabel = termRaw ? ` · ${termRaw}` : '';
+      L.push(`• ${placa}${cap}${termLabel}${transp}`);
+    });
+  } else {
+    L.push('• Todos os veículos disponíveis foram programados.');
+  }
+
+  return L.join('\n');
+}
+
+window.gerarResumoDia        = gerarResumoDia;
+window.popularSeletorResumoDia = popularSeletorResumoDia;
