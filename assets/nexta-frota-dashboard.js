@@ -742,34 +742,51 @@ function dashToggleFiltroClientes() {
   }
 }
 
+function _dashCheckSVG() {
+  return '<svg width="11" height="9" viewBox="0 0 11 9"><polyline points="1,4.5 4,7.5 10,1" stroke="#000" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
+
+function _dashAtualizarBoxVisual(box, checked) {
+  box.style.borderColor = checked ? 'var(--pet-green,#b5e51d)' : '#bbb';
+  box.style.background  = checked ? 'var(--pet-green,#b5e51d)' : 'transparent';
+  box.innerHTML         = checked ? _dashCheckSVG() : '';
+}
+
 function dashPopularListaClientes() {
   const list = document.getElementById('dash-cli-list');
   if (!list) return;
   list.innerHTML = _dashTodosClientes.map(nome => {
-    const sel = !_dashClientesSelecionados || _dashClientesSelecionados.has(nome);
-    const nomeSafe = nome.replace(/"/g, '&quot;');
-    return `<label data-label style="display:flex;align-items:center;gap:10px;padding:7px 14px;cursor:pointer;transition:background .12s;border-radius:6px;margin:0 4px;">
-      <span style="flex-shrink:0;width:16px;height:16px;border-radius:4px;border:2px solid ${sel ? 'var(--pet-green,#b5e51d)' : '#ccc'};background:${sel ? 'var(--pet-green,#b5e51d)' : 'transparent'};display:flex;align-items:center;justify-content:center;transition:all .12s;">
-        ${sel ? '<svg width="10" height="8" viewBox="0 0 10 8"><polyline points="1,4 4,7 9,1" stroke="#000" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' : ''}
-      </span>
-      <input type="checkbox" data-cli="${nomeSafe}" ${sel ? 'checked' : ''} style="display:none;">
-      <span style="font-size:12px;color:var(--text,#111);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3;">${nome}</span>
-    </label>`;
+    const sel     = !_dashClientesSelecionados || _dashClientesSelecionados.has(nome);
+    const nomeSafe = nome.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    const chk      = sel ? _dashCheckSVG() : '';
+    const bc       = sel ? 'var(--pet-green,#b5e51d)' : '#bbb';
+    const bg       = sel ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    return `<div data-cli="${nomeSafe}" data-checked="${sel ? '1' : '0'}"
+      style="display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;border-radius:6px;margin:0 4px;user-select:none;">
+      <span class="dash-cb-box" style="flex-shrink:0;width:20px;height:20px;border-radius:5px;border:2px solid ${bc};background:${bg};display:flex;align-items:center;justify-content:center;transition:all .12s;">${chk}</span>
+      <span style="font-size:12px;color:var(--text,#111);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${nome}</span>
+    </div>`;
   }).join('');
-  // Toggle visual ao clicar
-  list.querySelectorAll('label[data-label]').forEach(lbl => {
-    lbl.addEventListener('mouseenter', () => lbl.style.background = 'rgba(0,0,0,0.04)');
-    lbl.addEventListener('mouseleave', () => lbl.style.background = '');
-    lbl.addEventListener('click', () => {
-      const cb  = lbl.querySelector('input[type=checkbox]');
-      const box = lbl.querySelector('span');
-      cb.checked = !cb.checked;
-      box.style.borderColor  = cb.checked ? 'var(--pet-green,#b5e51d)' : '#ccc';
-      box.style.background   = cb.checked ? 'var(--pet-green,#b5e51d)' : 'transparent';
-      box.innerHTML = cb.checked
-        ? '<svg width="10" height="8" viewBox="0 0 10 8"><polyline points="1,4 4,7 9,1" stroke="#000" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-        : '';
+
+  list.querySelectorAll('div[data-cli]').forEach(row => {
+    row.addEventListener('mouseenter', () => row.style.background = 'rgba(0,0,0,0.04)');
+    row.addEventListener('mouseleave', () => row.style.background = '');
+    row.addEventListener('click', () => {
+      const checked = row.dataset.checked !== '1';
+      row.dataset.checked = checked ? '1' : '0';
+      _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), checked);
     });
+  });
+}
+
+function dashSelecionarTodosClientesVisual(sel) {
+  const list = document.getElementById('dash-cli-list');
+  if (!list) return;
+  list.querySelectorAll('div[data-cli]').forEach(row => {
+    // Respeita busca ativa — só afeta itens visíveis
+    if (row.style.display === 'none') return;
+    row.dataset.checked = sel ? '1' : '0';
+    _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), sel);
   });
 }
 
@@ -777,23 +794,20 @@ function dashFiltrarListaClientes(busca) {
   const list = document.getElementById('dash-cli-list');
   if (!list) return;
   const b = (busca || '').toLowerCase();
-  list.querySelectorAll('label').forEach(lbl => {
-    const nome = lbl.querySelector('input')?.dataset.cli || '';
-    lbl.style.display = nome.toLowerCase().includes(b) ? '' : 'none';
+  list.querySelectorAll('div[data-cli]').forEach(row => {
+    row.style.display = row.dataset.cli.toLowerCase().includes(b) ? '' : 'none';
   });
 }
 
 function dashSelecionarTodosClientes(sel) {
-  const list = document.getElementById('dash-cli-list');
-  if (!list) return;
-  list.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = sel);
+  dashSelecionarTodosClientesVisual(sel);
 }
 
 function dashAplicarFiltroClientes() {
   const list = document.getElementById('dash-cli-list');
   if (!list) return;
   const selecionados = new Set();
-  list.querySelectorAll('input[type=checkbox]:checked').forEach(cb => selecionados.add(cb.dataset.cli));
+  list.querySelectorAll('div[data-checked="1"]').forEach(row => selecionados.add(row.dataset.cli));
   // Se todos selecionados = sem filtro ativo
   _dashClientesSelecionados = selecionados.size === _dashTodosClientes.length ? null : selecionados;
   // Atualiza badge
