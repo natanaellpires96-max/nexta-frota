@@ -4382,16 +4382,30 @@ function renderTemplateOperacao() {
     const linhasFinal = linhas;
     const _nexta_svg = `<svg style="height:20px;width:auto;" viewBox="0 0 242 45" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M149.631 0.870612H138.515L127.579 14.6805L116.586 0.870612H105.356L121.715 21.6422L104.148 43.9406H114.999L127.078 28.421L139.156 43.7829L139.279 43.9406H150.833L133.011 21.5161L149.631 0.870612ZM67.2515 43.9437H97.073V35.4805H65.8352V26.5725H86.6225V18.1756H65.8352V9.26758H97.073V0.870612H56.9272V43.9437H67.2515ZM196.417 0.870612H155.382V9.26758H171.479V43.9406H180.324V9.27074H196.42V0.870612H196.417ZM224.4 0.870612H211.811L195.01 43.9437H204.426L208.498 33.1273H227.523L231.658 43.9437H241.2L224.4 0.870612ZM224.453 24.7304H211.618L217.892 8.75657L224.457 24.7304H224.453ZM36.8748 0.870612V34.8938C36.8748 35.2786 36.5719 35.6666 36.1019 35.6666C35.9127 35.6666 35.6729 35.6004 35.4963 35.3764L17.8759 4.82621C17.0305 3.35942 15.8508 2.0882 14.3777 1.25545C13.0718 0.517321 11.4504 1.75258e-06 9.54517 1.75258e-06C4.25526 -0.00315263 0 4.25211 0 9.86061V43.9437H8.93006V9.92054C8.93006 9.53571 9.23288 9.14772 9.70289 9.14772C9.89215 9.14772 10.1319 9.21396 10.3085 9.43792L26.5599 37.9031C27.2097 39.0387 27.8595 40.0828 28.503 40.9755C29.7774 42.7514 32.4586 44.8207 36.2691 44.8207C41.559 44.8207 45.8111 40.5654 45.8111 34.9569V0.870612H36.8811H36.8748Z" fill="#2D6A1B"/></svg>`;
     return `
-      <div class="op-bloco">
+      <div class="op-bloco" data-bloco-id="bloco-${v.placa}-${idx}">
         <div class="op-head">
-          <!-- Barra superior: logo + ID da viagem -->
+          <!-- Barra superior: logo + ID da viagem + botões de exportação -->
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding-bottom:9px;border-bottom:1.5px solid #C8E0B0;">
             <div style="display:flex;align-items:center;gap:10px;">
               ${_nexta_svg}
               <span style="font-size:9px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#4A6535;opacity:.7;">Roteirização Outbound</span>
             </div>
-            <div style="font-size:14px;font-weight:800;letter-spacing:.06em;color:#1A3A0A;">
-              Viagem ${idx + 1}${viOriginal.petId ? ` &nbsp;·&nbsp; <span style="font-family:var(--font-cond);letter-spacing:.08em;">${viOriginal.petId}</span>` : ''}
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="font-size:14px;font-weight:800;letter-spacing:.06em;color:#1A3A0A;">
+                Viagem ${idx + 1}${viOriginal.petId ? ` &nbsp;·&nbsp; <span style="font-family:var(--font-cond);letter-spacing:.08em;">${viOriginal.petId}</span>` : ''}
+              </div>
+              <button onclick="exportarBlocoPDF('bloco-${v.placa}-${idx}', '${(viOriginal.petId || `V${idx+1}_${v.placa}`).replace(/'/g,'')}', event)"
+                title="Exportar esta programação como PDF"
+                style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;border:1px solid rgba(239,68,68,0.35);background:rgba(239,68,68,0.07);color:#DC2626;font-size:10px;font-weight:700;cursor:pointer;font-family:var(--font-cond);letter-spacing:.05em;white-space:nowrap;transition:all .15s;"
+                onmouseover="this.style.background='rgba(239,68,68,0.15)'" onmouseout="this.style.background='rgba(239,68,68,0.07)'">
+                📄 PDF
+              </button>
+              <button onclick="exportarBlocoPNG('bloco-${v.placa}-${idx}', '${(viOriginal.petId || `V${idx+1}_${v.placa}`).replace(/'/g,'')}', event)"
+                title="Exportar esta programação como imagem PNG"
+                style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;border:1px solid rgba(79,70,229,0.35);background:rgba(79,70,229,0.07);color:#4338CA;font-size:10px;font-weight:700;cursor:pointer;font-family:var(--font-cond);letter-spacing:.05em;white-space:nowrap;transition:all .15s;"
+                onmouseover="this.style.background='rgba(79,70,229,0.15)'" onmouseout="this.style.background='rgba(79,70,229,0.07)'">
+                🖼 PNG
+              </button>
             </div>
           </div>
           <!-- Grid de dados -->
@@ -6436,3 +6450,224 @@ function _montarTextoResumoDia(snaps) {
 
 window.gerarResumoDia        = gerarResumoDia;
 window.popularSeletorResumoDia = popularSeletorResumoDia;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORTAÇÃO PDF / PNG — Programações do Resumo Transportadora
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Clona um op-bloco para um iframe oculto com estilos inline,
+ * garantindo renderização fiel sem depender das classes CSS da página.
+ */
+function _clonarBlocoParaExport(blocoEl) {
+  // Coleta as folhas de estilo relevantes como texto inline
+  const cssTexto = Array.from(document.styleSheets)
+    .flatMap(ss => {
+      try { return Array.from(ss.cssRules).map(r => r.cssText); }
+      catch(e) { return []; }
+    }).join('\n');
+
+  // Cria iframe temporário fora da viewport
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1050px;height:auto;border:none;visibility:hidden;';
+  document.body.appendChild(iframe);
+
+  const doc = iframe.contentDocument;
+  doc.open();
+  doc.write(`<!DOCTYPE html><html><head>
+    <meta charset="utf-8">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=Barlow+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
+    <style>
+      ${cssTexto}
+      /* Overrides para export limpo */
+      body { margin: 0; padding: 16px; background: #fff; font-family: 'DM Sans', sans-serif; }
+      :root {
+        --bg: #F8FAF4; --surface: #fff; --border: #D4E4C0; --border-dk: #BDD6A3;
+        --text: #1A2A0A; --text-3: #5A7A42; --radius: 8px; --radius-lg: 12px;
+        --shadow: 0 1px 4px rgba(0,0,0,.06);
+        --green-bg: #EDF7E0; --green-text: #2D6A1B; --green-border: #9FD07A;
+        --amber-bg: #FEF3C7; --amber-text: #92400E; --amber-border: #FCD34D;
+        --red-bg: #FEE2E2; --red-text: #991B1B; --red-border: #FCA5A5;
+        --pet-green: #4A7C30; --pet-green-bg: rgba(74,124,48,.08);
+        --font: 'DM Sans', sans-serif; --font-cond: 'Barlow Condensed', sans-serif; --font-mono: 'DM Mono', monospace;
+      }
+      #roteirizador-shell { all: unset; }
+      .op-bloco { border: 0.5px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
+      .op-head { padding: 11px 16px; background: var(--bg); border-bottom: 0.5px solid var(--border); }
+      .op-head-lbl { color: var(--text-3); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
+      .op-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .op-table th, .op-table td { border: 0.5px solid var(--border); padding: 7px 9px; text-align: left; }
+      .op-table th { background: var(--bg); font-family: var(--font); letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px; color: var(--text-3); font-weight: 600; }
+      .op-ocup { display: inline-block; padding: 2px 8px; border-radius: 20px; font-weight: 500; font-size: 11px; border: 0.5px solid; }
+      .op-ocup-verde   { background: var(--green-bg); color: var(--green-text); border-color: var(--green-border); }
+      .op-ocup-amarelo { background: var(--amber-bg); color: var(--amber-text); border-color: var(--amber-border); }
+      .op-ocup-vermelho{ background: var(--red-bg);   color: var(--red-text);   border-color: var(--red-border); }
+      /* Oculta botões de exportação no clone */
+      button { display: none !important; }
+    </style>
+  </head><body><div id="roteirizador-shell">${blocoEl.outerHTML}</div></body></html>`);
+  doc.close();
+  return iframe;
+}
+
+/**
+ * Usa html2canvas para capturar um elemento como canvas.
+ */
+async function _capturarCanvas(el, escala = 2) {
+  return html2canvas(el, {
+    scale: escala,
+    useCORS: true,
+    backgroundColor: '#ffffff',
+    logging: false,
+    allowTaint: false,
+  });
+}
+
+/**
+ * Exporta um único bloco de programação como PDF.
+ * @param {string} blocoId  - valor de data-bloco-id do card
+ * @param {string} nomeArq  - nome base do arquivo (sem extensão)
+ * @param {Event}  ev       - evento click (para stopPropagation)
+ */
+async function exportarBlocoPDF(blocoId, nomeArq, ev) {
+  if (ev) ev.stopPropagation();
+  const blocoEl = document.querySelector(`[data-bloco-id="${blocoId}"]`);
+  if (!blocoEl) { showToast('Card não encontrado.', false); return; }
+  showToast('Gerando PDF…', true);
+  try {
+    const iframe = _clonarBlocoParaExport(blocoEl);
+    // Aguarda fontes carregarem
+    await new Promise(r => setTimeout(r, 600));
+    const clone = iframe.contentDocument.querySelector('.op-bloco');
+    const canvas = await _capturarCanvas(clone);
+    document.body.removeChild(iframe);
+
+    const { jsPDF } = window.jspdf;
+    const imgW = canvas.width;
+    const imgH = canvas.height;
+    // A4 em pontos (595.28 × 841.89). Escala para caber na largura da página.
+    const pdfW = 595.28;
+    const margin = 20;
+    const maxW   = pdfW - margin * 2;
+    const ratio  = maxW / imgW;
+    const pdfH   = imgH * ratio + margin * 2;
+    const pdf = new jsPDF({ orientation: pdfH > pdfW ? 'p' : 'l', unit: 'pt', format: [pdfW, Math.max(pdfH, 100)] });
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, maxW, imgH * ratio);
+    pdf.save(`${nomeArq}.pdf`);
+    showToast('PDF exportado ✅', true);
+  } catch(e) {
+    console.error('Erro ao exportar PDF:', e);
+    showToast('Erro ao gerar PDF: ' + e.message, false);
+  }
+}
+
+/**
+ * Exporta um único bloco de programação como PNG.
+ */
+async function exportarBlocoPNG(blocoId, nomeArq, ev) {
+  if (ev) ev.stopPropagation();
+  const blocoEl = document.querySelector(`[data-bloco-id="${blocoId}"]`);
+  if (!blocoEl) { showToast('Card não encontrado.', false); return; }
+  showToast('Gerando PNG…', true);
+  try {
+    const iframe = _clonarBlocoParaExport(blocoEl);
+    await new Promise(r => setTimeout(r, 600));
+    const clone = iframe.contentDocument.querySelector('.op-bloco');
+    const canvas = await _capturarCanvas(clone, 3);
+    document.body.removeChild(iframe);
+
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `${nomeArq}.png`;
+    a.click();
+    showToast('PNG exportado ✅', true);
+  } catch(e) {
+    console.error('Erro ao exportar PNG:', e);
+    showToast('Erro ao gerar PNG: ' + e.message, false);
+  }
+}
+
+/**
+ * Exporta TODOS os blocos visíveis como um único PDF multi-página.
+ */
+async function exportarTodasProgramacoesPDF() {
+  const blocos = document.querySelectorAll('#operacao-content [data-bloco-id]');
+  if (!blocos.length) { showToast('Nenhuma programação para exportar.', false); return; }
+  showToast(`Gerando PDF com ${blocos.length} programação(ões)…`, true);
+  try {
+    const { jsPDF } = window.jspdf;
+    const pdfW  = 595.28;
+    const margin = 20;
+    const maxW   = pdfW - margin * 2;
+    let pdf = null;
+    let paginaAtual = 0;
+
+    for (const blocoEl of blocos) {
+      const iframe = _clonarBlocoParaExport(blocoEl);
+      await new Promise(r => setTimeout(r, 600));
+      const clone = iframe.contentDocument.querySelector('.op-bloco');
+      const canvas = await _capturarCanvas(clone);
+      document.body.removeChild(iframe);
+
+      const ratio = maxW / canvas.width;
+      const imgH  = canvas.height * ratio;
+      const pageH = imgH + margin * 2;
+
+      if (!pdf) {
+        pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: [pdfW, Math.max(pageH, 100)] });
+      } else {
+        pdf.addPage([pdfW, Math.max(pageH, 100)], 'p');
+      }
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, maxW, imgH);
+      paginaAtual++;
+    }
+
+    const agora = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const fname = `Programacoes_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}.pdf`;
+    pdf.save(fname);
+    showToast(`PDF com ${paginaAtual} página(s) exportado ✅`, true);
+  } catch(e) {
+    console.error('Erro ao exportar PDF completo:', e);
+    showToast('Erro ao gerar PDF: ' + e.message, false);
+  }
+}
+
+/**
+ * Exporta TODOS os blocos visíveis, cada um como um PNG separado (zip não disponível,
+ * então faz download sequencial com intervalo para não bloquear o browser).
+ */
+async function exportarTodasProgramacoesPNG() {
+  const blocos = document.querySelectorAll('#operacao-content [data-bloco-id]');
+  if (!blocos.length) { showToast('Nenhuma programação para exportar.', false); return; }
+  showToast(`Gerando ${blocos.length} PNG(s)…`, true);
+  const agora = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const prefixo = `Prog_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+  let i = 0;
+  for (const blocoEl of blocos) {
+    i++;
+    try {
+      const blocoId  = blocoEl.getAttribute('data-bloco-id') || `bloco${i}`;
+      const iframe   = _clonarBlocoParaExport(blocoEl);
+      await new Promise(r => setTimeout(r, 600));
+      const clone  = iframe.contentDocument.querySelector('.op-bloco');
+      const canvas = await _capturarCanvas(clone, 3);
+      document.body.removeChild(iframe);
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = `${prefixo}_${String(i).padStart(2,'0')}_${blocoId.replace(/[^a-zA-Z0-9_-]/g,'')}.png`;
+      a.click();
+      // Pausa entre downloads para o browser não bloquear
+      await new Promise(r => setTimeout(r, 400));
+    } catch(e) {
+      console.warn(`Erro ao exportar bloco ${i}:`, e);
+    }
+  }
+  showToast(`${i} PNG(s) exportados ✅`, true);
+}
+
+window.exportarBlocoPDF              = exportarBlocoPDF;
+window.exportarBlocoPNG              = exportarBlocoPNG;
+window.exportarTodasProgramacoesPDF  = exportarTodasProgramacoesPDF;
+window.exportarTodasProgramacoesPNG  = exportarTodasProgramacoesPNG;
