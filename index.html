@@ -461,16 +461,23 @@
               <span>👥 Clientes</span>
               <span id="dash-cli-badge" style="display:none;background:var(--pet-green);color:#000;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
             </button>
-            <div id="dash-cli-panel" style="display:none;position:absolute;top:calc(100% + 6px);right:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.18);width:300px;max-height:380px;display:flex;flex-direction:column;">
-              <div style="padding:10px 12px;border-bottom:1px solid var(--border-dk);flex-shrink:0;">
-                <input id="dash-cli-search" type="text" placeholder="Buscar cliente..." oninput="dashFiltrarListaClientes(this.value)"
-                  style="width:100%;box-sizing:border-box;background:var(--bg,#f5f5f5);border:1px solid var(--border-dk);border-radius:6px;padding:6px 10px;font-size:12px;color:var(--text);outline:none;"/>
+            <div id="dash-cli-panel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.22);width:320px;max-height:400px;flex-direction:column;overflow:hidden;">
+              <div style="padding:12px 14px 10px;border-bottom:1px solid var(--border-dk);flex-shrink:0;">
+                <div style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.06em;margin-bottom:8px;">FILTRAR CLIENTES</div>
+                <div style="position:relative;">
+                  <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;">🔍</span>
+                  <input id="dash-cli-search" type="text" placeholder="Buscar cliente..." oninput="dashFiltrarListaClientes(this.value)"
+                    style="width:100%;box-sizing:border-box;background:rgba(0,0,0,.04);border:1px solid var(--border-dk);border-radius:8px;padding:7px 10px 7px 30px;font-size:12px;color:var(--text);outline:none;"/>
+                </div>
               </div>
-              <div id="dash-cli-list" style="overflow-y:auto;flex:1;padding:6px 0;"></div>
-              <div style="padding:8px 12px;border-top:1px solid var(--border-dk);display:flex;gap:8px;flex-shrink:0;">
-                <button onclick="dashSelecionarTodosClientes(true)"  style="flex:1;font-size:11px;padding:5px;border:1px solid var(--border-dk);border-radius:6px;background:transparent;color:var(--text-2);cursor:pointer;">Todos</button>
-                <button onclick="dashSelecionarTodosClientes(false)" style="flex:1;font-size:11px;padding:5px;border:1px solid var(--border-dk);border-radius:6px;background:transparent;color:var(--text-2);cursor:pointer;">Limpar</button>
-                <button onclick="dashAplicarFiltroClientes()"        style="flex:1;font-size:11px;padding:5px;border:none;border-radius:6px;background:var(--pet-green);color:#000;font-weight:700;cursor:pointer;">Aplicar</button>
+              <div id="dash-cli-list" style="overflow-y:auto;flex:1;padding:6px 0;min-height:0;"></div>
+              <div style="padding:10px 14px;border-top:1px solid var(--border-dk);display:flex;gap:8px;flex-shrink:0;background:var(--surface);">
+                <button onclick="dashSelecionarTodosClientes(true)"
+                  style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Todos</button>
+                <button onclick="dashSelecionarTodosClientes(false)"
+                  style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Limpar</button>
+                <button onclick="dashAplicarFiltroClientes()"
+                  style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
               </div>
             </div>
           </div>
@@ -502,14 +509,14 @@
           <div id="dash-chart-ent" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+      <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px;">
+        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Taxa de Ocupação por Cliente (%)</div>
+          <div id="dash-chart-ocup" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
+        </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Km Rodado vs Volume por Cliente</div>
-          <div id="dash-chart-km" style="max-height:280px;overflow-y:auto;overflow-x:hidden;"></div>
-        </div>
-        <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Taxa de Ocupacao por Viagem (%)</div>
-          <canvas id="dash-chart-ocup" height="260"></canvas>
+          <div id="dash-chart-km" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:14px;">
