@@ -454,6 +454,26 @@
           <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Análise histórica das roteirizações salvas</div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <!-- Filtro de clientes -->
+          <div style="position:relative;">
+            <button id="dash-cli-btn" onclick="dashToggleFiltroClientes()"
+              style="display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;font-size:11px;color:var(--text-2);cursor:pointer;white-space:nowrap;">
+              <span>👥 Clientes</span>
+              <span id="dash-cli-badge" style="display:none;background:var(--pet-green);color:#000;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
+            </button>
+            <div id="dash-cli-panel" style="display:none;position:absolute;top:calc(100% + 6px);right:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.18);width:300px;max-height:380px;display:flex;flex-direction:column;">
+              <div style="padding:10px 12px;border-bottom:1px solid var(--border-dk);flex-shrink:0;">
+                <input id="dash-cli-search" type="text" placeholder="Buscar cliente..." oninput="dashFiltrarListaClientes(this.value)"
+                  style="width:100%;box-sizing:border-box;background:var(--bg,#f5f5f5);border:1px solid var(--border-dk);border-radius:6px;padding:6px 10px;font-size:12px;color:var(--text);outline:none;"/>
+              </div>
+              <div id="dash-cli-list" style="overflow-y:auto;flex:1;padding:6px 0;"></div>
+              <div style="padding:8px 12px;border-top:1px solid var(--border-dk);display:flex;gap:8px;flex-shrink:0;">
+                <button onclick="dashSelecionarTodosClientes(true)"  style="flex:1;font-size:11px;padding:5px;border:1px solid var(--border-dk);border-radius:6px;background:transparent;color:var(--text-2);cursor:pointer;">Todos</button>
+                <button onclick="dashSelecionarTodosClientes(false)" style="flex:1;font-size:11px;padding:5px;border:1px solid var(--border-dk);border-radius:6px;background:transparent;color:var(--text-2);cursor:pointer;">Limpar</button>
+                <button onclick="dashAplicarFiltroClientes()"        style="flex:1;font-size:11px;padding:5px;border:none;border-radius:6px;background:var(--pet-green);color:#000;font-weight:700;cursor:pointer;">Aplicar</button>
+              </div>
+            </div>
+          </div>
           <div style="display:flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;">
             <span style="font-size:11px;color:var(--text-3);letter-spacing:0.06em;">MES</span>
             <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--pet-green);font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;">
@@ -472,14 +492,14 @@
         <div class="sum-card"><div class="sum-num" id="dk-km" style="color:#6ee04a">-</div><div class="sum-label">Km Total</div></div>
         <div class="sum-card"><div class="sum-num" id="dk-clientes" style="color:#f06060">-</div><div class="sum-label">Clientes</div></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+      <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Volume por Cliente (m3)</div>
-          <div id="dash-chart-vol" style="max-height:280px;overflow-y:auto;overflow-x:hidden;"></div>
+          <div id="dash-chart-vol" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Entregas por Cliente</div>
-          <div id="dash-chart-ent" style="max-height:280px;overflow-y:auto;overflow-x:hidden;"></div>
+          <div id="dash-chart-ent" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
