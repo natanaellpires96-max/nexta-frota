@@ -6326,7 +6326,7 @@ function _montarTextoResumoDia(snaps) {
         placasDisponiveisMap.set(v.placa, {
           transportadora: v.transportadora || '',
           capacidade: v.capacidade || 0,
-          terminal: v.terminal || '',
+          cidadeBase: v.cidadeBase || v.cidade || '',
         });
       }
 
@@ -6357,6 +6357,30 @@ function _montarTextoResumoDia(snaps) {
     .filter(([placa]) => !placasComProgramacao.has(placa))
     .sort(([a], [b]) => a.localeCompare(b));
 
+  // Ocupação da frota
+  let totalCapacidade = 0;
+  let totalVolumeAlocado = 0;
+  let veiculosOcupacaoTotal = 0;
+  let veiculosOcupacaoParcial = 0;
+  snaps.forEach(snap => {
+    const res  = snap.resultado || {};
+    const veics = snap.veiculos || [];
+    veics.forEach(v => {
+      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      if (!viagens.length) return;
+      const volVeiculo = viagens.reduce((s, vi) => s + vi.paradas.reduce((ss, p) => ss + (p.volumeTotal || 0), 0), 0);
+      const cap = v.capacidade || 0;
+      if (cap > 0) {
+        totalCapacidade    += cap;
+        totalVolumeAlocado += volVeiculo;
+        const pct = volVeiculo / cap;
+        if (pct >= 0.99) veiculosOcupacaoTotal++;
+        else veiculosOcupacaoParcial++;
+      }
+    });
+  });
+  const pctFrota = totalCapacidade > 0 ? Math.round((totalVolumeAlocado / totalCapacidade) * 100) : 0;
+
   const horasConsH = (horasConsumidas  / 60).toFixed(1).replace('.', ',');
   const horasDispH = (horasDisponiveis / 60).toFixed(1).replace('.', ',');
   const volumeStr  = totalVolume.toFixed(1).replace('.', ',');
@@ -6376,7 +6400,7 @@ function _montarTextoResumoDia(snaps) {
   } else {
     const prob = [];
     if (pedidosComProblema.size > 0) prob.push(`${pedidosComProblema.size} pedido(s) com restrição de horário`);
-    if (temEstouroJornada) prob.push('estouro de jornada em alguma programação');
+    if (temEstouroJornada) prob.push('possível estouro de jornada em alguma programação');
     L.push(
       `A programação para o dia ${dataEntregaStr} foi concluída. ` +
       `Foram identificados: ${prob.join(' e ')}.`
@@ -6387,7 +6411,8 @@ function _montarTextoResumoDia(snaps) {
   L.push(`• *Volume planejado:* ${volumeStr} m³`);
   L.push(`• *Pedidos atendidos:* ${totalPedidos}`);
   L.push(`• *Viagens geradas:* ${totalViagens} — importadas em lote para a Herrlog`);
-  L.push(`• *Estouro de jornada:* ${temEstouroJornada ? '⚠️ Sim' : '✅ Não'}`);
+  L.push(`• *Possível estouro de jornada:* ${temEstouroJornada ? '⚠️ Sim' : '✅ Não'}`);
+  L.push(`• *Ocupação da frota:* ${pctFrota}% · ${veiculosOcupacaoTotal} veículo(s) com ocupação total · ${veiculosOcupacaoParcial} parcial`);
 
   L.push(`• *Jornada consumida:* ${horasConsH} h de ${horasDispH} h disponíveis`);
   L.push('');
@@ -6399,8 +6424,7 @@ function _montarTextoResumoDia(snaps) {
       const transp = info.transportadora ? ` · ${info.transportadora}` : '';
       const cap    = info.capacidade ? ` · ${info.capacidade} m³` : '';
       // Terminal: pega só a cidade/base (ex: "Paulínia TORRÃO Nexta" → "Paulínia")
-      const termRaw = info.terminal || '';
-      const termLabel = termRaw ? ` · ${termRaw}` : '';
+      const termLabel = info.cidadeBase ? ` · ${info.cidadeBase}` : '';
       L.push(`• ${placa}${cap}${termLabel}${transp}`);
     });
   } else {
