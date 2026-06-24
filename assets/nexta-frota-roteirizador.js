@@ -6321,11 +6321,14 @@ function _montarTextoResumoDia(snaps) {
 
     veics.forEach(v => {
       // Registra placa disponível (o snap mais recente sobrescreve transportadora)
-      placasDisponiveisMap.set(v.placa, {
-        transportadora: v.transportadora || '',
-        capacidade: v.capacidade || 0,
-        terminal: v.terminal || '',
-      });
+      // Só registra veículos marcados como Disponível no painel do dia
+      if (v.disponibilidade === 'Disponível') {
+        placasDisponiveisMap.set(v.placa, {
+          transportadora: v.transportadora || '',
+          capacidade: v.capacidade || 0,
+          terminal: v.terminal || '',
+        });
+      }
 
       const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
       const ctV = ct[String(v.id)] || {};
@@ -6385,7 +6388,7 @@ function _montarTextoResumoDia(snaps) {
   L.push(`• *Pedidos atendidos:* ${totalPedidos}`);
   L.push(`• *Viagens geradas:* ${totalViagens} — importadas em lote para a Herrlog`);
   L.push(`• *Estouro de jornada:* ${temEstouroJornada ? '⚠️ Sim' : '✅ Não'}`);
-  L.push(`• *Pedidos com problema:* ${pedidosComProblema.size > 0 ? '⚠️ ' + [...pedidosComProblema].join(', ') : '✅ Nenhum'}`);
+
   L.push(`• *Jornada consumida:* ${horasConsH} h de ${horasDispH} h disponíveis`);
   L.push('');
 
