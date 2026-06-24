@@ -74,9 +74,59 @@ function fecharModalDataCarga() {
   document.getElementById('modal-data-carga').style.display = 'none';
   _modoOtimizarPendente = null;
 }
-function confirmarOtimizar() {
+async function confirmarOtimizar() {
   const val = document.getElementById('input-data-carga').value;
   if (!val) { alert('Informe a data de carregamento.'); return; }
+
+  // ── Verifica pasta de histórico antes de iniciar ──────────────────────────
+  // O sistema precisa acessar o histórico para garantir que nenhum ID de
+  // viagem seja reutilizado. Sem a pasta disponível, a roteirização é bloqueada.
+  if (!dirHandleHistorico) {
+    const ir = confirm(
+      '⚠️ Pasta de histórico não selecionada.
+
+' +
+      'O sistema precisa acessar o histórico para garantir IDs de viagem únicos (sem duplicação).
+
+' +
+      'Clique em OK para selecionar a pasta agora, ou em Cancelar para abortar a roteirização.'
+    );
+    if (!ir) return;
+    fecharModalDataCarga();
+    showTab('historico');
+    await selecionarPastaHistorico();
+    if (!dirHandleHistorico) {
+      alert('Pasta não selecionada. A roteirização foi cancelada.');
+      return;
+    }
+    // Reabre o modal após seleção da pasta
+    abrirModalDataCarga(_modoOtimizarPendente || 'padrao');
+    return;
+  }
+
+  // Verifica se a permissão ainda está ativa (pode expirar entre sessões)
+  let permOk = false;
+  try { permOk = (await dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
+  if (!permOk) {
+    const ir = confirm(
+      '⚠️ Permissão da pasta de histórico expirou.
+
+' +
+      'O sistema precisa reautorizar o acesso para verificar os IDs de viagem existentes.
+
+' +
+      'Clique em OK para reautorizar agora, ou em Cancelar para abortar a roteirização.'
+    );
+    if (!ir) return;
+    try {
+      permOk = (await dirHandleHistorico.requestPermission({ mode: 'readwrite' })) === 'granted';
+    } catch(e) {}
+    if (!permOk) {
+      alert('Permissão negada. A roteirização foi cancelada para evitar IDs duplicados.');
+      return;
+    }
+  }
+
   fecharModalDataCarga();
   otimizar(_modoOtimizarPendente || 'padrao', new Date(val + 'T00:00:00'));
 }
@@ -3859,7 +3909,9 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   }
   // ── Reconstrói contador a partir do histórico real antes de atribuir IDs ────
   // Garante que rodadas repetidas sem salvar não inflem a sequência.
-  await _reconstruirPetSeqDoHistorico();
+  // { obrigatorio: true } — se a pasta não estiver disponível lança erro e
+  // impede a geração de IDs sem verificação completa do histórico.
+  await _reconstruirPetSeqDoHistorico({ obrigatorio: true });
   atribuirPetIds(resultado, baseDataEntrega || new Date());
   // Sugestões de quebra manual (só no modo dedicado): pedidos alocados sozinhos
   // em veículo com <55% de utilização temporal E há dedicado ocioso compatível.
@@ -3916,6 +3968,19 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   renderMapaGeral();
   renderTemplateOperacao();
   showTab('resultado');
+  } catch(e) {
+    // Erros específicos de pasta de histórico indisponível
+    if (e.message === 'PASTA_NAO_SELECIONADA') {
+      alert('Roteirização cancelada: a pasta de histórico não está selecionada.
+
+Selecione a pasta na aba Histórico e tente novamente.');
+    } else if (e.message === 'PERMISSAO_NEGADA') {
+      alert('Roteirização cancelada: permissão da pasta de histórico negada.
+
+Reautorize o acesso na aba Histórico e tente novamente.');
+    } else {
+      throw e; // propaga outros erros normalmente
+    }
   } finally {
     // Restaura lista completa de veículos (inclui indisponíveis)
     // para que a aba Veículos & Turnos continue mostrando todos
@@ -4947,11 +5012,17 @@ function abrirMapaVeiculo(veiculoId) {
 }
 // Reconstrói o contador de petId a partir de TODOS os arquivos do histórico,
 // descartando qualquer valor inflado que possa estar no localStorage.
-async function _reconstruirPetSeqDoHistorico() {
-  if (!dirHandleHistorico) return;
+async function _reconstruirPetSeqDoHistorico({ obrigatorio = false } = {}) {
+  if (!dirHandleHistorico) {
+    if (obrigatorio) throw new Error('PASTA_NAO_SELECIONADA');
+    return;
+  }
   let permOk = false;
   try { permOk = (await dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
-  if (!permOk) return;
+  if (!permOk) {
+    if (obrigatorio) throw new Error('PERMISSAO_NEGADA');
+    return;
+  }
   const stored = {};
   for await (const [name, handle] of dirHandleHistorico.entries()) {
     if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
