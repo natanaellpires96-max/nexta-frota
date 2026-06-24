@@ -674,15 +674,19 @@ function dashAgregar(snapshots) {
           const coords = latLonEfetivo ? latLonEfetivo(ped) : { lat: par.lat, lon: par.lon };
           const lat = coords?.lat || par.lat;
           const lon = coords?.lon || par.lon;
-          const km = (tLat && tLon && lat && lon)
-            ? haversine(tLat, tLon, lat, lon) : 0;
+          // Usa distanciaKm da parada (calculado na roteirização com fator de tortuosidade 1.3x)
+          // em vez de Haversine direto terminal→cliente, que ignora a sequência de paradas.
+          // Para clientes com múltiplas entregas, acumula e divide pela contagem → km médio.
+          const km = par.distanciaKm > 0 ? par.distanciaKm
+            : ((tLat && tLon && lat && lon) ? haversine(tLat, tLon, lat, lon) : 0);
           const chave = dashChaveCliente(ped);
-          if (!clientes[chave]) clientes[chave] = { nome, cidade, entregas:0, volume:0, km:0, lat, lon, capTotal:0 };
+          if (!clientes[chave]) clientes[chave] = { nome, cidade, entregas:0, volume:0, km:0, kmTotal:0, lat, lon, capTotal:0 };
           clientes[chave].nome = dashNomeCanônico(clientes[chave].nome, nome);
           clientes[chave].entregas++;
           clientes[chave].volume += vol;
           clientes[chave].capTotal += capV > 0 ? capV : 0;
-          clientes[chave].km += km; // acumula km de todas as entregas ao cliente
+          clientes[chave].kmTotal = (clientes[chave].kmTotal || 0) + km;
+          clientes[chave].km = clientes[chave].kmTotal / clientes[chave].entregas; // km médio por entrega
           totalVol += vol;
           volViagem += vol;
           totalKm += km;
@@ -722,7 +726,93 @@ function dashAgregar(snapshots) {
   };
 }
 // ── Renderizar Dashboard ───────────────────────────────────────────────────
+// ── Filtro de clientes ────────────────────────────────────────────────────
+let _dashClientesSelecionados = null; // null = todos; Set = filtro ativo
+let _dashSnapshotsAtivos = [];        // snapshots atualmente carregados
+let _dashTodosClientes   = [];        // lista completa de clientes do período
+
+function dashToggleFiltroClientes() {
+  const panel = document.getElementById('dash-cli-panel');
+  if (!panel) return;
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : 'flex';
+  if (!visible) {
+    document.getElementById('dash-cli-search').value = '';
+    dashFiltrarListaClientes('');
+  }
+}
+
+function dashPopularListaClientes() {
+  const list = document.getElementById('dash-cli-list');
+  if (!list) return;
+  list.innerHTML = _dashTodosClientes.map(nome => {
+    const sel = !_dashClientesSelecionados || _dashClientesSelecionados.has(nome);
+    const nomeSafe = nome.replace(/"/g, '&quot;');
+    return `<label style="display:flex;align-items:center;gap:8px;padding:5px 12px;cursor:pointer;font-size:12px;color:var(--text);">
+      <input type="checkbox" data-cli="${nomeSafe}" ${sel ? 'checked' : ''}
+        style="width:14px;height:14px;accent-color:var(--pet-green);cursor:pointer;flex-shrink:0;">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${nome}</span>
+    </label>`;
+  }).join('');
+}
+
+function dashFiltrarListaClientes(busca) {
+  const list = document.getElementById('dash-cli-list');
+  if (!list) return;
+  const b = (busca || '').toLowerCase();
+  list.querySelectorAll('label').forEach(lbl => {
+    const nome = lbl.querySelector('input')?.dataset.cli || '';
+    lbl.style.display = nome.toLowerCase().includes(b) ? '' : 'none';
+  });
+}
+
+function dashSelecionarTodosClientes(sel) {
+  const list = document.getElementById('dash-cli-list');
+  if (!list) return;
+  list.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = sel);
+}
+
+function dashAplicarFiltroClientes() {
+  const list = document.getElementById('dash-cli-list');
+  if (!list) return;
+  const selecionados = new Set();
+  list.querySelectorAll('input[type=checkbox]:checked').forEach(cb => selecionados.add(cb.dataset.cli));
+  // Se todos selecionados = sem filtro ativo
+  _dashClientesSelecionados = selecionados.size === _dashTodosClientes.length ? null : selecionados;
+  // Atualiza badge
+  const badge = document.getElementById('dash-cli-badge');
+  if (badge) {
+    if (_dashClientesSelecionados) {
+      badge.textContent = selecionados.size;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+  document.getElementById('dash-cli-panel').style.display = 'none';
+  dashRenderComFiltro();
+}
+
+function dashRenderComFiltro() {
+  dashRender(_dashSnapshotsAtivos);
+}
+
+// Fecha painel ao clicar fora
+document.addEventListener('click', function(e) {
+  const panel = document.getElementById('dash-cli-panel');
+  const btn   = document.getElementById('dash-cli-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && !btn?.contains(e.target)) {
+    panel.style.display = 'none';
+  }
+});
+
+window.dashToggleFiltroClientes   = dashToggleFiltroClientes;
+window.dashFiltrarListaClientes    = dashFiltrarListaClientes;
+window.dashSelecionarTodosClientes = dashSelecionarTodosClientes;
+window.dashAplicarFiltroClientes   = dashAplicarFiltroClientes;
+
 function dashRender(snapshots) {
+  _dashSnapshotsAtivos = snapshots || [];
   if (!snapshots || !snapshots.length) {
     document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes')
       .forEach(el => { if(el) el.textContent = '-'; });
@@ -731,6 +821,16 @@ function dashRender(snapshots) {
     return;
   }
   const d = dashAgregar(snapshots);
+  // Atualiza lista global de clientes para o filtro
+  _dashTodosClientes = d.clientes.map(c => c.nome).sort();
+  dashPopularListaClientes();
+  // Aplica filtro se ativo
+  const clientesFiltrados = _dashClientesSelecionados
+    ? d.clientes.filter(c => _dashClientesSelecionados.has(c.nome))
+    : d.clientes;
+  const ocupFiltrados = _dashClientesSelecionados
+    ? d.clientes_ocup.filter(c => _dashClientesSelecionados.has(c.nome))
+    : d.clientes_ocup;
   // KPIs
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
   set('dk-viagens',  d.totalViagens);
@@ -740,21 +840,21 @@ function dashRender(snapshots) {
   set('dk-km',       d.totalKm.toLocaleString('pt-BR') + ' km');
   set('dk-clientes', d.totalClientes);
   // Gráfico de barras: volume por cliente
-  dashBarChart('dash-chart-vol', d.clientes.slice(0,20), c=>c.volume.toFixed(1),
+  dashBarChart('dash-chart-vol', clientesFiltrados.slice(0,30), c=>c.volume.toFixed(1),
     '#f0be40', 'm³', c=>c.nome);
   // Gráfico de barras: entregas por cliente
-  dashBarChart('dash-chart-ent', d.clientes.slice(0,20).sort((a,b)=>b.entregas-a.entregas),
+  dashBarChart('dash-chart-ent', clientesFiltrados.slice(0,30).sort((a,b)=>b.entregas-a.entregas),
     c=>c.entregas, '#70a8f0', 'ent.', c=>c.nome);
   // Gráfico Km vs Volume
-  dashKmVolChart('dash-chart-km', d.clientes.slice(0,20));
+  dashKmVolChart('dash-chart-km', clientesFiltrados.slice(0,30));
   // Gráfico de ocupação por cliente
-  dashOcupClienteChart('dash-chart-ocup', d.clientes_ocup.slice(0,30));
+  dashOcupClienteChart('dash-chart-ocup', ocupFiltrados.slice(0,30));
   // Mapa
   dashRenderMapa(d.rotasMap);
   // Tabela
   const tbody = document.getElementById('dash-tabela-cli-body');
   if (tbody) {
-    tbody.innerHTML = d.clientes.map((c, i) => {
+    tbody.innerHTML = clientesFiltrados.map((c, i) => {
       const kmVol = c.km > 0 ? (c.volume / c.km).toFixed(2) : '-';
       const bg = i % 2 === 0 ? '#FFFFFF' : '#F9FAFB';
       return `<tr style="background:${bg};border-bottom:1px solid #E5E7EB;">
@@ -794,28 +894,30 @@ function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
 function dashKmVolChart(containerId, clientes) {
   const el = document.getElementById(containerId);
   if (!el) return;
-  const itens = clientes.filter(c => c.km > 0).slice(0,15);
-  if (!itens.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:12px">Sem dados de localização</div>'; return; }
-  const maxKm = Math.max(...itens.map(c=>c.km), 1);
-  const maxVol = Math.max(...itens.map(c=>c.volume), 1);
+  // Mostra só clientes com km calculado, ordenados por km decrescente
+  const itens = clientes.filter(c => c.km > 0).sort((a, b) => b.km - a.km).slice(0, 30);
+  if (!itens.length) { el.innerHTML = '<div style="color:#888;font-size:12px;padding:12px">Sem dados de distância — abra o mapa de cada viagem para calcular.</div>'; return; }
+  const maxKm  = Math.max(...itens.map(c => c.km  || 0), 1);
+  const maxVol = Math.max(...itens.map(c => c.volume || 0), 1);
   el.innerHTML = itens.map(c => {
-    const pctKm = Math.round((c.km / maxKm) * 100);
+    const pctKm  = c.km > 0 ? Math.round((c.km  / maxKm)  * 100) : 0;
     const pctVol = Math.round((c.volume / maxVol) * 100);
+    const kmLabel = c.km > 0 ? c.km.toFixed(0) + ' km' : '— km';
     return `<div style="margin-bottom:12px;">
-      <div style="font-size:12px;font-weight:700;color:#000000;margin-bottom:5px;" title="${c.nome}">${c.nome}</div>
+      <div style="font-size:12px;font-weight:700;color:#000000;margin-bottom:5px;">${c.nome}</div>
       <div style="display:flex;gap:4px;align-items:center;">
         <span style="font-size:10px;font-weight:700;color:#000000;width:22px;text-align:right;">km</span>
         <div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
           <div style="width:${pctKm}%;height:100%;background:#6ee04a;border-radius:99px;"></div>
         </div>
-        <span style="font-size:10px;font-weight:700;color:#000000;width:44px;">${c.km.toFixed(0)} km</span>
+        <span style="font-size:10px;font-weight:700;color:#000000;width:52px;">${kmLabel}</span>
       </div>
       <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
         <span style="font-size:10px;font-weight:700;color:#000000;width:22px;text-align:right;">m³</span>
         <div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
           <div style="width:${pctVol}%;height:100%;background:#f0be40;border-radius:99px;"></div>
         </div>
-        <span style="font-size:10px;font-weight:700;color:#000000;width:44px;">${c.volume.toFixed(1)} m³</span>
+        <span style="font-size:10px;font-weight:700;color:#000000;width:52px;">${c.volume.toFixed(1)} m³</span>
       </div>
     </div>`;
   }).join('');
@@ -825,23 +927,23 @@ function dashOcupClienteChart(containerId, itens) {
   const el = document.getElementById(containerId);
   if (!el) return;
   if (!itens.length) {
-    el.innerHTML = '<div style="color:#000;font-size:12px;padding:12px">Sem dados de ocupação</div>';
+    el.innerHTML = '<div style="color:#888;font-size:12px;padding:12px">Sem dados de ocupação</div>';
     return;
   }
   el.innerHTML = itens.map(function(item) {
-    const pct = Math.min(item.ocup, 100);
+    const pct = Math.min(Math.round(item.ocup), 100);
     const cor = pct >= 90 ? '#4caf50' : pct >= 60 ? '#f0be40' : '#f06060';
-    const vol = item.volMedio != null ? item.volMedio : null;
-    return '<div style="margin-bottom:12px;">'
-      + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;">'
-      + '<span style="font-size:12px;font-weight:700;color:#000000;">' + item.nome + '</span>'
-      + '<span style="display:flex;gap:10px;align-items:baseline;white-space:nowrap;margin-left:10px;">'
-      + (vol != null ? '<span style="font-size:11px;font-weight:600;color:#555;">' + vol + ' m³/ent.</span>' : '')
-      + '<span style="font-size:13px;font-weight:700;color:#000000;">' + pct + '%</span>'
+    const vol = item.volMedio != null ? item.volMedio + ' m³/ent.' : '';
+    return '<div style="margin-bottom:14px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;gap:8px;">'
+      + '<span style="font-size:12px;font-weight:700;color:var(--text,#111);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + item.nome + '</span>'
+      + '<span style="display:flex;gap:12px;align-items:center;white-space:nowrap;flex-shrink:0;">'
+      + (vol ? '<span style="font-size:11px;font-weight:500;color:var(--text-3,#777);">' + vol + '</span>' : '')
+      + '<span style="font-size:13px;font-weight:800;color:' + cor + ';min-width:36px;text-align:right;">' + pct + '%</span>'
       + '</span>'
       + '</div>'
-      + '<div style="position:relative;height:12px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">'
-      + '<div style="width:' + pct + '%;height:100%;background:' + cor + ';border-radius:99px;transition:width .5s ease;"></div>'
+      + '<div style="position:relative;height:14px;background:rgba(0,0,0,0.07);border-radius:99px;overflow:hidden;">'
+      + '<div style="width:' + pct + '%;height:100%;background:' + cor + ';border-radius:99px;transition:width .6s ease;"></div>'
       + '</div>'
       + '</div>';
   }).join('');
