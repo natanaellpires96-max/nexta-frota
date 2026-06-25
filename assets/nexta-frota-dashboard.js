@@ -660,12 +660,7 @@ function dashAgregar(snapshots) {
     vecs.forEach(v => {
       const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
       if (!viagens.length) return;
-      // Capacidade do veículo escalado: conta 1x por veículo por snapshot
-      const capV_esc = v.capacidade || v.capacidadeTotal || 0;
-      if (capV_esc > 0) {
-        totalCap += capV_esc;
-        veiculos_escalados.push({ snapIdx, vid: v.id, capV: capV_esc });
-      }
+      // capV é acumulado por VIAGEM realizada (dentro do loop de viagens abaixo)
       // Terminal lat/lon
       const term = terms.find(t => t.nome === v.terminal);
       const tLat = term?.lat, tLon = term?.lon;
@@ -710,6 +705,9 @@ function dashAgregar(snapshots) {
         if (capV > 0) {
           const ocup = Math.round((volViagem / capV) * 100);
           viagens_ocup.push({ label: `${v.placa} V${iV+1}`, ocup, snapIdx, vid: v.id, iV });
+          // Capacidade acumulada por viagem realizada: veículo de 35m³ que fez 2 viagens = 70m³
+          totalCap += capV;
+          veiculos_escalados.push({ snapIdx, vid: v.id, capV, iV });
         }
       });
     });
@@ -903,30 +901,26 @@ function dashRender(snapshots) {
   if (_dashClientesSelecionados) {
     let _filtVol = 0, _filtCap = 0;
     const _nomesF = _dashClientesSelecionados;
-    const _veicsAtenderam = new Set(); // evita contar o mesmo veículo duas vezes
     _dashSnapshotsAtivos.forEach((snap, sIdx) => {
       const res = snap.resultado || {}, vecs = snap.veiculos || [];
       vecs.forEach(v => {
         const capV = v.capacidade || v.capacidadeTotal || 0;
         const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
-        const atendeCliente = viagens.some(vi =>
-          vi.paradas.some(par => {
+        viagens.forEach(vi => {
+          // Verifica se esta viagem atende ao menos um cliente filtrado
+          const atendeCliente = vi.paradas.some(par => {
             const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
             return _nomesF.has(n);
-          })
-        );
-        if (!atendeCliente) return;
-        // Capacidade: conta 1x por veículo
-        const _vKey = sIdx + '_' + v.id;
-        if (capV > 0 && !_veicsAtenderam.has(_vKey)) {
-          _filtCap += capV;
-          _veicsAtenderam.add(_vKey);
-        }
-        // Volume: apenas paradas dos clientes filtrados
-        viagens.forEach(vi => vi.paradas.forEach(par => {
-          const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
-          if (_nomesF.has(n)) _filtVol += par.volumeTotal || 0;
-        }));
+          });
+          if (!atendeCliente) return;
+          // Capacidade: soma capV desta viagem (veículo de 35m³ × 2 viagens = 70m³)
+          if (capV > 0) _filtCap += capV;
+          // Volume: apenas paradas dos clientes filtrados nesta viagem
+          vi.paradas.forEach(par => {
+            const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
+            if (_nomesF.has(n)) _filtVol += par.volumeTotal || 0;
+          });
+        });
       });
     });
     _kpiOcup = _filtCap > 0 ? Math.round((_filtVol / _filtCap) * 100) : d.totalOcup;
@@ -1301,28 +1295,23 @@ window.dashExportarExcel = async function dashExportarExcel() {
     let _exOcup = d.totalOcup;
     if (filtroAtivo) {
       let _exFiltVol = 0, _exFiltCap = 0;
-      const _exVeicsAtenderam = new Set();
-      snapshots.forEach((snap, sIdx) => {
+      snapshots.forEach(snap => {
         const res = snap.resultado || {}, vecs = snap.veiculos || [];
         vecs.forEach(v => {
           const capV = v.capacidade || v.capacidadeTotal || 0;
           const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
-          const atende = viagens.some(vi =>
-            vi.paradas.some(par => {
+          viagens.forEach(vi => {
+            const atende = vi.paradas.some(par => {
               const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
               return filtroAtivo.has(n);
-            })
-          );
-          if (!atende) return;
-          const _vKey = sIdx + '_' + v.id;
-          if (capV > 0 && !_exVeicsAtenderam.has(_vKey)) {
-            _exFiltCap += capV;
-            _exVeicsAtenderam.add(_vKey);
-          }
-          viagens.forEach(vi => vi.paradas.forEach(par => {
-            const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
-            if (filtroAtivo.has(n)) _exFiltVol += par.volumeTotal || 0;
-          }));
+            });
+            if (!atende) return;
+            if (capV > 0) _exFiltCap += capV;
+            vi.paradas.forEach(par => {
+              const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
+              if (filtroAtivo.has(n)) _exFiltVol += par.volumeTotal || 0;
+            });
+          });
         });
       });
       _exOcup = _exFiltCap > 0 ? Math.round((_exFiltVol / _exFiltCap) * 100) : d.totalOcup;
