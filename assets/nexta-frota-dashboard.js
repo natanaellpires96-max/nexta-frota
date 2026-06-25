@@ -807,7 +807,9 @@ function dashAplicarFiltroClientes() {
   const list = document.getElementById('dash-cli-list');
   if (!list) return;
   const selecionados = new Set();
-  list.querySelectorAll('div[data-checked="1"]').forEach(row => selecionados.add(row.dataset.cli));
+  // dataset.cli pode ter entidades HTML escapadas (&amp; &quot;) — decodifica antes de comparar com c.nome
+  const _dec = s => s.replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+  list.querySelectorAll('div[data-checked="1"]').forEach(row => selecionados.add(_dec(row.dataset.cli)));
   // Se todos selecionados = sem filtro ativo
   _dashClientesSelecionados = selecionados.size === _dashTodosClientes.length ? null : selecionados;
   // Atualiza badge
@@ -853,7 +855,19 @@ function dashRender(snapshots) {
   }
   const d = dashAgregar(snapshots);
   // Atualiza lista global de clientes para o filtro
-  _dashTodosClientes = d.clientes.map(c => c.nome).sort();
+  // Só reinicia a lista visual se não houver filtro ativo (evita resetar seleção do usuário)
+  const _novaListaClientes = d.clientes.map(c => c.nome).sort();
+  const _listaIgual = _novaListaClientes.length === _dashTodosClientes.length &&
+    _novaListaClientes.every((n,i) => n === _dashTodosClientes[i]);
+  if (!_listaIgual) {
+    _dashTodosClientes = _novaListaClientes;
+    // Se havia filtro ativo, mantém apenas os clientes que ainda existem
+    if (_dashClientesSelecionados) {
+      const novosNomes = new Set(_dashTodosClientes);
+      const filtroAtualizado = new Set([..._dashClientesSelecionados].filter(n => novosNomes.has(n)));
+      _dashClientesSelecionados = filtroAtualizado.size === _dashTodosClientes.length ? null : filtroAtualizado;
+    }
+  }
   dashPopularListaClientes();
   // Aplica filtro se ativo
   const clientesFiltrados = _dashClientesSelecionados
