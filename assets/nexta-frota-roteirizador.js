@@ -3259,6 +3259,9 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     return Math.round((d.getTime() - baseDataEntrega.getTime()) / 86400000);
   };
   // Veículo atende as restrições do pedido (tipo, Petronas, terminal)?
+  // veicOk: filtra candidatos por tipo, Petronas e terminal.
+  // A verificação de compartimentos é feita por veicOkCompartimentos (definida abaixo,
+  // após produtosPendentesPedido e podeFitar) para evitar referência antecipada.
   const veicOk = (v, p) =>
     (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
     (!p.identidadePetronas || !!v.identidadePetronas) &&
@@ -3303,6 +3306,19 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     }
     return true;
   };
+  // veicOkCompartimentos: extensão de veicOk que também verifica se os produtos
+  // do pedido cabem nos compartimentos do veículo (usa podeFitar e produtosPendentesPedido).
+  // Separado de veicOk para evitar referência a closures ainda não declaradas.
+  const veicOkCompartimentos = (v, p) => {
+    if (!veicOk(v, p)) return false;
+    const prods = produtosPendentesPedido(p);
+    if (!prods.length) return true;
+    const compsSimul = criarCompsDisp(v);
+    // Se veículo não tem compartimentos definidos, não bloqueia
+    if (!compsSimul.length) return true;
+    return podeFitar(prods, compsSimul);
+  };
+
   // Aloca todos os produtos do pedido em compartimentos reais (commit)
   // Retorna false se algum produto não couber (não deveria ocorrer após podeFitar)
   const commitPedido = (viagem, pedido, detalheParada, custoRelogio, custoProdutivo, v, produtosSelecionados = pedido.produtos) => {
@@ -3337,7 +3353,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     const vol     = (volMin === null || volMin === undefined) ? totalVolPedido(pedido) : volMin;
     const cidadeP = (pedido.cidade || '').toLowerCase().trim();
     return veiculos
-      .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) && (v.disponibilidade || 'Disponível') !== 'Indisponível' && veicOk(v, pedido) && (permitirCapacidadeMenor || v.capacidade >= vol - 0.001))
+      .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) && (v.disponibilidade || 'Disponível') !== 'Indisponível' && veicOkCompartimentos(v, pedido) && (permitirCapacidadeMenor || v.capacidade >= vol - 0.001))
       .sort((a, b) => {
         // 1. Dedicado antes de Spot
         const aDedicado = (a.contrato || 'Dedicado') !== 'Spot' ? 1 : 0;
@@ -3660,7 +3676,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
           (v.disponibilidade || 'Disponível') !== 'Indisponível' &&
           (v.contrato || 'Dedicado') !== 'Spot' &&
           resultado[v.id].length === 0 &&
-          veicOk(v, pedido))
+          veicOkCompartimentos(v, pedido))
         .sort((a, b) => a.capacidade - b.capacidade); // menores primeiro
       const volTotal15 = totalVolPedido(pedido);
       const maiorCapOcioso = ociososCompat.length ? Math.max(...ociososCompat.map(v => v.capacidade)) : 0;
@@ -3669,7 +3685,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       const maiorCapQualquer = veiculos
         .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) &&
           (v.disponibilidade || 'Disponível') !== 'Indisponível' &&
-          veicOk(v, pedido))
+          veicOkCompartimentos(v, pedido))
         .reduce((mx, v) => Math.max(mx, v.capacidade), 0);
       const umTruckResolveMaior = maiorCapQualquer >= volTotal15 * 0.85;
       if (ociososCompat.length >= 2 && !umTruckResolveMaior) {
@@ -3889,7 +3905,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
             if (v.id === vFonte.id) return false;
             if (lockedTerminals.has(baseVeiculoLabel(v))) return false;
             if ((v.disponibilidade || 'Disponível') === 'Indisponível') return false;
-            if (!veicOk(v, pedido)) return false;
+            if (!veicOkCompartimentos(v, pedido)) return false;
             if (!vFonteEhSpot && (v.contrato || 'Dedicado') === 'Spot') return false;
             return true;
           })
@@ -6127,9 +6143,13 @@ async function onMudarRoteirizacao(val) {
     lockedTerminals.clear();
     filtroMapaPlaca = '';
     filtroMapaTerminais.clear();
+    renderPedidos();
+    renderVeiculos();
     renderResultado(ultimoResultado, ultimoControleTempo);
     renderMapaGeral();
     renderTemplateOperacao();
+    // Navega para a aba de resultado para que o usuário veja a roteirização carregada
+    showTab('resultado');
   }
 }
 async function excluirEntradaHistorico(filename, btn) {
