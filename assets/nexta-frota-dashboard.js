@@ -1209,3 +1209,173 @@ async function osrmRoute(pontos, layer, cor, peso, opacidade) {
   layer._nexta_distAcum = distAcum;
   return distAcum;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXPORTAÇÃO EXCEL — Dashboard
+// Gera um .xlsx fiel ao dashboard: KPIs, tabela por cliente, detalhamento
+// por viagem/parada e ocupação por veículo — usando SheetJS (já carregado).
+// ═══════════════════════════════════════════════════════════════════════════
+window.dashExportarExcel = async function dashExportarExcel() {
+  const snapshots = _dashSnapshotsAtivos;
+  if (!snapshots || !snapshots.length) {
+    alert('Nenhum dado carregado. Selecione um mês ou clique em "Todos os períodos" primeiro.');
+    return;
+  }
+
+  // Verifica SheetJS
+  if (typeof XLSX === 'undefined') {
+    alert('Biblioteca SheetJS não encontrada. Verifique a importação no index.html.');
+    return;
+  }
+
+  const btn = document.getElementById('dash-export-btn');
+  const orig = btn?.textContent;
+  if (btn) { btn.textContent = '⏳ Gerando...'; btn.disabled = true; }
+
+  try {
+    const d = dashAgregar(snapshots);
+    const wb = XLSX.utils.book_new();
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+    const pct = v => (typeof v === 'number' ? v + '%' : v);
+    const num = (v, dec=1) => typeof v === 'number' ? parseFloat(v.toFixed(dec)) : v;
+
+    // Estilo de cabeçalho compartilhado (SheetJS Community não suporta estilos,
+    // mas estruturamos para que apps Pro / xlsx-style possam aplicar facilmente)
+    function addSheet(name, rows) {
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      // Largura automática por coluna
+      const colWidths = rows.reduce((acc, row) => {
+        row.forEach((cell, i) => {
+          const len = cell !== null && cell !== undefined ? String(cell).length : 0;
+          acc[i] = Math.max(acc[i] || 8, Math.min(len + 2, 60));
+        });
+        return acc;
+      }, []);
+      ws['!cols'] = colWidths.map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+    }
+
+    // ── Aba 1: Resumo KPIs ──────────────────────────────────────────────────
+    addSheet('Resumo', [
+      ['DASHBOARD NEXTA — RESUMO DO PERÍODO'],
+      ['Gerado em', new Date().toLocaleString('pt-BR')],
+      ['Período(s)', snapshots.map(s => s.chave || '').filter(Boolean).join(', ') || 'Todos'],
+      [],
+      ['INDICADOR', 'VALOR'],
+      ['Total de Viagens',     d.totalViagens],
+      ['Total de Entregas',    d.totalEntregas],
+      ['Volume Total (m³)',    num(d.totalVol)],
+      ['Ocupação Média (%)',   d.totalOcup],
+      ['Km Total',             d.totalKm],
+      ['Clientes Atendidos',   d.totalClientes],
+    ]);
+
+    // ── Aba 2: Por Cliente ──────────────────────────────────────────────────
+    const cliRows = [
+      ['CLIENTE', 'CIDADE', 'ENTREGAS', 'VOLUME (m³)', 'KM MÉDIO', 'VOL/KM (m³/km)', 'OCUP. MÉDIA (%)'],
+    ];
+    // Mescla dados de clientes com ocupação
+    const ocupMap = {};
+    d.clientes_ocup.forEach(c => { ocupMap[c.nome] = c.ocup; });
+    d.clientes.forEach(c => {
+      const kmVol = c.km > 0 ? num(c.volume / c.km, 2) : '';
+      cliRows.push([
+        c.nome,
+        c.cidade,
+        c.entregas,
+        num(c.volume),
+        c.km > 0 ? num(c.km, 0) : '',
+        kmVol,
+        ocupMap[c.nome] ?? '',
+      ]);
+    });
+    // Linha de totais
+    cliRows.push([]);
+    cliRows.push([
+      'TOTAL', '',
+      d.totalEntregas,
+      num(d.totalVol),
+      num(d.totalKm > 0 && d.totalEntregas > 0 ? d.totalKm / d.totalEntregas : 0, 0),
+      '',
+      d.totalOcup,
+    ]);
+    addSheet('Por Cliente', cliRows);
+
+    // ── Aba 3: Por Viagem (detalhamento completo) ───────────────────────────
+    const viaRows = [
+      ['DATA CARGA', 'PLACA', 'TRANSPORTADORA', 'TERMINAL', 'TIPO', 'CAP. (m³)',
+       'MOTORISTA', 'Nº VIAGEM', 'PARADA', 'CLIENTE', 'CIDADE', 'ORDER SAP',
+       'VOLUME PARADA (m³)', 'CPT', 'PRODUTO', 'KM PARADA', 'OCUP. VIAGEM (%)'],
+    ];
+    snapshots.forEach(snap => {
+      const res   = snap.resultado  || {};
+      const vecs  = snap.veiculos   || [];
+      const terms = snap.terminais  || [];
+      const datasEntrega = snap.datasEntrega || [];
+      const dataLabel = datasEntrega[0] || '';
+      vecs.forEach(v => {
+        const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+        const capV = v.capacidade || 0;
+        viagens.forEach((vi, iV) => {
+          let volViagem = 0;
+          vi.paradas.forEach(par => { volViagem += par.volumeTotal || 0; });
+          const ocupV = capV > 0 ? Math.round((volViagem / capV) * 100) : '';
+          const term = terms.find(t => t.nome === v.terminal);
+
+          vi.paradas.forEach((par, iP) => {
+            const ped   = par.pedido || {};
+            const prods = (par.produtosSelecionados || par.produtos || []);
+            const prodLabel = prods.map(p =>
+              [p.codigoProduto || p.codigo || '', p.descricao || p.produto || ''].filter(Boolean).join(' - ')
+            ).join(' | ') || '';
+            const cptLabel = prods.map(p => p.cpt || p.compartimento || '').filter(Boolean).join(',') || '';
+
+            viaRows.push([
+              dataLabel,
+              v.placa || '',
+              v.transportadora || '',
+              v.terminal || '',
+              v.tipo || '',
+              capV || '',
+              v.motoristaDiurno || v.motorista || '',
+              iV + 1,
+              iP + 1,
+              ped.cliente || ped.nomeCliente || par.nome || '',
+              ped.cidade || '',
+              ped.codigoSAP || ped.codSAP || '',
+              num(par.volumeTotal || 0),
+              cptLabel,
+              prodLabel,
+              par.distanciaKm > 0 ? num(par.distanciaKm, 0) : '',
+              ocupV,
+            ]);
+          });
+        });
+      });
+    });
+    addSheet('Por Viagem', viaRows);
+
+    // ── Aba 4: Ocupação por Veículo ─────────────────────────────────────────
+    const ocupRows = [
+      ['PLACA', 'Nº VIAGEM', 'OCUPAÇÃO (%)'],
+    ];
+    d.viagens_ocup.forEach(vo => {
+      const parts = vo.label.split(' V');
+      ocupRows.push([parts[0] || vo.label, parts[1] ? parseInt(parts[1]) : '', vo.ocup]);
+    });
+    addSheet('Ocupação Veículos', ocupRows);
+
+    // ── Gera arquivo ────────────────────────────────────────────────────────
+    const agora = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const fname = `Dashboard_Nexta_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}.xlsx`;
+    XLSX.writeFile(wb, fname);
+
+    if (btn) { btn.textContent = '✅ Exportado!'; setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000); }
+  } catch(e) {
+    console.error('dashExportarExcel:', e);
+    alert('Erro ao gerar Excel: ' + e.message);
+    if (btn) { btn.textContent = orig; btn.disabled = false; }
+  }
+};
