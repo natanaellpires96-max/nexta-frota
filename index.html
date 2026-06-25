@@ -490,11 +490,12 @@
             </select>
           </div>
           <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:11px;padding:6px 14px;">Todos os periodos</button>
+          <button class="btn btn-sm" onclick="dashExportarExcel()" id="dash-export-btn" style="background:rgba(34,197,94,0.12);color:#16A34A;border:1px solid rgba(34,197,94,0.35);font-size:11px;padding:6px 14px;">📊 Exportar Excel</button>
           <button class="btn btn-sm" onclick="dashSincronizar()" id="dash-sync-btn" style="background:rgba(0,164,153,0.12);color:#00A499;border:1px solid rgba(0,164,153,0.35);font-size:11px;padding:6px 14px;">🔄 Sincronizar</button>
         </div>
       </div>
       <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px;">
-        <div class="sum-card"><div class="sum-num" id="dk-viagens" style="color:var(--pet-green)">-</div><div class="sum-label">Viagens</div></div>
+        <div class="sum-card"><div class="sum-num" id="dk-viagens" style="color:#FFFFFF">-</div><div class="sum-label">Viagens</div></div>
         <div class="sum-card"><div class="sum-num" id="dk-entregas" style="color:#70a8f0">-</div><div class="sum-label">Entregas</div></div>
         <div class="sum-card"><div class="sum-num" id="dk-volume" style="color:#f0be40">-</div><div class="sum-label">Volume m3</div></div>
         <div class="sum-card"><div class="sum-num" id="dk-ocup" style="color:#b07ef0">-</div><div class="sum-label">Ocup. Media</div></div>
