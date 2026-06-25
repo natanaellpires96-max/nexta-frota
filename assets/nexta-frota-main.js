@@ -570,8 +570,29 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
       v.motoristaNt      = motoristaAtivoOuVazio(carrier, operacao, registroFirestore.motoristaNoturno || '');
       v._motoristaPainel = false;
       if (rec && rec.status) {
-        v.disponibilidade    = rec.status === 'disponivel' ? 'Disponível' : 'Indisponível';
-        v._motivoIndisponivel = rec.status !== 'disponivel' ? rec.status : null;
+        // Manutenção com previsão de retorno (rec.time válido, ex: "09:00"):
+        //   → tratada como Disponível a partir do horário de retorno.
+        //   O roteirizador respeita _horarioDisponivelAPartirDe e não escalará
+        //   o veículo antes desse horário.
+        // Manutenção sem previsão ("sem_previsao" ou vazio): Indisponível.
+        // Programado/Em viagem, Folga, Indisponível: sempre bloqueados.
+        const _isManutComRetorno = rec.status === 'manutencao'
+          && rec.time && rec.time !== 'sem_previsao';
+
+        v.disponibilidade     = (rec.status === 'disponivel' || _isManutComRetorno)
+          ? 'Disponível' : 'Indisponível';
+        v._motivoIndisponivel = v.disponibilidade === 'Indisponível' ? rec.status : null;
+        v._emManutencao       = rec.status === 'manutencao'; // flag para exibição
+
+        // Propaga horário mínimo de início: disponível a partir de HH:MM
+        //   • disponivel com time  → respeita horário registrado pelo transportador
+        //   • manutencao com time  → veículo só sai depois que retornar da manutenção
+        if ((rec.status === 'disponivel' || _isManutComRetorno)
+            && rec.time && rec.time !== 'sem_previsao') {
+          v._horarioDisponivelAPartirDe = rec.time; // formato "HH:MM"
+        } else {
+          v._horarioDisponivelAPartirDe = null;
+        }
         // Painel tem motorista? Sobrescreve o do cadastro — também filtrado por ativo.
         const motDPainel = motoristaAtivoOuVazio(carrier, operacao, rec.motoristaDiurno  || '');
         const motNPainel = motoristaAtivoOuVazio(carrier, operacao, rec.motoristaNoturno || '');

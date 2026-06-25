@@ -1003,8 +1003,9 @@ function abrirModalViagem(veiculoId, idxViagem) {
   // Distâncias para popups (em background) — não desenha polylines aqui, mvDesenharRota faz isso
   const distAcum = [];
   // Calcula horário absoluto de chegada para cada parada
-  const jIni = parseHoraMin(v.jornadaInicio || '06:00');
-  const jIniMin = isNaN(jIni) ? 360 : jIni;
+  const _jIniRaw3 = parseHoraMin(v.jornadaInicio || '06:00');
+  let jIniMin = isNaN(_jIniRaw3) ? 360 : _jIniRaw3;
+  if (v._horarioDisponivelAPartirDe) { const _dm3 = parseHoraMin(v._horarioDisponivelAPartirDe); if (!isNaN(_dm3) && _dm3 > jIniMin) jIniMin = _dm3; }
   const viagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && vi.paradas?.length);
   let clock = inicioViagemAbsMin(viagens, viagens.indexOf(viagem), jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
   clock += (viagem.esperaTerminalMin || 0);
@@ -1693,8 +1694,9 @@ function recalcularTimingViagem(viagem, v) {
   if (!viagem || viagem._vazio || !(viagem.paradas || []).length) return;
   const viagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && vi.paradas?.length);
   const idx     = viagens.indexOf(viagem);
-  const jIni    = parseHoraMin(v.jornadaInicio || '06:00');
-  const jIniMin = isNaN(jIni) ? 360 : jIni;
+  const _jIniRaw4 = parseHoraMin(v.jornadaInicio || '06:00');
+  let jIniMin = isNaN(_jIniRaw4) ? 360 : _jIniRaw4;
+  if (v._horarioDisponivelAPartirDe) { const _dm4 = parseHoraMin(v._horarioDisponivelAPartirDe); if (!isNaN(_dm4) && _dm4 > jIniMin) jIniMin = _dm4; }
   // Clock no início desta viagem
   let clock = inicioViagemAbsMin(viagens, Math.max(idx, 0), jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
   // Recalcula espera no terminal — respeita override manual de horário de carga
@@ -3146,11 +3148,39 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   // para que a aba Veículos & Turnos continue mostrando todos após roteirizar
   let _veiculosTodos = veiculos.slice();
   try {
-  // ── Remove veículos indisponíveis antes do motor rodar ─────────────────────
-  // Status já foi definido na importação via sincronizarDisponibilidadeVeiculos.
-  // Aqui apenas garante que nenhum indisponível entre no motor.
-  const veiculosIndisponiveis = veiculos.filter(v => (v.disponibilidade || 'Disponível') === 'Indisponível');
-  veiculos = veiculos.filter(v => (v.disponibilidade || 'Disponível') !== 'Indisponível');
+  // ── Ressincroniza disponibilidade com a data EXATA do carregamento ──────────
+  // Garante que o status do painel seja sempre o do dia correto, independente
+  // de qual data estava selecionada no header quando a aba foi aberta.
+  // Sem isso, se o usuário roteirizar para amanhã mas o painel estava em hoje,
+  // veículos com 'programado' ou outros status não-disponível passariam.
+  {
+    const _dataIso = (() => {
+      const d = dataCarregamento || new Date();
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    })();
+    try { await sincronizarDisponibilidadeVeiculos(_dataIso); } catch(e) {
+      console.warn('[otimizar] Falha ao ressincronizar disponibilidade:', e);
+    }
+  }
+  // ── Remove veículos não-disponíveis antes do motor rodar ───────────────────
+  // Regras:
+  //   • 'Disponível'  → sempre entra (respeitando _horarioDisponivelAPartirDe se houver)
+  //   • 'Manutenção'  → entra SOMENTE se previsão de retorno (_horarioDisponivelAPartirDe)
+  //                     for antes ou igual ao jornadaFim do veículo (há janela de uso no dia)
+  //   • Demais (Programado/Em viagem, Folga, sem_registro) → sempre bloqueado
+  const veiculosIndisponiveis = veiculos.filter(v => {
+    if ((v.disponibilidade || 'Indisponível') !== 'Disponível') return true; // bloqueia
+    // Veículo marcado como disponível mas em manutenção com horário de retorno:
+    // verifica se ainda há janela útil no dia (retorno antes do fim da jornada)
+    if (v._emManutencao && v._horarioDisponivelAPartirDe) {
+      const retornoMin = parseHoraMin(v._horarioDisponivelAPartirDe);
+      const fimMin     = parseHoraMin(v.jornadaFim || '18:00');
+      // Se o retorno for igual ou depois do fim da jornada, não há janela útil
+      if (!isNaN(retornoMin) && !isNaN(fimMin) && retornoMin >= fimMin) return true;
+    }
+    return false;
+  });
+  veiculos = veiculos.filter(v => !veiculosIndisponiveis.includes(v));
   if (veiculosIndisponiveis.length) {
     console.log(`[Otimizador] ${veiculosIndisponiveis.length} veículo(s) removido(s) por indisponibilidade:`,
       veiculosIndisponiveis.map(v => `${v.placa} (${v._motivoIndisponivel || 'indisponível'})`).join(', '));
@@ -3191,7 +3221,19 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   });
   // ── Helpers internos ──────────────────────────────────────────────────────
   // Minuto de início da jornada do veículo
-  const jIni = v => { const m = parseHoraMin(v.jornadaInicio || '06:00'); return isNaN(m) ? 360 : m; };
+  // jIni(v): retorna o minuto de início efetivo da jornada do veículo.
+  // Se o painel registrou horário de disponibilidade (_horarioDisponivelAPartirDe),
+  // usa o MAIOR entre jornadaInicio e esse horário — o veículo só pode sair
+  // quando ambos os critérios forem satisfeitos.
+  const jIni = v => {
+    const jornadaMin = parseHoraMin(v.jornadaInicio || '06:00');
+    const base = isNaN(jornadaMin) ? 360 : jornadaMin;
+    if (v._horarioDisponivelAPartirDe) {
+      const dispMin = parseHoraMin(v._horarioDisponivelAPartirDe);
+      if (!isNaN(dispMin) && dispMin > base) return dispMin;
+    }
+    return base;
+  };
   // Clock absoluto atual do veículo = jornada_início + sum(tempoConsumidoMin das viagens)
   const clockV = v => jIni(v)
     + Math.min(resultado[v.id].length, doisTurnos(v) ? 2 : 1) * (v.tempoPerdidoMin || 0)
@@ -4088,8 +4130,10 @@ async function exportarHrrlog() {
   veiculos.forEach(v => {
     const todasViagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
     if (!todasViagens.length) return;
-    const jornadaInicioMin = parseHoraMin(v.jornadaInicio || '06:00');
-    const jIniMin = isNaN(jornadaInicioMin) ? 360 : jornadaInicioMin;
+    const _jIniRawCt = parseHoraMin(v.jornadaInicio || '06:00');
+    let jIniMin = isNaN(_jIniRawCt) ? 360 : _jIniRawCt;
+    if (v._horarioDisponivelAPartirDe) { const _dmCt = parseHoraMin(v._horarioDisponivelAPartirDe); if (!isNaN(_dmCt) && _dmCt > jIniMin) jIniMin = _dmCt; }
+    const jornadaInicioMin = jIniMin; // alias para compatibilidade
     todasViagens.forEach((vi, idx) => {
       // Data base da viagem (mesma lógica do template operação)
       const _fp = vi.paradas[0];
@@ -4266,7 +4310,8 @@ function renderTemplateOperacao() {
     const volViagemM3 = (paradasUsar || []).reduce((s, p) => s + (p.volumeTotal || 0), 0);
     const ocupPct = (v.capacidade || 0) > 0 ? Math.round((volViagemM3 / v.capacidade) * 100) : 0;
     const ocupClasse = ocupPct >= 90 ? 'op-ocup-verde' : (ocupPct < 50 ? 'op-ocup-vermelho' : 'op-ocup-amarelo');
-    const jornadaInicioMin = parseHoraMin(v.jornadaInicio || '06:00');
+    const _jIniRawRo = parseHoraMin(v.jornadaInicio || '06:00');
+    const jornadaInicioMin = (() => { const base = isNaN(_jIniRawRo)?360:_jIniRawRo; if(v._horarioDisponivelAPartirDe){const dm=parseHoraMin(v._horarioDisponivelAPartirDe);if(!isNaN(dm)&&dm>base)return dm;} return base; })();
     let relogioMin = inicioViagemAbsMin(
       viagensVeiculo || [],
       idx,
