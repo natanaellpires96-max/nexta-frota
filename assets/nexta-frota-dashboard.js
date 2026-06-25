@@ -650,14 +650,22 @@ function dashAgregar(snapshots) {
   const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade, capTotal}
   const viagens_ocup = []; // {label, ocup}
   let totalViagens = 0, totalKm = 0, totalVol = 0, totalCap = 0;
+  // veiculos_escalados: lista de {id, snapIdx, capV, viagensIds} para cálculo de ocupação filtrada
+  const veiculos_escalados = [];
   const rotasMap = [];   // para o mapa: [{termLat,termLon,paradas:[{lat,lon,nome}]}]
-  snapshots.forEach(snap => {
+  snapshots.forEach((snap, snapIdx) => {
     const res = snap.resultado || {};
     const vecs = snap.veiculos || [];
     const terms = snap.terminais || [];
     vecs.forEach(v => {
       const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
       if (!viagens.length) return;
+      // Capacidade do veículo escalado: conta 1x por veículo por snapshot
+      const capV_esc = v.capacidade || v.capacidadeTotal || 0;
+      if (capV_esc > 0) {
+        totalCap += capV_esc;
+        veiculos_escalados.push({ snapIdx, vid: v.id, capV: capV_esc });
+      }
       // Terminal lat/lon
       const term = terms.find(t => t.nome === v.terminal);
       const tLat = term?.lat, tLon = term?.lon;
@@ -680,11 +688,17 @@ function dashAgregar(snapshots) {
           const km = par.distanciaKm > 0 ? par.distanciaKm
             : ((tLat && tLon && lat && lon) ? haversine(tLat, tLon, lat, lon) : 0);
           const chave = dashChaveCliente(ped);
-          if (!clientes[chave]) clientes[chave] = { nome, cidade, entregas:0, volume:0, km:0, kmTotal:0, lat, lon, capTotal:0 };
+          if (!clientes[chave]) clientes[chave] = { nome, cidade, entregas:0, volume:0, km:0, kmTotal:0, lat, lon, capTotal:0, viagensIds: new Set() };
           clientes[chave].nome = dashNomeCanônico(clientes[chave].nome, nome);
           clientes[chave].entregas++;
           clientes[chave].volume += vol;
-          clientes[chave].capTotal += capV > 0 ? capV : 0;
+          // capTotal por cliente: acumula a capacidade do veículo UMA VEZ por viagem
+          // (não por parada), para que volume/capTotal dê a ocupação real dessa viagem.
+          const _viagemId = v.id + '_' + iV;
+          if (capV > 0 && !clientes[chave].viagensIds.has(_viagemId)) {
+            clientes[chave].capTotal += capV;
+            clientes[chave].viagensIds.add(_viagemId);
+          }
           clientes[chave].kmTotal = (clientes[chave].kmTotal || 0) + km;
           clientes[chave].km = clientes[chave].kmTotal / clientes[chave].entregas; // km médio por entrega
           totalVol += vol;
@@ -695,8 +709,7 @@ function dashAgregar(snapshots) {
         rotasMap.push(rotaPontos);
         if (capV > 0) {
           const ocup = Math.round((volViagem / capV) * 100);
-          viagens_ocup.push({ label: `${v.placa} V${iV+1}`, ocup });
-          totalCap += capV;
+          viagens_ocup.push({ label: `${v.placa} V${iV+1}`, ocup, snapIdx, vid: v.id, iV });
         }
       });
     });
@@ -716,6 +729,7 @@ function dashAgregar(snapshots) {
     clientes: Object.values(clientes).sort((a,b)=>b.volume-a.volume),
     viagens_ocup,
     clientes_ocup,
+    veiculos_escalados, // [{snapIdx, vid, capV}] para cálculo de ocupação filtrada
     totalViagens,
     totalEntregas,
     totalVol: parseFloat(totalVol.toFixed(1)),
@@ -882,8 +896,41 @@ function dashRender(snapshots) {
   const _kpiEntregas = clientesFiltrados.reduce((s,c) => s+c.entregas, 0);
   const _kpiVol      = clientesFiltrados.reduce((s,c) => s+c.volume,   0);
   const _kpiKm       = clientesFiltrados.reduce((s,c) => s+(c.kmTotal||c.km*c.entregas||0), 0);
-  const _kpiCapTotal = clientesFiltrados.reduce((s,c) => s+(c.capTotal||0), 0);
-  const _kpiOcup     = _kpiCapTotal > 0 ? Math.round((_kpiVol / _kpiCapTotal) * 100) : d.totalOcup;
+  // Ocupação = volume total de pedidos / capacidade total da frota escalada.
+  // Sem filtro: d.totalOcup (calculado em dashAgregar: totalVol / totalCap por veículo).
+  // Com filtro de cliente: volume dos clientes filtrados / cap dos veículos que os atenderam.
+  let _kpiOcup = d.totalOcup;
+  if (_dashClientesSelecionados) {
+    let _filtVol = 0, _filtCap = 0;
+    const _nomesF = _dashClientesSelecionados;
+    const _veicsAtenderam = new Set(); // evita contar o mesmo veículo duas vezes
+    _dashSnapshotsAtivos.forEach((snap, sIdx) => {
+      const res = snap.resultado || {}, vecs = snap.veiculos || [];
+      vecs.forEach(v => {
+        const capV = v.capacidade || v.capacidadeTotal || 0;
+        const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+        const atendeCliente = viagens.some(vi =>
+          vi.paradas.some(par => {
+            const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
+            return _nomesF.has(n);
+          })
+        );
+        if (!atendeCliente) return;
+        // Capacidade: conta 1x por veículo
+        const _vKey = sIdx + '_' + v.id;
+        if (capV > 0 && !_veicsAtenderam.has(_vKey)) {
+          _filtCap += capV;
+          _veicsAtenderam.add(_vKey);
+        }
+        // Volume: apenas paradas dos clientes filtrados
+        viagens.forEach(vi => vi.paradas.forEach(par => {
+          const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
+          if (_nomesF.has(n)) _filtVol += par.volumeTotal || 0;
+        }));
+      });
+    });
+    _kpiOcup = _filtCap > 0 ? Math.round((_filtVol / _filtCap) * 100) : d.totalOcup;
+  }
   // Viagens: conta apenas viagens que atendem ao menos um cliente filtrado
   const _nomesFilter = _dashClientesSelecionados;
   let _kpiViagens = d.totalViagens;
@@ -1250,8 +1297,36 @@ window.dashExportarExcel = async function dashExportarExcel() {
     const _exVol      = cliExport.reduce((s,c) => s+c.volume, 0);
     const _exKm       = cliExport.reduce((s,c) => s+(c.kmTotal||c.km*c.entregas||0), 0);
     const _exEntregas = cliExport.reduce((s,c) => s+c.entregas, 0);
-    const _exCapTotal = cliExport.reduce((s,c) => s+(c.capTotal||0), 0);
-    const _exOcup     = _exCapTotal > 0 ? Math.round((_exVol / _exCapTotal) * 100) : d.totalOcup;
+    // Ocupação do export = volume pedidos filtrados / cap frota que atendeu esses clientes
+    let _exOcup = d.totalOcup;
+    if (filtroAtivo) {
+      let _exFiltVol = 0, _exFiltCap = 0;
+      const _exVeicsAtenderam = new Set();
+      snapshots.forEach((snap, sIdx) => {
+        const res = snap.resultado || {}, vecs = snap.veiculos || [];
+        vecs.forEach(v => {
+          const capV = v.capacidade || v.capacidadeTotal || 0;
+          const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+          const atende = viagens.some(vi =>
+            vi.paradas.some(par => {
+              const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
+              return filtroAtivo.has(n);
+            })
+          );
+          if (!atende) return;
+          const _vKey = sIdx + '_' + v.id;
+          if (capV > 0 && !_exVeicsAtenderam.has(_vKey)) {
+            _exFiltCap += capV;
+            _exVeicsAtenderam.add(_vKey);
+          }
+          viagens.forEach(vi => vi.paradas.forEach(par => {
+            const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
+            if (filtroAtivo.has(n)) _exFiltVol += par.volumeTotal || 0;
+          }));
+        });
+      });
+      _exOcup = _exFiltCap > 0 ? Math.round((_exFiltVol / _exFiltCap) * 100) : d.totalOcup;
+    }
     let _exViagens = d.totalViagens;
     if (filtroAtivo) {
       _exViagens = 0;
