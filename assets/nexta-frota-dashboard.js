@@ -862,14 +862,39 @@ function dashRender(snapshots) {
   const ocupFiltrados = _dashClientesSelecionados
     ? d.clientes_ocup.filter(c => _dashClientesSelecionados.has(c.nome))
     : d.clientes_ocup;
-  // KPIs
+  // KPIs — calculados sobre os clientes filtrados (respeita filtro de cliente ativo)
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
-  set('dk-viagens',  d.totalViagens);
-  set('dk-entregas', d.totalEntregas);
-  set('dk-volume',   d.totalVol + ' m³');
-  set('dk-ocup',     d.totalOcup + '%');
-  set('dk-km',       d.totalKm.toLocaleString('pt-BR') + ' km');
-  set('dk-clientes', d.totalClientes);
+  // Recalcula totais a partir dos clientes filtrados
+  const _kpiEntregas = clientesFiltrados.reduce((s,c) => s+c.entregas, 0);
+  const _kpiVol      = clientesFiltrados.reduce((s,c) => s+c.volume,   0);
+  const _kpiKm       = clientesFiltrados.reduce((s,c) => s+(c.kmTotal||c.km*c.entregas||0), 0);
+  const _kpiCapTotal = clientesFiltrados.reduce((s,c) => s+(c.capTotal||0), 0);
+  const _kpiOcup     = _kpiCapTotal > 0 ? Math.round((_kpiVol / _kpiCapTotal) * 100) : d.totalOcup;
+  // Viagens: conta apenas viagens que atendem ao menos um cliente filtrado
+  const _nomesFilter = _dashClientesSelecionados;
+  let _kpiViagens = d.totalViagens;
+  if (_nomesFilter) {
+    _kpiViagens = 0;
+    _dashSnapshotsAtivos.forEach(snap => {
+      const res  = snap.resultado || {};
+      const vecs = snap.veiculos  || [];
+      vecs.forEach(v => {
+        (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length).forEach(vi => {
+          const temCliente = vi.paradas.some(par => {
+            const nome = (par.pedido||{}).cliente || (par.pedido||{}).nomeCliente || par.nome || '';
+            return _nomesFilter.has(nome);
+          });
+          if (temCliente) _kpiViagens++;
+        });
+      });
+    });
+  }
+  set('dk-viagens',  _kpiViagens);
+  set('dk-entregas', _kpiEntregas);
+  set('dk-volume',   parseFloat(_kpiVol.toFixed(1)) + ' m³');
+  set('dk-ocup',     _kpiOcup + '%');
+  set('dk-km',       Math.round(_kpiKm).toLocaleString('pt-BR') + ' km');
+  set('dk-clientes', clientesFiltrados.length);
   // Gráfico de barras: volume por cliente
   dashBarChart('dash-chart-vol', clientesFiltrados.slice(0,30), c=>c.volume.toFixed(1),
     '#f0be40', 'm³', c=>c.nome);
@@ -1162,6 +1187,8 @@ window.dashExportarExcel = async function dashExportarExcel() {
     alert('Nenhum dado carregado. Selecione um mês ou clique em "Todos os períodos" primeiro.');
     return;
   }
+  // Respeita filtro de clientes ativo
+  const filtroAtivo = _dashClientesSelecionados; // null = todos, Set = filtro
 
   // Verifica SheetJS
   if (typeof XLSX === 'undefined') {
@@ -1198,28 +1225,61 @@ window.dashExportarExcel = async function dashExportarExcel() {
     }
 
     // ── Aba 1: Resumo KPIs ──────────────────────────────────────────────────
+    // Aplica filtro de clientes aos dados agregados
+    const cliExport = filtroAtivo
+      ? d.clientes.filter(c => filtroAtivo.has(c.nome))
+      : d.clientes;
+    const ocupExport = filtroAtivo
+      ? d.clientes_ocup.filter(c => filtroAtivo.has(c.nome))
+      : d.clientes_ocup;
+    // Recalcula KPIs filtrados para o Excel
+    const _exVol      = cliExport.reduce((s,c) => s+c.volume, 0);
+    const _exKm       = cliExport.reduce((s,c) => s+(c.kmTotal||c.km*c.entregas||0), 0);
+    const _exEntregas = cliExport.reduce((s,c) => s+c.entregas, 0);
+    const _exCapTotal = cliExport.reduce((s,c) => s+(c.capTotal||0), 0);
+    const _exOcup     = _exCapTotal > 0 ? Math.round((_exVol / _exCapTotal) * 100) : d.totalOcup;
+    let _exViagens = d.totalViagens;
+    if (filtroAtivo) {
+      _exViagens = 0;
+      snapshots.forEach(snap => {
+        const res = snap.resultado||{}; const vecs = snap.veiculos||[];
+        vecs.forEach(v => {
+          (res[v.id]||[]).filter(vi=>!vi._vazio&&(vi.paradas||[]).length).forEach(vi => {
+            if (vi.paradas.some(par => {
+              const n=(par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
+              return filtroAtivo.has(n);
+            })) _exViagens++;
+          });
+        });
+      });
+    }
+    const filtroLabel = filtroAtivo
+      ? `Clientes filtrados: ${[...filtroAtivo].join(', ')}`
+      : 'Todos os clientes';
+
     addSheet('Resumo', [
       ['DASHBOARD NEXTA — RESUMO DO PERÍODO'],
       ['Gerado em', new Date().toLocaleString('pt-BR')],
       ['Período(s)', snapshots.map(s => s.chave || '').filter(Boolean).join(', ') || 'Todos'],
+      ['Filtro de Clientes', filtroLabel],
       [],
       ['INDICADOR', 'VALOR'],
-      ['Total de Viagens',     d.totalViagens],
-      ['Total de Entregas',    d.totalEntregas],
-      ['Volume Total (m³)',    num(d.totalVol)],
-      ['Ocupação Média (%)',   d.totalOcup],
-      ['Km Total',             d.totalKm],
-      ['Clientes Atendidos',   d.totalClientes],
+      ['Total de Viagens',     _exViagens],
+      ['Total de Entregas',    _exEntregas],
+      ['Volume Total (m³)',    num(_exVol)],
+      ['Ocupação Média (%)',   _exOcup],
+      ['Km Total',             Math.round(_exKm)],
+      ['Clientes Atendidos',   cliExport.length],
     ]);
 
     // ── Aba 2: Por Cliente ──────────────────────────────────────────────────
     const cliRows = [
       ['CLIENTE', 'CIDADE', 'ENTREGAS', 'VOLUME (m³)', 'KM MÉDIO', 'VOL/KM (m³/km)', 'OCUP. MÉDIA (%)'],
     ];
-    // Mescla dados de clientes com ocupação
+    // Mescla dados de clientes com ocupação — respeita filtro
     const ocupMap = {};
-    d.clientes_ocup.forEach(c => { ocupMap[c.nome] = c.ocup; });
-    d.clientes.forEach(c => {
+    ocupExport.forEach(c => { ocupMap[c.nome] = c.ocup; });
+    cliExport.forEach(c => {
       const kmVol = c.km > 0 ? num(c.volume / c.km, 2) : '';
       cliRows.push([
         c.nome,
@@ -1235,11 +1295,11 @@ window.dashExportarExcel = async function dashExportarExcel() {
     cliRows.push([]);
     cliRows.push([
       'TOTAL', '',
-      d.totalEntregas,
-      num(d.totalVol),
-      num(d.totalKm > 0 && d.totalEntregas > 0 ? d.totalKm / d.totalEntregas : 0, 0),
+      _exEntregas,
+      num(_exVol),
+      num(_exKm > 0 && _exEntregas > 0 ? _exKm / _exEntregas : 0, 0),
       '',
-      d.totalOcup,
+      _exOcup,
     ]);
     addSheet('Por Cliente', cliRows);
 
@@ -1266,6 +1326,9 @@ window.dashExportarExcel = async function dashExportarExcel() {
 
           vi.paradas.forEach((par, iP) => {
             const ped   = par.pedido || {};
+            // Pula parada se filtro de cliente ativo e este cliente não está no filtro
+            const _nomeParada = ped.cliente || ped.nomeCliente || par.nome || '';
+            if (filtroAtivo && !filtroAtivo.has(_nomeParada)) return;
             const prods = (par.produtosSelecionados || par.produtos || []);
             const prodLabel = prods.map(p =>
               [p.codigoProduto || p.codigo || '', p.descricao || p.produto || ''].filter(Boolean).join(' - ')
@@ -1301,6 +1364,10 @@ window.dashExportarExcel = async function dashExportarExcel() {
     const ocupRows = [
       ['PLACA', 'Nº VIAGEM', 'OCUPAÇÃO (%)'],
     ];
+    // Usa ocupação filtrada quando há filtro de clientes ativo
+    // (viagens_ocup não tem info de cliente — usa d.viagens_ocup completo quando sem filtro)
+    const _ocupExportFinal = ocupExport.length ? ocupExport : d.clientes_ocup;
+    // Para ocupação por veículo mantemos d.viagens_ocup (por viagem, não por cliente)
     d.viagens_ocup.forEach(vo => {
       const parts = vo.label.split(' V');
       ocupRows.push([parts[0] || vo.label, parts[1] ? parseInt(parts[1]) : '', vo.ocup]);
