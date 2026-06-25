@@ -897,7 +897,10 @@ function limparFiltros(aba) {
     // Usa data de operação do header; fallback para hoje
     const inputData = document.getElementById('rot-data-operacao')?.value;
     const ds = inputData || (() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-${String(h.getDate()).padStart(2,'0')}`; })();
-    sincronizarDisponibilidadeVeiculos(ds).then(() => renderVeiculos()).catch(() => renderVeiculos());
+    // Usa data do roteirizador, não do painel de disponibilidade
+    const inputDataAba = document.getElementById('rot-data-operacao')?.value;
+    const dsAba = inputDataAba || ds;
+    sincronizarDisponibilidadeVeiculos(dsAba).then(() => renderVeiculos()).catch(() => renderVeiculos());
   }
   if (aba === 'mapa') renderMapaGeral();
 }
@@ -3032,9 +3035,12 @@ function removerVeiculo(id) {
   renderVeiculos();
 }
 function renderVeiculos() {
-  // Sempre re-sincroniza motoristas e disponibilidade do painel do dia antes de renderizar,
-  // garantindo que o card mostre o motorista do painel (não o do cadastro da placa).
-  const ds = dateStr(S.dateOffset);
+  // Sempre re-sincroniza motoristas e disponibilidade do painel do dia antes de renderizar.
+  // Usa a data do seletor do roteirizador (rot-data-operacao) como prioridade,
+  // pois é a data para a qual a programação está sendo feita.
+  // Fallback para dateStr(S.dateOffset) caso o input não exista.
+  const inputData = document.getElementById('rot-data-operacao')?.value;
+  const ds = inputData || dateStr(S.dateOffset);
   sincronizarDisponibilidadeVeiculos(ds).then(_renderVeiculosInterno).catch(_renderVeiculosInterno);
 }
 function _renderVeiculosInterno() {
