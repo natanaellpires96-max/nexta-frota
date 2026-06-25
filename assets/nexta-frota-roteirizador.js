@@ -6704,16 +6704,16 @@ async function exportarBlocoPDF(blocoId, nomeArq, ev) {
     document.body.removeChild(iframe);
 
     const { jsPDF } = window.jspdf;
-    const imgW = canvas.width;
-    const imgH = canvas.height;
-    // A4 em pontos (595.28 × 841.89). Escala para caber na largura da página.
-    const pdfW = 595.28;
+    // A4 paisagem para cards horizontais do Resumo Transportadora
+    const pdfW  = 841.89;
+    const pdfHMin = 595.28;
     const margin = 20;
-    const maxW   = pdfW - margin * 2;
-    const ratio  = maxW / imgW;
-    const pdfH   = imgH * ratio + margin * 2;
-    const pdf = new jsPDF({ orientation: pdfH > pdfW ? 'p' : 'l', unit: 'pt', format: [pdfW, Math.max(pdfH, 100)] });
-    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, maxW, imgH * ratio);
+    const maxW  = pdfW - margin * 2;
+    const ratio = maxW / canvas.width;
+    const imgH  = canvas.height * ratio;
+    const pageH = Math.max(imgH + margin * 2, pdfHMin);
+    const pdf = new jsPDF({ orientation: 'l', unit: 'pt', format: [pdfW, pageH] });
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, maxW, imgH);
     pdf.save(`${nomeArq}.pdf`);
     showToast('PDF exportado ✅', true);
   } catch(e) {
@@ -6770,13 +6770,16 @@ async function exportarTodasProgramacoesPDF() {
       document.body.removeChild(iframe);
 
       const { jsPDF } = window.jspdf;
-      const pdfW  = 595.28;
+      // Layout do card é horizontal (1050px de largura) — usa A4 paisagem para maximizar
+      // a área útil e evitar que a imagem fique espremida em retrato.
+      const pdfW  = 841.89; // A4 landscape largura (pt)
+      const pdfHMin = 595.28; // A4 landscape altura mínima (pt)
       const margin = 20;
       const maxW  = pdfW - margin * 2;
       const ratio = maxW / canvas.width;
       const imgH  = canvas.height * ratio;
-      const pageH = imgH + margin * 2;
-      const pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: [pdfW, Math.max(pageH, 100)] });
+      const pageH = Math.max(imgH + margin * 2, pdfHMin);
+      const pdf = new jsPDF({ orientation: 'l', unit: 'pt', format: [pdfW, pageH] });
       pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, maxW, imgH);
       pdf.save(`${prefixo}_${String(i).padStart(2,'0')}_${blocoId.replace(/[^a-zA-Z0-9_-]/g,'')}.pdf`);
       await new Promise(r => setTimeout(r, 400));
