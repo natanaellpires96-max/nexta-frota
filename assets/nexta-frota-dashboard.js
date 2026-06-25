@@ -1150,65 +1150,6 @@ window.excluirEntradaHistorico = async function(filename, btn) {
     }
   } catch (e) { /* segue mesmo se a restauração falhar */ }
   dashPopularMeses();
-})();
-})(); // fim IIFE dashboard
-async function osrmFetchSegmento(a, b) {
-  // Tenta perfil truck primeiro, cai para driving se falhar
-  const perfis = ['truck', 'driving'];
-  for (const perfil of perfis) {
-    try {
-      const url = `https://router.project-osrm.org/route/v1/${perfil}/` +
-        `${a.lon},${a.lat};${b.lon},${b.lat}` +
-        `?overview=full&geometries=geojson&steps=false`;
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.code === 'Ok' && data.routes?.[0]) {
-        return {
-          coords:   data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]),
-          distKm:   data.routes[0].distance / 1000,
-        };
-      }
-    } catch(e) { /* tenta próximo perfil */ }
-  }
-  // Fallback: linha reta com distância haversine
-  const R = 6371;
-  const dLat = (b.lat - a.lat) * Math.PI / 180;
-  const dLon = (b.lon - a.lon) * Math.PI / 180;
-  const ha = Math.sin(dLat/2)**2 + Math.cos(a.lat*Math.PI/180) * Math.cos(b.lat*Math.PI/180) * Math.sin(dLon/2)**2;
-  const distKm = R * 2 * Math.atan2(Math.sqrt(ha), Math.sqrt(1-ha));
-  return { coords: [[a.lat, a.lon], [b.lat, b.lon]], distKm };
-}
-async function osrmRoute(pontos, layer, cor, peso, opacidade) {
-  peso      = peso      || 4;
-  opacidade = opacidade || 0.88;
-  if (!pontos || pontos.length < 2) return;
-  // Distância acumulada por ponto (índice 0 = origem = 0 km)
-  const distAcum = [0];
-  let totalKm = 0;
-  // Busca segmentos em paralelo (máx 4 simultâneos) para não travar
-  const BATCH = 4;
-  const segmentos = new Array(pontos.length - 1);
-  for (let start = 0; start < pontos.length - 1; start += BATCH) {
-    const end = Math.min(start + BATCH, pontos.length - 1);
-    const batch = [];
-    for (let i = start; i < end; i++) {
-      batch.push(osrmFetchSegmento(pontos[i], pontos[i + 1]).then(r => { segmentos[i] = r; }));
-    }
-    await Promise.all(batch);
-    // Desenha cada segmento conforme fica pronto
-    for (let i = start; i < end; i++) {
-      totalKm += segmentos[i].distKm;
-      distAcum.push(totalKm);
-      L.polyline(segmentos[i].coords, { color: cor, weight: peso, opacity: opacidade }).addTo(layer);
-    }
-  }
-  // Expõe as distâncias acumuladas indexadas pelo array de pontos
-  // Usa o índice do layer como chave
-  if (!layer._nexta_distAcum) layer._nexta_distAcum = [];
-  layer._nexta_distAcum = distAcum;
-  return distAcum;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXPORTAÇÃO EXCEL — Dashboard
@@ -1379,3 +1320,63 @@ window.dashExportarExcel = async function dashExportarExcel() {
     if (btn) { btn.textContent = orig; btn.disabled = false; }
   }
 };
+
+})();
+})(); // fim IIFE dashboard
+async function osrmFetchSegmento(a, b) {
+  // Tenta perfil truck primeiro, cai para driving se falhar
+  const perfis = ['truck', 'driving'];
+  for (const perfil of perfis) {
+    try {
+      const url = `https://router.project-osrm.org/route/v1/${perfil}/` +
+        `${a.lon},${a.lat};${b.lon},${b.lat}` +
+        `?overview=full&geometries=geojson&steps=false`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.code === 'Ok' && data.routes?.[0]) {
+        return {
+          coords:   data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]),
+          distKm:   data.routes[0].distance / 1000,
+        };
+      }
+    } catch(e) { /* tenta próximo perfil */ }
+  }
+  // Fallback: linha reta com distância haversine
+  const R = 6371;
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLon = (b.lon - a.lon) * Math.PI / 180;
+  const ha = Math.sin(dLat/2)**2 + Math.cos(a.lat*Math.PI/180) * Math.cos(b.lat*Math.PI/180) * Math.sin(dLon/2)**2;
+  const distKm = R * 2 * Math.atan2(Math.sqrt(ha), Math.sqrt(1-ha));
+  return { coords: [[a.lat, a.lon], [b.lat, b.lon]], distKm };
+}
+async function osrmRoute(pontos, layer, cor, peso, opacidade) {
+  peso      = peso      || 4;
+  opacidade = opacidade || 0.88;
+  if (!pontos || pontos.length < 2) return;
+  // Distância acumulada por ponto (índice 0 = origem = 0 km)
+  const distAcum = [0];
+  let totalKm = 0;
+  // Busca segmentos em paralelo (máx 4 simultâneos) para não travar
+  const BATCH = 4;
+  const segmentos = new Array(pontos.length - 1);
+  for (let start = 0; start < pontos.length - 1; start += BATCH) {
+    const end = Math.min(start + BATCH, pontos.length - 1);
+    const batch = [];
+    for (let i = start; i < end; i++) {
+      batch.push(osrmFetchSegmento(pontos[i], pontos[i + 1]).then(r => { segmentos[i] = r; }));
+    }
+    await Promise.all(batch);
+    // Desenha cada segmento conforme fica pronto
+    for (let i = start; i < end; i++) {
+      totalKm += segmentos[i].distKm;
+      distAcum.push(totalKm);
+      L.polyline(segmentos[i].coords, { color: cor, weight: peso, opacity: opacidade }).addTo(layer);
+    }
+  }
+  // Expõe as distâncias acumuladas indexadas pelo array de pontos
+  // Usa o índice do layer como chave
+  if (!layer._nexta_distAcum) layer._nexta_distAcum = [];
+  layer._nexta_distAcum = distAcum;
+  return distAcum;
+}
