@@ -360,6 +360,9 @@ var resultadoOriginal    = null;   // cópia do resultado puro da otimização
 var historicoManual      = [];     // pilha de estados para desfazer
 var dragInfo             = null;   // { tipo, veiculoId, tripIndex, ... } durante drag
 var dirHandleHistorico = null; // precisa ficar em window para ser
+// Cache de metadados do histórico: { [filename]: { savedAt, resumo, datasEntrega, salvoPor, versao } }
+// Evita reler arquivos completos a cada "Atualizar lista" — só relê arquivos novos/modificados.
+var _histMetaCache = {};
                                 // acessível pelo módulo do Dashboard, em outro <script>.
 var estadoAtual = null;
 var ultimoItensOtimizacao = [];
@@ -3259,9 +3262,6 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     return Math.round((d.getTime() - baseDataEntrega.getTime()) / 86400000);
   };
   // Veículo atende as restrições do pedido (tipo, Petronas, terminal)?
-  // veicOk: filtra candidatos por tipo, Petronas e terminal.
-  // A verificação de compartimentos é feita por veicOkCompartimentos (definida abaixo,
-  // após produtosPendentesPedido e podeFitar) para evitar referência antecipada.
   const veicOk = (v, p) =>
     (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
     (!p.identidadePetronas || !!v.identidadePetronas) &&
@@ -3306,19 +3306,6 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     }
     return true;
   };
-  // veicOkCompartimentos: extensão de veicOk que também verifica se os produtos
-  // do pedido cabem nos compartimentos do veículo (usa podeFitar e produtosPendentesPedido).
-  // Separado de veicOk para evitar referência a closures ainda não declaradas.
-  const veicOkCompartimentos = (v, p) => {
-    if (!veicOk(v, p)) return false;
-    const prods = produtosPendentesPedido(p);
-    if (!prods.length) return true;
-    const compsSimul = criarCompsDisp(v);
-    // Se veículo não tem compartimentos definidos, não bloqueia
-    if (!compsSimul.length) return true;
-    return podeFitar(prods, compsSimul);
-  };
-
   // Aloca todos os produtos do pedido em compartimentos reais (commit)
   // Retorna false se algum produto não couber (não deveria ocorrer após podeFitar)
   const commitPedido = (viagem, pedido, detalheParada, custoRelogio, custoProdutivo, v, produtosSelecionados = pedido.produtos) => {
@@ -3353,7 +3340,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     const vol     = (volMin === null || volMin === undefined) ? totalVolPedido(pedido) : volMin;
     const cidadeP = (pedido.cidade || '').toLowerCase().trim();
     return veiculos
-      .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) && (v.disponibilidade || 'Disponível') !== 'Indisponível' && veicOkCompartimentos(v, pedido) && (permitirCapacidadeMenor || v.capacidade >= vol - 0.001))
+      .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) && (v.disponibilidade || 'Disponível') !== 'Indisponível' && veicOk(v, pedido) && (permitirCapacidadeMenor || v.capacidade >= vol - 0.001))
       .sort((a, b) => {
         // 1. Dedicado antes de Spot
         const aDedicado = (a.contrato || 'Dedicado') !== 'Spot' ? 1 : 0;
@@ -3676,7 +3663,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
           (v.disponibilidade || 'Disponível') !== 'Indisponível' &&
           (v.contrato || 'Dedicado') !== 'Spot' &&
           resultado[v.id].length === 0 &&
-          veicOkCompartimentos(v, pedido))
+          veicOk(v, pedido))
         .sort((a, b) => a.capacidade - b.capacidade); // menores primeiro
       const volTotal15 = totalVolPedido(pedido);
       const maiorCapOcioso = ociososCompat.length ? Math.max(...ociososCompat.map(v => v.capacidade)) : 0;
@@ -3685,7 +3672,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       const maiorCapQualquer = veiculos
         .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) &&
           (v.disponibilidade || 'Disponível') !== 'Indisponível' &&
-          veicOkCompartimentos(v, pedido))
+          veicOk(v, pedido))
         .reduce((mx, v) => Math.max(mx, v.capacidade), 0);
       const umTruckResolveMaior = maiorCapQualquer >= volTotal15 * 0.85;
       if (ociososCompat.length >= 2 && !umTruckResolveMaior) {
@@ -3905,7 +3892,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
             if (v.id === vFonte.id) return false;
             if (lockedTerminals.has(baseVeiculoLabel(v))) return false;
             if ((v.disponibilidade || 'Disponível') === 'Indisponível') return false;
-            if (!veicOkCompartimentos(v, pedido)) return false;
+            if (!veicOk(v, pedido)) return false;
             if (!vFonteEhSpot && (v.contrato || 'Dedicado') === 'Spot') return false;
             return true;
           })
@@ -5920,6 +5907,7 @@ async function selecionarPastaHistorico() {
   try {
     const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
     dirHandleHistorico = handle;
+    _histMetaCache = {}; // limpa cache ao trocar de pasta
     await _histSalvarHandle(handle);
     document.getElementById('hist-pasta-path').textContent = handle.name;
     await carregarListaHistorico();
@@ -5986,6 +5974,7 @@ async function salvarNoHistorico(silencioso = false) {
     await ws.write(JSON.stringify(snapshot, null, 2));
     await ws.close();
     _atualizarPetSeq(ultimoResultado); // persiste contador apenas ao salvar
+    delete _histMetaCache[filename]; // invalida cache para releitura na próxima listagem
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
     popularSeletorResumoDia().catch(()=>{});
@@ -6006,15 +5995,59 @@ async function carregarListaHistorico() {
   }
   document.getElementById('hist-pasta-path').textContent = dirHandleHistorico.name;
   el.innerHTML = '<div class="empty">Carregando...</div>';
-  const entries = [];
+
+  // ── Coleta handles de todos os arquivos JSON em paralelo ───────────────────
+  const fileHandles = [];
   for await (const [name, handle] of dirHandleHistorico.entries()) {
     if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
-    try {
-      const file = await handle.getFile();
-      const data = JSON.parse(await file.text());
-      if (data.versao && data.savedAt && data.resumo) entries.push({ name, data });
-    } catch(e) { /* arquivo inválido, ignora */ }
+    fileHandles.push({ name, handle });
   }
+
+  // ── Leitura paralela com cache de metadados ────────────────────────────────
+  // Para cada arquivo: se já está em cache E o lastModified não mudou, usa o cache.
+  // Caso contrário, lê apenas o início do arquivo (os primeiros 4KB contêm savedAt,
+  // versao, resumo e datasEntrega) evitando deserializar o JSON completo (que pode
+  // ter centenas de KB de pedidos/veículos/resultado).
+  const BATCH = 8; // processa N arquivos por vez para não saturar I/O
+  const entries = [];
+
+  for (let i = 0; i < fileHandles.length; i += BATCH) {
+    const batch = fileHandles.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(async ({ name, handle }) => {
+      try {
+        const file = await handle.getFile();
+        const cached = _histMetaCache[name];
+        // Cache hit: mesmo tamanho e lastModified → não relê
+        if (cached && cached._lastModified === file.lastModified && cached._size === file.size) {
+          return { name, data: cached };
+        }
+        // Cache miss: lê arquivo completo (necessário para garantir integridade do JSON)
+        // mas extrai apenas os metadados e descarta o resto da memória
+        const text = await file.text();
+        const data = JSON.parse(text);
+        if (!data.versao || !data.savedAt || !data.resumo) return null;
+        // Salva apenas metadados no cache (não o resultado/pedidos/veículos)
+        const meta = {
+          versao: data.versao,
+          savedAt: data.savedAt,
+          resumo: data.resumo,
+          datasEntrega: data.datasEntrega || [],
+          salvoPor: data.salvoPor || '',
+          _lastModified: file.lastModified,
+          _size: file.size,
+        };
+        _histMetaCache[name] = meta;
+        return { name, data: meta };
+      } catch(e) { return null; }
+    }));
+    results.forEach(r => { if (r) entries.push(r); });
+    // Atualiza UI a cada batch para dar feedback de progresso
+    if (fileHandles.length > BATCH) {
+      el.innerHTML = `<div class="empty">Carregando… ${Math.min(i + BATCH, fileHandles.length)} / ${fileHandles.length}</div>`;
+      await new Promise(r => setTimeout(r, 0)); // yield para o browser renderizar
+    }
+  }
+
   entries.sort((a, b) => b.data.savedAt.localeCompare(a.data.savedAt));
   // Reconstrói o contador de IDs a partir do histórico real (evita sequências infladas)
   _reconstruirPetSeqDoHistorico();
@@ -6143,16 +6176,14 @@ async function onMudarRoteirizacao(val) {
     lockedTerminals.clear();
     filtroMapaPlaca = '';
     filtroMapaTerminais.clear();
-    renderPedidos();
-    renderVeiculos();
     renderResultado(ultimoResultado, ultimoControleTempo);
     renderMapaGeral();
     renderTemplateOperacao();
-    // Navega para a aba de resultado para que o usuário veja a roteirização carregada
-    showTab('resultado');
   }
 }
 async function excluirEntradaHistorico(filename, btn) {
+  // Invalida cache do arquivo excluído
+  delete _histMetaCache[filename];
   if (!confirm(`Excluir "${filename}" do histórico?`)) return;
   if (!await _histGarantirPermissao()) return;
   try {
