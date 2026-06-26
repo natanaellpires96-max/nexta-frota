@@ -3430,8 +3430,10 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       } else {
         prod = det.incrementoMin;
       }
-      if (controleTempo[v.id].usadoMin + prod > limiteEfetivo + 0.001) continue;
+      const excesso2 = (controleTempo[v.id].usadoMin + prod) - limiteEfetivo;
+      if (!permitirExcederJornada && excesso2 > 0.001) continue;
       det.tempoEsperaRestricaoMin = aval.esperaMin || 0;
+      if (excesso2 > 0.001) det._jornadaExcedenteMin = excesso2; // registra excesso para alerta
       return { detalhe: det, custoRelogio: det.incrementoMin + (aval.esperaMin || 0), custoProdutivo: prod };
     }
     return null;
@@ -3465,8 +3467,10 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     // ── Entrega no mesmo dia (espera curta no cliente, ≤ 8h) ─────────────────
     if (aval.ok && (aval.esperaMin || 0) <= 8 * 60) {
       const prod = det.incrementoMin + prodRefeicao;
-      if (controleTempo[v.id].usadoMin + prod > limiteEfetivo + 0.001) return null;
+      const excesso3a = (controleTempo[v.id].usadoMin + prod) - limiteEfetivo;
+      if (!permitirExcederJornada && excesso3a > 0.001) return null;
       det.tempoEsperaRestricaoMin = aval.esperaMin || 0;
+      if (excesso3a > 0.001) det._jornadaExcedenteMin = excesso3a;
       const vi = novaViagem(v, terminalEfetivo, espTerm);
       return { vi, detalhe: det,
                custoRelogio: espTerm + det.incrementoMin + (aval.esperaMin || 0),
@@ -3490,8 +3494,10 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     // ── Fallback: mesmo dia com espera longa (overnight indisponível) ─────────
     if (aval.ok) {
       const prod = det.incrementoMin + prodRefeicao;
-      if (controleTempo[v.id].usadoMin + prod > limiteEfetivo + 0.001) return null;
+      const excesso4 = (controleTempo[v.id].usadoMin + prod) - limiteEfetivo;
+      if (!permitirExcederJornada && excesso4 > 0.001) return null;
       det.tempoEsperaRestricaoMin = aval.esperaMin || 0;
+      if (excesso4 > 0.001) det._jornadaExcedenteMin = excesso4;
       const vi = novaViagem(v, terminalEfetivo, espTerm);
       return { vi, detalhe: det,
                custoRelogio: espTerm + det.incrementoMin + (aval.esperaMin || 0),
@@ -3753,20 +3759,36 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       }
     }
     if (!alocado) {
-      // PASSO 2.5: Tenta nova viagem com tolerância de jornada antes de quebrar.
-      // Se algum veículo aceita o pedido INTEIRO com leve estouro de jornada,
-      // é sempre melhor que fragmentar o pedido em 2 entregas para o mesmo cliente.
+      // PASSO 2.5: Tenta encaixe em viagem existente OU nova viagem com jornada excedida.
+      // Pedidos que não cabem dentro da jornada normal são alocados com excesso registrado.
+      // O alerta "Jornada excedida: +X h" é gerado em renderResultado a partir de usadoMin > limiteMin.
       const cands25 = candidatos(pedido);
+      // 2.5a: encaixe em viagem existente com jornada excedida
       for (const v of cands25) {
-        const fitOk = podeFitar(pedido.produtos, criarCompsDisp(v));
-        if (!fitOk) continue;
-        const t = tentarNovaViagem(pedido, v, pedido.produtos, { permitirExcederJornada: true });
-        if (!t) continue;
-        if (commitPedido(t.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
-          resultado[v.id].push(t.vi);
-          alocado = true;
-          console.log('[Otimizador] PASSO 2.5 (jornada estendida):', pedido.cliente, '→', v.placa);
-          break;
+        if (alocado) break;
+        for (const vi of (resultado[v.id] || []).filter(x => !x._vazio && x.paradas?.length)) {
+          const t = tentarEncaixe(pedido, v, vi, pedido.produtos, { permitirExcederJornada: true });
+          if (!t) continue;
+          if (commitPedido(vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
+            alocado = true;
+            console.log('[Otimizador] PASSO 2.5a (encaixe jornada excedida):', pedido.cliente, '→', v.placa);
+            break;
+          }
+        }
+      }
+      // 2.5b: nova viagem com jornada excedida
+      if (!alocado) {
+        for (const v of cands25) {
+          const fitOk = podeFitar(pedido.produtos, criarCompsDisp(v));
+          if (!fitOk) continue;
+          const t = tentarNovaViagem(pedido, v, pedido.produtos, { permitirExcederJornada: true });
+          if (!t) continue;
+          if (commitPedido(t.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
+            resultado[v.id].push(t.vi);
+            alocado = true;
+            console.log('[Otimizador] PASSO 2.5b (nova viagem jornada excedida):', pedido.cliente, '→', v.placa);
+            break;
+          }
         }
       }
     }
@@ -5224,7 +5246,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
     const linhas = excessoJornada
       .sort((a,b) => b.excesso - a.excesso)
       .map(x => `${x.v.placa}: +${(x.excesso/60).toFixed(1)} h`);
-    html += `<div class="alert alert-warn">⚠ Jornada excedida (liberada na etapa de complementação): ${linhas.join(', ')}.</div>`;
+    html += `<div class="alert alert-warn">⚠ Jornada excedida: ${linhas.join(', ')}. O pedido foi alocado mas a jornada do veículo foi ultrapassada.</div>`;
   }
   if (totalQuebras > 0) html += `<div class="alert alert-warn">⚠ ${totalQuebras} item(ns) de pedido divididos por limitação de capacidade.</div>`;
   else html += `<div class="alert alert-success">✓ Todos os itens alocados sem quebras de pedido.</div>`;
