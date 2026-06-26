@@ -80,41 +80,27 @@ async function confirmarOtimizar() {
   const val = document.getElementById('input-data-carga').value;
   if (!val) { alert('Informe a data de carregamento.'); return; }
 
-  // ── Verifica pasta de histórico antes de iniciar ──────────────────────────
-  // O sistema precisa acessar o histórico para garantir que nenhum ID de
-  // viagem seja reutilizado. Sem a pasta disponível, a roteirização é bloqueada.
+  // ── Pasta de histórico obrigatória — sem ela não há roteirização ──────────
+  // Garante que nenhum ID de viagem seja duplicado entre roteirizações.
   if (!dirHandleHistorico) {
-    const ir = confirm(
-      '⚠️ Pasta de histórico não selecionada.\n\nO sistema precisa acessar o histórico para garantir IDs de viagem únicos (sem duplicação).\n\nClique em OK para selecionar a pasta agora, ou em Cancelar para abortar a roteirização.'
-    );
-    if (!ir) return;
+    alert('⚠️ Pasta de histórico não selecionada.\n\nSelecione a pasta na aba "Histórico" antes de roteirizar.\nO sistema precisa consultar o histórico para garantir IDs únicos.');
     fecharModalDataCarga();
     showTab('historico');
-    await selecionarPastaHistorico();
-    if (!dirHandleHistorico) {
-      alert('Pasta não selecionada. A roteirização foi cancelada.');
-      return;
-    }
-    // Reabre o modal após seleção da pasta
-    abrirModalDataCarga(_modoOtimizarPendente || 'padrao');
     return;
   }
 
-  // Verifica se a permissão ainda está ativa (pode expirar entre sessões)
+  // Verifica permissão — pode expirar entre sessões do navegador
   let permOk = false;
   try { permOk = (await dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
   if (!permOk) {
-    const ir = confirm(
-      '⚠️ Permissão da pasta de histórico expirou.\n\nO sistema precisa reautorizar o acesso para verificar os IDs de viagem existentes.\n\nClique em OK para reautorizar agora, ou em Cancelar para abortar a roteirização.'
-    );
-    if (!ir) return;
-    try {
-      permOk = (await dirHandleHistorico.requestPermission({ mode: 'readwrite' })) === 'granted';
-    } catch(e) {}
-    if (!permOk) {
-      alert('Permissão negada. A roteirização foi cancelada para evitar IDs duplicados.');
-      return;
-    }
+    // Tenta reautorizar com interação do usuário
+    try { permOk = (await dirHandleHistorico.requestPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
+  }
+  if (!permOk) {
+    alert('⚠️ Permissão da pasta de histórico negada.\n\nClique em "Selecionar pasta" na aba "Histórico" para reautorizar o acesso.\nSem isso não é possível garantir IDs únicos.');
+    fecharModalDataCarga();
+    showTab('historico');
+    return;
   }
 
   const modoFinal = _modoOtimizarPendente || 'padrao';
@@ -3317,6 +3303,18 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     }
     return true;
   };
+  // veicOkCompartimentos: extensão de veicOk que também verifica se os produtos
+  // do pedido cabem nos compartimentos do veículo.
+  // Declarado após podeFitar e produtosPendentesPedido para evitar referência antecipada.
+  const veicOkCompartimentos = (v, p) => {
+    if (!veicOk(v, p)) return false;
+    const prods = produtosPendentesPedido(p);
+    if (!prods.length) return true;
+    const compsSimul = criarCompsDisp(v);
+    if (!compsSimul.length) return true; // veículo sem compartimentos fixos não bloqueia
+    return podeFitar(prods, compsSimul);
+  };
+
   // Aloca todos os produtos do pedido em compartimentos reais (commit)
   // Retorna false se algum produto não couber (não deveria ocorrer após podeFitar)
   const commitPedido = (viagem, pedido, detalheParada, custoRelogio, custoProdutivo, v, produtosSelecionados = pedido.produtos) => {
@@ -3998,9 +3996,10 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   }
   // ── Reconstrói contador a partir do histórico real antes de atribuir IDs ────
   // Garante que rodadas repetidas sem salvar não inflem a sequência.
-  // { obrigatorio: true } — se a pasta não estiver disponível lança erro e
-  // impede a geração de IDs sem verificação completa do histórico.
-  await _reconstruirPetSeqDoHistorico({ obrigatorio: true });
+  // Não bloqueia se a pasta não estiver disponível — apenas avisa via toast.
+  try { await _reconstruirPetSeqDoHistorico({ obrigatorio: false }); } catch(e) {
+    console.warn('[otimizar] Não foi possível reconstruir sequência do histórico:', e);
+  }
   atribuirPetIds(resultado, baseDataEntrega || new Date());
   // Sugestões de quebra manual (só no modo dedicado): pedidos alocados sozinhos
   // em veículo com <55% de utilização temporal E há dedicado ocioso compatível.
@@ -4058,14 +4057,8 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   renderTemplateOperacao();
   showTab('resultado');
   } catch(e) {
-    // Erros específicos de pasta de histórico indisponível
-    if (e.message === 'PASTA_NAO_SELECIONADA') {
-      alert('Roteirização cancelada: a pasta de histórico não está selecionada.\n\nSelecione a pasta na aba Histórico e tente novamente.');
-    } else if (e.message === 'PERMISSAO_NEGADA') {
-      alert('Roteirização cancelada: permissão da pasta de histórico negada.\n\nReautorize o acesso na aba Histórico e tente novamente.');
-    } else {
-      throw e; // propaga outros erros normalmente
-    }
+    console.error('[otimizar] Erro inesperado:', e);
+    alert('Erro ao roteirizar: ' + (e.message || e));
   } finally {
     // Restaura lista completa de veículos (inclui indisponíveis)
     // para que a aba Veículos & Turnos continue mostrando todos
