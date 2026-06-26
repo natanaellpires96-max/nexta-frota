@@ -3450,11 +3450,20 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     const vRef     = { paradas: [], terminalOrigem: terminalEfetivo, esperaTerminalMin: espTerm };
     const det      = dadosIncrementoParada(vRef, v, { ...pedido, terminal: terminalEfetivo }, terminalEfetivo);
     const chegAbs  = chegadaPrevistaAbsMin(vRef, det, resultado[v.id], resultado[v.id].length, jIni(v), v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
-    const aval     = avaliarRestricaoPedido(pedido, chegAbs, diaAlvoPedido(pedido));
+    const _diaAlvoBase = diaAlvoPedido(pedido);
+    const aval     = avaliarRestricaoPedido(pedido, chegAbs, _diaAlvoBase);
+    // Se chegada já passou da janela do dia alvo, tenta automaticamente no dia seguinte.
+    // Isso cobre veículos disponíveis tarde (ex: 14h) que não chegam a tempo hoje.
+    const _diaAlvoAjust = (!aval.ok && (_diaAlvoBase ?? 0) === 0)
+      ? 1  // tenta entrega no dia seguinte
+      : (_diaAlvoBase ?? 0);
+    const avalFinal = (!aval.ok && _diaAlvoAjust !== (_diaAlvoBase ?? 0))
+      ? avaliarRestricaoPedido(pedido, chegAbs, _diaAlvoAjust)
+      : aval;
+    const _diaAlvo = _diaAlvoAjust;
     // Para entregas com data futura (N dias à frente do carregamento), o veículo dispõe
     // de N+1 dias de jornada produtiva — escala o limite pelo horizonte real da viagem.
-    const _diaAlvo = diaAlvoPedido(pedido);
-    const diasViagem = Math.max(1, (_diaAlvo ?? 0) + 1);
+    const diasViagem = Math.max(1, _diaAlvo + 1);
     const limiteEfetivo = permitirExcederJornada
       ? controleTempo[v.id].limiteMin * diasViagem * 1.05
       : controleTempo[v.id].limiteMin * diasViagem;
@@ -3464,22 +3473,25 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     // inicioViagemAbsMin para manter o relógio correto sem dupla contagem.
     const prodRefeicao = resultado[v.id].length === (doisTurnos(v) ? 2 : 1)
       ? (v.tempoPerdidoMin || 0) : 0;
-    // ── Entrega no mesmo dia (espera curta no cliente, ≤ 8h) ─────────────────
-    if (aval.ok && (aval.esperaMin || 0) <= 8 * 60) {
+    // ── Entrega no mesmo dia ou dia seguinte (espera curta no cliente, ≤ 32h) ──
+    if (avalFinal.ok && (avalFinal.esperaMin || 0) <= 32 * 60) {
       const prod = det.incrementoMin + prodRefeicao;
       const excesso3a = (controleTempo[v.id].usadoMin + prod) - limiteEfetivo;
       if (!permitirExcederJornada && excesso3a > 0.001) return null;
-      det.tempoEsperaRestricaoMin = aval.esperaMin || 0;
+      det.tempoEsperaRestricaoMin = avalFinal.esperaMin || 0;
       if (excesso3a > 0.001) det._jornadaExcedenteMin = excesso3a;
+      if (_diaAlvoAjust > (_diaAlvoBase ?? 0)) det.overnight = true; // marcado para alerta de dia+1
       const vi = novaViagem(v, terminalEfetivo, espTerm);
       return { vi, detalhe: det,
-               custoRelogio: espTerm + det.incrementoMin + (aval.esperaMin || 0),
+               custoRelogio: espTerm + det.incrementoMin + (avalFinal.esperaMin || 0),
                custoProdutivo: prod };
     }
     // ── Overnight: carrega no terminal, aguarda e parte no horário certo ─────
     // Também cobre caso em que espera no cliente seria > 8h (viagem longa/futura).
     const itemRef = { pedido, produto: null, restante: 0 };
-    const ov = calcOvernightViagem(v, itemRef, ck, terminalEfetivo, diaAlvoPedido(pedido));
+    // Tenta overnight para o diaAlvo calculado; se falhar, tenta dia seguinte
+    let ov = calcOvernightViagem(v, itemRef, ck, terminalEfetivo, _diaAlvo);
+    if (!ov && _diaAlvo === 0) ov = calcOvernightViagem(v, itemRef, ck, terminalEfetivo, 1);
     if (ov && controleTempo[v.id].usadoMin + ov.productiveMin + prodRefeicao <= limiteEfetivo + 0.001) {
       const ovDet = {
         ...ov,
@@ -3491,16 +3503,17 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       const vi = novaViagem(v, terminalEfetivo, ov.waitBeforeLoadingMin);
       return { vi, detalhe: ovDet, custoRelogio: ov.totalElapsedMin, custoProdutivo: ov.productiveMin + prodRefeicao };
     }
-    // ── Fallback: mesmo dia com espera longa (overnight indisponível) ─────────
-    if (aval.ok) {
+    // ── Fallback: espera longa (overnight indisponível) ─────────────────────
+    if (avalFinal.ok) {
       const prod = det.incrementoMin + prodRefeicao;
       const excesso4 = (controleTempo[v.id].usadoMin + prod) - limiteEfetivo;
       if (!permitirExcederJornada && excesso4 > 0.001) return null;
-      det.tempoEsperaRestricaoMin = aval.esperaMin || 0;
+      det.tempoEsperaRestricaoMin = avalFinal.esperaMin || 0;
       if (excesso4 > 0.001) det._jornadaExcedenteMin = excesso4;
+      if (_diaAlvoAjust > (_diaAlvoBase ?? 0)) det.overnight = true;
       const vi = novaViagem(v, terminalEfetivo, espTerm);
       return { vi, detalhe: det,
-               custoRelogio: espTerm + det.incrementoMin + (aval.esperaMin || 0),
+               custoRelogio: espTerm + det.incrementoMin + (avalFinal.esperaMin || 0),
                custoProdutivo: prod };
     }
     return null;
