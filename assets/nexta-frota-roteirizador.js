@@ -1711,7 +1711,8 @@ function recalcularTimingViagem(viagem, v) {
     viagem.esperaTerminalMin = calcEsperaTerminal(viagem.terminalOrigem, clock);
     clock += viagem.esperaTerminalMin;
   }
-  clock += viagem.esperaTerminalMin;
+  // Nota: esperaTerminalMin já foi somado dentro do else acima.
+  // Não somar novamente aqui para evitar dupla contagem.
   // Recalcula cada parada
   let produtivo = 0;
   viagem.paradas.forEach((p, idxP) => {
@@ -5166,8 +5167,9 @@ function _editMotoristaViagem(petId, val) {
 function editarHorarioCarga(vid, ti, hhmm) {
   const v = veiculos.find(x => x.id === vid);
   if (!v || !ultimoResultado) return;
+  // ti é o índice no array FILTRADO (sem _vazio) — precisamos encontrar a viagem certa
   const viagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && vi.paradas?.length);
-  const viagem  = (ultimoResultado[v.id] || [])[ti];
+  const viagem  = viagens[ti]; // usa o array filtrado, igual ao render
   if (!viagem || viagem._vazio || !(viagem.paradas || []).length) return;
 
   if (!hhmm) {
@@ -5655,33 +5657,20 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
             return `${String(Math.floor(md/60)).padStart(2,'0')}:${String(md%60).padStart(2,'0')}`;
           })();
           const temOverride = viagem.horarioCargaManualMin !== undefined;
-          // Label e ícone do estado do horário de carga
-          const cargaLabel  = temOverride ? '✏️ Carga' : '🕐 Carga';
-          const cargaTitle  = temOverride
-            ? 'Horário personalizado — clique em Restaurar para voltar ao calculado'
-            : 'Horário calculado — clique para editar';
-          const cargaBorder = temOverride ? '#16a34a' : 'var(--border)';
-          const cargaBg     = temOverride ? 'rgba(22,163,74,0.08)' : 'var(--surface)';
-          const cargaColor  = temOverride ? '#15803d' : 'var(--text)';
-          const cargaWeight = temOverride ? '700' : '500';
-          html += `<div style="padding:5px 10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;${utilViagBg(utilV)}border-bottom:1px solid var(--border);filter:brightness(0.95);">
+          html += `<div style="padding:3px 10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;${utilViagBg(utilV)}border-bottom:1px solid var(--border);filter:brightness(0.95);">
             <span style="font-size:10px;color:var(--text-3);white-space:nowrap;">Motorista</span>
             <input value="${nomeMotor.replace(/"/g,'&quot;')}" placeholder="—"
               oninput="${onInput}"
-              style="font-size:11px;padding:2px 7px;border:1px solid var(--border);border-radius:5px;width:190px;background:var(--surface);color:var(--text);font-weight:500;" />
-            <span style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:4px;">${cargaLabel}</span>
+              style="font-size:11px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;width:190px;background:var(--surface);color:var(--text);font-weight:500;" />
+            <span style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:6px;">Carga</span>
             <input type="time" value="${cargaHHMM}"
-              title="${cargaTitle}"
+              title="Horário de carregamento${temOverride ? ' (personalizado — clique em ✕ para restaurar o calculado)' : ' (calculado — edite para personalizar)'}"
               onchange="editarHorarioCarga(${v.id},${ti},this.value)"
-              style="font-size:12px;padding:2px 6px;border:2px solid ${cargaBorder};border-radius:5px;background:${cargaBg};color:${cargaColor};font-weight:${cargaWeight};width:96px;cursor:pointer;outline:none;" />
-            ${temOverride
-              ? `<button onclick="editarHorarioCarga(${v.id},${ti},'')" title="Restaurar horário calculado"
-                  style="font-size:10px;padding:2px 8px;border:1px solid #16a34a;border-radius:5px;background:transparent;color:#16a34a;cursor:pointer;white-space:nowrap;font-weight:600;">↺ Restaurar</button>`
-              : `<span style="font-size:9px;color:var(--text-3);font-style:italic;white-space:nowrap;">editável</span>`}
+              style="font-size:11px;padding:1px 4px;border:1.5px solid ${temOverride ? 'var(--pet-green)' : 'var(--border)'};border-radius:4px;background:${temOverride ? '#F0FFF4' : 'var(--surface)'};color:var(--text);font-weight:${temOverride ? '700' : '400'};width:90px;" />
+            ${temOverride ? `<button onclick="editarHorarioCarga(${v.id},${ti},'')" title="Restaurar horário calculado"
+              style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text-3);cursor:pointer;">✕ Restaurar</button>` : ''}
           </div>
-          ${viagem._alertaCargaManual ? `<div style="padding:4px 10px 5px;display:flex;align-items:center;gap:6px;font-size:11px;color:#92400E;background:#FFFBEB;border-bottom:1px solid #FCD34D;">
-            <span>⚠️</span><span>${viagem._alertaCargaManual.replace('⚠ ','')}</span>
-          </div>` : ''}`;
+          ${viagem._alertaCargaManual ? `<div style="padding:3px 10px 5px;font-size:10px;color:#92400E;background:#FFFBEB;border-bottom:1px solid #FCD34D;">${viagem._alertaCargaManual}</div>` : ''}`;
         })();
         paradasComHorario.forEach(({p, inicioCargaMin, fimCargaMin, chegadaEntregaMin, inicioDescargaMin, fimDescargaMin, retornoTerminalMin, esperaVisivelMin, waitAfterLoad},i) => {
           const temQuebra = p.itens.some(it => !it.completo);
