@@ -1703,16 +1703,27 @@ function recalcularTimingViagem(viagem, v) {
   const _jIniRaw4 = parseHoraMin(v.jornadaInicio || '06:00');
   let jIniMin = isNaN(_jIniRaw4) ? 360 : _jIniRaw4;
   if (v._horarioDisponivelAPartirDe) { const _dm4 = parseHoraMin(v._horarioDisponivelAPartirDe); if (!isNaN(_dm4) && _dm4 > jIniMin) jIniMin = _dm4; }
-  // Clock no início desta viagem
-  let clock = inicioViagemAbsMin(viagens, Math.max(idx, 0), jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
-  // Recalcula espera no terminal — respeita override manual de horário de carga
+
+  let clock;
   if (viagem.horarioCargaManualMin !== undefined && !isNaN(viagem.horarioCargaManualMin)) {
-    const baseDay = Math.floor(clock / 1440) * 1440;
+    // Override manual: o clock desta viagem começa EXATAMENTE no horário escolhido,
+    // independente do término da viagem anterior. O usuário assume a responsabilidade.
+    // Descobre em qual dia absoluto colocar o horário:
+    // usa o clock da viagem anterior como referência de dia, mas não de sequência.
+    const clockAnterior = idx > 0
+      ? inicioViagemAbsMin(viagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1)
+      : jIniMin;
+    const baseDay = Math.floor(clockAnterior / 1440) * 1440;
     let alvo = baseDay + viagem.horarioCargaManualMin;
-    if (alvo < clock) alvo += 1440; // próxima ocorrência do horário
-    viagem.esperaTerminalMin = Math.max(0, alvo - clock);
+    // Se o horário manual é antes do início calculado, avança para o próximo dia
+    if (alvo < clockAnterior - 0.001) alvo += 1440;
+    clock = alvo;
+    viagem.esperaTerminalMin = 0; // espera já está embutida no clock manual
   } else {
+    // Sem override: comportamento normal — clock baseado na sequência de viagens
+    clock = inicioViagemAbsMin(viagens, Math.max(idx, 0), jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
     viagem.esperaTerminalMin = calcEsperaTerminal(viagem.terminalOrigem, clock);
+    clock += viagem.esperaTerminalMin;
   }
   clock += viagem.esperaTerminalMin;
   // Recalcula cada parada
@@ -3340,7 +3351,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     const vol     = (volMin === null || volMin === undefined) ? totalVolPedido(pedido) : volMin;
     const cidadeP = (pedido.cidade || '').toLowerCase().trim();
     return veiculos
-      .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) && (v.disponibilidade || 'Disponível') !== 'Indisponível' && veicOk(v, pedido) && (permitirCapacidadeMenor || v.capacidade >= vol - 0.001))
+      .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) && (v.disponibilidade || 'Disponível') !== 'Indisponível' && veicOkCompartimentos(v, pedido) && (permitirCapacidadeMenor || v.capacidade >= vol - 0.001))
       .sort((a, b) => {
         // 1. Dedicado antes de Spot
         const aDedicado = (a.contrato || 'Dedicado') !== 'Spot' ? 1 : 0;
@@ -5130,7 +5141,9 @@ async function _reconstruirPetSeqDoHistorico({ obrigatorio = false } = {}) {
 function motoristaDaViagem(v, cargaAbsMin, vi) {
   if (vi?.petId && _motoristasOverride[vi.petId] !== undefined) return _motoristasOverride[vi.petId];
   const hod = ((Math.round(cargaAbsMin) % 1440) + 1440) % 1440; // hora do dia em min
-  const ehNoturno = hod >= 18 * 60 || hod < 6 * 60;
+  // Usa jornadaInicio do veículo como limiar — ex: jornada 05:00 → carga às 05h é diurna
+  const _jornadaIniHod = parseHoraMin(v?.jornadaInicio || '06:00') || 360;
+  const ehNoturno = hod >= 18 * 60 || hod < _jornadaIniHod;
   if (ehNoturno && v.motoristaNt)      return v.motoristaNt;
   if (!ehNoturno && v.motoristaDiurno) return v.motoristaDiurno;
   return v.motoristaDiurno || v.motoristaNt || '';
@@ -5144,15 +5157,39 @@ function _editMotoristaViagem(petId, val) {
 function editarHorarioCarga(vid, ti, hhmm) {
   const v = veiculos.find(x => x.id === vid);
   if (!v || !ultimoResultado) return;
-  // ti corresponde ao índice direto em ultimoResultado[v.id] (mesmo mapeamento do render)
-  const viagem = (ultimoResultado[v.id] || [])[ti];
+  const viagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && vi.paradas?.length);
+  const viagem  = (ultimoResultado[v.id] || [])[ti];
   if (!viagem || viagem._vazio || !(viagem.paradas || []).length) return;
+
   if (!hhmm) {
     delete viagem.horarioCargaManualMin;
+    delete viagem._alertaCargaManual;
   } else {
     const min = parseHoraMin(hhmm);
-    if (!isNaN(min)) viagem.horarioCargaManualMin = min;
+    if (isNaN(min)) return;
+    viagem.horarioCargaManualMin = min;
+
+    // Verifica sobreposição com viagem anterior — gera alerta mas NÃO bloqueia
+    const idxNaLista = viagens.indexOf(viagem);
+    if (idxNaLista > 0) {
+      const viagemAnterior = viagens[idxNaLista - 1];
+      // fimCicloMin da viagem anterior = tempoConsumidoMin relativo ao início
+      const _jIniRaw = parseHoraMin(v.jornadaInicio || '06:00');
+      const jIniMin  = isNaN(_jIniRaw) ? 360 : _jIniRaw;
+      const iniAnterior = inicioViagemAbsMin(viagens, idxNaLista - 1, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
+      const fimAnteriorEstimado = iniAnterior + (viagemAnterior.tempoConsumidoMin || 0);
+      const baseDay  = Math.floor(fimAnteriorEstimado / 1440) * 1440;
+      let   alvoAbs  = baseDay + min;
+      if (alvoAbs < fimAnteriorEstimado - 0.001) alvoAbs += 1440;
+      const sobrepoe = alvoAbs < fimAnteriorEstimado - 0.001;
+      viagem._alertaCargaManual = sobrepoe
+        ? `⚠ Horário manual (${hhmm}) é anterior ao retorno estimado da viagem anterior. Verifique se há tempo suficiente.`
+        : null;
+    } else {
+      viagem._alertaCargaManual = null;
+    }
   }
+
   recalcularTimingViagem(viagem, v);
   recalcularControleTempo();
   renderResultado(ultimoResultado, ultimoControleTempo || {});
@@ -5595,7 +5632,10 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
         (() => {
           const cargaMin = paradasComHorario[0]?.inicioCargaMin ?? inicioCicloMin;
           const hod = ((Math.round(cargaMin) % 1440) + 1440) % 1440;
-          const ehNoturno = hod >= 18 * 60 || hod < 6 * 60;
+          // Usa jornadaInicio do veículo como limiar diurno/noturno — não fixo 06:00.
+          // Ex: veículo com jornada 05:00-21:00: carga às 05:00 é diurna, não noturna.
+          const _jornadaIniHod = parseHoraMin(v.jornadaInicio || '06:00') || 360;
+          const ehNoturno = hod >= 18 * 60 || hod < _jornadaIniHod;
           const _petIdViagem = viagem.petId || '';
           const nomeMotor = (_petIdViagem && _motoristasOverride[_petIdViagem] !== undefined)
             ? _motoristasOverride[_petIdViagem]
@@ -5618,7 +5658,8 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
               style="font-size:11px;padding:1px 4px;border:1.5px solid ${temOverride ? 'var(--pet-green)' : 'var(--border)'};border-radius:4px;background:${temOverride ? '#F0FFF4' : 'var(--surface)'};color:var(--text);font-weight:${temOverride ? '700' : '400'};width:90px;" />
             ${temOverride ? `<button onclick="editarHorarioCarga(${v.id},${ti},'')" title="Restaurar horário calculado"
               style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text-3);cursor:pointer;">✕ Restaurar</button>` : ''}
-          </div>`;
+          </div>
+          ${viagem._alertaCargaManual ? `<div style="padding:3px 10px 5px;font-size:10px;color:#92400E;background:#FFFBEB;border-bottom:1px solid #FCD34D;">${viagem._alertaCargaManual}</div>` : ''}`;
         })();
         paradasComHorario.forEach(({p, inicioCargaMin, fimCargaMin, chegadaEntregaMin, inicioDescargaMin, fimDescargaMin, retornoTerminalMin, esperaVisivelMin, waitAfterLoad},i) => {
           const temQuebra = p.itens.some(it => !it.completo);
