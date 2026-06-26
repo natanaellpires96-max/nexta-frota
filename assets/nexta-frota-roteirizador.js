@@ -1768,7 +1768,20 @@ function doisTurnos(v) {
 // é adicionada aqui para que o relógio absoluto fique correto.
 function inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin = 0, numMaxBreaks = 1) {
   let t = jornadaInicioMin;
-  for (let i = 0; i < idxViagem; i++) t += viagensVeiculo[i]?.tempoConsumidoMin || 0;
+  for (let i = 0; i < idxViagem; i++) {
+    const vi = viagensVeiculo[i];
+    // Se a viagem seguinte tem horário manual fixo, usa o horário manual diretamente
+    // como início, descartando a cadeia de tempoConsumidoMin que viria antes.
+    const proxVi = viagensVeiculo[i + 1];
+    if (proxVi?.horarioCargaManualMin !== undefined && i + 1 === idxViagem) {
+      // Retorna o horário manual absoluto (ajustado para o dia correto)
+      const baseDay = Math.floor((t + (vi?.tempoConsumidoMin || 0)) / 1440) * 1440;
+      let alvo = baseDay + proxVi.horarioCargaManualMin;
+      if (alvo < t - 0.001) alvo += 1440;
+      return alvo;
+    }
+    t += vi?.tempoConsumidoMin || 0;
+  }
   t += Math.min(idxViagem, numMaxBreaks) * tempoPerdidoMin;
   return t;
 }
@@ -3460,10 +3473,13 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     const det      = dadosIncrementoParada(vRef, v, { ...pedido, terminal: terminalEfetivo }, terminalEfetivo);
     const chegAbs  = chegadaPrevistaAbsMin(vRef, det, resultado[v.id], resultado[v.id].length, jIni(v), v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
     const _diaAlvoBase = diaAlvoPedido(pedido);
-    const aval     = avaliarRestricaoPedido(pedido, chegAbs, _diaAlvoBase);
-    // Se chegada já passou da janela do dia alvo, tenta automaticamente no dia seguinte.
-    // Isso cobre veículos disponíveis tarde (ex: 14h) que não chegam a tempo hoje.
-    const _diaAlvoAjust = (!aval.ok && (_diaAlvoBase ?? 0) === 0)
+    const aval = avaliarRestricaoPedido(pedido, chegAbs, _diaAlvoBase);
+    // Tenta dia seguinte SOMENTE quando:
+    // 1. Pedido tem janela de entrega definida (restricao não nulo)
+    // 2. A chegada passou do FIM da janela de hoje (chegou tarde demais)
+    // 3. O diaAlvo base é 0 (hoje) — não empurra pedidos futuros mais para frente
+    const _temJanela = !!(pedido?.restricao);
+    const _diaAlvoAjust = (!aval.ok && _temJanela && (_diaAlvoBase ?? 0) === 0)
       ? 1  // tenta entrega no dia seguinte
       : (_diaAlvoBase ?? 0);
     const avalFinal = (!aval.ok && _diaAlvoAjust !== (_diaAlvoBase ?? 0))
