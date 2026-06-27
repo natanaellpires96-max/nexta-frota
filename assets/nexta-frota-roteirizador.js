@@ -5163,6 +5163,33 @@ function _editMotoristaViagem(petId, val) {
   if (val.trim()) { _motoristasOverride[petId] = val; } else { delete _motoristasOverride[petId]; }
   renderTemplateOperacao();
 }
+// Controla re-render: quando o campo de carga está em foco, bloqueia re-render
+// para não destruir o input enquanto o usuário edita.
+let _cargaInputAtivo = false;
+let _cargaPendente = null;
+
+function editarHorarioCargaDebounced(vid, ti, hhmm) {
+  if (!hhmm) { editarHorarioCarga(vid, ti, ''); return; }
+  // Salva o valor imediatamente no objeto em memória SEM re-renderizar
+  const v = veiculos.find(x => x.id === vid);
+  if (!v || !ultimoResultado) return;
+  const viagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && vi.paradas?.length);
+  const viagem = viagens[ti];
+  if (!viagem) return;
+  const min = parseHoraMin(hhmm);
+  if (isNaN(min)) return;
+  viagem.horarioCargaManualMin = min;
+  // Agenda re-render apenas depois que o campo perder o foco
+  _cargaPendente = { vid, ti, hhmm };
+}
+
+function finalizarEdicaoCarga(vid, ti) {
+  if (!_cargaPendente || _cargaPendente.vid !== vid || _cargaPendente.ti !== ti) return;
+  const { hhmm } = _cargaPendente;
+  _cargaPendente = null;
+  editarHorarioCarga(vid, ti, hhmm);
+}
+
 // Override manual do horário de carregamento de uma viagem
 function editarHorarioCarga(vid, ti, hhmm) {
   const v = veiculos.find(x => x.id === vid);
@@ -5662,15 +5689,18 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
             <input value="${nomeMotor.replace(/"/g,'&quot;')}" placeholder="—"
               oninput="${onInput}"
               style="font-size:11px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;width:190px;background:var(--surface);color:var(--text);font-weight:500;" />
-            <span style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:6px;">Carga</span>
+            <span style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:6px;">${temOverride ? '✏️' : '🕐'} Carga</span>
             <input type="time" value="${cargaHHMM}"
-              title="Horário de carregamento${temOverride ? ' (personalizado — clique em ✕ para restaurar o calculado)' : ' (calculado — edite para personalizar)'}"
-              onchange="editarHorarioCarga(${v.id},${ti},this.value)"
-              style="font-size:11px;padding:1px 4px;border:1.5px solid ${temOverride ? 'var(--pet-green)' : 'var(--border)'};border-radius:4px;background:${temOverride ? '#F0FFF4' : 'var(--surface)'};color:var(--text);font-weight:${temOverride ? '700' : '400'};width:90px;" />
-            ${temOverride ? `<button onclick="editarHorarioCarga(${v.id},${ti},'')" title="Restaurar horário calculado"
-              style="font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text-3);cursor:pointer;">✕ Restaurar</button>` : ''}
+              title="${temOverride ? 'Horário personalizado — clique em Restaurar para voltar ao calculado' : 'Horário calculado — edite para personalizar'}"
+              onchange="editarHorarioCargaDebounced(${v.id},${ti},this.value)"
+              onblur="finalizarEdicaoCarga(${v.id},${ti})"
+              style="font-size:12px;padding:2px 6px;border:2px solid ${temOverride ? '#16a34a' : 'var(--border)'};border-radius:5px;background:${temOverride ? 'rgba(22,163,74,0.08)' : 'var(--surface)'};color:${temOverride ? '#15803d' : 'var(--text)'};font-weight:${temOverride ? '700' : '500'};width:96px;cursor:pointer;" />
+            ${temOverride
+              ? `<button onclick="editarHorarioCarga(${v.id},${ti},'')" title="Restaurar horário calculado"
+                  style="font-size:10px;padding:2px 8px;border:1px solid #16a34a;border-radius:5px;background:transparent;color:#16a34a;cursor:pointer;font-weight:600;">↺ Restaurar</button>`
+              : `<span style="font-size:9px;color:var(--text-3);font-style:italic;">editável</span>`}
           </div>
-          ${viagem._alertaCargaManual ? `<div style="padding:3px 10px 5px;font-size:10px;color:#92400E;background:#FFFBEB;border-bottom:1px solid #FCD34D;">${viagem._alertaCargaManual}</div>` : ''}`;
+          ${viagem._alertaCargaManual ? `<div style="padding:4px 10px 5px;display:flex;align-items:center;gap:6px;font-size:11px;color:#92400E;background:#FFFBEB;border-bottom:1px solid #FCD34D;">⚠️ ${viagem._alertaCargaManual.replace('⚠ ','')}</div>` : ''}`;
         })();
         paradasComHorario.forEach(({p, inicioCargaMin, fimCargaMin, chegadaEntregaMin, inicioDescargaMin, fimDescargaMin, retornoTerminalMin, esperaVisivelMin, waitAfterLoad},i) => {
           const temQuebra = p.itens.some(it => !it.completo);
