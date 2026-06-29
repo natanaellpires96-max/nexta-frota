@@ -4427,6 +4427,14 @@ function renderTemplateOperacao() {
     const _op_espTerm = viOriginal.esperaTerminalMin || 0;
     relogioMin += _op_espTerm;
     const _opTemOverride = viOriginal.horarioCargaManualMin !== undefined;
+    // Se o usuário definiu horário manual de carga, aplica ao relogioMin do bloco transportador
+    // para que "Carregamento" no resumo reflita o horário editado, não o calculado automaticamente.
+    if (_opTemOverride && !isNaN(viOriginal.horarioCargaManualMin)) {
+      const _baseDay = Math.floor(relogioMin / 1440) * 1440;
+      let _alvoManual = _baseDay + viOriginal.horarioCargaManualMin;
+      if (_alvoManual < relogioMin - 0.001) _alvoManual += 1440;
+      relogioMin = _alvoManual;
+    }
     let inicioCargaCicloMin = relogioMin;
     let retornoBaseCicloMin = relogioMin;
     (viOriginal.paradas || []).forEach((p, idxParada) => {
@@ -5615,6 +5623,14 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
         const esperaTermRender = viagem.esperaTerminalMin || 0;
         if (esperaTermRender > 0) relogioMin += esperaTermRender; // avança até abertura do terminal
         const _temOverride = viagem.horarioCargaManualMin !== undefined;
+        // Se o usuário definiu horário manual, ajusta relogioMin para refletir esse horário
+        // (preserva o horário salvo no re-render, evitando que o campo volte ao calculado)
+        if (_temOverride && !isNaN(viagem.horarioCargaManualMin)) {
+          const baseDay = Math.floor(relogioMin / 1440) * 1440;
+          let alvoManual = baseDay + viagem.horarioCargaManualMin;
+          if (alvoManual < relogioMin - 0.001) alvoManual += 1440;
+          relogioMin = alvoManual;
+        }
         const paradasComHorario = viagem.paradas.map((p, idxParada) => {
           const esperaOriginalMin = p.tempoEsperaRestricaoMin || 0;
           const waitAfterLoad = p.overnight ? (p.waitAfterLoadingMin || 0) : 0;
