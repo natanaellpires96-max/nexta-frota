@@ -71,6 +71,7 @@
     <button class="tab" onclick="showTab('mapa')">Resumo Operação</button>
     <button class="tab" onclick="showTab('operacao')">Envio Transportadora</button>
     <button class="tab" onclick="showTab('dashboard_rot')">📊 Dashboard</button>
+    <button class="tab" onclick="showTab('frete')">💰 Frete</button>
     <button class="tab" onclick="showTab('historico')">Histórico</button>
   </div>
   <!-- ── TERMINAIS ─────────────────────────────────────────────────────────── -->
@@ -552,6 +553,88 @@
       </div>
     </div>
   </div>
+  <!-- ── FRETE ─────────────────────────────────────────────────────────────── -->
+  <div id="tab-frete" class="page">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px;">
+      <div>
+        <div class="sec-title" style="margin:0;">Calculadora de Frete</div>
+        <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Contratos por veículo e custos por operação</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <label style="font-size:11px;color:var(--text-3);">Período</label>
+        <input type="date" id="frete-de"  style="font-size:12px;padding:5px 8px;border:1px solid var(--border-dk);border-radius:7px;background:var(--surface);color:var(--text);">
+        <span style="font-size:11px;color:var(--text-3);">até</span>
+        <input type="date" id="frete-ate" style="font-size:12px;padding:5px 8px;border:1px solid var(--border-dk);border-radius:7px;background:var(--surface);color:var(--text);">
+        <button class="btn btn-sm" onclick="freteCalcular()" style="background:var(--pet-green);color:#000;font-weight:700;border:none;">Calcular</button>
+      </div>
+    </div>
+
+    <!-- CONTRATOS -->
+    <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;margin-bottom:16px;overflow:hidden;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border-dk);">
+        <span style="font-size:13px;font-weight:600;color:var(--text);">📋 Contratos por Veículo</span>
+        <button class="btn btn-sm" onclick="freteAdicionarContrato()" style="font-size:11px;">+ Adicionar</button>
+      </div>
+      <div id="frete-contratos-lista" style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="background:rgba(0,0,0,0.03);">
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;white-space:nowrap;">PLACA</th>
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;white-space:nowrap;">TRANSPORTADORA</th>
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;white-space:nowrap;">TIPO</th>
+              <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;white-space:nowrap;">FIXO/MÊS (R$)</th>
+              <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;white-space:nowrap;">R$/KM</th>
+              <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;white-space:nowrap;">R$/M³</th>
+              <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;white-space:nowrap;">R$/DIA</th>
+              <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">AÇÕES</th>
+            </tr>
+          </thead>
+          <tbody id="frete-contratos-body"></tbody>
+        </table>
+      </div>
+      <!-- Linhas spot por rota -->
+      <div style="padding:14px 18px;border-top:1px solid var(--border-dk);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <span style="font-size:12px;font-weight:600;color:var(--text);">🚚 Tabela Spot (por Rota)</span>
+          <button class="btn btn-sm" onclick="freteAdicionarSpot()" style="font-size:11px;">+ Rota</button>
+        </div>
+        <div id="frete-spot-lista" style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr style="background:rgba(0,0,0,0.03);">
+                <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">ORIGEM (TERMINAL)</th>
+                <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">DESTINO (CIDADE/CLIENTE)</th>
+                <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">R$/M³</th>
+                <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">AÇÕES</th>
+              </tr>
+            </thead>
+            <tbody id="frete-spot-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAINEL DE CUSTOS -->
+    <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;overflow:hidden;">
+      <div style="padding:14px 18px;border-bottom:1px solid var(--border-dk);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <span style="font-size:13px;font-weight:600;color:var(--text);">📊 Custos por Operação</span>
+        <div style="display:flex;gap:6px;">
+          <button onclick="freteSetVista('viagem')"  id="frete-btn-viagem"  class="btn btn-sm" style="font-size:11px;">Por Viagem</button>
+          <button onclick="freteSetVista('dia')"     id="frete-btn-dia"     class="btn btn-sm" style="font-size:11px;">Por Dia</button>
+          <button onclick="freteSetVista('semana')"  id="frete-btn-semana"  class="btn btn-sm" style="font-size:11px;">Por Semana</button>
+          <button onclick="freteSetVista('mes')"     id="frete-btn-mes"     class="btn btn-sm" style="font-size:11px;">Por Mês</button>
+          <button onclick="freteSetVista('periodo')" id="frete-btn-periodo" class="btn btn-sm" style="font-size:11px;">Período</button>
+        </div>
+      </div>
+      <!-- Resumo total -->
+      <div id="frete-resumo-total" style="display:flex;gap:16px;padding:14px 18px;border-bottom:1px solid var(--border-dk);flex-wrap:wrap;"></div>
+      <!-- Tabela de resultados -->
+      <div id="frete-resultado" style="overflow-x:auto;padding:0;">
+        <div style="padding:40px;text-align:center;color:var(--text-3);font-size:13px;">Configure os contratos e clique em Calcular</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── HISTORICO ─────────────────────────────────────────────────────────── -->
   <div id="tab-historico" class="page">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
