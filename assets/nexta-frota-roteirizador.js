@@ -591,6 +591,17 @@ function showTab(name) {
   routeRoot.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   routeRoot.querySelector('#tab-' + name)?.classList.add('active');
   if (name === 'operacao') renderTemplateOperacao();
+  if (name === 'frete') {
+    freteRenderContratos();
+    freteRenderSpot();
+    freteSetVista(_freteVista);
+    const hoje = new Date();
+    const y = hoje.getFullYear(), m = String(hoje.getMonth()+1).padStart(2,'0');
+    const de  = document.getElementById('frete-de');
+    const ate = document.getElementById('frete-ate');
+    if (de  && !de.value)  de.value  = `${y}-${m}-01`;
+    if (ate && !ate.value) ate.value = hoje.toISOString().slice(0,10);
+  }
   if (name === 'mapa') {
     renderMapaGeral();
     // Garante invalidateSize após o CSS aplicar display:block
@@ -7352,23 +7363,7 @@ async function freteCalcular() {
     </table>`;
 }
 
-// ── Init ao abrir a aba ───────────────────────────────────────────────────────
-const _freteShowTabOrig = showTab;
-function showTab(name) {
-  _freteShowTabOrig(name);
-  if (name === 'frete') {
-    freteRenderContratos();
-    freteRenderSpot();
-    freteSetVista(_freteVista);
-    // Pré-preenche datas: mês atual
-    const hoje = new Date();
-    const y = hoje.getFullYear(), m = String(hoje.getMonth()+1).padStart(2,'0');
-    const de  = document.getElementById('frete-de');
-    const ate = document.getElementById('frete-ate');
-    if (de  && !de.value)  de.value  = `${y}-${m}-01`;
-    if (ate && !ate.value) ate.value = hoje.toISOString().slice(0,10);
-  }
-}
+// ── Init ao abrir a aba (hook injetado na função original) ──────────────────
 
 window.freteCalcular          = freteCalcular;
 window.freteAdicionarContrato = freteAdicionarContrato;
