@@ -6994,6 +6994,42 @@ function freteSalvarSpot(arr) {
   localStorage.setItem(FRETE_SPOT_KEY, JSON.stringify(arr));
 }
 
+function _freteListaTransportadoras() {
+  // Busca a lista de transportadoras cadastradas no sistema pai (Cadastros).
+  // Inclui também transportadoras já usadas em veículos/contratos, como fallback,
+  // para não "esconder" valores legados que não estejam no cadastro oficial.
+  var base = (window.CARRIERS || []).slice();
+  (veiculos || []).forEach(function(v) { if (v.transportadora && base.indexOf(v.transportadora) === -1) base.push(v.transportadora); });
+  return base.filter(Boolean).sort(function(a,b) { return a.localeCompare(b, 'pt-BR'); });
+}
+
+function _freteSelectTransportadora(valorAtual, onChangeFn) {
+  var lista = _freteListaTransportadoras();
+  var sel = document.createElement('select');
+  sel.style.cssText = _freteInputStyle('width:160px;');
+  var optVazia = document.createElement('option');
+  optVazia.value = '';
+  optVazia.textContent = lista.length ? 'Selecione...' : 'Nenhuma cadastrada';
+  sel.appendChild(optVazia);
+  lista.forEach(function(nome) {
+    var opt = document.createElement('option');
+    opt.value = nome;
+    opt.textContent = nome;
+    if (nome === valorAtual) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  // Se o valor salvo não está mais na lista (cadastro removido), mantém visível como opção extra
+  if (valorAtual && lista.indexOf(valorAtual) === -1) {
+    var optExtra = document.createElement('option');
+    optExtra.value = valorAtual;
+    optExtra.textContent = valorAtual + ' (não cadastrada)';
+    optExtra.selected = true;
+    sel.appendChild(optExtra);
+  }
+  sel.onchange = onChangeFn;
+  return sel;
+}
+
 function _freteInputStyle(extra) {
   return 'font-size:12px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);' + (extra||'');
 }
@@ -7025,12 +7061,8 @@ function freteRenderContratos() {
     // Transportadora
     var tdTransp = document.createElement('td');
     tdTransp.style.cssText = 'padding:10px 14px;color:var(--text-2);';
-    var inpTransp = document.createElement('input');
-    inpTransp.value = c.transportadora || '';
-    inpTransp.placeholder = 'Transportadora';
-    inpTransp.style.cssText = _freteInputStyle('width:140px;');
-    inpTransp.onchange = function() { freteEditarContrato(i, 'transportadora', this.value); };
-    tdTransp.appendChild(inpTransp);
+    var selTransp = _freteSelectTransportadora(c.transportadora || '', function() { freteEditarContrato(i, 'transportadora', this.value); });
+    tdTransp.appendChild(selTransp);
     tr.appendChild(tdTransp);
 
     // Tipo
@@ -7128,7 +7160,7 @@ function freteRenderSpot() {
   if (!tbody) return;
   const spots = freteCarregarSpot();
   if (!spots.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma rota spot cadastrada.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:14px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma rota spot cadastrada.</td></tr>';
     return;
   }
   tbody.innerHTML = '';
@@ -7155,6 +7187,12 @@ function freteRenderSpot() {
     inpDest.onchange = function() { freteEditarSpot(i, 'destino', this.value); };
     tdDest.appendChild(inpDest);
     tr.appendChild(tdDest);
+
+    var tdTranspSpot = document.createElement('td');
+    tdTranspSpot.style.padding = '8px 12px';
+    var selTranspSpot = _freteSelectTransportadora(s.transportadora || '', function() { freteEditarSpot(i, 'transportadora', this.value); });
+    tdTranspSpot.appendChild(selTranspSpot);
+    tr.appendChild(tdTranspSpot);
 
     var tdVal = document.createElement('td');
     tdVal.style.cssText = 'padding:8px 12px;text-align:right;';
@@ -7212,7 +7250,7 @@ function freteRemoverContrato(i) {
 
 function freteAdicionarSpot() {
   var arr = freteCarregarSpot();
-  arr.push({ origem:'', destino:'', valor:'' });
+  arr.push({ origem:'', destino:'', transportadora:'', valor:'' });
   freteSalvarSpot(arr);
   freteRenderSpot();
 }
@@ -7233,6 +7271,7 @@ function freteRemoverSpot(i) {
 
 // ── Vista ─────────────────────────────────────────────────────────────────────
 var _freteVista = 'viagem';
+var _freteOrdem = 'custo';
 function freteSetVista(v) {
   _freteVista = v;
   ['viagem','dia','semana','mes','periodo'].forEach(function(k) {
@@ -7340,8 +7379,11 @@ async function freteCalcular() {
     if (contrato.tipo === 'diaria')   return parseFloat(contrato.diaria) || 0;
     if (contrato.tipo === 'spot') {
       var sp = spots.find(function(s) {
-        return entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
-               entry.destinos.toLowerCase().includes((s.destino||'').toLowerCase());
+        var bateRota = entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
+                        entry.destinos.toLowerCase().includes((s.destino||'').toLowerCase());
+        // Se a rota spot tem transportadora definida, só casa com contratos da mesma transportadora
+        var bateTransp = !s.transportadora || s.transportadora === contrato.transportadora;
+        return bateRota && bateTransp;
       });
       return sp ? (parseFloat(sp.valor)||0) * entry.m3Total : 0;
     }
@@ -7414,7 +7456,17 @@ async function freteCalcular() {
   var vistas = { viagem:'Viagem', dia:'Dia', semana:'Semana', mes:'Mês', periodo:'Período' };
   var thLabel = (vistas[_freteVista] || _freteVista).toUpperCase();
 
-  var html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+  var ordemBtnStyle = function(ativo) {
+    return 'font-size:10px;padding:3px 10px;border-radius:6px;cursor:pointer;' +
+      (ativo ? 'background:var(--pet-green);color:#000;font-weight:700;border:none;' : 'background:transparent;color:var(--text-3);border:1px solid var(--border-dk);');
+  };
+  var html = '<div style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--border-dk);">' +
+    '<span style="font-size:10px;color:var(--text-3);font-weight:600;letter-spacing:.04em;">ORDENAR POR</span>' +
+    '<button id="frete-ordem-custo" onclick="freteSetOrdem(\'custo\')" style="' + ordemBtnStyle(_freteOrdem==='custo') + '">Custo</button>' +
+    '<button id="frete-ordem-transportadora" onclick="freteSetOrdem(\'transportadora\')" style="' + ordemBtnStyle(_freteOrdem==='transportadora') + '">Transportadora</button>' +
+    '<button id="frete-ordem-placa" onclick="freteSetOrdem(\'placa\')" style="' + ordemBtnStyle(_freteOrdem==='placa') + '">Placa</button>' +
+    '</div>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
     '<thead><tr style="background:rgba(0,0,0,0.03);border-bottom:2px solid var(--border-dk);">' +
     '<th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);">PLACA</th>' +
     '<th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);">TRANSPORTADORA</th>' +
@@ -7426,16 +7478,63 @@ async function freteCalcular() {
     '</tr></thead><tbody>';
 
   if (linhas.length) {
-    linhas.forEach(function(g, i) {
-      html += '<tr style="border-top:1px solid var(--border-dk);' + (i%2===1?'background:rgba(0,0,0,0.015)':'') + '">' +
-        '<td style="padding:10px 14px;font-weight:700;color:var(--text);white-space:nowrap;">' + (g.placa||'') + '</td>' +
-        '<td style="padding:10px 14px;color:var(--text-2);">' + (g.transportadora||'') + '</td>' +
-        '<td style="padding:10px 14px;color:var(--text-2);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + labelLegivel(g) + '</td>' +
-        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + g.nViagens + '</td>' +
-        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + g.km.toFixed(0) + ' km</td>' +
-        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + g.m3.toFixed(1) + '</td>' +
-        '<td style="padding:10px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(g.custo) + '</td>' +
+    // Agrupa as linhas por placa para permitir expandir/recolher (lista fica longa)
+    var porPlaca = {};
+    var ordemPlacas = [];
+    linhas.forEach(function(g) {
+      if (!porPlaca[g.placa]) { porPlaca[g.placa] = []; ordemPlacas.push(g.placa); }
+      porPlaca[g.placa].push(g);
+    });
+    // Ordena placas conforme critério selecionado pelo usuário
+    ordemPlacas.sort(function(a,b) {
+      if (_freteOrdem === 'transportadora') {
+        var ta = (porPlaca[a][0].transportadora || '').toLowerCase();
+        var tb = (porPlaca[b][0].transportadora || '').toLowerCase();
+        if (ta !== tb) return ta < tb ? -1 : 1;
+        return a < b ? -1 : (a > b ? 1 : 0); // desempate por placa
+      }
+      if (_freteOrdem === 'placa') {
+        return a < b ? -1 : (a > b ? 1 : 0);
+      }
+      // padrão: maior custo agregado primeiro
+      var sa = porPlaca[a].reduce(function(s,g){return s+g.custo;},0);
+      var sb = porPlaca[b].reduce(function(s,g){return s+g.custo;},0);
+      return sb - sa;
+    });
+
+    ordemPlacas.forEach(function(placa, gi) {
+      var itens = porPlaca[placa];
+      var custoPlaca = itens.reduce(function(s,g){return s+g.custo;},0);
+      var kmPlaca    = itens.reduce(function(s,g){return s+g.km;},0);
+      var m3Placa    = itens.reduce(function(s,g){return s+g.m3;},0);
+      var viPlaca    = itens.reduce(function(s,g){return s+g.nViagens;},0);
+      var transpPlaca = itens[0].transportadora || '';
+      var groupId = 'frete-grp-' + gi;
+
+      html += '<tr onclick="freteToggleGrupo(\'' + groupId + '\')" style="border-top:1px solid var(--border-dk);cursor:pointer;background:rgba(0,0,0,0.025);' + '">' +
+        '<td style="padding:10px 14px;font-weight:700;color:var(--text);white-space:nowrap;">' +
+          '<span id="' + groupId + '-icon" style="display:inline-block;width:16px;text-align:center;margin-right:6px;color:var(--text-3);">▸</span>' +
+          (placa||'') +
+        '</td>' +
+        '<td style="padding:10px 14px;color:var(--text-2);">' + (transpPlaca||'') + '</td>' +
+        '<td style="padding:10px 14px;color:var(--text-3);font-style:italic;">' + itens.length + ' registro' + (itens.length>1?'s':'') + '</td>' +
+        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + viPlaca + '</td>' +
+        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + kmPlaca.toFixed(0) + ' km</td>' +
+        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + m3Placa.toFixed(1) + '</td>' +
+        '<td style="padding:10px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(custoPlaca) + '</td>' +
         '</tr>';
+
+      itens.forEach(function(g, i) {
+        html += '<tr class="' + groupId + '-row" style="display:none;border-top:1px solid var(--border-dk);' + (i%2===1?'background:rgba(0,0,0,0.015)':'') + '">' +
+          '<td style="padding:8px 14px 8px 36px;color:var(--text-3);white-space:nowrap;font-size:11px;">' + (g.placa||'') + '</td>' +
+          '<td style="padding:8px 14px;color:var(--text-2);">' + (g.transportadora||'') + '</td>' +
+          '<td style="padding:8px 14px;color:var(--text-2);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + labelLegivel(g) + '</td>' +
+          '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.nViagens + '</td>' +
+          '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.km.toFixed(0) + ' km</td>' +
+          '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.m3.toFixed(1) + '</td>' +
+          '<td style="padding:8px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(g.custo) + '</td>' +
+          '</tr>';
+      });
     });
   } else {
     html += '<tr><td colspan="7" style="padding:32px;text-align:center;color:var(--text-3);">Nenhum dado calculado. Verifique os contratos cadastrados.</td></tr>';
@@ -7449,6 +7548,35 @@ async function freteCalcular() {
   el.innerHTML = html;
 }
 
+function freteSetOrdem(o) {
+  _freteOrdem = o;
+  ['custo','transportadora','placa'].forEach(function(k) {
+    var btn = document.getElementById('frete-ordem-' + k);
+    if (!btn) return;
+    if (k === o) {
+      btn.style.background = 'var(--pet-green)';
+      btn.style.color = '#000';
+      btn.style.fontWeight = '700';
+      btn.style.border = 'none';
+    } else {
+      btn.style.background = '';
+      btn.style.color = '';
+      btn.style.fontWeight = '';
+      btn.style.border = '';
+    }
+  });
+  freteCalcular();
+}
+
+function freteToggleGrupo(groupId) {
+  var icon = document.getElementById(groupId + '-icon');
+  var rows = document.querySelectorAll('.' + groupId + '-row');
+  if (!rows.length) return;
+  var aberto = rows[0].style.display !== 'none';
+  rows.forEach(function(r) { r.style.display = aberto ? 'none' : 'table-row'; });
+  if (icon) icon.textContent = aberto ? '▸' : '▾';
+}
+
 window.freteCalcular          = freteCalcular;
 window.freteAdicionarContrato = freteAdicionarContrato;
 window.freteEditarContrato    = freteEditarContrato;
@@ -7457,3 +7585,5 @@ window.freteAdicionarSpot     = freteAdicionarSpot;
 window.freteEditarSpot        = freteEditarSpot;
 window.freteRemoverSpot       = freteRemoverSpot;
 window.freteSetVista          = freteSetVista;
+window.freteToggleGrupo       = freteToggleGrupo;
+window.freteSetOrdem          = freteSetOrdem;

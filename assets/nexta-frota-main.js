@@ -360,6 +360,9 @@ async function loadConfig() {
   if(fbOps) OPERACOES = fbOps;
   if(Number.isFinite(fbCutoff)) ALERT_CUTOFF_HOUR = fbCutoff;
   if(Number.isFinite(fbMeta) && fbMeta > 0) META_DISP = fbMeta;
+  // Expõe a lista de transportadoras globalmente para outros módulos (ex: Roteirizador)
+  // que não têm acesso direto a esta variável de módulo ES.
+  window.CARRIERS = CARRIERS;
 }
 // ── Monthly archive helpers ──
 async function dbGetArchives() {
@@ -626,6 +629,7 @@ let USERS_DB = {
   garbuio:   { name:"Garbuio Transportes",     role:"carrier",     initials:"GT", carrier:"Garbuio Transportes" },
 };
 let CARRIERS = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transportes","Simeira Transportes","Garbuio Transportes"];
+window.CARRIERS = CARRIERS; // disponível desde já para outros módulos (ex: Roteirizador)
 let OPERACOES = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de Caxias","Brasília","Cubatão","Uberaba"];
 const TIPOS_VEIC = ["Truck","Bi-Truck","Cavalo Mecânico"];
 const IDENTS     = ["Petronas","Branco"];
