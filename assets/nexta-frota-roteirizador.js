@@ -4226,6 +4226,14 @@ async function exportarHrrlog() {
       // Clock acumulado até esta viagem
       let relogioMin = inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
       relogioMin += vi.esperaTerminalMin || 0;
+      // Se o usuário editou manualmente o horário de carga, aplica o override
+      // (mesma lógica do bloco transportador e do render de otimização)
+      if (vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin)) {
+        const _baseDay = Math.floor(relogioMin / 1440) * 1440;
+        let _alvo = _baseDay + vi.horarioCargaManualMin;
+        if (_alvo < relogioMin - 0.001) _alvo += 1440;
+        relogioMin = _alvo;
+      }
       // Início de carga (com possível atraso de restrição na 1ª parada)
       const p0 = vi.paradas[0];
       const atrasoP0 = (!p0.overnight && (p0.tempoEsperaRestricaoMin || 0) > 0 && (p0.tempoCarregamentoMin || 0) > 0)
@@ -7006,7 +7014,7 @@ function _freteListaTransportadoras() {
 function _freteSelectTransportadora(valorAtual, onChangeFn) {
   var lista = _freteListaTransportadoras();
   var sel = document.createElement('select');
-  sel.style.cssText = _freteInputStyle('width:160px;');
+  sel.style.cssText = _freteInputStyle('width:100%;');
   var optVazia = document.createElement('option');
   optVazia.value = '';
   optVazia.textContent = lista.length ? 'Selecione...' : 'Nenhuma cadastrada';
@@ -7031,7 +7039,7 @@ function _freteSelectTransportadora(valorAtual, onChangeFn) {
 }
 
 function _freteInputStyle(extra) {
-  return 'font-size:12px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);' + (extra||'');
+  return 'font-size:11px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 5px;background:var(--surface);color:var(--text);box-sizing:border-box;' + (extra||'');
 }
 
 function freteRenderContratos() {
@@ -7049,27 +7057,27 @@ function freteRenderContratos() {
 
     // Placa
     var tdPlaca = document.createElement('td');
-    tdPlaca.style.cssText = 'padding:10px 14px;font-weight:600;color:var(--text);white-space:nowrap;';
+    tdPlaca.style.cssText = 'padding:7px 8px;font-weight:600;color:var(--text);';
     var inpPlaca = document.createElement('input');
     inpPlaca.value = c.placa || '';
     inpPlaca.placeholder = 'Placa';
-    inpPlaca.style.cssText = _freteInputStyle('width:90px;font-weight:600;');
+    inpPlaca.style.cssText = _freteInputStyle('width:100%;font-weight:600;');
     inpPlaca.onchange = function() { freteEditarContrato(i, 'placa', this.value); };
     tdPlaca.appendChild(inpPlaca);
     tr.appendChild(tdPlaca);
 
     // Transportadora
     var tdTransp = document.createElement('td');
-    tdTransp.style.cssText = 'padding:10px 14px;color:var(--text-2);';
+    tdTransp.style.cssText = 'padding:7px 8px;color:var(--text-2);';
     var selTransp = _freteSelectTransportadora(c.transportadora || '', function() { freteEditarContrato(i, 'transportadora', this.value); });
     tdTransp.appendChild(selTransp);
     tr.appendChild(tdTransp);
 
     // Tipo
     var tdTipo = document.createElement('td');
-    tdTipo.style.cssText = 'padding:10px 14px;';
+    tdTipo.style.cssText = 'padding:7px 8px;';
     var sel = document.createElement('select');
-    sel.style.cssText = _freteInputStyle('');
+    sel.style.cssText = _freteInputStyle('width:100%;');
     Object.entries(FRETE_TIPOS).forEach(function(entry) {
       var opt = document.createElement('option');
       opt.value = entry[0];
@@ -7083,10 +7091,10 @@ function freteRenderContratos() {
 
     // Modo de cálculo do KM (ida e volta ou somente ida)
     var tdKmModo = document.createElement('td');
-    tdKmModo.style.cssText = 'padding:10px 14px;';
+    tdKmModo.style.cssText = 'padding:7px 8px;';
     var selKmModo = document.createElement('select');
     selKmModo.title = 'Define se o KM rodado considera ida e volta ou somente o trecho de ida';
-    selKmModo.style.cssText = _freteInputStyle('width:110px;');
+    selKmModo.style.cssText = _freteInputStyle('width:100%;');
     [['ida_volta','Ida e volta'], ['ida','Somente ida']].forEach(function(opt) {
       var o = document.createElement('option');
       o.value = opt[0];
@@ -7100,13 +7108,13 @@ function freteRenderContratos() {
 
     // Fixo/mês
     var tdFixo = document.createElement('td');
-    tdFixo.style.cssText = 'padding:10px 14px;text-align:right;';
+    tdFixo.style.cssText = 'padding:7px 8px;text-align:right;';
     var inpFixo = document.createElement('input');
     inpFixo.type = 'number';
     inpFixo.value = c.fixo || '';
     inpFixo.placeholder = '0,00';
     inpFixo.min = '0'; inpFixo.step = '0.01';
-    inpFixo.style.cssText = _freteInputStyle('width:100px;text-align:right;');
+    inpFixo.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpFixo.disabled = (c.tipo === 'diaria' || c.tipo === 'spot');
     if (inpFixo.disabled) inpFixo.style.opacity = '0.4';
     inpFixo.onchange = function() { freteEditarContrato(i, 'fixo', this.value); };
@@ -7115,13 +7123,13 @@ function freteRenderContratos() {
 
     // R$/km
     var tdKm = document.createElement('td');
-    tdKm.style.cssText = 'padding:10px 14px;text-align:right;';
+    tdKm.style.cssText = 'padding:7px 8px;text-align:right;';
     var inpKm = document.createElement('input');
     inpKm.type = 'number';
     inpKm.value = c.km || '';
     inpKm.placeholder = '0,00';
     inpKm.min = '0'; inpKm.step = '0.01';
-    inpKm.style.cssText = _freteInputStyle('width:80px;text-align:right;');
+    inpKm.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpKm.disabled = (c.tipo !== 'fixo_km');
     if (inpKm.disabled) inpKm.style.opacity = '0.4';
     inpKm.onchange = function() { freteEditarContrato(i, 'km', this.value); };
@@ -7130,13 +7138,13 @@ function freteRenderContratos() {
 
     // R$/m³
     var tdM3 = document.createElement('td');
-    tdM3.style.cssText = 'padding:10px 14px;text-align:right;';
+    tdM3.style.cssText = 'padding:7px 8px;text-align:right;';
     var inpM3 = document.createElement('input');
     inpM3.type = 'number';
     inpM3.value = c.m3 || '';
     inpM3.placeholder = '0,00';
     inpM3.min = '0'; inpM3.step = '0.01';
-    inpM3.style.cssText = _freteInputStyle('width:80px;text-align:right;');
+    inpM3.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpM3.disabled = (c.tipo !== 'fixo_m3');
     if (inpM3.disabled) inpM3.style.opacity = '0.4';
     inpM3.onchange = function() { freteEditarContrato(i, 'm3', this.value); };
@@ -7145,13 +7153,13 @@ function freteRenderContratos() {
 
     // R$/dia
     var tdDia = document.createElement('td');
-    tdDia.style.cssText = 'padding:10px 14px;text-align:right;';
+    tdDia.style.cssText = 'padding:7px 8px;text-align:right;';
     var inpDia = document.createElement('input');
     inpDia.type = 'number';
     inpDia.value = c.diaria || '';
     inpDia.placeholder = '0,00';
     inpDia.min = '0'; inpDia.step = '0.01';
-    inpDia.style.cssText = _freteInputStyle('width:90px;text-align:right;');
+    inpDia.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpDia.disabled = (c.tipo !== 'diaria');
     if (inpDia.disabled) inpDia.style.opacity = '0.4';
     inpDia.onchange = function() { freteEditarContrato(i, 'diaria', this.value); };
@@ -7160,7 +7168,7 @@ function freteRenderContratos() {
 
     // Ações
     var tdAcao = document.createElement('td');
-    tdAcao.style.cssText = 'padding:10px 14px;text-align:center;';
+    tdAcao.style.cssText = 'padding:7px 6px;text-align:center;';
     var btnDel = document.createElement('button');
     btnDel.textContent = '✕';
     btnDel.style.cssText = 'font-size:11px;padding:3px 9px;border:1px solid #ef4444;border-radius:5px;background:transparent;color:#ef4444;cursor:pointer;';
