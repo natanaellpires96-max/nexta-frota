@@ -599,7 +599,7 @@ function showTab(name) {
     const y = hoje.getFullYear(), m = String(hoje.getMonth()+1).padStart(2,'0');
     const de  = document.getElementById('frete-de');
     const ate = document.getElementById('frete-ate');
-    if (de  && !de.value)  de.value  = `${y}-${m}-01`;
+    if (de  && !de.value)  de.value  = y + '-' + m + '-01';
     if (ate && !ate.value) ate.value = hoje.toISOString().slice(0,10);
   }
   if (name === 'mapa') {
@@ -4441,9 +4441,11 @@ function renderTemplateOperacao() {
     // Se o usuário definiu horário manual de carga, aplica ao relogioMin do bloco transportador
     // para que "Carregamento" no resumo reflita o horário editado, não o calculado automaticamente.
     if (_opTemOverride && !isNaN(viOriginal.horarioCargaManualMin)) {
-      const _baseDay = Math.floor(relogioMin / 1440) * 1440;
-      let _alvoManual = _baseDay + viOriginal.horarioCargaManualMin;
-      if (_alvoManual < relogioMin - 0.001) _alvoManual += 1440;
+      // O horarioCargaManualMin é sempre relativo ao dia base (dia 0 = dia de carregamento).
+      // Não usamos Math.floor(relogioMin/1440) para evitar jogar para o dia seguinte
+      // quando o relogioMin acumulado já passou de 1440 (overnight anterior).
+      // O dia base é sempre 0 (jornada começa no dia do carregamento).
+      const _alvoManual = viOriginal.horarioCargaManualMin;
       relogioMin = _alvoManual;
     }
     let inicioCargaCicloMin = relogioMin;
@@ -5637,10 +5639,8 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
         // Se o usuário definiu horário manual, ajusta relogioMin para refletir esse horário
         // (preserva o horário salvo no re-render, evitando que o campo volte ao calculado)
         if (_temOverride && !isNaN(viagem.horarioCargaManualMin)) {
-          const baseDay = Math.floor(relogioMin / 1440) * 1440;
-          let alvoManual = baseDay + viagem.horarioCargaManualMin;
-          if (alvoManual < relogioMin - 0.001) alvoManual += 1440;
-          relogioMin = alvoManual;
+          // Usa o horário manual diretamente sem baseDay para não avançar dia
+          relogioMin = viagem.horarioCargaManualMin;
         }
         const paradasComHorario = viagem.paradas.map((p, idxParada) => {
           const esperaOriginalMin = p.tempoEsperaRestricaoMin || 0;
@@ -6972,16 +6972,15 @@ window.exportarBlocoPDF              = exportarBlocoPDF;
 window.exportarBlocoPNG              = exportarBlocoPNG;
 window.exportarTodasProgramacoesPDF  = exportarTodasProgramacoesPDF;
 window.exportarTodasProgramacoesPNG  = exportarTodasProgramacoesPNG;
+// ══════════════════════════════════════════════════════════════════════════════
 // CALCULADORA DE FRETE
-// Contratos: fixo+km | fixo+m³ | diária | spot por rota
-// Custos calculados por viagem/dia/semana/mês/período
-// O fixo mensal é reprocessado a cada viagem feita no mês.
+// Contratos: fixo+km | fixo+m3 | diaria | spot por rota
 // ══════════════════════════════════════════════════════════════════════════════
 
 const FRETE_LS_KEY   = 'nexta_frete_contratos_v1';
 const FRETE_SPOT_KEY = 'nexta_frete_spot_v1';
+const FRETE_TIPOS    = { fixo_km:'Fixo + R$/km', fixo_m3:'Fixo + R$/m³', diaria:'Diária', spot:'Spot' };
 
-// ── Persistência ─────────────────────────────────────────────────────────────
 function freteCarregarContratos() {
   try { return JSON.parse(localStorage.getItem(FRETE_LS_KEY) || '[]'); } catch(e) { return []; }
 }
@@ -6995,55 +6994,133 @@ function freteSalvarSpot(arr) {
   localStorage.setItem(FRETE_SPOT_KEY, JSON.stringify(arr));
 }
 
-// ── Render tabela de contratos ────────────────────────────────────────────────
+function _freteInputStyle(extra) {
+  return 'font-size:12px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);' + (extra||'');
+}
+
 function freteRenderContratos() {
   const tbody = document.getElementById('frete-contratos-body');
   if (!tbody) return;
   const contratos = freteCarregarContratos();
-
   if (!contratos.length) {
-    tbody.innerHTML = `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">
-      Nenhum contrato cadastrado. Clique em "+ Adicionar" para começar.</td></tr>`;
+    tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Nenhum contrato cadastrado. Clique em "+ Adicionar" para começar.</td></tr>';
     return;
   }
+  tbody.innerHTML = '';
+  contratos.forEach(function(c, i) {
+    var tr = document.createElement('tr');
+    tr.style.borderTop = '1px solid var(--border-dk)';
 
-  const TIPOS = { 'fixo_km':'Fixo + R$/km', 'fixo_m3':'Fixo + R$/m³', 'diaria':'Diária', 'spot':'Spot' };
-  tbody.innerHTML = contratos.map((c, i) => {
-    const tipo = TIPOS[c.tipo] || c.tipo;
-    const R = v => v != null && v !== '' ? `R$ ${parseFloat(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—';
-    return `<tr style="border-top:1px solid var(--border-dk);">
-      <td style="padding:10px 14px;font-weight:600;color:var(--text);white-space:nowrap;">
-        <input value="${esc(c.placa||'')}" onchange="freteEditarContrato(${i},'placa',this.value)"
-          style="width:90px;font-size:12px;font-weight:600;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);" placeholder="Placa"/></td>
-      <td style="padding:10px 14px;color:var(--text-2);">
-        <input value="${esc(c.transportadora||'')}" onchange="freteEditarContrato(${i},'transportadora',this.value)"
-          style="width:140px;font-size:12px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);" placeholder="Transportadora"/></td>
-      <td style="padding:10px 14px;">
-        <select onchange="freteEditarContrato(${i},'tipo',this.value)"
-          style="font-size:12px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);">
-          ${Object.entries(TIPOS).map(([v,l]) => `<option value="${v}" ${c.tipo===v?'selected':''}>${l}</option>`).join('')}
-        </select></td>
-      <td style="padding:10px 14px;text-align:right;">
-        <input type="number" value="${c.fixo||''}" onchange="freteEditarContrato(${i},'fixo',this.value)"
-          style="width:100px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);"
-          placeholder="0,00" min="0" step="0.01" ${c.tipo==='diaria'||c.tipo==='spot'?'disabled style="opacity:.4;width:100px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);"':''}/></td>
-      <td style="padding:10px 14px;text-align:right;">
-        <input type="number" value="${c.km||''}" onchange="freteEditarContrato(${i},'km',this.value)"
-          style="width:80px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);"
-          placeholder="0,00" min="0" step="0.01" ${c.tipo!=='fixo_km'?'disabled style="opacity:.4;width:80px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);"':''}/></td>
-      <td style="padding:10px 14px;text-align:right;">
-        <input type="number" value="${c.m3||''}" onchange="freteEditarContrato(${i},'m3',this.value)"
-          style="width:80px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);"
-          placeholder="0,00" min="0" step="0.01" ${c.tipo!=='fixo_m3'?'disabled style="opacity:.4;width:80px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);"':''}/></td>
-      <td style="padding:10px 14px;text-align:right;">
-        <input type="number" value="${c.diaria||''}" onchange="freteEditarContrato(${i},'diaria',this.value)"
-          style="width:90px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);"
-          placeholder="0,00" min="0" step="0.01" ${c.tipo!=='diaria'?'disabled style="opacity:.4;width:90px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);"':''}/></td>
-      <td style="padding:10px 14px;text-align:center;">
-        <button onclick="freteRemoverContrato(${i})" style="font-size:11px;padding:3px 9px;border:1px solid #ef4444;border-radius:5px;background:transparent;color:#ef4444;cursor:pointer;">✕</button>
-      </td>
-    </tr>`;
-  }).join('');
+    // Placa
+    var tdPlaca = document.createElement('td');
+    tdPlaca.style.cssText = 'padding:10px 14px;font-weight:600;color:var(--text);white-space:nowrap;';
+    var inpPlaca = document.createElement('input');
+    inpPlaca.value = c.placa || '';
+    inpPlaca.placeholder = 'Placa';
+    inpPlaca.style.cssText = _freteInputStyle('width:90px;font-weight:600;');
+    inpPlaca.onchange = function() { freteEditarContrato(i, 'placa', this.value); };
+    tdPlaca.appendChild(inpPlaca);
+    tr.appendChild(tdPlaca);
+
+    // Transportadora
+    var tdTransp = document.createElement('td');
+    tdTransp.style.cssText = 'padding:10px 14px;color:var(--text-2);';
+    var inpTransp = document.createElement('input');
+    inpTransp.value = c.transportadora || '';
+    inpTransp.placeholder = 'Transportadora';
+    inpTransp.style.cssText = _freteInputStyle('width:140px;');
+    inpTransp.onchange = function() { freteEditarContrato(i, 'transportadora', this.value); };
+    tdTransp.appendChild(inpTransp);
+    tr.appendChild(tdTransp);
+
+    // Tipo
+    var tdTipo = document.createElement('td');
+    tdTipo.style.cssText = 'padding:10px 14px;';
+    var sel = document.createElement('select');
+    sel.style.cssText = _freteInputStyle('');
+    Object.entries(FRETE_TIPOS).forEach(function(entry) {
+      var opt = document.createElement('option');
+      opt.value = entry[0];
+      opt.textContent = entry[1];
+      if (c.tipo === entry[0]) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.onchange = function() { freteEditarContrato(i, 'tipo', this.value); };
+    tdTipo.appendChild(sel);
+    tr.appendChild(tdTipo);
+
+    // Fixo/mês
+    var tdFixo = document.createElement('td');
+    tdFixo.style.cssText = 'padding:10px 14px;text-align:right;';
+    var inpFixo = document.createElement('input');
+    inpFixo.type = 'number';
+    inpFixo.value = c.fixo || '';
+    inpFixo.placeholder = '0,00';
+    inpFixo.min = '0'; inpFixo.step = '0.01';
+    inpFixo.style.cssText = _freteInputStyle('width:100px;text-align:right;');
+    inpFixo.disabled = (c.tipo === 'diaria' || c.tipo === 'spot');
+    if (inpFixo.disabled) inpFixo.style.opacity = '0.4';
+    inpFixo.onchange = function() { freteEditarContrato(i, 'fixo', this.value); };
+    tdFixo.appendChild(inpFixo);
+    tr.appendChild(tdFixo);
+
+    // R$/km
+    var tdKm = document.createElement('td');
+    tdKm.style.cssText = 'padding:10px 14px;text-align:right;';
+    var inpKm = document.createElement('input');
+    inpKm.type = 'number';
+    inpKm.value = c.km || '';
+    inpKm.placeholder = '0,00';
+    inpKm.min = '0'; inpKm.step = '0.01';
+    inpKm.style.cssText = _freteInputStyle('width:80px;text-align:right;');
+    inpKm.disabled = (c.tipo !== 'fixo_km');
+    if (inpKm.disabled) inpKm.style.opacity = '0.4';
+    inpKm.onchange = function() { freteEditarContrato(i, 'km', this.value); };
+    tdKm.appendChild(inpKm);
+    tr.appendChild(tdKm);
+
+    // R$/m³
+    var tdM3 = document.createElement('td');
+    tdM3.style.cssText = 'padding:10px 14px;text-align:right;';
+    var inpM3 = document.createElement('input');
+    inpM3.type = 'number';
+    inpM3.value = c.m3 || '';
+    inpM3.placeholder = '0,00';
+    inpM3.min = '0'; inpM3.step = '0.01';
+    inpM3.style.cssText = _freteInputStyle('width:80px;text-align:right;');
+    inpM3.disabled = (c.tipo !== 'fixo_m3');
+    if (inpM3.disabled) inpM3.style.opacity = '0.4';
+    inpM3.onchange = function() { freteEditarContrato(i, 'm3', this.value); };
+    tdM3.appendChild(inpM3);
+    tr.appendChild(tdM3);
+
+    // R$/dia
+    var tdDia = document.createElement('td');
+    tdDia.style.cssText = 'padding:10px 14px;text-align:right;';
+    var inpDia = document.createElement('input');
+    inpDia.type = 'number';
+    inpDia.value = c.diaria || '';
+    inpDia.placeholder = '0,00';
+    inpDia.min = '0'; inpDia.step = '0.01';
+    inpDia.style.cssText = _freteInputStyle('width:90px;text-align:right;');
+    inpDia.disabled = (c.tipo !== 'diaria');
+    if (inpDia.disabled) inpDia.style.opacity = '0.4';
+    inpDia.onchange = function() { freteEditarContrato(i, 'diaria', this.value); };
+    tdDia.appendChild(inpDia);
+    tr.appendChild(tdDia);
+
+    // Ações
+    var tdAcao = document.createElement('td');
+    tdAcao.style.cssText = 'padding:10px 14px;text-align:center;';
+    var btnDel = document.createElement('button');
+    btnDel.textContent = '✕';
+    btnDel.style.cssText = 'font-size:11px;padding:3px 9px;border:1px solid #ef4444;border-radius:5px;background:transparent;color:#ef4444;cursor:pointer;';
+    btnDel.onclick = (function(idx) { return function() { freteRemoverContrato(idx); }; })(i);
+    tdAcao.appendChild(btnDel);
+    tr.appendChild(tdAcao);
+
+    tbody.appendChild(tr);
+  });
 }
 
 function freteRenderSpot() {
@@ -7051,137 +7128,167 @@ function freteRenderSpot() {
   if (!tbody) return;
   const spots = freteCarregarSpot();
   if (!spots.length) {
-    tbody.innerHTML = `<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma rota spot cadastrada.</td></tr>`;
+    tbody.innerHTML = '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma rota spot cadastrada.</td></tr>';
     return;
   }
-  tbody.innerHTML = spots.map((s, i) => `
-    <tr style="border-top:1px solid var(--border-dk);">
-      <td style="padding:8px 12px;">
-        <input value="${esc(s.origem||'')}" onchange="freteEditarSpot(${i},'origem',this.value)"
-          style="width:160px;font-size:12px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);" placeholder="Terminal de origem"/></td>
-      <td style="padding:8px 12px;">
-        <input value="${esc(s.destino||'')}" onchange="freteEditarSpot(${i},'destino',this.value)"
-          style="width:160px;font-size:12px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);" placeholder="Cidade ou cliente destino"/></td>
-      <td style="padding:8px 12px;text-align:right;">
-        <input type="number" value="${s.valor||''}" onchange="freteEditarSpot(${i},'valor',this.value)"
-          style="width:90px;font-size:12px;text-align:right;border:1px solid var(--border-dk);border-radius:5px;padding:3px 7px;background:var(--surface);color:var(--text);" placeholder="0,00" min="0" step="0.01"/></td>
-      <td style="padding:8px 12px;text-align:center;">
-        <button onclick="freteRemoverSpot(${i})" style="font-size:11px;padding:3px 9px;border:1px solid #ef4444;border-radius:5px;background:transparent;color:#ef4444;cursor:pointer;">✕</button>
-      </td>
-    </tr>`).join('');
+  tbody.innerHTML = '';
+  spots.forEach(function(s, i) {
+    var tr = document.createElement('tr');
+    tr.style.borderTop = '1px solid var(--border-dk)';
+
+    var tdOrig = document.createElement('td');
+    tdOrig.style.padding = '8px 12px';
+    var inpOrig = document.createElement('input');
+    inpOrig.value = s.origem || '';
+    inpOrig.placeholder = 'Terminal de origem';
+    inpOrig.style.cssText = _freteInputStyle('width:160px;');
+    inpOrig.onchange = function() { freteEditarSpot(i, 'origem', this.value); };
+    tdOrig.appendChild(inpOrig);
+    tr.appendChild(tdOrig);
+
+    var tdDest = document.createElement('td');
+    tdDest.style.padding = '8px 12px';
+    var inpDest = document.createElement('input');
+    inpDest.value = s.destino || '';
+    inpDest.placeholder = 'Cidade ou cliente destino';
+    inpDest.style.cssText = _freteInputStyle('width:160px;');
+    inpDest.onchange = function() { freteEditarSpot(i, 'destino', this.value); };
+    tdDest.appendChild(inpDest);
+    tr.appendChild(tdDest);
+
+    var tdVal = document.createElement('td');
+    tdVal.style.cssText = 'padding:8px 12px;text-align:right;';
+    var inpVal = document.createElement('input');
+    inpVal.type = 'number';
+    inpVal.value = s.valor || '';
+    inpVal.placeholder = '0,00';
+    inpVal.min = '0'; inpVal.step = '0.01';
+    inpVal.style.cssText = _freteInputStyle('width:90px;text-align:right;');
+    inpVal.onchange = function() { freteEditarSpot(i, 'valor', this.value); };
+    tdVal.appendChild(inpVal);
+    tr.appendChild(tdVal);
+
+    var tdAcao = document.createElement('td');
+    tdAcao.style.cssText = 'padding:8px 12px;text-align:center;';
+    var btnDel = document.createElement('button');
+    btnDel.textContent = '✕';
+    btnDel.style.cssText = 'font-size:11px;padding:3px 9px;border:1px solid #ef4444;border-radius:5px;background:transparent;color:#ef4444;cursor:pointer;';
+    btnDel.onclick = (function(idx) { return function() { freteRemoverSpot(idx); }; })(i);
+    tdAcao.appendChild(btnDel);
+    tr.appendChild(tdAcao);
+
+    tbody.appendChild(tr);
+  });
 }
 
-// ── CRUD contratos ────────────────────────────────────────────────────────────
+// ── CRUD ─────────────────────────────────────────────────────────────────────
 function freteAdicionarContrato() {
-  const arr = freteCarregarContratos();
-  // Tenta pré-preencher com o primeiro veículo ainda não cadastrado
-  const placasCadastradas = new Set(arr.map(c => c.placa));
-  const proxVeiculo = veiculos.find(v => !placasCadastradas.has(v.placa));
-  arr.push({
-    placa: proxVeiculo?.placa || '',
-    transportadora: proxVeiculo?.transportadora || '',
-    tipo: 'fixo_km', fixo: '', km: '', m3: '', diaria: ''
-  });
+  var arr = freteCarregarContratos();
+  var placasCadastradas = new Set(arr.map(function(c) { return c.placa; }));
+  var proxV = veiculos.find(function(v) { return !placasCadastradas.has(v.placa); });
+  arr.push({ placa: proxV ? proxV.placa : '', transportadora: proxV ? (proxV.transportadora||'') : '', tipo:'fixo_km', fixo:'', km:'', m3:'', diaria:'' });
   freteSalvarContratos(arr);
   freteRenderContratos();
 }
 
 function freteEditarContrato(i, campo, valor) {
-  const arr = freteCarregarContratos();
+  var arr = freteCarregarContratos();
   if (!arr[i]) return;
   arr[i][campo] = valor;
-  // Ao mudar a placa, tenta pré-preencher transportadora
   if (campo === 'placa') {
-    const v = veiculos.find(v => v.placa === valor);
+    var v = veiculos.find(function(v) { return v.placa === valor; });
     if (v) arr[i].transportadora = v.transportadora || arr[i].transportadora;
   }
   freteSalvarContratos(arr);
-  // Só re-render se mudou o tipo (para habilitar/desabilitar campos)
   if (campo === 'tipo') freteRenderContratos();
 }
 
 function freteRemoverContrato(i) {
-  const arr = freteCarregarContratos();
+  var arr = freteCarregarContratos();
   arr.splice(i, 1);
   freteSalvarContratos(arr);
   freteRenderContratos();
 }
 
 function freteAdicionarSpot() {
-  const arr = freteCarregarSpot();
-  arr.push({ origem: '', destino: '', valor: '' });
+  var arr = freteCarregarSpot();
+  arr.push({ origem:'', destino:'', valor:'' });
   freteSalvarSpot(arr);
   freteRenderSpot();
 }
 
 function freteEditarSpot(i, campo, valor) {
-  const arr = freteCarregarSpot();
+  var arr = freteCarregarSpot();
   if (!arr[i]) return;
   arr[i][campo] = valor;
   freteSalvarSpot(arr);
 }
 
 function freteRemoverSpot(i) {
-  const arr = freteCarregarSpot();
+  var arr = freteCarregarSpot();
   arr.splice(i, 1);
   freteSalvarSpot(arr);
   freteRenderSpot();
 }
 
-// ── Vista atual ───────────────────────────────────────────────────────────────
-let _freteVista = 'viagem';
+// ── Vista ─────────────────────────────────────────────────────────────────────
+var _freteVista = 'viagem';
 function freteSetVista(v) {
   _freteVista = v;
-  ['viagem','dia','semana','mes','periodo'].forEach(k => {
-    const btn = document.getElementById('frete-btn-' + k);
-    if (btn) {
-      btn.style.background   = k === v ? 'var(--pet-green)' : '';
-      btn.style.color        = k === v ? '#000' : '';
-      btn.style.fontWeight   = k === v ? '700' : '';
-      btn.style.border       = k === v ? 'none' : '';
+  ['viagem','dia','semana','mes','periodo'].forEach(function(k) {
+    var btn = document.getElementById('frete-btn-' + k);
+    if (!btn) return;
+    if (k === v) {
+      btn.style.background = 'var(--pet-green)';
+      btn.style.color = '#000';
+      btn.style.fontWeight = '700';
+      btn.style.border = 'none';
+    } else {
+      btn.style.background = '';
+      btn.style.color = '';
+      btn.style.fontWeight = '';
+      btn.style.border = '';
     }
   });
   freteCalcular();
 }
 
-// ── Cálculo principal ─────────────────────────────────────────────────────────
+// ── Cálculo ───────────────────────────────────────────────────────────────────
 async function freteCalcular() {
-  const el = document.getElementById('frete-resultado');
-  const resumoEl = document.getElementById('frete-resumo-total');
+  var el = document.getElementById('frete-resultado');
+  var resumoEl = document.getElementById('frete-resumo-total');
   if (!el) return;
 
-  const de  = document.getElementById('frete-de')?.value;
-  const ate = document.getElementById('frete-ate')?.value;
-  const contratos = freteCarregarContratos();
-  const spots     = freteCarregarSpot();
+  var de  = (document.getElementById('frete-de')  || {}).value || '';
+  var ate = (document.getElementById('frete-ate') || {}).value || '';
+  var contratos = freteCarregarContratos();
+  var spots     = freteCarregarSpot();
 
   if (!dirHandleHistorico) {
-    el.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-3);font-size:13px;">⚠️ Selecione a pasta do Histórico na aba Histórico para carregar os dados.</div>';
+    el.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-3);font-size:13px;">Selecione a pasta do Histórico na aba Histórico para carregar os dados.</div>';
     return;
   }
 
   el.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-3);font-size:13px;">Carregando dados do histórico...</div>';
 
-  // Carrega todos os snapshots do período
-  let snaps = [];
+  var snaps = [];
   try {
-    for await (const [name, handle] of dirHandleHistorico.entries()) {
+    for await (var [name, handle] of dirHandleHistorico.entries()) {
       if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
-      const diaKey = name.slice(0, 8);
+      var diaKey = name.slice(0, 8);
       if (!/^\d{8}$/.test(diaKey)) continue;
-      // Filtro de período
-      if (de && diaKey < de.replace(/-/g,'')) continue;
+      if (de  && diaKey < de.replace(/-/g,''))  continue;
       if (ate && diaKey > ate.replace(/-/g,'')) continue;
       try {
-        const file = await handle.getFile();
-        const data = JSON.parse(await file.text());
+        var file = await handle.getFile();
+        var data = JSON.parse(await file.text());
         if (!(data.resultado || data.pedidos || data.versao)) continue;
         if (!data.savedAt) data.savedAt = new Date(file.lastModified).toISOString();
         snaps.push(data);
       } catch(e) {}
     }
   } catch(e) {
-    el.innerHTML = `<div style="padding:32px;text-align:center;color:#ef4444;font-size:13px;">Erro ao ler histórico: ${e.message}</div>`;
+    el.innerHTML = '<div style="padding:32px;text-align:center;color:#ef4444;font-size:13px;">Erro ao ler histórico: ' + e.message + '</div>';
     return;
   }
 
@@ -7190,104 +7297,90 @@ async function freteCalcular() {
     return;
   }
 
-  // ── Agrega viagens por placa ──────────────────────────────────────────────
-  // viagensMap: placa → [{ data, kmTotal, m3Total, diasUsados, mesKey }]
-  const viagensMap = {}; // placa → Array de viagens brutas
-  const diasUsoMap = {}; // placa → Set de 'YYYYMMDD' usados
-  const mesMapa   = {}; // placa → mesKey → { viagens[], fixoRateado }
+  // Agrega viagens por placa
+  var viagensMap = {}; // placa → [viagem entries]
+  var mesMapa    = {}; // placa → mesKey → { viagens[] }
 
-  snaps.forEach(snap => {
-    const res  = snap.resultado || {};
-    const veics = snap.veiculos  || [];
-    const dataSnap = snap.savedAt ? snap.savedAt.slice(0,10) : '';
-    const mesKey   = dataSnap.slice(0,7); // YYYY-MM
-    const diaKey   = dataSnap.replace(/-/g,'').slice(0,8);
+  snaps.forEach(function(snap) {
+    var res   = snap.resultado || {};
+    var veics = snap.veiculos  || [];
+    var dataSnap = (snap.savedAt || '').slice(0,10);
+    var mesKey   = dataSnap.slice(0,7);
+    var diaKey2  = dataSnap.replace(/-/g,'').slice(0,8);
 
-    veics.forEach(v => {
-      const placa = v.placa;
+    veics.forEach(function(v) {
+      var placa = v.placa;
       if (!placa) return;
-      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+      var viagens = (res[v.id] || []).filter(function(vi) { return !vi._vazio && (vi.paradas||[]).length; });
       if (!viagens.length) return;
 
       if (!viagensMap[placa]) viagensMap[placa] = [];
-      if (!diasUsoMap[placa]) diasUsoMap[placa] = new Set();
-      if (!mesMapa[placa])   mesMapa[placa] = {};
+      if (!mesMapa[placa])    mesMapa[placa] = {};
       if (!mesMapa[placa][mesKey]) mesMapa[placa][mesKey] = { viagens: [] };
 
-      diasUsoMap[placa].add(diaKey);
-
-      viagens.forEach(vi => {
-        const kmTotal = vi.paradas.reduce((s,p) => s + (p.distanciaKm||0), 0) * 2; // ida+volta estimado
-        const m3Total = vi.paradas.reduce((s,p) => s + (p.volumeTotal||0), 0);
-        const termOrigem = vi.terminalOrigem || '';
-        const destinos   = [...new Set(vi.paradas.map(p => p.pedido?.cidade || p.pedido?.cliente || ''))].join(', ');
-        const entry = { data: dataSnap, diaKey, mesKey, kmTotal, m3Total, termOrigem, destinos, placa };
+      viagens.forEach(function(vi) {
+        var kmTotal = vi.paradas.reduce(function(s,p) { return s + (p.distanciaKm||0); }, 0) * 2;
+        var m3Total = vi.paradas.reduce(function(s,p) { return s + (p.volumeTotal||0); }, 0);
+        var termOrigem = vi.terminalOrigem || '';
+        var destinos   = Array.from(new Set(vi.paradas.map(function(p) { return p.pedido ? (p.pedido.cidade||p.pedido.cliente||'') : ''; }))).join(', ');
+        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmTotal: kmTotal, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa };
         viagensMap[placa].push(entry);
         mesMapa[placa][mesKey].viagens.push(entry);
       });
     });
   });
 
-  // ── Calcula custo por viagem ──────────────────────────────────────────────
-  const fmt = v => `R$ ${v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-
-  // Para cada placa, calcula o fixo rateado por viagem dentro do mês
   function custoViagem(entry, contrato) {
-    const mes = mesMapa[entry.placa]?.[entry.mesKey];
-    const nViagMes = mes ? mes.viagens.length : 1;
-    const fixo = parseFloat(contrato.fixo) || 0;
-    const fixoRateado = fixo / nViagMes;
-
-    if (contrato.tipo === 'fixo_km') {
-      return fixoRateado + (parseFloat(contrato.km)||0) * entry.kmTotal;
-    }
-    if (contrato.tipo === 'fixo_m3') {
-      return fixoRateado + (parseFloat(contrato.m3)||0) * entry.m3Total;
-    }
-    if (contrato.tipo === 'diaria') {
-      return parseFloat(contrato.diaria) || 0;
-    }
+    var mes = mesMapa[entry.placa] && mesMapa[entry.placa][entry.mesKey];
+    var nViagMes = mes ? mes.viagens.length : 1;
+    var fixo = parseFloat(contrato.fixo) || 0;
+    var fixoRateado = fixo / Math.max(nViagMes, 1);
+    if (contrato.tipo === 'fixo_km')  return fixoRateado + (parseFloat(contrato.km)||0)  * entry.kmTotal;
+    if (contrato.tipo === 'fixo_m3')  return fixoRateado + (parseFloat(contrato.m3)||0)  * entry.m3Total;
+    if (contrato.tipo === 'diaria')   return parseFloat(contrato.diaria) || 0;
     if (contrato.tipo === 'spot') {
-      // Busca na tabela spot pela rota origem→destino
-      const s = spots.find(sp =>
-        entry.termOrigem.toLowerCase().includes((sp.origem||'').toLowerCase()) &&
-        entry.destinos.toLowerCase().includes((sp.destino||'').toLowerCase())
-      );
-      return s ? (parseFloat(s.valor)||0) * entry.m3Total : 0;
+      var sp = spots.find(function(s) {
+        return entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
+               entry.destinos.toLowerCase().includes((s.destino||'').toLowerCase());
+      });
+      return sp ? (parseFloat(sp.valor)||0) * entry.m3Total : 0;
     }
     return 0;
   }
 
-  // ── Agrupa por vista ──────────────────────────────────────────────────────
   function chaveVista(entry) {
-    if (_freteVista === 'viagem')  return `${entry.placa}__${entry.data}__${entry.termOrigem}__${entry.destinos}`;
-    if (_freteVista === 'dia')     return `${entry.placa}__${entry.diaKey}`;
+    if (_freteVista === 'viagem')  return entry.placa + '__' + entry.data + '__' + entry.termOrigem + '__' + entry.destinos;
+    if (_freteVista === 'dia')     return entry.placa + '__' + entry.diaKey;
     if (_freteVista === 'semana') {
-      // Semana ISO
-      const d = new Date(entry.data);
-      const jan1 = new Date(d.getFullYear(), 0, 1);
-      const sem  = Math.ceil((((d - jan1) / 86400000) + jan1.getDay() + 1) / 7);
-      return `${entry.placa}__${d.getFullYear()}-S${String(sem).padStart(2,'0')}`;
+      var d = new Date(entry.data), jan1 = new Date(d.getFullYear(),0,1);
+      var sem = Math.ceil((((d - jan1)/86400000) + jan1.getDay() + 1) / 7);
+      return entry.placa + '__' + d.getFullYear() + '-S' + String(sem).padStart(2,'0');
     }
-    if (_freteVista === 'mes')     return `${entry.placa}__${entry.mesKey}`;
-    if (_freteVista === 'periodo') return entry.placa;
+    if (_freteVista === 'mes')     return entry.placa + '__' + entry.mesKey;
     return entry.placa;
   }
 
-  // Calcula custo para cada viagem e agrupa
-  const grupos = {}; // chave → { label, placa, transportadora, custo, km, m3, viagens }
-  let totalGeral = 0;
+  function labelLegivel(g) {
+    var parts = g.label.split('__');
+    if (_freteVista === 'viagem')  return (parts[1]||'') + ' · ' + (parts[2]||'').split(' ')[0] + ' → ' + (parts[3]||'').slice(0,30);
+    if (_freteVista === 'dia')     return (parts[1]||'').replace(/(\d{4})(\d{2})(\d{2})/, '$3/$2/$1');
+    if (_freteVista === 'semana')  return parts[1]||'';
+    if (_freteVista === 'mes')     { var ym = (parts[1]||'').split('-'); return (ym[1]||'') + '/' + (ym[0]||''); }
+    return 'Total do período';
+  }
 
-  Object.entries(viagensMap).forEach(([placa, entradas]) => {
-    const contrato = contratos.find(c => c.placa === placa);
-    entradas.forEach(entry => {
-      const custo = contrato ? custoViagem(entry, contrato) : 0;
-      const chave = chaveVista(entry);
+  var grupos = {};
+  var totalGeral = 0;
+
+  Object.keys(viagensMap).forEach(function(placa) {
+    var entradas = viagensMap[placa];
+    var contrato = contratos.find(function(c) { return c.placa === placa; });
+    entradas.forEach(function(entry) {
+      var custo = contrato ? custoViagem(entry, contrato) : 0;
+      var chave = chaveVista(entry);
       if (!grupos[chave]) {
-        const transp = contratos.find(c => c.placa === placa)
-          ? contratos.find(c => c.placa === placa).transportadora
-          : (veiculos.find(v => v.placa === placa)?.transportadora || '—');
-        grupos[chave] = { placa, transportadora: transp, custo: 0, km: 0, m3: 0, nViagens: 0, label: chave };
+        var transp = contrato ? contrato.transportadora : (veiculos.find(function(v) { return v.placa === placa; }) || {}).transportadora || '—';
+        grupos[chave] = { placa: placa, transportadora: transp, custo: 0, km: 0, m3: 0, nViagens: 0, label: chave };
       }
       grupos[chave].custo    += custo;
       grupos[chave].km       += entry.kmTotal;
@@ -7297,73 +7390,64 @@ async function freteCalcular() {
     });
   });
 
-  const linhas = Object.values(grupos).sort((a,b) => b.custo - a.custo);
-
-  // ── Labels legíveis por vista ─────────────────────────────────────────────
-  function labelLegivel(g) {
-    const parts = g.label.split('__');
-    if (_freteVista === 'viagem')  return `${parts[1]} · ${(parts[2]||'').split(' ')[0]} → ${(parts[3]||'').slice(0,30)}`;
-    if (_freteVista === 'dia')     return parts[1].replace(/(\d{4})(\d{2})(\d{2})/,'$3/$2/$1');
-    if (_freteVista === 'semana')  return parts[1];
-    if (_freteVista === 'mes')     { const [y,m]=parts[1].split('-'); return `${m}/${y}`; }
-    if (_freteVista === 'periodo') return 'Total do período';
-    return g.label;
-  }
-
-  // ── Render resultado ──────────────────────────────────────────────────────
-  const vistas = { viagem:'Viagem', dia:'Dia', semana:'Semana', mes:'Mês', periodo:'Período' };
+  var linhas = Object.values(grupos).sort(function(a,b) { return b.custo - a.custo; });
+  var fmt = function(v) { return 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); };
 
   if (resumoEl) {
-    const totalKm = linhas.reduce((s,g)=>s+g.km,0);
-    const totalM3 = linhas.reduce((s,g)=>s+g.m3,0);
-    const totalVi = linhas.reduce((s,g)=>s+g.nViagens,0);
-    resumoEl.innerHTML = [
+    var totalKm = linhas.reduce(function(s,g){return s+g.km;},0);
+    var totalM3 = linhas.reduce(function(s,g){return s+g.m3;},0);
+    var totalVi = linhas.reduce(function(s,g){return s+g.nViagens;},0);
+    var cards = [
       ['💰 Custo Total', fmt(totalGeral)],
       ['🚛 Viagens', totalVi],
-      ['📏 KM Total (est.)', `${totalKm.toFixed(0)} km`],
-      ['📦 Volume Total', `${totalM3.toFixed(1)} m³`],
+      ['📏 KM Total (est.)', totalKm.toFixed(0) + ' km'],
+      ['📦 Volume Total', totalM3.toFixed(1) + ' m³'],
       ['📊 Custo Médio/Viagem', totalVi ? fmt(totalGeral/totalVi) : '—'],
-    ].map(([l,v]) => `
-      <div style="background:rgba(0,0,0,0.03);border:1px solid var(--border-dk);border-radius:8px;padding:10px 18px;min-width:140px;">
-        <div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;font-weight:600;margin-bottom:4px;">${l}</div>
-        <div style="font-size:16px;font-weight:700;color:var(--text);">${v}</div>
-      </div>`).join('');
+    ];
+    resumoEl.innerHTML = cards.map(function(c) {
+      return '<div style="background:rgba(0,0,0,0.03);border:1px solid var(--border-dk);border-radius:8px;padding:10px 18px;min-width:140px;">' +
+        '<div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;font-weight:600;margin-bottom:4px;">' + c[0] + '</div>' +
+        '<div style="font-size:16px;font-weight:700;color:var(--text);">' + c[1] + '</div></div>';
+    }).join('');
   }
 
-  el.innerHTML = `
-    <table style="width:100%;border-collapse:collapse;font-size:12px;">
-      <thead>
-        <tr style="background:rgba(0,0,0,0.03);border-bottom:2px solid var(--border-dk);">
-          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">PLACA</th>
-          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">TRANSPORTADORA</th>
-          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">${vistas[_freteVista].toUpperCase()}</th>
-          <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">VIAGENS</th>
-          <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">KM EST.</th>
-          <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">VOLUME (m³)</th>
-          <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;">CUSTO</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${linhas.length ? linhas.map((g,i) => `
-          <tr style="border-top:1px solid var(--border-dk);${i%2===1?'background:rgba(0,0,0,0.015)':''}">
-            <td style="padding:10px 14px;font-weight:700;color:var(--text);white-space:nowrap;">${esc(g.placa)}</td>
-            <td style="padding:10px 14px;color:var(--text-2);">${esc(g.transportadora)}</td>
-            <td style="padding:10px 14px;color:var(--text-2);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(labelLegivel(g))}">${esc(labelLegivel(g))}</td>
-            <td style="padding:10px 14px;text-align:right;color:var(--text-2);">${g.nViagens}</td>
-            <td style="padding:10px 14px;text-align:right;color:var(--text-2);">${g.km.toFixed(0)} km</td>
-            <td style="padding:10px 14px;text-align:right;color:var(--text-2);">${g.m3.toFixed(1)}</td>
-            <td style="padding:10px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">${fmt(g.custo)}</td>
-          </tr>`).join('')
-        : '<tr><td colspan="7" style="padding:32px;text-align:center;color:var(--text-3);">Nenhum dado calculado. Verifique os contratos cadastrados.</td></tr>'}
-        <tr style="border-top:2px solid var(--border-dk);background:rgba(0,0,0,0.03);">
-          <td colspan="6" style="padding:10px 14px;font-weight:700;color:var(--text);text-align:right;">TOTAL GERAL</td>
-          <td style="padding:10px 14px;text-align:right;font-weight:800;font-size:14px;color:var(--pet-green,#84cc16);">${fmt(totalGeral)}</td>
-        </tr>
-      </tbody>
-    </table>`;
-}
+  var vistas = { viagem:'Viagem', dia:'Dia', semana:'Semana', mes:'Mês', periodo:'Período' };
+  var thLabel = (vistas[_freteVista] || _freteVista).toUpperCase();
 
-// ── Init ao abrir a aba (hook injetado na função original) ──────────────────
+  var html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+    '<thead><tr style="background:rgba(0,0,0,0.03);border-bottom:2px solid var(--border-dk);">' +
+    '<th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);">PLACA</th>' +
+    '<th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);">TRANSPORTADORA</th>' +
+    '<th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-3);">' + thLabel + '</th>' +
+    '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">VIAGENS</th>' +
+    '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">KM EST.</th>' +
+    '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">VOLUME (m³)</th>' +
+    '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">CUSTO</th>' +
+    '</tr></thead><tbody>';
+
+  if (linhas.length) {
+    linhas.forEach(function(g, i) {
+      html += '<tr style="border-top:1px solid var(--border-dk);' + (i%2===1?'background:rgba(0,0,0,0.015)':'') + '">' +
+        '<td style="padding:10px 14px;font-weight:700;color:var(--text);white-space:nowrap;">' + (g.placa||'') + '</td>' +
+        '<td style="padding:10px 14px;color:var(--text-2);">' + (g.transportadora||'') + '</td>' +
+        '<td style="padding:10px 14px;color:var(--text-2);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + labelLegivel(g) + '</td>' +
+        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + g.nViagens + '</td>' +
+        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + g.km.toFixed(0) + ' km</td>' +
+        '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + g.m3.toFixed(1) + '</td>' +
+        '<td style="padding:10px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(g.custo) + '</td>' +
+        '</tr>';
+    });
+  } else {
+    html += '<tr><td colspan="7" style="padding:32px;text-align:center;color:var(--text-3);">Nenhum dado calculado. Verifique os contratos cadastrados.</td></tr>';
+  }
+
+  html += '<tr style="border-top:2px solid var(--border-dk);background:rgba(0,0,0,0.03);">' +
+    '<td colspan="6" style="padding:10px 14px;font-weight:700;color:var(--text);text-align:right;">TOTAL GERAL</td>' +
+    '<td style="padding:10px 14px;text-align:right;font-weight:800;font-size:14px;color:var(--pet-green,#84cc16);">' + fmt(totalGeral) + '</td>' +
+    '</tr></tbody></table>';
+
+  el.innerHTML = html;
+}
 
 window.freteCalcular          = freteCalcular;
 window.freteAdicionarContrato = freteAdicionarContrato;
