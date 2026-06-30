@@ -7039,7 +7039,7 @@ function freteRenderContratos() {
   if (!tbody) return;
   const contratos = freteCarregarContratos();
   if (!contratos.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Nenhum contrato cadastrado. Clique em "+ Adicionar" para começar.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Nenhum contrato cadastrado. Clique em "+ Adicionar" para começar.</td></tr>';
     return;
   }
   tbody.innerHTML = '';
@@ -7080,6 +7080,23 @@ function freteRenderContratos() {
     sel.onchange = function() { freteEditarContrato(i, 'tipo', this.value); };
     tdTipo.appendChild(sel);
     tr.appendChild(tdTipo);
+
+    // Modo de cálculo do KM (ida e volta ou somente ida)
+    var tdKmModo = document.createElement('td');
+    tdKmModo.style.cssText = 'padding:10px 14px;';
+    var selKmModo = document.createElement('select');
+    selKmModo.title = 'Define se o KM rodado considera ida e volta ou somente o trecho de ida';
+    selKmModo.style.cssText = _freteInputStyle('width:110px;');
+    [['ida_volta','Ida e volta'], ['ida','Somente ida']].forEach(function(opt) {
+      var o = document.createElement('option');
+      o.value = opt[0];
+      o.textContent = opt[1];
+      if ((c.kmModo || 'ida_volta') === opt[0]) o.selected = true;
+      selKmModo.appendChild(o);
+    });
+    selKmModo.onchange = function() { freteEditarContrato(i, 'kmModo', this.value); };
+    tdKmModo.appendChild(selKmModo);
+    tr.appendChild(tdKmModo);
 
     // Fixo/mês
     var tdFixo = document.createElement('td');
@@ -7224,7 +7241,7 @@ function freteAdicionarContrato() {
   var arr = freteCarregarContratos();
   var placasCadastradas = new Set(arr.map(function(c) { return c.placa; }));
   var proxV = veiculos.find(function(v) { return !placasCadastradas.has(v.placa); });
-  arr.push({ placa: proxV ? proxV.placa : '', transportadora: proxV ? (proxV.transportadora||'') : '', tipo:'fixo_km', fixo:'', km:'', m3:'', diaria:'' });
+  arr.push({ placa: proxV ? proxV.placa : '', transportadora: proxV ? (proxV.transportadora||'') : '', tipo:'fixo_km', kmModo:'ida_volta', fixo:'', km:'', m3:'', diaria:'' });
   freteSalvarContratos(arr);
   freteRenderContratos();
 }
@@ -7358,23 +7375,31 @@ async function freteCalcular() {
       if (!mesMapa[placa][mesKey]) mesMapa[placa][mesKey] = { viagens: [] };
 
       viagens.forEach(function(vi) {
-        var kmTotal = vi.paradas.reduce(function(s,p) { return s + (p.distanciaKm||0); }, 0) * 2;
+        var kmIda = vi.paradas.reduce(function(s,p) { return s + (p.distanciaKm||0); }, 0);
         var m3Total = vi.paradas.reduce(function(s,p) { return s + (p.volumeTotal||0); }, 0);
         var termOrigem = vi.terminalOrigem || '';
         var destinos   = Array.from(new Set(vi.paradas.map(function(p) { return p.pedido ? (p.pedido.cidade||p.pedido.cliente||'') : ''; }))).join(', ');
-        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmTotal: kmTotal, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa };
+        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa };
         viagensMap[placa].push(entry);
         mesMapa[placa][mesKey].viagens.push(entry);
       });
     });
   });
 
+  // Calcula o km efetivo de uma viagem conforme o modo do contrato:
+  // 'ida_volta' (padrão) multiplica por 2, 'ida' usa só o trecho de ida.
+  function kmEfetivo(entry, contrato) {
+    var modo = (contrato && contrato.kmModo) || 'ida_volta';
+    return modo === 'ida' ? entry.kmIda : entry.kmIda * 2;
+  }
+
   function custoViagem(entry, contrato) {
     var mes = mesMapa[entry.placa] && mesMapa[entry.placa][entry.mesKey];
     var nViagMes = mes ? mes.viagens.length : 1;
     var fixo = parseFloat(contrato.fixo) || 0;
     var fixoRateado = fixo / Math.max(nViagMes, 1);
-    if (contrato.tipo === 'fixo_km')  return fixoRateado + (parseFloat(contrato.km)||0)  * entry.kmTotal;
+    var km = kmEfetivo(entry, contrato);
+    if (contrato.tipo === 'fixo_km')  return fixoRateado + (parseFloat(contrato.km)||0)  * km;
     if (contrato.tipo === 'fixo_m3')  return fixoRateado + (parseFloat(contrato.m3)||0)  * entry.m3Total;
     if (contrato.tipo === 'diaria')   return parseFloat(contrato.diaria) || 0;
     if (contrato.tipo === 'spot') {
@@ -7419,13 +7444,14 @@ async function freteCalcular() {
     var contrato = contratos.find(function(c) { return c.placa === placa; });
     entradas.forEach(function(entry) {
       var custo = contrato ? custoViagem(entry, contrato) : 0;
+      var kmDisplay = kmEfetivo(entry, contrato); // sem contrato, usa padrão ida_volta
       var chave = chaveVista(entry);
       if (!grupos[chave]) {
         var transp = contrato ? contrato.transportadora : (veiculos.find(function(v) { return v.placa === placa; }) || {}).transportadora || '—';
         grupos[chave] = { placa: placa, transportadora: transp, custo: 0, km: 0, m3: 0, nViagens: 0, label: chave };
       }
       grupos[chave].custo    += custo;
-      grupos[chave].km       += entry.kmTotal;
+      grupos[chave].km       += kmDisplay;
       grupos[chave].m3       += entry.m3Total;
       grupos[chave].nViagens += 1;
       totalGeral             += custo;
