@@ -4462,7 +4462,7 @@ function renderTemplateOperacao() {
       const _alvoManual = viOriginal.horarioCargaManualMin;
       relogioMin = _alvoManual;
     }
-    if (Number.isFinite(viOriginal._inicioCargaMin)) {
+    if (!_opTemOverride && Number.isFinite(viOriginal._inicioCargaMin)) {
       relogioMin = viOriginal._inicioCargaMin;
     }
     let inicioCargaCicloMin = relogioMin;
