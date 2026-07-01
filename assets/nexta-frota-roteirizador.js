@@ -5074,7 +5074,10 @@ function resumoProduto(nome) {
 function _freteNum(v) {
   if (v == null || v === '') return 0;
   if (typeof v === 'number') return isNaN(v) ? 0 : v;
-  const n = parseFloat(String(v).trim().replace(/\./g, '').replace(',', '.'));
+  const s = String(v).trim().replace(/[^\d,.-]/g, '');
+  const n = s.includes(',')
+    ? parseFloat(s.replace(/\./g, '').replace(',', '.'))
+    : parseFloat(s);
   return isNaN(n) ? 0 : n;
 }
 function _freteMoeda(v) {
