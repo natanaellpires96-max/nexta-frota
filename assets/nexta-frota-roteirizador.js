@@ -4243,7 +4243,7 @@ async function exportarHrrlog() {
       // senão usa relogioMin puro (sem atrasoP0 — tempoEsperaRestricaoMin é espera no
       // cliente, não atraso de carregamento no terminal).
       const p0 = vi.paradas[0];
-      const inicioCargaMin = vi._inicioCargaMin ?? relogioMin;
+      const inicioCargaMin = temOverrideCarga ? relogioMin : (vi._inicioCargaMin ?? relogioMin);
       // Terminal desta viagem (fallback ao terminal do pedido se terminalOrigem ausente)
       const _termPedidoHrr = vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || '';
       const termNome = vi.terminalOrigem || _termPedidoHrr || v.terminal || '';
