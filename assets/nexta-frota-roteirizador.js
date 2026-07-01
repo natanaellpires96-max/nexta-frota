@@ -1722,6 +1722,9 @@ function recalcularTimingViagem(viagem, v) {
     viagem.esperaTerminalMin = calcEsperaTerminal(viagem.terminalOrigem, clock);
     clock += viagem.esperaTerminalMin;
   }
+  // Salva o horário de início de carga — é este clock neste momento,
+  // sem nenhum atraso adicional. É o mesmo valor que aparece no campo "Carga" da tela.
+  viagem._inicioCargaMin = clock;
   // Nota: esperaTerminalMin já foi somado dentro do else acima.
   // Não somar novamente aqui para evitar dupla contagem.
   // Recalcula cada parada
@@ -4227,9 +4230,9 @@ async function exportarHrrlog() {
       let relogioMin = inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
       relogioMin += vi.esperaTerminalMin || 0;
       if (vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin)) { relogioMin = vi.horarioCargaManualMin; }
-      // Início de carga: lê diretamente o valor calculado pelo render de otimização,
-      // que é o mesmo que aparece na tela ("Carga 06:00-07:00").
-      // _inicioCargaMin é salvo no render após calcular paradasComHorario.
+      // Início de carga: usa o valor já calculado pelo render da tela se disponível,
+      // senão usa relogioMin puro (sem atrasoP0 — tempoEsperaRestricaoMin é espera no
+      // cliente, não atraso de carregamento no terminal).
       const p0 = vi.paradas[0];
       const inicioCargaMin = vi._inicioCargaMin ?? relogioMin;
       // Terminal desta viagem (fallback ao terminal do pedido se terminalOrigem ausente)
