@@ -728,6 +728,11 @@
 }
 /* Mount sem padding */
 #roteirizador-mount { padding: 0 !important; background: transparent !important; border-radius: 0 !important; }
+/* Quando o roteirizador esta montado, remove o limite de largura do shell principal */
+#main-content:has(#roteirizador-mount) {
+  max-width: none !important;
+  padding: 0 !important;
+}
 /* Tabs sem radius */
 #roteirizador-shell .header-actions {
   justify-content: space-between !important;
@@ -739,18 +744,22 @@
   margin-bottom: 16px;
   border-radius: 0;
   display: flex !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
+  padding: 0 12px !important;
 }
 #roteirizador-shell .tab {
-  flex: 1 1 0;
-  min-width: 0;
-  padding-left: 12px;
-  padding-right: 12px;
+  flex: 0 0 auto;
+  min-width: max-content;
+  padding-left: 10px;
+  padding-right: 10px;
 }
 @media (max-width: 980px) {
   #roteirizador-shell .header { height: auto !important; min-height: 60px; padding-top: 8px; padding-bottom: 8px; }
   #roteirizador-shell .header-actions { justify-content: flex-start !important; flex-wrap: wrap !important; }
   #roteirizador-shell .tabs {
     display: flex !important;
+    justify-content: flex-start !important;
     overflow-x: auto;
   }
 }
