@@ -5083,22 +5083,62 @@ function _freteNum(v) {
 function _freteMoeda(v) {
   return 'R$ ' + (Number(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+function _freteHoras(min) {
+  return ((Number(min) || 0) / 60).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'h';
+}
+function _freteDataBase(viagem) {
+  const iso = document.getElementById('rot-data-operacao')?.value;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso || '')) {
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  }
+  const br = viagem?.paradas?.[0]?.pedido?.dataEntregaLogistica || viagem?.paradas?.[0]?.pedido?.dataEntrega;
+  const mt = String(br || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (mt) return new Date(Number(mt[3]), Number(mt[2]) - 1, Number(mt[1]));
+  return new Date();
+}
+function _freteDiasMes(viagem) {
+  const d = _freteDataBase(viagem);
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+}
+function _freteTempoViagemMin(viagem) {
+  const direto = Number(viagem?.tempoConsumidoMin);
+  if (direto > 0) return direto;
+  return (viagem?.paradas || []).reduce((s, p, i) => s
+    + (i === 0 ? (p.tempoCarregamentoMin || 0) : 0)
+    + (p.deslocCarregadoMin || 0)
+    + (p.tempoEsperaRestricaoMin || 0)
+    + (p.tempoDescargaMin || 0)
+    + (p.deslocVazioMin || 0), 0);
+}
+function _freteParcelaFixaMensal(v, viagem, fixoMensal) {
+  const diasMes = _freteDiasMes(viagem) || 30;
+  const fixoDiario = (Number(fixoMensal) || 0) / diasMes;
+  const jornadaDispMin = Number(v?.jornadaMin) || duracaoJornadaMin(v?.jornadaInicio || '06:00', v?.jornadaFim || '18:00') || 720;
+  const jornadaUsadaMin = _freteTempoViagemMin(viagem);
+  const fatorJornada = jornadaDispMin > 0 ? Math.min(1, Math.max(0, jornadaUsadaMin / jornadaDispMin)) : 0;
+  const fixoViagem = fixoDiario * fatorJornada;
+  return { diasMes, fixoDiario, jornadaDispMin, jornadaUsadaMin, fatorJornada, fixoViagem };
+}
 function calcularFreteViagemAtual(v, viagem, kmMapa) {
   const contrato = freteCarregarContratos().find(c => (c.placa || '').toUpperCase() === (v.placa || '').toUpperCase());
   const spots = freteCarregarSpot();
   const volumeM3 = (viagem.paradas || []).reduce((s, p) => s + (p.volumeTotal || 0), 0);
   const km = Number(kmMapa) || 0;
   if (!contrato) return { contrato: null, km, volumeM3, custo: 0, tipo: 'Sem contrato', detalhe: 'Cadastre contrato para esta placa na aba Frete.' };
-  const fixo = _freteNum(contrato.fixo);
+  const fixoMensal = _freteNum(contrato.fixo);
+  const fixa = _freteParcelaFixaMensal(v, viagem, fixoMensal);
   let custo = 0, detalhe = '';
   if (contrato.tipo === 'fixo_km') {
     const taxaKm = _freteNum(contrato.km);
-    custo = fixo + taxaKm * km;
-    detalhe = `${_freteMoeda(fixo)} fixo + ${_freteMoeda(taxaKm)}/km`;
+    const variavel = taxaKm * km;
+    custo = fixa.fixoViagem + variavel;
+    detalhe = `Fixo mensal ${_freteMoeda(fixoMensal)} / ${fixa.diasMes} dias x ${_freteHoras(fixa.jornadaUsadaMin)}/${_freteHoras(fixa.jornadaDispMin)} = ${_freteMoeda(fixa.fixoViagem)} + ${_freteMoeda(taxaKm)}/km`;
   } else if (contrato.tipo === 'fixo_m3') {
     const taxaM3 = _freteNum(contrato.m3);
-    custo = fixo + taxaM3 * volumeM3;
-    detalhe = `${_freteMoeda(fixo)} fixo + ${_freteMoeda(taxaM3)}/m3`;
+    const variavel = taxaM3 * volumeM3;
+    custo = fixa.fixoViagem + variavel;
+    detalhe = `Fixo mensal ${_freteMoeda(fixoMensal)} / ${fixa.diasMes} dias x ${_freteHoras(fixa.jornadaUsadaMin)}/${_freteHoras(fixa.jornadaDispMin)} = ${_freteMoeda(fixa.fixoViagem)} + ${_freteMoeda(taxaM3)}/m3`;
   } else if (contrato.tipo === 'diaria') {
     custo = _freteNum(contrato.diaria);
     detalhe = `${_freteMoeda(custo)} diaria`;
@@ -5110,7 +5150,7 @@ function calcularFreteViagemAtual(v, viagem, kmMapa) {
     custo = taxaSpot * volumeM3;
     detalhe = sp ? `${_freteMoeda(taxaSpot)}/m3 spot` : 'Spot sem rota cadastrada';
   }
-  return { contrato, km, volumeM3, custo, tipo: FRETE_TIPOS[contrato.tipo] || contrato.tipo || 'Contrato', detalhe };
+  return { contrato, km, volumeM3, custo, tipo: FRETE_TIPOS[contrato.tipo] || contrato.tipo || 'Contrato', detalhe, ...fixa, fixoMensal };
 }
 function renderCustoMapaViagem() {
   const box = document.getElementById('mv-custo');
@@ -5122,15 +5162,36 @@ function renderCustoMapaViagem() {
   const calc = calcularFreteViagemAtual(v, viagem, viagem._kmAjustado != null ? viagem._kmAjustado : kmOriginal);
   const totalLitros = calc.volumeM3 * 1000;
   const custoLitroMedio = totalLitros > 0 ? calc.custo / totalLitros : 0;
-  const clienteHtml = (viagem.paradas || []).map((p, i) => {
+  const paradasFrete = viagem.paradas || [];
+  let somaPesoRateio = 0;
+  const pesosRateio = paradasFrete.map((p, i) => {
     const vol = p.volumeTotal || 0;
-    const custoCliente = calc.volumeM3 > 0 ? calc.custo * (vol / calc.volumeM3) : 0;
+    const kmRef = p.distanciaKm > 0 ? p.distanciaKm : (calc.km > 0 ? calc.km / Math.max(paradasFrete.length, 1) : 1);
+    const peso = vol * kmRef;
+    somaPesoRateio += peso;
+    return { vol, kmRef, peso };
+  });
+  if (!(somaPesoRateio > 0)) {
+    somaPesoRateio = paradasFrete.reduce((s, p) => s + (p.volumeTotal || 0), 0);
+    pesosRateio.forEach((r, i) => { r.peso = paradasFrete[i]?.volumeTotal || 0; });
+  }
+  const custoTotalCent = Math.round((calc.custo || 0) * 100);
+  let custoRateadoAcumCent = 0;
+  const clienteHtml = paradasFrete.map((p, i) => {
+    const vol = p.volumeTotal || 0;
+    const isLast = i === paradasFrete.length - 1;
+    const custoClienteCent = isLast
+      ? Math.max(0, custoTotalCent - custoRateadoAcumCent)
+      : Math.round(somaPesoRateio > 0 ? custoTotalCent * (pesosRateio[i].peso / somaPesoRateio) : 0);
+    custoRateadoAcumCent += custoClienteCent;
+    const custoCliente = custoClienteCent / 100;
     const custoLitro = vol > 0 ? custoCliente / (vol * 1000) : 0;
     const nome = String(p.pedido?.cliente || '-').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     return `<div style="display:flex;align-items:center;gap:6px;min-width:0;">
       <span style="width:18px;height:18px;border-radius:50%;background:#4F46E5;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">${i+1}</span>
       <span style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">${nome}</span>
       <span style="color:var(--text-3);white-space:nowrap;">${vol.toFixed(1)} m3</span>
+      <span style="color:var(--text-3);white-space:nowrap;">${pesosRateio[i].kmRef.toFixed(1)} km</span>
       <span style="color:#15803d;font-weight:700;white-space:nowrap;">${_freteMoeda(custoCliente)}</span>
       <span style="color:#3730A3;background:rgba(79,70,229,0.09);border:1px solid rgba(79,70,229,0.2);border-radius:999px;padding:1px 7px;white-space:nowrap;">R$ ${custoLitro.toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})}/L</span>
     </div>`;
@@ -5142,7 +5203,7 @@ function renderCustoMapaViagem() {
       <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Custo viagem</div><div style="font-weight:800;color:#15803d;">${_freteMoeda(calc.custo)}</div></div>
       <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Media</div><div style="font-weight:700;color:var(--text);">R$ ${custoLitroMedio.toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})}/L</div></div>
     </div>
-    <div style="font-size:10px;color:var(--text-3);margin-bottom:5px;">${calc.detalhe || '&nbsp;'}</div>
+    <div style="font-size:10px;color:var(--text-3);margin-bottom:5px;">${calc.detalhe || '&nbsp;'} · Rateio por volume x distancia da parada; ultimo cliente ajusta centavos para fechar o total.</div>
     <div style="display:grid;gap:4px;font-size:11px;line-height:1.35;">${clienteHtml || '<span style="color:var(--text-3);">Sem clientes para rateio.</span>'}</div>`;
 }
 window.renderCustoMapaViagem = renderCustoMapaViagem;
