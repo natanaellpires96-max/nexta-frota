@@ -717,8 +717,6 @@
 #roteirizador-shell .logo-sub { letter-spacing: 0.06em !important; }
 /* Shell sem border-radius e sem padding */
 #roteirizador-shell {
-  display: block !important;
-  width: 100% !important;
   max-width: none; min-height: auto; padding: 0;
   background: var(--bg);
   border-radius: 0 !important;
@@ -726,14 +724,5 @@
 }
 /* Mount sem padding */
 #roteirizador-mount { padding: 0 !important; background: transparent !important; border-radius: 0 !important; }
-/* Preenche o vao lateral da barra de modulos sem alterar o header */
-#roteirizador-shell .tabs {
-  position: relative;
-  overflow: hidden;
-  margin-bottom: 16px;
-  border-radius: 0;
-  padding-right: 0 !important;
-}
-#roteirizador-shell .tabs .tab:last-child {
-  margin-left: auto;
-}
+/* Tabs sem radius */
+#roteirizador-shell .tabs { margin-bottom: 16px; border-radius: 0; }
