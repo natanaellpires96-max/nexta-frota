@@ -3367,6 +3367,7 @@ async function renderRegister(body){
 }
 async function addPlate(){
   const carrier=document.getElementById("r-carrier").value;
+  const operacao=document.getElementById("r-op").value;
   const operação=document.getElementById("r-op").value;
   const placa=document.getElementById("r-placa").value.trim().toUpperCase();
   const tipo=document.getElementById("r-tipo").value;
@@ -3378,6 +3379,7 @@ async function addPlate(){
   if(!placa){msg.textContent="Informe a placa.";msg.style.color="var(--red)";return;}
   if(!capacidade||isNaN(capacidade)||+capacidade<=0){msg.textContent="Informe a capacidade.";msg.style.color="var(--red)";return;}
   btn.disabled=true; btn.textContent="Salvando...";
+  try{
   const allP=await dbGetPlates();
   if(!allP[carrier]) allP[carrier]=[];
   if(CARRIERS.some(c=>(allP[c]||[]).some(p=>p.placa===placa))){
@@ -3396,6 +3398,12 @@ async function addPlate(){
   setTimeout(()=>{msg.textContent="";},3000);
   btn.disabled=false;btn.textContent="+ Cadastrar placa";
   await renderTabBody();
+  } catch(e) {
+    console.error("Erro ao cadastrar placa:", e);
+    msg.textContent="Erro ao cadastrar placa. Tente novamente.";msg.style.color="var(--red)";
+    showToast("Erro ao cadastrar placa.", false);
+    btn.disabled=false;btn.textContent="+ Cadastrar placa";
+  }
 }
 async function delPlate(carrier,idx){
   if(!confirm("Remover esta placa?")) return;
