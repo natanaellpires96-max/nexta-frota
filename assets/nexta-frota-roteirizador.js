@@ -5101,21 +5101,41 @@ function _freteDiasMes(viagem) {
   const d = _freteDataBase(viagem);
   return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
 }
-function _freteTempoViagemMin(viagem) {
+function _freteTempoViagemMin(viagem, v, kmMapa) {
+  const kmRealMapa = Number(kmMapa) || 0;
+  if (kmRealMapa > 0 && v) {
+    const velCarregado = Number(v.velMediaCarregado) || 45;
+    const velVazio = Number(v.velMediaVazio) || 55;
+    const paradas = viagem?.paradas || [];
+    const kmCarregadoBase = paradas.reduce((s, p) => s + (((p.deslocCarregadoMin || 0) / 60) * velCarregado), 0);
+    const kmVazioBase = paradas.reduce((s, p) => s + (((p.deslocVazioMin || 0) / 60) * velVazio), 0);
+    const kmBaseTotal = kmCarregadoBase + kmVazioBase;
+    const propCarregado = kmBaseTotal > 0 ? kmCarregadoBase / kmBaseTotal : 0.85;
+    const propVazio = 1 - propCarregado;
+    const tempoMapaMin = ((kmRealMapa * propCarregado) / velCarregado) * 60
+      + ((kmRealMapa * propVazio) / velVazio) * 60;
+    const servicoMin = paradas.reduce((s, p, i) => s
+      + (i === 0 ? (p.tempoCarregamentoMin || 0) : 0)
+      + (p.waitAfterLoadingMin || 0)
+      + (p.tempoEsperaRestricaoMin || 0)
+      + (p.tempoDescargaMin || 0), 0);
+    return tempoMapaMin + servicoMin;
+  }
   const direto = Number(viagem?.tempoConsumidoMin);
   if (direto > 0) return direto;
   return (viagem?.paradas || []).reduce((s, p, i) => s
     + (i === 0 ? (p.tempoCarregamentoMin || 0) : 0)
+    + (p.waitAfterLoadingMin || 0)
     + (p.deslocCarregadoMin || 0)
     + (p.tempoEsperaRestricaoMin || 0)
     + (p.tempoDescargaMin || 0)
     + (p.deslocVazioMin || 0), 0);
 }
-function _freteParcelaFixaMensal(v, viagem, fixoMensal) {
+function _freteParcelaFixaMensal(v, viagem, fixoMensal, kmMapa) {
   const diasMes = _freteDiasMes(viagem) || 30;
   const fixoDiario = (Number(fixoMensal) || 0) / diasMes;
   const jornadaDispMin = Number(v?.jornadaMin) || duracaoJornadaMin(v?.jornadaInicio || '06:00', v?.jornadaFim || '18:00') || 720;
-  const jornadaUsadaMin = _freteTempoViagemMin(viagem);
+  const jornadaUsadaMin = _freteTempoViagemMin(viagem, v, kmMapa);
   const fatorJornada = jornadaDispMin > 0 ? Math.min(1, Math.max(0, jornadaUsadaMin / jornadaDispMin)) : 0;
   const fixoViagem = fixoDiario * fatorJornada;
   return { diasMes, fixoDiario, jornadaDispMin, jornadaUsadaMin, fatorJornada, fixoViagem };
@@ -5127,7 +5147,7 @@ function calcularFreteViagemAtual(v, viagem, kmMapa) {
   const km = Number(kmMapa) || 0;
   if (!contrato) return { contrato: null, km, volumeM3, custo: 0, tipo: 'Sem contrato', detalhe: 'Cadastre contrato para esta placa na aba Frete.' };
   const fixoMensal = _freteNum(contrato.fixo);
-  const fixa = _freteParcelaFixaMensal(v, viagem, fixoMensal);
+  const fixa = _freteParcelaFixaMensal(v, viagem, fixoMensal, km);
   let custo = 0, detalhe = '';
   if (contrato.tipo === 'fixo_km') {
     const taxaKm = _freteNum(contrato.km);
@@ -5163,10 +5183,13 @@ function renderCustoMapaViagem() {
   const totalLitros = calc.volumeM3 * 1000;
   const custoLitroMedio = totalLitros > 0 ? calc.custo / totalLitros : 0;
   const paradasFrete = viagem.paradas || [];
+  const somaKmParadas = paradasFrete.reduce((s, p) => s + (p.distanciaKm > 0 ? p.distanciaKm : 0), 0);
   let somaPesoRateio = 0;
   const pesosRateio = paradasFrete.map((p, i) => {
     const vol = p.volumeTotal || 0;
-    const kmRef = p.distanciaKm > 0 ? p.distanciaKm : (calc.km > 0 ? calc.km / Math.max(paradasFrete.length, 1) : 1);
+    const kmRef = somaKmParadas > 0 && p.distanciaKm > 0
+      ? calc.km * (p.distanciaKm / somaKmParadas)
+      : (calc.km > 0 ? calc.km / Math.max(paradasFrete.length, 1) : 1);
     const peso = vol * kmRef;
     somaPesoRateio += peso;
     return { vol, kmRef, peso };
