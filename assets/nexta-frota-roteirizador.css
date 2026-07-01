@@ -717,6 +717,10 @@
 #roteirizador-shell .logo-sub { letter-spacing: 0.06em !important; }
 /* Shell sem border-radius e sem padding */
 #roteirizador-shell {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  width: 100% !important;
   max-width: none; min-height: auto; padding: 0;
   background: var(--bg);
   border-radius: 0 !important;
@@ -725,4 +729,28 @@
 /* Mount sem padding */
 #roteirizador-mount { padding: 0 !important; background: transparent !important; border-radius: 0 !important; }
 /* Tabs sem radius */
-#roteirizador-shell .tabs { margin-bottom: 16px; border-radius: 0; }
+#roteirizador-shell .header-actions {
+  justify-content: space-between !important;
+  gap: clamp(10px, 1.1vw, 22px) !important;
+}
+#roteirizador-shell .header-actions > * { flex-shrink: 0; }
+#roteirizador-shell .tabs {
+  width: 100% !important;
+  margin-bottom: 16px;
+  border-radius: 0;
+  display: flex !important;
+}
+#roteirizador-shell .tab {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+@media (max-width: 980px) {
+  #roteirizador-shell .header { height: auto !important; min-height: 60px; padding-top: 8px; padding-bottom: 8px; }
+  #roteirizador-shell .header-actions { justify-content: flex-start !important; flex-wrap: wrap !important; }
+  #roteirizador-shell .tabs {
+    display: flex !important;
+    overflow-x: auto;
+  }
+}
