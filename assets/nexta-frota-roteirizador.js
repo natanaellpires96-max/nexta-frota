@@ -5646,6 +5646,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           // Usa o horário manual diretamente sem baseDay para não avançar dia
           relogioMin = viagem.horarioCargaManualMin;
         }
+        const _relogioMinCarga = relogioMin; // horário exato de chegada ao terminal para carga
         const paradasComHorario = viagem.paradas.map((p, idxParada) => {
           const esperaOriginalMin = p.tempoEsperaRestricaoMin || 0;
           const waitAfterLoad = p.overnight ? (p.waitAfterLoadingMin || 0) : 0;
@@ -5668,9 +5669,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           return { p, inicioCargaMin, fimCargaMin, chegadaEntregaMin, inicioDescargaMin, fimDescargaMin, retornoTerminalMin, esperaVisivelMin, waitAfterLoad };
         });
         const fimCicloMin = relogioMin;
-        // Salva o horário real de início de carga no objeto da viagem
-        // para que o export Herrlog leia diretamente sem recalcular.
-        viagem._inicioCargaMin = paradasComHorario[0]?.inicioCargaMin ?? inicioCicloMin;
+        viagem._inicioCargaMin = _relogioMinCarga;
         const label = `Viagem ${ti+1}${viagem.petId ? ` · ${viagem.petId}` : ''}`;
         const esperaTagHtml = esperaTermRender > 0
           ? `<span style="font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FCD34D;border-radius:4px;padding:2px 7px;">⏳ Espera terminal ${fmtDT(inicioCicloMin)}→${fmtDT(inicioCicloMin+esperaTermRender)} (${Math.round(esperaTermRender)} min)</span>`
