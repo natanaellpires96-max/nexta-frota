@@ -4226,14 +4226,7 @@ async function exportarHrrlog() {
       // Clock acumulado até esta viagem
       let relogioMin = inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
       relogioMin += vi.esperaTerminalMin || 0;
-      // Se o usuário editou manualmente o horário de carga, aplica o override
-      // (mesma lógica do bloco transportador e do render de otimização)
-      if (vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin)) {
-        const _baseDay = Math.floor(relogioMin / 1440) * 1440;
-        let _alvo = _baseDay + vi.horarioCargaManualMin;
-        if (_alvo < relogioMin - 0.001) _alvo += 1440;
-        relogioMin = _alvo;
-      }
+      if (vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin)) { relogioMin = vi.horarioCargaManualMin; }
       // Início de carga (com possível atraso de restrição na 1ª parada)
       const p0 = vi.paradas[0];
       const atrasoP0 = (!p0.overnight && (p0.tempoEsperaRestricaoMin || 0) > 0 && (p0.tempoCarregamentoMin || 0) > 0)
@@ -7002,10 +6995,11 @@ function freteSalvarSpot(arr) {
   localStorage.setItem(FRETE_SPOT_KEY, JSON.stringify(arr));
 }
 
+function _freteInputStyle(extra) {
+  return 'font-size:11px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 5px;background:var(--surface);color:var(--text);box-sizing:border-box;' + (extra||'');
+}
+
 function _freteListaTransportadoras() {
-  // Busca a lista de transportadoras cadastradas no sistema pai (Cadastros).
-  // Inclui também transportadoras já usadas em veículos/contratos, como fallback,
-  // para não "esconder" valores legados que não estejam no cadastro oficial.
   var base = (window.CARRIERS || []).slice();
   (veiculos || []).forEach(function(v) { if (v.transportadora && base.indexOf(v.transportadora) === -1) base.push(v.transportadora); });
   return base.filter(Boolean).sort(function(a,b) { return a.localeCompare(b, 'pt-BR'); });
@@ -7021,12 +7015,10 @@ function _freteSelectTransportadora(valorAtual, onChangeFn) {
   sel.appendChild(optVazia);
   lista.forEach(function(nome) {
     var opt = document.createElement('option');
-    opt.value = nome;
-    opt.textContent = nome;
+    opt.value = nome; opt.textContent = nome;
     if (nome === valorAtual) opt.selected = true;
     sel.appendChild(opt);
   });
-  // Se o valor salvo não está mais na lista (cadastro removido), mantém visível como opção extra
   if (valorAtual && lista.indexOf(valorAtual) === -1) {
     var optExtra = document.createElement('option');
     optExtra.value = valorAtual;
@@ -7036,10 +7028,6 @@ function _freteSelectTransportadora(valorAtual, onChangeFn) {
   }
   sel.onchange = onChangeFn;
   return sel;
-}
-
-function _freteInputStyle(extra) {
-  return 'font-size:11px;border:1px solid var(--border-dk);border-radius:5px;padding:3px 5px;background:var(--surface);color:var(--text);box-sizing:border-box;' + (extra||'');
 }
 
 function freteRenderContratos() {
@@ -7055,126 +7043,97 @@ function freteRenderContratos() {
     var tr = document.createElement('tr');
     tr.style.borderTop = '1px solid var(--border-dk)';
 
-    // Placa
     var tdPlaca = document.createElement('td');
     tdPlaca.style.cssText = 'padding:7px 8px;font-weight:600;color:var(--text);';
     var inpPlaca = document.createElement('input');
-    inpPlaca.value = c.placa || '';
-    inpPlaca.placeholder = 'Placa';
+    inpPlaca.value = c.placa || ''; inpPlaca.placeholder = 'Placa';
     inpPlaca.style.cssText = _freteInputStyle('width:100%;font-weight:600;');
     inpPlaca.onchange = function() { freteEditarContrato(i, 'placa', this.value); };
-    tdPlaca.appendChild(inpPlaca);
-    tr.appendChild(tdPlaca);
+    tdPlaca.appendChild(inpPlaca); tr.appendChild(tdPlaca);
 
-    // Transportadora
     var tdTransp = document.createElement('td');
-    tdTransp.style.cssText = 'padding:7px 8px;color:var(--text-2);';
+    tdTransp.style.cssText = 'padding:7px 8px;';
     var selTransp = _freteSelectTransportadora(c.transportadora || '', function() { freteEditarContrato(i, 'transportadora', this.value); });
-    tdTransp.appendChild(selTransp);
-    tr.appendChild(tdTransp);
+    tdTransp.appendChild(selTransp); tr.appendChild(tdTransp);
 
-    // Tipo
     var tdTipo = document.createElement('td');
     tdTipo.style.cssText = 'padding:7px 8px;';
     var sel = document.createElement('select');
     sel.style.cssText = _freteInputStyle('width:100%;');
     Object.entries(FRETE_TIPOS).forEach(function(entry) {
       var opt = document.createElement('option');
-      opt.value = entry[0];
-      opt.textContent = entry[1];
+      opt.value = entry[0]; opt.textContent = entry[1];
       if (c.tipo === entry[0]) opt.selected = true;
       sel.appendChild(opt);
     });
     sel.onchange = function() { freteEditarContrato(i, 'tipo', this.value); };
-    tdTipo.appendChild(sel);
-    tr.appendChild(tdTipo);
+    tdTipo.appendChild(sel); tr.appendChild(tdTipo);
 
-    // Modo de cálculo do KM (ida e volta ou somente ida)
     var tdKmModo = document.createElement('td');
     tdKmModo.style.cssText = 'padding:7px 8px;';
     var selKmModo = document.createElement('select');
-    selKmModo.title = 'Define se o KM rodado considera ida e volta ou somente o trecho de ida';
+    selKmModo.title = 'Define se o KM considera ida e volta ou somente a ida';
     selKmModo.style.cssText = _freteInputStyle('width:100%;');
     [['ida_volta','Ida e volta'], ['ida','Somente ida']].forEach(function(opt) {
       var o = document.createElement('option');
-      o.value = opt[0];
-      o.textContent = opt[1];
+      o.value = opt[0]; o.textContent = opt[1];
       if ((c.kmModo || 'ida_volta') === opt[0]) o.selected = true;
       selKmModo.appendChild(o);
     });
     selKmModo.onchange = function() { freteEditarContrato(i, 'kmModo', this.value); };
-    tdKmModo.appendChild(selKmModo);
-    tr.appendChild(tdKmModo);
+    tdKmModo.appendChild(selKmModo); tr.appendChild(tdKmModo);
 
-    // Fixo/mês
     var tdFixo = document.createElement('td');
     tdFixo.style.cssText = 'padding:7px 8px;text-align:right;';
     var inpFixo = document.createElement('input');
-    inpFixo.type = 'number';
-    inpFixo.value = c.fixo || '';
-    inpFixo.placeholder = '0,00';
+    inpFixo.type = 'number'; inpFixo.value = c.fixo || ''; inpFixo.placeholder = '0,00';
     inpFixo.min = '0'; inpFixo.step = '0.01';
     inpFixo.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpFixo.disabled = (c.tipo === 'diaria' || c.tipo === 'spot');
     if (inpFixo.disabled) inpFixo.style.opacity = '0.4';
     inpFixo.onchange = function() { freteEditarContrato(i, 'fixo', this.value); };
-    tdFixo.appendChild(inpFixo);
-    tr.appendChild(tdFixo);
+    tdFixo.appendChild(inpFixo); tr.appendChild(tdFixo);
 
-    // R$/km
     var tdKm = document.createElement('td');
     tdKm.style.cssText = 'padding:7px 8px;text-align:right;';
     var inpKm = document.createElement('input');
-    inpKm.type = 'number';
-    inpKm.value = c.km || '';
-    inpKm.placeholder = '0,00';
+    inpKm.type = 'number'; inpKm.value = c.km || ''; inpKm.placeholder = '0,00';
     inpKm.min = '0'; inpKm.step = '0.01';
     inpKm.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpKm.disabled = (c.tipo !== 'fixo_km');
     if (inpKm.disabled) inpKm.style.opacity = '0.4';
     inpKm.onchange = function() { freteEditarContrato(i, 'km', this.value); };
-    tdKm.appendChild(inpKm);
-    tr.appendChild(tdKm);
+    tdKm.appendChild(inpKm); tr.appendChild(tdKm);
 
-    // R$/m³
     var tdM3 = document.createElement('td');
     tdM3.style.cssText = 'padding:7px 8px;text-align:right;';
     var inpM3 = document.createElement('input');
-    inpM3.type = 'number';
-    inpM3.value = c.m3 || '';
-    inpM3.placeholder = '0,00';
+    inpM3.type = 'number'; inpM3.value = c.m3 || ''; inpM3.placeholder = '0,00';
     inpM3.min = '0'; inpM3.step = '0.01';
     inpM3.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpM3.disabled = (c.tipo !== 'fixo_m3');
     if (inpM3.disabled) inpM3.style.opacity = '0.4';
     inpM3.onchange = function() { freteEditarContrato(i, 'm3', this.value); };
-    tdM3.appendChild(inpM3);
-    tr.appendChild(tdM3);
+    tdM3.appendChild(inpM3); tr.appendChild(tdM3);
 
-    // R$/dia
     var tdDia = document.createElement('td');
     tdDia.style.cssText = 'padding:7px 8px;text-align:right;';
     var inpDia = document.createElement('input');
-    inpDia.type = 'number';
-    inpDia.value = c.diaria || '';
-    inpDia.placeholder = '0,00';
+    inpDia.type = 'number'; inpDia.value = c.diaria || ''; inpDia.placeholder = '0,00';
     inpDia.min = '0'; inpDia.step = '0.01';
     inpDia.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpDia.disabled = (c.tipo !== 'diaria');
     if (inpDia.disabled) inpDia.style.opacity = '0.4';
     inpDia.onchange = function() { freteEditarContrato(i, 'diaria', this.value); };
-    tdDia.appendChild(inpDia);
-    tr.appendChild(tdDia);
+    tdDia.appendChild(inpDia); tr.appendChild(tdDia);
 
-    // Ações
     var tdAcao = document.createElement('td');
     tdAcao.style.cssText = 'padding:7px 6px;text-align:center;';
     var btnDel = document.createElement('button');
     btnDel.textContent = '✕';
     btnDel.style.cssText = 'font-size:11px;padding:3px 9px;border:1px solid #ef4444;border-radius:5px;background:transparent;color:#ef4444;cursor:pointer;';
     btnDel.onclick = (function(idx) { return function() { freteRemoverContrato(idx); }; })(i);
-    tdAcao.appendChild(btnDel);
-    tr.appendChild(tdAcao);
+    tdAcao.appendChild(btnDel); tr.appendChild(tdAcao);
 
     tbody.appendChild(tr);
   });
@@ -7193,43 +7152,32 @@ function freteRenderSpot() {
     var tr = document.createElement('tr');
     tr.style.borderTop = '1px solid var(--border-dk)';
 
-    var tdOrig = document.createElement('td');
-    tdOrig.style.padding = '8px 12px';
+    var tdOrig = document.createElement('td'); tdOrig.style.padding = '8px 12px';
     var inpOrig = document.createElement('input');
-    inpOrig.value = s.origem || '';
-    inpOrig.placeholder = 'Terminal de origem';
-    inpOrig.style.cssText = _freteInputStyle('width:160px;');
+    inpOrig.value = s.origem || ''; inpOrig.placeholder = 'Terminal de origem';
+    inpOrig.style.cssText = _freteInputStyle('width:100%;');
     inpOrig.onchange = function() { freteEditarSpot(i, 'origem', this.value); };
-    tdOrig.appendChild(inpOrig);
-    tr.appendChild(tdOrig);
+    tdOrig.appendChild(inpOrig); tr.appendChild(tdOrig);
 
-    var tdDest = document.createElement('td');
-    tdDest.style.padding = '8px 12px';
+    var tdDest = document.createElement('td'); tdDest.style.padding = '8px 12px';
     var inpDest = document.createElement('input');
-    inpDest.value = s.destino || '';
-    inpDest.placeholder = 'Cidade ou cliente destino';
-    inpDest.style.cssText = _freteInputStyle('width:160px;');
+    inpDest.value = s.destino || ''; inpDest.placeholder = 'Cidade ou cliente destino';
+    inpDest.style.cssText = _freteInputStyle('width:100%;');
     inpDest.onchange = function() { freteEditarSpot(i, 'destino', this.value); };
-    tdDest.appendChild(inpDest);
-    tr.appendChild(tdDest);
+    tdDest.appendChild(inpDest); tr.appendChild(tdDest);
 
-    var tdTranspSpot = document.createElement('td');
-    tdTranspSpot.style.padding = '8px 12px';
+    var tdTranspSpot = document.createElement('td'); tdTranspSpot.style.padding = '8px 12px';
     var selTranspSpot = _freteSelectTransportadora(s.transportadora || '', function() { freteEditarSpot(i, 'transportadora', this.value); });
-    tdTranspSpot.appendChild(selTranspSpot);
-    tr.appendChild(tdTranspSpot);
+    tdTranspSpot.appendChild(selTranspSpot); tr.appendChild(tdTranspSpot);
 
     var tdVal = document.createElement('td');
     tdVal.style.cssText = 'padding:8px 12px;text-align:right;';
     var inpVal = document.createElement('input');
-    inpVal.type = 'number';
-    inpVal.value = s.valor || '';
-    inpVal.placeholder = '0,00';
+    inpVal.type = 'number'; inpVal.value = s.valor || ''; inpVal.placeholder = '0,00';
     inpVal.min = '0'; inpVal.step = '0.01';
-    inpVal.style.cssText = _freteInputStyle('width:90px;text-align:right;');
+    inpVal.style.cssText = _freteInputStyle('width:100%;text-align:right;');
     inpVal.onchange = function() { freteEditarSpot(i, 'valor', this.value); };
-    tdVal.appendChild(inpVal);
-    tr.appendChild(tdVal);
+    tdVal.appendChild(inpVal); tr.appendChild(tdVal);
 
     var tdAcao = document.createElement('td');
     tdAcao.style.cssText = 'padding:8px 12px;text-align:center;';
@@ -7237,8 +7185,7 @@ function freteRenderSpot() {
     btnDel.textContent = '✕';
     btnDel.style.cssText = 'font-size:11px;padding:3px 9px;border:1px solid #ef4444;border-radius:5px;background:transparent;color:#ef4444;cursor:pointer;';
     btnDel.onclick = (function(idx) { return function() { freteRemoverSpot(idx); }; })(i);
-    tdAcao.appendChild(btnDel);
-    tr.appendChild(tdAcao);
+    tdAcao.appendChild(btnDel); tr.appendChild(tdAcao);
 
     tbody.appendChild(tr);
   });
@@ -7250,8 +7197,7 @@ function freteAdicionarContrato() {
   var placasCadastradas = new Set(arr.map(function(c) { return c.placa; }));
   var proxV = veiculos.find(function(v) { return !placasCadastradas.has(v.placa); });
   arr.push({ placa: proxV ? proxV.placa : '', transportadora: proxV ? (proxV.transportadora||'') : '', tipo:'fixo_km', kmModo:'ida_volta', fixo:'', km:'', m3:'', diaria:'' });
-  freteSalvarContratos(arr);
-  freteRenderContratos();
+  freteSalvarContratos(arr); freteRenderContratos();
 }
 
 function freteEditarContrato(i, campo, valor) {
@@ -7269,15 +7215,13 @@ function freteEditarContrato(i, campo, valor) {
 function freteRemoverContrato(i) {
   var arr = freteCarregarContratos();
   arr.splice(i, 1);
-  freteSalvarContratos(arr);
-  freteRenderContratos();
+  freteSalvarContratos(arr); freteRenderContratos();
 }
 
 function freteAdicionarSpot() {
   var arr = freteCarregarSpot();
   arr.push({ origem:'', destino:'', transportadora:'', valor:'' });
-  freteSalvarSpot(arr);
-  freteRenderSpot();
+  freteSalvarSpot(arr); freteRenderSpot();
 }
 
 function freteEditarSpot(i, campo, valor) {
@@ -7290,39 +7234,48 @@ function freteEditarSpot(i, campo, valor) {
 function freteRemoverSpot(i) {
   var arr = freteCarregarSpot();
   arr.splice(i, 1);
-  freteSalvarSpot(arr);
-  freteRenderSpot();
+  freteSalvarSpot(arr); freteRenderSpot();
 }
 
-// ── Vista ─────────────────────────────────────────────────────────────────────
+// ── Vista e Ordem ─────────────────────────────────────────────────────────────
 var _freteVista = 'viagem';
 var _freteOrdem = 'custo';
+
 function freteSetVista(v) {
   _freteVista = v;
   ['viagem','dia','semana','mes','periodo'].forEach(function(k) {
     var btn = document.getElementById('frete-btn-' + k);
     if (!btn) return;
-    if (k === v) {
-      btn.style.background = 'var(--pet-green)';
-      btn.style.color = '#000';
-      btn.style.fontWeight = '700';
-      btn.style.border = 'none';
-    } else {
-      btn.style.background = '';
-      btn.style.color = '';
-      btn.style.fontWeight = '';
-      btn.style.border = '';
-    }
+    if (k === v) { btn.style.background='var(--pet-green)'; btn.style.color='#000'; btn.style.fontWeight='700'; btn.style.border='none'; }
+    else { btn.style.background=''; btn.style.color=''; btn.style.fontWeight=''; btn.style.border=''; }
   });
   freteCalcular();
 }
 
-// ── Cálculo ───────────────────────────────────────────────────────────────────
+function freteSetOrdem(o) {
+  _freteOrdem = o;
+  ['custo','transportadora','placa'].forEach(function(k) {
+    var btn = document.getElementById('frete-ordem-' + k);
+    if (!btn) return;
+    if (k === o) { btn.style.background='var(--pet-green)'; btn.style.color='#000'; btn.style.fontWeight='700'; btn.style.border='none'; }
+    else { btn.style.background=''; btn.style.color=''; btn.style.fontWeight=''; btn.style.border=''; }
+  });
+  freteCalcular();
+}
+
+function freteToggleGrupo(groupId) {
+  var icon = document.getElementById(groupId + '-icon');
+  var rows = document.querySelectorAll('.' + groupId + '-row');
+  if (!rows.length) return;
+  var aberto = rows[0].style.display !== 'none';
+  rows.forEach(function(r) { r.style.display = aberto ? 'none' : 'table-row'; });
+  if (icon) icon.textContent = aberto ? '▸' : '▾';
+}
+
 async function freteCalcular() {
   var el = document.getElementById('frete-resultado');
   var resumoEl = document.getElementById('frete-resumo-total');
   if (!el) return;
-
   var de  = (document.getElementById('frete-de')  || {}).value || '';
   var ate = (document.getElementById('frete-ate') || {}).value || '';
   var contratos = freteCarregarContratos();
@@ -7332,7 +7285,6 @@ async function freteCalcular() {
     el.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-3);font-size:13px;">Selecione a pasta do Histórico na aba Histórico para carregar os dados.</div>';
     return;
   }
-
   el.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-3);font-size:13px;">Carregando dados do histórico...</div>';
 
   var snaps = [];
@@ -7361,32 +7313,26 @@ async function freteCalcular() {
     return;
   }
 
-  // Agrega viagens por placa
-  var viagensMap = {}; // placa → [viagem entries]
-  var mesMapa    = {}; // placa → mesKey → { viagens[] }
+  var viagensMap = {}, mesMapa = {};
 
   snaps.forEach(function(snap) {
-    var res   = snap.resultado || {};
-    var veics = snap.veiculos  || [];
+    var res = snap.resultado || {}, veics = snap.veiculos || [];
     var dataSnap = (snap.savedAt || '').slice(0,10);
-    var mesKey   = dataSnap.slice(0,7);
-    var diaKey2  = dataSnap.replace(/-/g,'').slice(0,8);
-
+    var mesKey = dataSnap.slice(0,7);
+    var diaKey2 = dataSnap.replace(/-/g,'').slice(0,8);
     veics.forEach(function(v) {
       var placa = v.placa;
       if (!placa) return;
       var viagens = (res[v.id] || []).filter(function(vi) { return !vi._vazio && (vi.paradas||[]).length; });
       if (!viagens.length) return;
-
       if (!viagensMap[placa]) viagensMap[placa] = [];
-      if (!mesMapa[placa])    mesMapa[placa] = {};
+      if (!mesMapa[placa]) mesMapa[placa] = {};
       if (!mesMapa[placa][mesKey]) mesMapa[placa][mesKey] = { viagens: [] };
-
       viagens.forEach(function(vi) {
         var kmIda = vi.paradas.reduce(function(s,p) { return s + (p.distanciaKm||0); }, 0);
         var m3Total = vi.paradas.reduce(function(s,p) { return s + (p.volumeTotal||0); }, 0);
         var termOrigem = vi.terminalOrigem || '';
-        var destinos   = Array.from(new Set(vi.paradas.map(function(p) { return p.pedido ? (p.pedido.cidade||p.pedido.cliente||'') : ''; }))).join(', ');
+        var destinos = Array.from(new Set(vi.paradas.map(function(p) { return p.pedido ? (p.pedido.cidade||p.pedido.cliente||'') : ''; }))).join(', ');
         var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa };
         viagensMap[placa].push(entry);
         mesMapa[placa][mesKey].viagens.push(entry);
@@ -7394,8 +7340,6 @@ async function freteCalcular() {
     });
   });
 
-  // Calcula o km efetivo de uma viagem conforme o modo do contrato:
-  // 'ida_volta' (padrão) multiplica por 2, 'ida' usa só o trecho de ida.
   function kmEfetivo(entry, contrato) {
     var modo = (contrato && contrato.kmModo) || 'ida_volta';
     return modo === 'ida' ? entry.kmIda : entry.kmIda * 2;
@@ -7407,14 +7351,13 @@ async function freteCalcular() {
     var fixo = parseFloat(contrato.fixo) || 0;
     var fixoRateado = fixo / Math.max(nViagMes, 1);
     var km = kmEfetivo(entry, contrato);
-    if (contrato.tipo === 'fixo_km')  return fixoRateado + (parseFloat(contrato.km)||0)  * km;
-    if (contrato.tipo === 'fixo_m3')  return fixoRateado + (parseFloat(contrato.m3)||0)  * entry.m3Total;
-    if (contrato.tipo === 'diaria')   return parseFloat(contrato.diaria) || 0;
+    if (contrato.tipo === 'fixo_km') return fixoRateado + (parseFloat(contrato.km)||0) * km;
+    if (contrato.tipo === 'fixo_m3') return fixoRateado + (parseFloat(contrato.m3)||0) * entry.m3Total;
+    if (contrato.tipo === 'diaria')  return parseFloat(contrato.diaria) || 0;
     if (contrato.tipo === 'spot') {
       var sp = spots.find(function(s) {
         var bateRota = entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
-                        entry.destinos.toLowerCase().includes((s.destino||'').toLowerCase());
-        // Se a rota spot tem transportadora definida, só casa com contratos da mesma transportadora
+                       entry.destinos.toLowerCase().includes((s.destino||'').toLowerCase());
         var bateTransp = !s.transportadora || s.transportadora === contrato.transportadora;
         return bateRota && bateTransp;
       });
@@ -7424,35 +7367,34 @@ async function freteCalcular() {
   }
 
   function chaveVista(entry) {
-    if (_freteVista === 'viagem')  return entry.placa + '__' + entry.data + '__' + entry.termOrigem + '__' + entry.destinos;
-    if (_freteVista === 'dia')     return entry.placa + '__' + entry.diaKey;
+    if (_freteVista === 'viagem') return entry.placa + '__' + entry.data + '__' + entry.termOrigem + '__' + entry.destinos;
+    if (_freteVista === 'dia')    return entry.placa + '__' + entry.diaKey;
     if (_freteVista === 'semana') {
       var d = new Date(entry.data), jan1 = new Date(d.getFullYear(),0,1);
       var sem = Math.ceil((((d - jan1)/86400000) + jan1.getDay() + 1) / 7);
       return entry.placa + '__' + d.getFullYear() + '-S' + String(sem).padStart(2,'0');
     }
-    if (_freteVista === 'mes')     return entry.placa + '__' + entry.mesKey;
+    if (_freteVista === 'mes') return entry.placa + '__' + entry.mesKey;
     return entry.placa;
   }
 
   function labelLegivel(g) {
     var parts = g.label.split('__');
-    if (_freteVista === 'viagem')  return (parts[1]||'') + ' · ' + (parts[2]||'').split(' ')[0] + ' → ' + (parts[3]||'').slice(0,30);
-    if (_freteVista === 'dia')     return (parts[1]||'').replace(/(\d{4})(\d{2})(\d{2})/, '$3/$2/$1');
-    if (_freteVista === 'semana')  return parts[1]||'';
-    if (_freteVista === 'mes')     { var ym = (parts[1]||'').split('-'); return (ym[1]||'') + '/' + (ym[0]||''); }
+    if (_freteVista === 'viagem') return (parts[1]||'') + ' · ' + (parts[2]||'').split(' ')[0] + ' → ' + (parts[3]||'').slice(0,30);
+    if (_freteVista === 'dia')    return (parts[1]||'').replace(/(\d{4})(\d{2})(\d{2})/, '$3/$2/$1');
+    if (_freteVista === 'semana') return parts[1]||'';
+    if (_freteVista === 'mes')    { var ym = (parts[1]||'').split('-'); return (ym[1]||'') + '/' + (ym[0]||''); }
     return 'Total do período';
   }
 
-  var grupos = {};
-  var totalGeral = 0;
+  var grupos = {}, totalGeral = 0;
 
   Object.keys(viagensMap).forEach(function(placa) {
     var entradas = viagensMap[placa];
     var contrato = contratos.find(function(c) { return c.placa === placa; });
     entradas.forEach(function(entry) {
       var custo = contrato ? custoViagem(entry, contrato) : 0;
-      var kmDisplay = kmEfetivo(entry, contrato); // sem contrato, usa padrão ida_volta
+      var kmDisplay = kmEfetivo(entry, contrato);
       var chave = chaveVista(entry);
       if (!grupos[chave]) {
         var transp = contrato ? contrato.transportadora : (veiculos.find(function(v) { return v.placa === placa; }) || {}).transportadora || '—';
@@ -7466,21 +7408,20 @@ async function freteCalcular() {
     });
   });
 
-  var linhas = Object.values(grupos).sort(function(a,b) { return b.custo - a.custo; });
+  var linhas = Object.values(grupos);
   var fmt = function(v) { return 'R$ ' + v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); };
 
   if (resumoEl) {
     var totalKm = linhas.reduce(function(s,g){return s+g.km;},0);
     var totalM3 = linhas.reduce(function(s,g){return s+g.m3;},0);
     var totalVi = linhas.reduce(function(s,g){return s+g.nViagens;},0);
-    var cards = [
+    resumoEl.innerHTML = [
       ['💰 Custo Total', fmt(totalGeral)],
       ['🚛 Viagens', totalVi],
       ['📏 KM Total (est.)', totalKm.toFixed(0) + ' km'],
       ['📦 Volume Total', totalM3.toFixed(1) + ' m³'],
       ['📊 Custo Médio/Viagem', totalVi ? fmt(totalGeral/totalVi) : '—'],
-    ];
-    resumoEl.innerHTML = cards.map(function(c) {
+    ].map(function(c) {
       return '<div style="background:rgba(0,0,0,0.03);border:1px solid var(--border-dk);border-radius:8px;padding:10px 18px;min-width:140px;">' +
         '<div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;font-weight:600;margin-bottom:4px;">' + c[0] + '</div>' +
         '<div style="font-size:16px;font-weight:700;color:var(--text);">' + c[1] + '</div></div>';
@@ -7489,12 +7430,13 @@ async function freteCalcular() {
 
   var vistas = { viagem:'Viagem', dia:'Dia', semana:'Semana', mes:'Mês', periodo:'Período' };
   var thLabel = (vistas[_freteVista] || _freteVista).toUpperCase();
-
   var ordemBtnStyle = function(ativo) {
     return 'font-size:10px;padding:3px 10px;border-radius:6px;cursor:pointer;' +
       (ativo ? 'background:var(--pet-green);color:#000;font-weight:700;border:none;' : 'background:transparent;color:var(--text-3);border:1px solid var(--border-dk);');
   };
-  var html = '<div style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--border-dk);">' +
+
+  var html =
+    '<div style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--border-dk);">' +
     '<span style="font-size:10px;color:var(--text-3);font-weight:600;letter-spacing:.04em;">ORDENAR POR</span>' +
     '<button id="frete-ordem-custo" onclick="freteSetOrdem(\'custo\')" style="' + ordemBtnStyle(_freteOrdem==='custo') + '">Custo</button>' +
     '<button id="frete-ordem-transportadora" onclick="freteSetOrdem(\'transportadora\')" style="' + ordemBtnStyle(_freteOrdem==='transportadora') + '">Transportadora</button>' +
@@ -7512,30 +7454,23 @@ async function freteCalcular() {
     '</tr></thead><tbody>';
 
   if (linhas.length) {
-    // Agrupa as linhas por placa para permitir expandir/recolher (lista fica longa)
-    var porPlaca = {};
-    var ordemPlacas = [];
+    var porPlaca = {}, ordemPlacas = [];
     linhas.forEach(function(g) {
       if (!porPlaca[g.placa]) { porPlaca[g.placa] = []; ordemPlacas.push(g.placa); }
       porPlaca[g.placa].push(g);
     });
-    // Ordena placas conforme critério selecionado pelo usuário
     ordemPlacas.sort(function(a,b) {
       if (_freteOrdem === 'transportadora') {
-        var ta = (porPlaca[a][0].transportadora || '').toLowerCase();
-        var tb = (porPlaca[b][0].transportadora || '').toLowerCase();
+        var ta = (porPlaca[a][0].transportadora||'').toLowerCase();
+        var tb = (porPlaca[b][0].transportadora||'').toLowerCase();
         if (ta !== tb) return ta < tb ? -1 : 1;
-        return a < b ? -1 : (a > b ? 1 : 0); // desempate por placa
-      }
-      if (_freteOrdem === 'placa') {
         return a < b ? -1 : (a > b ? 1 : 0);
       }
-      // padrão: maior custo agregado primeiro
+      if (_freteOrdem === 'placa') return a < b ? -1 : (a > b ? 1 : 0);
       var sa = porPlaca[a].reduce(function(s,g){return s+g.custo;},0);
       var sb = porPlaca[b].reduce(function(s,g){return s+g.custo;},0);
       return sb - sa;
     });
-
     ordemPlacas.forEach(function(placa, gi) {
       var itens = porPlaca[placa];
       var custoPlaca = itens.reduce(function(s,g){return s+g.custo;},0);
@@ -7544,30 +7479,24 @@ async function freteCalcular() {
       var viPlaca    = itens.reduce(function(s,g){return s+g.nViagens;},0);
       var transpPlaca = itens[0].transportadora || '';
       var groupId = 'frete-grp-' + gi;
-
-      html += '<tr onclick="freteToggleGrupo(\'' + groupId + '\')" style="border-top:1px solid var(--border-dk);cursor:pointer;background:rgba(0,0,0,0.025);' + '">' +
+      html += '<tr onclick="freteToggleGrupo(\'' + groupId + '\')" style="border-top:1px solid var(--border-dk);cursor:pointer;background:rgba(0,0,0,0.025);">' +
         '<td style="padding:10px 14px;font-weight:700;color:var(--text);white-space:nowrap;">' +
-          '<span id="' + groupId + '-icon" style="display:inline-block;width:16px;text-align:center;margin-right:6px;color:var(--text-3);">▸</span>' +
-          (placa||'') +
-        '</td>' +
-        '<td style="padding:10px 14px;color:var(--text-2);">' + (transpPlaca||'') + '</td>' +
+        '<span id="' + groupId + '-icon" style="display:inline-block;width:16px;text-align:center;margin-right:6px;color:var(--text-3);">▸</span>' + placa + '</td>' +
+        '<td style="padding:10px 14px;color:var(--text-2);">' + transpPlaca + '</td>' +
         '<td style="padding:10px 14px;color:var(--text-3);font-style:italic;">' + itens.length + ' registro' + (itens.length>1?'s':'') + '</td>' +
         '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + viPlaca + '</td>' +
         '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + kmPlaca.toFixed(0) + ' km</td>' +
         '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + m3Placa.toFixed(1) + '</td>' +
-        '<td style="padding:10px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(custoPlaca) + '</td>' +
-        '</tr>';
-
-      itens.forEach(function(g, i) {
-        html += '<tr class="' + groupId + '-row" style="display:none;border-top:1px solid var(--border-dk);' + (i%2===1?'background:rgba(0,0,0,0.015)':'') + '">' +
-          '<td style="padding:8px 14px 8px 36px;color:var(--text-3);white-space:nowrap;font-size:11px;">' + (g.placa||'') + '</td>' +
+        '<td style="padding:10px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(custoPlaca) + '</td></tr>';
+      itens.forEach(function(g, ii) {
+        html += '<tr class="' + groupId + '-row" style="display:none;border-top:1px solid var(--border-dk);' + (ii%2===1?'background:rgba(0,0,0,0.015)':'') + '">' +
+          '<td style="padding:8px 14px 8px 36px;color:var(--text-3);font-size:11px;">' + (g.placa||'') + '</td>' +
           '<td style="padding:8px 14px;color:var(--text-2);">' + (g.transportadora||'') + '</td>' +
           '<td style="padding:8px 14px;color:var(--text-2);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + labelLegivel(g) + '</td>' +
           '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.nViagens + '</td>' +
           '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.km.toFixed(0) + ' km</td>' +
           '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.m3.toFixed(1) + '</td>' +
-          '<td style="padding:8px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(g.custo) + '</td>' +
-          '</tr>';
+          '<td style="padding:8px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(g.custo) + '</td></tr>';
       });
     });
   } else {
@@ -7582,35 +7511,6 @@ async function freteCalcular() {
   el.innerHTML = html;
 }
 
-function freteSetOrdem(o) {
-  _freteOrdem = o;
-  ['custo','transportadora','placa'].forEach(function(k) {
-    var btn = document.getElementById('frete-ordem-' + k);
-    if (!btn) return;
-    if (k === o) {
-      btn.style.background = 'var(--pet-green)';
-      btn.style.color = '#000';
-      btn.style.fontWeight = '700';
-      btn.style.border = 'none';
-    } else {
-      btn.style.background = '';
-      btn.style.color = '';
-      btn.style.fontWeight = '';
-      btn.style.border = '';
-    }
-  });
-  freteCalcular();
-}
-
-function freteToggleGrupo(groupId) {
-  var icon = document.getElementById(groupId + '-icon');
-  var rows = document.querySelectorAll('.' + groupId + '-row');
-  if (!rows.length) return;
-  var aberto = rows[0].style.display !== 'none';
-  rows.forEach(function(r) { r.style.display = aberto ? 'none' : 'table-row'; });
-  if (icon) icon.textContent = aberto ? '▸' : '▾';
-}
-
 window.freteCalcular          = freteCalcular;
 window.freteAdicionarContrato = freteAdicionarContrato;
 window.freteEditarContrato    = freteEditarContrato;
@@ -7619,5 +7519,5 @@ window.freteAdicionarSpot     = freteAdicionarSpot;
 window.freteEditarSpot        = freteEditarSpot;
 window.freteRemoverSpot       = freteRemoverSpot;
 window.freteSetVista          = freteSetVista;
-window.freteToggleGrupo       = freteToggleGrupo;
 window.freteSetOrdem          = freteSetOrdem;
+window.freteToggleGrupo       = freteToggleGrupo;
