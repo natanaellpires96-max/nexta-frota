@@ -4206,9 +4206,6 @@ async function exportarHrrlog() {
   veiculos.forEach(v => {
     const todasViagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
     if (!todasViagens.length) return;
-    // Recalcula os timings de cada viagem para garantir que tempoEsperaRestricaoMin,
-    // esperaTerminalMin e demais campos reflitam o estado atual (incluindo overrides manuais).
-    todasViagens.forEach(vi => { try { recalcularTimingViagem(v, vi, todasViagens); } catch(e) {} });
     const _jIniRawCt = parseHoraMin(v.jornadaInicio || '06:00');
     let jIniMin = isNaN(_jIniRawCt) ? 360 : _jIniRawCt;
     if (v._horarioDisponivelAPartirDe) { const _dmCt = parseHoraMin(v._horarioDisponivelAPartirDe); if (!isNaN(_dmCt) && _dmCt > jIniMin) jIniMin = _dmCt; }
@@ -4230,17 +4227,11 @@ async function exportarHrrlog() {
       let relogioMin = inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
       relogioMin += vi.esperaTerminalMin || 0;
       if (vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin)) { relogioMin = vi.horarioCargaManualMin; }
-      // Início de carga — replica exatamente a lógica do render de otimização:
-      // 1. relogioMin base (já inclui esperaTerminalMin e override manual, calculados acima)
-      // 2. atrasoCargaMin: espera por restrição de janela na 1ª parada,
-      //    só aplicado quando não há override manual (com override o usuário fixou o horário exato)
+      // Início de carga = relogioMin exatamente.
+      // tempoEsperaRestricaoMin é a espera no CLIENTE (após deslocamento), não no terminal.
+      // Não há atraso adicional entre chegada ao terminal e início de carga.
       const p0 = vi.paradas[0];
-      const temOverrideHrr = vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin);
-      const atrasoP0 = (!temOverrideHrr && !p0.overnight
-        && (p0.tempoEsperaRestricaoMin || 0) > 0
-        && (p0.tempoCarregamentoMin || 0) > 0)
-          ? (p0.tempoEsperaRestricaoMin || 0) : 0;
-      const inicioCargaMin = relogioMin + atrasoP0;
+      const inicioCargaMin = relogioMin;
       // Terminal desta viagem (fallback ao terminal do pedido se terminalOrigem ausente)
       const _termPedidoHrr = vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || '';
       const termNome = vi.terminalOrigem || _termPedidoHrr || v.terminal || '';
