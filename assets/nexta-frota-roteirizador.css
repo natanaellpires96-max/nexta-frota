@@ -717,6 +717,8 @@
 #roteirizador-shell .logo-sub { letter-spacing: 0.06em !important; }
 /* Shell sem border-radius e sem padding */
 #roteirizador-shell {
+  display: block !important;
+  width: 100% !important;
   max-width: none; min-height: auto; padding: 0;
   background: var(--bg);
   border-radius: 0 !important;
@@ -725,11 +727,31 @@
 /* Mount sem padding */
 #roteirizador-mount { padding: 0 !important; background: transparent !important; border-radius: 0 !important; }
 /* Preenche o vazio lateral sem mexer na posicao/tamanho dos botoes */
-#roteirizador-shell .header {
-  box-shadow: 100vmax 0 0 100vmax #111d0a !important;
+#roteirizador-shell .header::after {
+  content: "";
+  position: absolute;
+  left: 100%;
+  top: 0;
+  width: 100vw;
+  height: 100%;
+  background: #111d0a;
+  border-bottom: 1px solid #1c2d12;
+  pointer-events: none;
 }
 #roteirizador-shell .tabs {
+  position: relative;
+  overflow: visible;
   margin-bottom: 16px;
   border-radius: 0;
-  box-shadow: 100vmax 0 0 100vmax var(--surface) !important;
+}
+#roteirizador-shell .tabs::after {
+  content: "";
+  position: absolute;
+  left: 100%;
+  top: 0;
+  width: 100vw;
+  height: 100%;
+  background: var(--surface);
+  border-bottom: 0.5px solid var(--border);
+  pointer-events: none;
 }
