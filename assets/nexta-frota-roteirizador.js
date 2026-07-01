@@ -4229,7 +4229,16 @@ async function exportarHrrlog() {
       // Clock acumulado até esta viagem
       let relogioMin = inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
       relogioMin += vi.esperaTerminalMin || 0;
-      if (vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin)) { relogioMin = vi.horarioCargaManualMin; }
+      const temOverrideCarga = vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin);
+      if (temOverrideCarga) {
+        const clockAnterior = idx > 0
+          ? inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1)
+          : jIniMin;
+        const baseDay = Math.floor(clockAnterior / 1440) * 1440;
+        let alvo = baseDay + vi.horarioCargaManualMin;
+        if (alvo < clockAnterior - 0.001) alvo += 1440;
+        relogioMin = alvo;
+      }
       // Início de carga: usa o valor já calculado pelo render da tela se disponível,
       // senão usa relogioMin puro (sem atrasoP0 — tempoEsperaRestricaoMin é espera no
       // cliente, não atraso de carregamento no terminal).
@@ -4280,11 +4289,11 @@ async function exportarHrrlog() {
         'Data Planejada*': fmtHrr(baseDate, inicioCargaMin),
       });
       // ── Eventos: Descarga (cada parada) ──────────────────────────────────────
-      let clock = relogioMin;
+      let clock = inicioCargaMin;
       vi.paradas.forEach((p, idxP) => {
         const espOrig = p.tempoEsperaRestricaoMin || 0;
         const wal = p.overnight ? (p.waitAfterLoadingMin || 0) : 0;
-        const atraso = (!p.overnight && idxP === 0 && espOrig > 0 && (p.tempoCarregamentoMin || 0) > 0) ? espOrig : 0;
+        const atraso = (!temOverrideCarga && !p.overnight && idxP === 0 && espOrig > 0 && (p.tempoCarregamentoMin || 0) > 0) ? espOrig : 0;
         const fimCarga = clock + atraso + (p.tempoCarregamentoMin || 0);
         const chegada  = fimCarga + wal + (p.deslocCarregadoMin || 0);
         const espVis   = p.overnight ? 0 : (espOrig - atraso);
@@ -4451,6 +4460,9 @@ function renderTemplateOperacao() {
       // O dia base é sempre 0 (jornada começa no dia do carregamento).
       const _alvoManual = viOriginal.horarioCargaManualMin;
       relogioMin = _alvoManual;
+    }
+    if (Number.isFinite(viOriginal._inicioCargaMin)) {
+      relogioMin = viOriginal._inicioCargaMin;
     }
     let inicioCargaCicloMin = relogioMin;
     let retornoBaseCicloMin = relogioMin;
@@ -5204,6 +5216,9 @@ function editarHorarioCargaDebounced(vid, ti, hhmm) {
   const min = parseHoraMin(hhmm);
   if (isNaN(min)) return;
   viagem.horarioCargaManualMin = min;
+  recalcularTimingViagem(viagem, v);
+  recalcularControleTempo();
+  renderTemplateOperacao();
   // Agenda re-render apenas depois que o campo perder o foco
   _cargaPendente = { vid, ti, hhmm };
 }
@@ -5256,6 +5271,7 @@ function editarHorarioCarga(vid, ti, hhmm) {
   recalcularTimingViagem(viagem, v);
   recalcularControleTempo();
   renderResultado(ultimoResultado, ultimoControleTempo || {});
+  renderTemplateOperacao();
 }
 function renderResultado(resultado, controleTempo={}) {
   // Garante que toda viagem real tenha petId (cobre ajustes manuais pós-otimização)
@@ -5725,6 +5741,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
             <span style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:6px;">${temOverride ? '✏️' : '🕐'} Carga</span>
             <input type="time" value="${cargaHHMM}"
               title="${temOverride ? 'Horário personalizado — clique em Restaurar para voltar ao calculado' : 'Horário calculado — edite para personalizar'}"
+              oninput="editarHorarioCargaDebounced(${v.id},${ti},this.value)"
               onchange="editarHorarioCargaDebounced(${v.id},${ti},this.value)"
               onblur="finalizarEdicaoCarga(${v.id},${ti})"
               style="font-size:12px;padding:2px 6px;border:2px solid ${temOverride ? '#16a34a' : 'var(--border)'};border-radius:5px;background:${temOverride ? 'rgba(22,163,74,0.08)' : 'var(--surface)'};color:${temOverride ? '#15803d' : 'var(--text)'};font-weight:${temOverride ? '700' : '500'};width:96px;cursor:pointer;" />
