@@ -4227,11 +4227,11 @@ async function exportarHrrlog() {
       let relogioMin = inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
       relogioMin += vi.esperaTerminalMin || 0;
       if (vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin)) { relogioMin = vi.horarioCargaManualMin; }
-      // Início de carga = relogioMin exatamente.
-      // tempoEsperaRestricaoMin é a espera no CLIENTE (após deslocamento), não no terminal.
-      // Não há atraso adicional entre chegada ao terminal e início de carga.
+      // Início de carga: lê diretamente o valor calculado pelo render de otimização,
+      // que é o mesmo que aparece na tela ("Carga 06:00-07:00").
+      // _inicioCargaMin é salvo no render após calcular paradasComHorario.
       const p0 = vi.paradas[0];
-      const inicioCargaMin = relogioMin;
+      const inicioCargaMin = vi._inicioCargaMin ?? relogioMin;
       // Terminal desta viagem (fallback ao terminal do pedido se terminalOrigem ausente)
       const _termPedidoHrr = vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || '';
       const termNome = vi.terminalOrigem || _termPedidoHrr || v.terminal || '';
@@ -5665,6 +5665,9 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           return { p, inicioCargaMin, fimCargaMin, chegadaEntregaMin, inicioDescargaMin, fimDescargaMin, retornoTerminalMin, esperaVisivelMin, waitAfterLoad };
         });
         const fimCicloMin = relogioMin;
+        // Salva o horário real de início de carga no objeto da viagem
+        // para que o export Herrlog leia diretamente sem recalcular.
+        viagem._inicioCargaMin = paradasComHorario[0]?.inicioCargaMin ?? inicioCicloMin;
         const label = `Viagem ${ti+1}${viagem.petId ? ` · ${viagem.petId}` : ''}`;
         const esperaTagHtml = esperaTermRender > 0
           ? `<span style="font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FCD34D;border-radius:4px;padding:2px 7px;">⏳ Espera terminal ${fmtDT(inicioCicloMin)}→${fmtDT(inicioCicloMin+esperaTermRender)} (${Math.round(esperaTermRender)} min)</span>`
