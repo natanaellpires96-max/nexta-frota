@@ -282,6 +282,7 @@ async function mvRecalcularDistancia(token = null) {
       ultimoResultado[vId][iV]._kmAjustado = totalKm;
       ultimoResultado[vId][iV]._userWaypoints = _mvRotasSalvas[chave].userWaypoints;
     }
+    if (typeof window.renderCustoMapaViagem === 'function') window.renderCustoMapaViagem();
   } catch (e) {
     console.error('mvRecalcularDistancia: erro ao persistir km/vias', e);
   }

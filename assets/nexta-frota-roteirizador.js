@@ -985,6 +985,7 @@ function abrirModalViagem(veiculoId, idxViagem) {
   dadosMapaAtual = validos;
   window._mvVeiculoId  = veiculoId;
   window._mvIdxViagem  = idxViagem;
+  renderCustoMapaViagem();
   // Inicializa waypoints arrastáveis
   _mvWaypoints = validos.map((p, i) => ({ ...p, idx: i, marker: null }));
   _mvPolylines = [];
@@ -5070,6 +5071,78 @@ function resumoProduto(nome) {
   return s;
 }
 // ── Mapa completo do veículo (todas as viagens) ────────────────────────────────
+function _freteNum(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'number') return isNaN(v) ? 0 : v;
+  const n = parseFloat(String(v).trim().replace(/\./g, '').replace(',', '.'));
+  return isNaN(n) ? 0 : n;
+}
+function _freteMoeda(v) {
+  return 'R$ ' + (Number(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function calcularFreteViagemAtual(v, viagem, kmMapa) {
+  const contrato = freteCarregarContratos().find(c => (c.placa || '').toUpperCase() === (v.placa || '').toUpperCase());
+  const spots = freteCarregarSpot();
+  const volumeM3 = (viagem.paradas || []).reduce((s, p) => s + (p.volumeTotal || 0), 0);
+  const km = Number(kmMapa) || 0;
+  if (!contrato) return { contrato: null, km, volumeM3, custo: 0, tipo: 'Sem contrato', detalhe: 'Cadastre contrato para esta placa na aba Frete.' };
+  const fixo = _freteNum(contrato.fixo);
+  let custo = 0, detalhe = '';
+  if (contrato.tipo === 'fixo_km') {
+    const taxaKm = _freteNum(contrato.km);
+    custo = fixo + taxaKm * km;
+    detalhe = `${_freteMoeda(fixo)} fixo + ${_freteMoeda(taxaKm)}/km`;
+  } else if (contrato.tipo === 'fixo_m3') {
+    const taxaM3 = _freteNum(contrato.m3);
+    custo = fixo + taxaM3 * volumeM3;
+    detalhe = `${_freteMoeda(fixo)} fixo + ${_freteMoeda(taxaM3)}/m3`;
+  } else if (contrato.tipo === 'diaria') {
+    custo = _freteNum(contrato.diaria);
+    detalhe = `${_freteMoeda(custo)} diaria`;
+  } else if (contrato.tipo === 'spot') {
+    const origem = (viagem.terminalOrigem || v.terminal || '').toLowerCase();
+    const destinos = (viagem.paradas || []).map(p => `${p.pedido?.cidade || ''} ${p.pedido?.cliente || ''}`).join(' ').toLowerCase();
+    const sp = spots.find(s => origem.includes((s.origem || '').toLowerCase()) && destinos.includes((s.destino || '').toLowerCase()) && (!s.transportadora || s.transportadora === contrato.transportadora));
+    const taxaSpot = sp ? _freteNum(sp.valor) : 0;
+    custo = taxaSpot * volumeM3;
+    detalhe = sp ? `${_freteMoeda(taxaSpot)}/m3 spot` : 'Spot sem rota cadastrada';
+  }
+  return { contrato, km, volumeM3, custo, tipo: FRETE_TIPOS[contrato.tipo] || contrato.tipo || 'Contrato', detalhe };
+}
+function renderCustoMapaViagem() {
+  const box = document.getElementById('mv-custo');
+  if (!box || window._mvVeiculoId == null || window._mvIdxViagem == null || !ultimoResultado) return;
+  const v = veiculos.find(x => x.id === window._mvVeiculoId);
+  const viagem = ultimoResultado?.[window._mvVeiculoId]?.[window._mvIdxViagem];
+  if (!v || !viagem) return;
+  const kmOriginal = (viagem.paradas || []).reduce((s, p) => s + (p.distanciaKm || 0), 0);
+  const calc = calcularFreteViagemAtual(v, viagem, viagem._kmAjustado != null ? viagem._kmAjustado : kmOriginal);
+  const totalLitros = calc.volumeM3 * 1000;
+  const custoLitroMedio = totalLitros > 0 ? calc.custo / totalLitros : 0;
+  const clienteHtml = (viagem.paradas || []).map((p, i) => {
+    const vol = p.volumeTotal || 0;
+    const custoCliente = calc.volumeM3 > 0 ? calc.custo * (vol / calc.volumeM3) : 0;
+    const custoLitro = vol > 0 ? custoCliente / (vol * 1000) : 0;
+    const nome = String(p.pedido?.cliente || '-').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<div style="display:flex;align-items:center;gap:6px;min-width:0;">
+      <span style="width:18px;height:18px;border-radius:50%;background:#4F46E5;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">${i+1}</span>
+      <span style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">${nome}</span>
+      <span style="color:var(--text-3);white-space:nowrap;">${vol.toFixed(1)} m3</span>
+      <span style="color:#15803d;font-weight:700;white-space:nowrap;">${_freteMoeda(custoCliente)}</span>
+      <span style="color:#3730A3;background:rgba(79,70,229,0.09);border:1px solid rgba(79,70,229,0.2);border-radius:999px;padding:1px 7px;white-space:nowrap;">R$ ${custoLitro.toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})}/L</span>
+    </div>`;
+  }).join('');
+  box.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:7px;">
+      <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Contrato</div><div style="font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${calc.tipo}</div></div>
+      <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">KM mapa</div><div style="font-weight:700;color:#3730A3;">${calc.km.toFixed(1)} km</div></div>
+      <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Custo viagem</div><div style="font-weight:800;color:#15803d;">${_freteMoeda(calc.custo)}</div></div>
+      <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Media</div><div style="font-weight:700;color:var(--text);">R$ ${custoLitroMedio.toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})}/L</div></div>
+    </div>
+    <div style="font-size:10px;color:var(--text-3);margin-bottom:5px;">${calc.detalhe || '&nbsp;'}</div>
+    <div style="display:grid;gap:4px;font-size:11px;line-height:1.35;">${clienteHtml || '<span style="color:var(--text-3);">Sem clientes para rateio.</span>'}</div>`;
+}
+window.renderCustoMapaViagem = renderCustoMapaViagem;
 const CORES_VIAGEM = ['#7CB82B','#2255CC','#F97316','#7C3AED','#E11D48','#0EA5E9'];
 function abrirMapaVeiculo(veiculoId) {
   if (!ultimoResultado || !ultimoResultado[veiculoId]) return;
