@@ -5162,6 +5162,12 @@ function calcularFreteViagemAtual(v, viagem, kmMapa) {
   } else if (contrato.tipo === 'diaria') {
     custo = _freteNum(contrato.diaria);
     detalhe = `${_freteMoeda(custo)} diaria`;
+  } else if (contrato.tipo === 'diaria_km') {
+    const diaria = _freteNum(contrato.diaria);
+    const taxaKm = _freteNum(contrato.km);
+    const variavel = taxaKm * km;
+    custo = diaria + variavel;
+    detalhe = `${_freteMoeda(diaria)} diaria + ${_freteMoeda(taxaKm)}/km`;
   } else if (contrato.tipo === 'spot') {
     const origem = (viagem.terminalOrigem || v.terminal || '').toLowerCase();
     const destinos = (viagem.paradas || []).map(p => `${p.pedido?.cidade || ''} ${p.pedido?.cliente || ''}`).join(' ').toLowerCase();
@@ -7157,12 +7163,12 @@ window.exportarTodasProgramacoesPDF  = exportarTodasProgramacoesPDF;
 window.exportarTodasProgramacoesPNG  = exportarTodasProgramacoesPNG;
 // ══════════════════════════════════════════════════════════════════════════════
 // CALCULADORA DE FRETE
-// Contratos: fixo+km | fixo+m3 | diaria | spot por rota
+// Contratos: fixo+km | fixo+m3 | diaria | diaria+km | spot por rota
 // ══════════════════════════════════════════════════════════════════════════════
 
 const FRETE_LS_KEY   = 'nexta_frete_contratos_v1';
 const FRETE_SPOT_KEY = 'nexta_frete_spot_v1';
-const FRETE_TIPOS    = { fixo_km:'Fixo + R$/km', fixo_m3:'Fixo + R$/m³', diaria:'Diária', spot:'Spot' };
+const FRETE_TIPOS    = { fixo_km:'Fixo + R$/km', fixo_m3:'Fixo + R$/m³', diaria:'Diária', diaria_km:'Diária + Km rodado', spot:'Spot' };
 
 function freteCarregarContratos() {
   try { return JSON.parse(localStorage.getItem(FRETE_LS_KEY) || '[]'); } catch(e) { return []; }
@@ -7271,7 +7277,7 @@ function freteRenderContratos() {
     inpFixo.type = 'number'; inpFixo.value = c.fixo || ''; inpFixo.placeholder = '0,00';
     inpFixo.min = '0'; inpFixo.step = '0.01';
     inpFixo.style.cssText = _freteInputStyle('width:100%;text-align:right;');
-    inpFixo.disabled = (c.tipo === 'diaria' || c.tipo === 'spot');
+    inpFixo.disabled = (c.tipo === 'diaria' || c.tipo === 'diaria_km' || c.tipo === 'spot');
     if (inpFixo.disabled) inpFixo.style.opacity = '0.4';
     inpFixo.onchange = function() { freteEditarContrato(i, 'fixo', this.value); };
     tdFixo.appendChild(inpFixo); tr.appendChild(tdFixo);
@@ -7282,7 +7288,7 @@ function freteRenderContratos() {
     inpKm.type = 'number'; inpKm.value = c.km || ''; inpKm.placeholder = '0,00';
     inpKm.min = '0'; inpKm.step = '0.01';
     inpKm.style.cssText = _freteInputStyle('width:100%;text-align:right;');
-    inpKm.disabled = (c.tipo !== 'fixo_km');
+    inpKm.disabled = (c.tipo !== 'fixo_km' && c.tipo !== 'diaria_km');
     if (inpKm.disabled) inpKm.style.opacity = '0.4';
     inpKm.onchange = function() { freteEditarContrato(i, 'km', this.value); };
     tdKm.appendChild(inpKm); tr.appendChild(tdKm);
@@ -7304,7 +7310,7 @@ function freteRenderContratos() {
     inpDia.type = 'number'; inpDia.value = c.diaria || ''; inpDia.placeholder = '0,00';
     inpDia.min = '0'; inpDia.step = '0.01';
     inpDia.style.cssText = _freteInputStyle('width:100%;text-align:right;');
-    inpDia.disabled = (c.tipo !== 'diaria');
+    inpDia.disabled = (c.tipo !== 'diaria' && c.tipo !== 'diaria_km');
     if (inpDia.disabled) inpDia.style.opacity = '0.4';
     inpDia.onchange = function() { freteEditarContrato(i, 'diaria', this.value); };
     tdDia.appendChild(inpDia); tr.appendChild(tdDia);
@@ -7536,6 +7542,7 @@ async function freteCalcular() {
     if (contrato.tipo === 'fixo_km') return fixoRateado + (parseFloat(contrato.km)||0) * km;
     if (contrato.tipo === 'fixo_m3') return fixoRateado + (parseFloat(contrato.m3)||0) * entry.m3Total;
     if (contrato.tipo === 'diaria')  return parseFloat(contrato.diaria) || 0;
+    if (contrato.tipo === 'diaria_km') return (parseFloat(contrato.diaria)||0) + (parseFloat(contrato.km)||0) * km;
     if (contrato.tipo === 'spot') {
       var sp = spots.find(function(s) {
         var bateRota = entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
