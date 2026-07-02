@@ -4215,18 +4215,27 @@ async function exportarHrrlog() {
     if (v._horarioDisponivelAPartirDe) { const _dmCt = parseHoraMin(v._horarioDisponivelAPartirDe); if (!isNaN(_dmCt) && _dmCt > jIniMin) jIniMin = _dmCt; }
     const jornadaInicioMin = jIniMin; // alias para compatibilidade
     todasViagens.forEach((vi, idx) => {
-      // Data base da viagem (mesma lógica do template operação)
+      // Data base da viagem — mesma lógica e mesma prioridade do template operação (tela):
+      // 1º a âncora gravada na otimização (_baseDataEntrega = data selecionada no roteirizador),
+      // 2º a data do pedido, 3º hoje (apenas como último recurso).
       const _fp = vi.paradas[0];
-      const _dl = _fp?.pedido?.dataEntregaLogistica;
-      let baseDate = new Date();
-      if (_dl) {
-        const pts = _dl.split('/');
-        if (pts.length >= 3) {
-          const d = new Date(parseInt(pts[2]), parseInt(pts[1]) - 1, parseInt(pts[0]));
-          if (_fp.overnight) d.setDate(d.getDate() - 1);
-          baseDate = d;
+      let baseDate = null;
+      if (ultimoResultado._baseDataEntrega) {
+        const _bd = new Date(ultimoResultado._baseDataEntrega);
+        if (!isNaN(_bd.getTime())) baseDate = _bd;
+      }
+      if (!baseDate) {
+        const _dl = _fp?.pedido?.dataEntregaLogistica;
+        if (_dl) {
+          const pts = _dl.split('/');
+          if (pts.length >= 3) {
+            const d = new Date(parseInt(pts[2]), parseInt(pts[1]) - 1, parseInt(pts[0]));
+            if (_fp.overnight) d.setDate(d.getDate() - 1);
+            baseDate = d;
+          }
         }
       }
+      if (!baseDate) baseDate = new Date();
       // Clock acumulado até esta viagem
       let relogioMin = inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
       relogioMin += vi.esperaTerminalMin || 0;
@@ -4300,11 +4309,16 @@ async function exportarHrrlog() {
         const espVis   = p.overnight ? 0 : (espOrig - atraso);
         const fimDesc  = chegada + espVis + (p.tempoDescargaMin || 0);
         clock = fimDesc + (p.deslocVazioMin || 0);
+        // Horário planejado do evento de descarga = início REAL da descarga,
+        // ou seja, chegada + espera pela janela de recebimento do cliente (espVis).
+        // Antes era exportado apenas "chegada", o que ignorava a espera e
+        // deixava o horário mais cedo do que o exibido na tela.
+        const inicioDescMin = chegada + espVis;
         rowsEventos.push({
           'Código da Viagem*': codViagem,
           'Codigo do Cliente*': p.pedido?.codigoSAP || '',
           'Tipo Evento*': 'Descarga',
-          'Data Planejada*': fmtHrr(baseDate, chegada),
+          'Data Planejada*': fmtHrr(baseDate, inicioDescMin),
         });
       });
     });
