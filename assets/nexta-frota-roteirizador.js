@@ -7192,6 +7192,11 @@ function _freteInputStyle(extra) {
 
 function _freteListaTransportadoras() {
   var base = (window.CARRIERS || []).slice();
+  if (_fretePlacasPaiCache) {
+    Object.keys(_fretePlacasPaiCache).forEach(function(nome) {
+      if (nome && base.indexOf(nome) === -1) base.push(nome);
+    });
+  }
   (veiculos || []).forEach(function(v) { if (v.transportadora && base.indexOf(v.transportadora) === -1) base.push(v.transportadora); });
   return base.filter(Boolean).sort(function(a,b) { return a.localeCompare(b, 'pt-BR'); });
 }
@@ -7225,10 +7230,49 @@ function _freteNormPlaca(placa) {
   return (placa || '').toString().trim().toUpperCase();
 }
 
+var _fretePlacasPaiCache = null;
+var _fretePlacasPaiPromise = null;
+
+function _freteCarregarPlacasPaiAsync(reRender) {
+  if (typeof window.dbGetPlates !== 'function') return null;
+  if (_fretePlacasPaiCache) return Promise.resolve(_fretePlacasPaiCache);
+  if (!_fretePlacasPaiPromise) {
+    _fretePlacasPaiPromise = window.dbGetPlates()
+      .then(function(data) {
+        _fretePlacasPaiCache = data || {};
+        return _fretePlacasPaiCache;
+      })
+      .catch(function(e) {
+        console.warn('Frete: falha ao carregar placas do cadastro pai', e);
+        return null;
+      })
+      .finally(function() {
+        _fretePlacasPaiPromise = null;
+        if (reRender) freteRenderContratos();
+      });
+  }
+  return _fretePlacasPaiPromise;
+}
+
+function _freteVeiculosCadastroPai() {
+  if (!_fretePlacasPaiCache) return null;
+  var lista = [];
+  Object.entries(_fretePlacasPaiCache).forEach(function(entry) {
+    var transportadora = entry[0];
+    (entry[1] || []).forEach(function(p) {
+      if (!p || p.ativo === false || !_freteNormPlaca(p.placa)) return;
+      lista.push({ ...p, placa: _freteNormPlaca(p.placa), transportadora: transportadora });
+    });
+  });
+  return lista;
+}
+
 function _freteVeiculosTransportadora(transportadora) {
   var transp = (transportadora || '').toString().trim();
   if (!transp) return [];
-  return (veiculos || [])
+  var basePai = _freteVeiculosCadastroPai();
+  var base = basePai || (veiculos || []);
+  return base
     .filter(function(v) { return (v.transportadora || '').toString().trim() === transp && _freteNormPlaca(v.placa); })
     .sort(function(a,b) { return _freteNormPlaca(a.placa).localeCompare(_freteNormPlaca(b.placa), 'pt-BR'); });
 }
@@ -7249,6 +7293,17 @@ function _freteSelectPlaca(c, idx, contratos) {
     vazio.textContent = 'Selecione a transportadora';
     vazio.style.cssText = 'font-size:11px;color:var(--text-3);padding:4px 0;';
     return vazio;
+  }
+
+  if (typeof window.dbGetPlates === 'function' && !_fretePlacasPaiCache) {
+    _freteCarregarPlacasPaiAsync(true);
+    var carregando = document.createElement('select');
+    carregando.disabled = true;
+    carregando.style.cssText = _freteInputStyle('width:100%;font-weight:600;opacity:.65;');
+    var optLoad = document.createElement('option');
+    optLoad.textContent = 'Carregando placas...';
+    carregando.appendChild(optLoad);
+    return carregando;
   }
 
   var placas = _freteVeiculosTransportadora(transportadora);
@@ -7291,6 +7346,7 @@ function _freteSelectPlaca(c, idx, contratos) {
 function freteRenderContratos() {
   const tbody = document.getElementById('frete-contratos-body');
   if (!tbody) return;
+  if (typeof window.dbGetPlates === 'function' && !_fretePlacasPaiCache) _freteCarregarPlacasPaiAsync(true);
   const contratos = freteCarregarContratos();
   if (!contratos.length) {
     tbody.innerHTML = '<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Nenhum contrato cadastrado. Clique em "+ Adicionar" para começar.</td></tr>';
@@ -7464,7 +7520,9 @@ function freteEditarContrato(i, campo, valor) {
       freteRenderContratos();
       return;
     }
-    var vPlaca = (veiculos || []).find(function(v) { return _freteNormPlaca(v.placa) === valor; });
+    var basePai = _freteVeiculosCadastroPai();
+    var basePlacas = basePai || (veiculos || []);
+    var vPlaca = basePlacas.find(function(v) { return _freteNormPlaca(v.placa) === valor; });
     if (valor && (!vPlaca || (arr[i].transportadora && (vPlaca.transportadora || '') !== arr[i].transportadora))) {
       alert('Selecione uma placa cadastrada para a transportadora escolhida.');
       arr[i].placa = '';
@@ -7480,7 +7538,9 @@ function freteEditarContrato(i, campo, valor) {
     if (!valor || !placaPertence || _fretePlacaEmOutroContrato(arr, placaAtual, i)) arr[i].placa = '';
   }
   if (campo === 'placa') {
-    var v = (veiculos || []).find(function(v) { return _freteNormPlaca(v.placa) === _freteNormPlaca(valor); });
+    var basePaiPlaca = _freteVeiculosCadastroPai();
+    var basePlaca = basePaiPlaca || (veiculos || []);
+    var v = basePlaca.find(function(v) { return _freteNormPlaca(v.placa) === _freteNormPlaca(valor); });
     if (v) arr[i].transportadora = v.transportadora || arr[i].transportadora;
   }
   freteSalvarContratos(arr);
