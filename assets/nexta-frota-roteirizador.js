@@ -7230,11 +7230,36 @@ function _freteNormPlaca(placa) {
   return (placa || '').toString().trim().toUpperCase();
 }
 
+function _freteNormTexto(txt) {
+  return (txt || '').toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 var _fretePlacasPaiCache = null;
 var _fretePlacasPaiPromise = null;
+var _freteAguardandoDbGetPlates = false;
+
+function _freteAguardarDbGetPlates() {
+  if (_freteAguardandoDbGetPlates || typeof window.dbGetPlates === 'function') return;
+  _freteAguardandoDbGetPlates = true;
+  var tentativas = 0;
+  var timer = setInterval(function() {
+    tentativas++;
+    if (typeof window.dbGetPlates === 'function') {
+      clearInterval(timer);
+      _freteAguardandoDbGetPlates = false;
+      _freteCarregarPlacasPaiAsync(true);
+    } else if (tentativas >= 30) {
+      clearInterval(timer);
+      _freteAguardandoDbGetPlates = false;
+    }
+  }, 200);
+}
 
 function _freteCarregarPlacasPaiAsync(reRender) {
-  if (typeof window.dbGetPlates !== 'function') return null;
+  if (typeof window.dbGetPlates !== 'function') {
+    _freteAguardarDbGetPlates();
+    return null;
+  }
   if (_fretePlacasPaiCache) return Promise.resolve(_fretePlacasPaiCache);
   if (!_fretePlacasPaiPromise) {
     _fretePlacasPaiPromise = window.dbGetPlates()
@@ -7270,10 +7295,11 @@ function _freteVeiculosCadastroPai() {
 function _freteVeiculosTransportadora(transportadora) {
   var transp = (transportadora || '').toString().trim();
   if (!transp) return [];
+  var transpNorm = _freteNormTexto(transp);
   var basePai = _freteVeiculosCadastroPai();
   var base = basePai || (veiculos || []);
   return base
-    .filter(function(v) { return (v.transportadora || '').toString().trim() === transp && _freteNormPlaca(v.placa); })
+    .filter(function(v) { return _freteNormTexto(v.transportadora) === transpNorm && _freteNormPlaca(v.placa); })
     .sort(function(a,b) { return _freteNormPlaca(a.placa).localeCompare(_freteNormPlaca(b.placa), 'pt-BR'); });
 }
 
@@ -7295,7 +7321,7 @@ function _freteSelectPlaca(c, idx, contratos) {
     return vazio;
   }
 
-  if (typeof window.dbGetPlates === 'function' && !_fretePlacasPaiCache) {
+  if (!_fretePlacasPaiCache && (typeof window.dbGetPlates === 'function' || _freteAguardandoDbGetPlates)) {
     _freteCarregarPlacasPaiAsync(true);
     var carregando = document.createElement('select');
     carregando.disabled = true;
@@ -7346,7 +7372,10 @@ function _freteSelectPlaca(c, idx, contratos) {
 function freteRenderContratos() {
   const tbody = document.getElementById('frete-contratos-body');
   if (!tbody) return;
-  if (typeof window.dbGetPlates === 'function' && !_fretePlacasPaiCache) _freteCarregarPlacasPaiAsync(true);
+  if (!_fretePlacasPaiCache) {
+    if (typeof window.dbGetPlates === 'function') _freteCarregarPlacasPaiAsync(true);
+    else _freteAguardarDbGetPlates();
+  }
   const contratos = freteCarregarContratos();
   if (!contratos.length) {
     tbody.innerHTML = '<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Nenhum contrato cadastrado. Clique em "+ Adicionar" para começar.</td></tr>';
