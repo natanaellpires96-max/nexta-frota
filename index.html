@@ -71,6 +71,7 @@
     <button class="tab" onclick="showTab('mapa')">Resumo Operação</button>
     <button class="tab" onclick="showTab('operacao')">Envio Transportadora</button>
     <button class="tab" onclick="showTab('dashboard_rot')">📊 Dashboard</button>
+    <button class="tab" onclick="showTab('frete')">💰 Frete</button>
     <button class="tab" onclick="showTab('historico')">Histórico</button>
   </div>
   <!-- ── TERMINAIS ─────────────────────────────────────────────────────────── -->
@@ -549,6 +550,87 @@
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  </div>
+  <!-- ── FRETE ─────────────────────────────────────────────────────────────── -->
+  <div id="tab-frete" class="page">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+      <div>
+        <div class="sec-title" style="margin:0;">Calculadora de Frete</div>
+        <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Custos de frete por contrato, spot e histórico de viagens</div>
+      </div>
+    </div>
+
+    <!-- Contratos de frete -->
+    <div style="border:1px solid var(--border-dk);border-radius:10px;overflow:hidden;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(0,0,0,0.03);border-bottom:1px solid var(--border-dk);">
+        <span style="font-size:12px;font-weight:700;color:var(--text);">Contratos por placa</span>
+        <button class="btn btn-green btn-sm" onclick="freteAdicionarContrato()">+ Adicionar</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:760px;">
+          <thead><tr style="background:rgba(0,0,0,0.02);">
+            <th style="padding:8px;text-align:left;font-size:11px;color:var(--text-3);">PLACA</th>
+            <th style="padding:8px;text-align:left;font-size:11px;color:var(--text-3);">TRANSPORTADORA</th>
+            <th style="padding:8px;text-align:left;font-size:11px;color:var(--text-3);">TIPO</th>
+            <th style="padding:8px;text-align:left;font-size:11px;color:var(--text-3);">KM</th>
+            <th style="padding:8px;text-align:right;font-size:11px;color:var(--text-3);">FIXO (R$)</th>
+            <th style="padding:8px;text-align:right;font-size:11px;color:var(--text-3);">R$/KM</th>
+            <th style="padding:8px;text-align:right;font-size:11px;color:var(--text-3);">R$/M³</th>
+            <th style="padding:8px;text-align:right;font-size:11px;color:var(--text-3);">DIÁRIA (R$)</th>
+            <th style="padding:8px;text-align:center;font-size:11px;color:var(--text-3);"></th>
+          </tr></thead>
+          <tbody id="frete-contratos-body">
+            <tr><td colspan="9" style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Nenhum contrato cadastrado. Clique em "+ Adicionar" para começar.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Rotas Spot -->
+    <div style="border:1px solid var(--border-dk);border-radius:10px;overflow:hidden;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(0,0,0,0.03);border-bottom:1px solid var(--border-dk);">
+        <span style="font-size:12px;font-weight:700;color:var(--text);">Rotas spot (R$/m³)</span>
+        <button class="btn btn-green btn-sm" onclick="freteAdicionarSpot()">+ Adicionar</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:600px;">
+          <thead><tr style="background:rgba(0,0,0,0.02);">
+            <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--text-3);">ORIGEM</th>
+            <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--text-3);">DESTINO</th>
+            <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--text-3);">TRANSPORTADORA</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--text-3);">VALOR (R$/m³)</th>
+            <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--text-3);"></th>
+          </tr></thead>
+          <tbody id="frete-spot-body">
+            <tr><td colspan="5" style="padding:14px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma rota spot cadastrada.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Resultado calculado -->
+    <div style="border:1px solid var(--border-dk);border-radius:10px;overflow:hidden;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(0,0,0,0.03);border-bottom:1px solid var(--border-dk);flex-wrap:wrap;gap:10px;">
+        <span style="font-size:12px;font-weight:700;color:var(--text);">Custo calculado (histórico)</span>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:10px;color:var(--text-3);font-weight:600;letter-spacing:.04em;">VISTA</span>
+          <button id="frete-btn-viagem" onclick="freteSetVista('viagem')" style="font-size:10px;padding:3px 10px;border-radius:6px;cursor:pointer;background:var(--pet-green);color:#000;font-weight:700;border:none;">Viagem</button>
+          <button id="frete-btn-dia" onclick="freteSetVista('dia')" style="font-size:10px;padding:3px 10px;border-radius:6px;cursor:pointer;background:transparent;color:var(--text-3);border:1px solid var(--border-dk);">Dia</button>
+          <button id="frete-btn-semana" onclick="freteSetVista('semana')" style="font-size:10px;padding:3px 10px;border-radius:6px;cursor:pointer;background:transparent;color:var(--text-3);border:1px solid var(--border-dk);">Semana</button>
+          <button id="frete-btn-mes" onclick="freteSetVista('mes')" style="font-size:10px;padding:3px 10px;border-radius:6px;cursor:pointer;background:transparent;color:var(--text-3);border:1px solid var(--border-dk);">Mês</button>
+          <button id="frete-btn-periodo" onclick="freteSetVista('periodo')" style="font-size:10px;padding:3px 10px;border-radius:6px;cursor:pointer;background:transparent;color:var(--text-3);border:1px solid var(--border-dk);">Período</button>
+          <span style="width:1px;height:16px;background:var(--border-dk);margin:0 2px;"></span>
+          <input type="date" id="frete-de" onchange="freteCalcular()" style="font-size:11px;padding:4px 6px;border:1px solid var(--border-dk);border-radius:6px;background:var(--surface);color:var(--text);"/>
+          <span style="font-size:11px;color:var(--text-3);">até</span>
+          <input type="date" id="frete-ate" onchange="freteCalcular()" style="font-size:11px;padding:4px 6px;border:1px solid var(--border-dk);border-radius:6px;background:var(--surface);color:var(--text);"/>
+          <button class="btn btn-sm" onclick="freteCalcular()">Calcular</button>
+        </div>
+      </div>
+      <div id="frete-resumo-total" style="display:flex;gap:10px;flex-wrap:wrap;padding:14px;border-bottom:1px solid var(--border-dk);"></div>
+      <div id="frete-resultado" style="overflow-x:auto;">
+        <div style="padding:32px;text-align:center;color:var(--text-3);font-size:13px;">Selecione a pasta do Histórico na aba Histórico para carregar os dados.</div>
       </div>
     </div>
   </div>
