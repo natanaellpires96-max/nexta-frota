@@ -5160,14 +5160,17 @@ function calcularFreteViagemAtual(v, viagem, kmMapa) {
     custo = fixa.fixoViagem + variavel;
     detalhe = `Fixo mensal ${_freteMoeda(fixoMensal)} / ${fixa.diasMes} dias x ${_freteHoras(fixa.jornadaUsadaMin)}/${_freteHoras(fixa.jornadaDispMin)} = ${_freteMoeda(fixa.fixoViagem)} + ${_freteMoeda(taxaM3)}/m3`;
   } else if (contrato.tipo === 'diaria') {
-    custo = _freteNum(contrato.diaria);
-    detalhe = `${_freteMoeda(custo)} diaria`;
+    const diaria = _freteNum(contrato.diaria);
+    const diariaRateada = diaria * fixa.fatorJornada;
+    custo = diariaRateada;
+    detalhe = `${_freteMoeda(diaria)} diaria x ${_freteHoras(fixa.jornadaUsadaMin)}/${_freteHoras(fixa.jornadaDispMin)} = ${_freteMoeda(diariaRateada)}`;
   } else if (contrato.tipo === 'diaria_km') {
     const diaria = _freteNum(contrato.diaria);
     const taxaKm = _freteNum(contrato.km);
+    const diariaRateada = diaria * fixa.fatorJornada;
     const variavel = taxaKm * km;
-    custo = diaria + variavel;
-    detalhe = `${_freteMoeda(diaria)} diaria + ${_freteMoeda(taxaKm)}/km`;
+    custo = diariaRateada + variavel;
+    detalhe = `${_freteMoeda(diaria)} diaria x ${_freteHoras(fixa.jornadaUsadaMin)}/${_freteHoras(fixa.jornadaDispMin)} = ${_freteMoeda(diariaRateada)} + ${_freteMoeda(taxaKm)}/km`;
   } else if (contrato.tipo === 'spot') {
     const origem = (viagem.terminalOrigem || v.terminal || '').toLowerCase();
     const destinos = (viagem.paradas || []).map(p => `${p.pedido?.cidade || ''} ${p.pedido?.cliente || ''}`).join(' ').toLowerCase();
@@ -7521,7 +7524,17 @@ async function freteCalcular() {
         var m3Total = vi.paradas.reduce(function(s,p) { return s + (p.volumeTotal||0); }, 0);
         var termOrigem = vi.terminalOrigem || '';
         var destinos = Array.from(new Set(vi.paradas.map(function(p) { return p.pedido ? (p.pedido.cidade||p.pedido.cliente||'') : ''; }))).join(', ');
-        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa };
+        var jornadaDispMin = Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720;
+        var jornadaUsadaMin = Number(vi.tempoConsumidoMin) || vi.paradas.reduce(function(s,p,idx) {
+          return s + (idx === 0 ? (p.tempoCarregamentoMin || 0) : 0)
+            + (p.waitAfterLoadingMin || 0)
+            + (p.deslocCarregadoMin || 0)
+            + (p.tempoEsperaRestricaoMin || 0)
+            + (p.tempoDescargaMin || 0)
+            + (p.deslocVazioMin || 0);
+        }, 0);
+        var fatorJornada = jornadaDispMin > 0 ? Math.min(1, Math.max(0, jornadaUsadaMin / jornadaDispMin)) : 0;
+        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa, jornadaDispMin: jornadaDispMin, jornadaUsadaMin: jornadaUsadaMin, fatorJornada: fatorJornada };
         viagensMap[placa].push(entry);
         mesMapa[placa][mesKey].viagens.push(entry);
       });
@@ -7541,8 +7554,8 @@ async function freteCalcular() {
     var km = kmEfetivo(entry, contrato);
     if (contrato.tipo === 'fixo_km') return fixoRateado + (parseFloat(contrato.km)||0) * km;
     if (contrato.tipo === 'fixo_m3') return fixoRateado + (parseFloat(contrato.m3)||0) * entry.m3Total;
-    if (contrato.tipo === 'diaria')  return parseFloat(contrato.diaria) || 0;
-    if (contrato.tipo === 'diaria_km') return (parseFloat(contrato.diaria)||0) + (parseFloat(contrato.km)||0) * km;
+    if (contrato.tipo === 'diaria')  return (parseFloat(contrato.diaria) || 0) * (entry.fatorJornada || 0);
+    if (contrato.tipo === 'diaria_km') return ((parseFloat(contrato.diaria)||0) * (entry.fatorJornada || 0)) + (parseFloat(contrato.km)||0) * km;
     if (contrato.tipo === 'spot') {
       var sp = spots.find(function(s) {
         var bateRota = entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
