@@ -7221,6 +7221,73 @@ function _freteSelectTransportadora(valorAtual, onChangeFn) {
   return sel;
 }
 
+function _freteNormPlaca(placa) {
+  return (placa || '').toString().trim().toUpperCase();
+}
+
+function _freteVeiculosTransportadora(transportadora) {
+  var transp = (transportadora || '').toString().trim();
+  if (!transp) return [];
+  return (veiculos || [])
+    .filter(function(v) { return (v.transportadora || '').toString().trim() === transp && _freteNormPlaca(v.placa); })
+    .sort(function(a,b) { return _freteNormPlaca(a.placa).localeCompare(_freteNormPlaca(b.placa), 'pt-BR'); });
+}
+
+function _fretePlacaEmOutroContrato(contratos, placa, idxAtual) {
+  var alvo = _freteNormPlaca(placa);
+  if (!alvo) return false;
+  return contratos.some(function(c, idx) {
+    return idx !== idxAtual && _freteNormPlaca(c.placa) === alvo;
+  });
+}
+
+function _freteSelectPlaca(c, idx, contratos) {
+  var transportadora = c.transportadora || '';
+  var atual = _freteNormPlaca(c.placa);
+  if (!transportadora) {
+    var vazio = document.createElement('div');
+    vazio.textContent = 'Selecione a transportadora';
+    vazio.style.cssText = 'font-size:11px;color:var(--text-3);padding:4px 0;';
+    return vazio;
+  }
+
+  var placas = _freteVeiculosTransportadora(transportadora);
+  var sel = document.createElement('select');
+  sel.style.cssText = _freteInputStyle('width:100%;font-weight:600;');
+
+  var optVazia = document.createElement('option');
+  optVazia.value = '';
+  optVazia.textContent = placas.length ? 'Selecione...' : 'Sem placas cadastradas';
+  sel.appendChild(optVazia);
+
+  var disponiveis = 0;
+  placas.forEach(function(v) {
+    var placa = _freteNormPlaca(v.placa);
+    var emUso = _fretePlacaEmOutroContrato(contratos, placa, idx);
+    if (emUso && placa !== atual) return;
+    disponiveis++;
+    var opt = document.createElement('option');
+    opt.value = placa;
+    opt.textContent = emUso ? placa + ' (já selecionada)' : placa;
+    opt.disabled = emUso && placa !== atual;
+    if (placa === atual) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  if (atual && !placas.some(function(v) { return _freteNormPlaca(v.placa) === atual; })) {
+    var optAtual = document.createElement('option');
+    optAtual.value = atual;
+    optAtual.textContent = atual + ' (fora da transportadora)';
+    optAtual.selected = true;
+    optAtual.disabled = true;
+    sel.appendChild(optAtual);
+  }
+  if (placas.length && !disponiveis && !atual) optVazia.textContent = 'Sem placas disponíveis';
+
+  sel.onchange = function() { freteEditarContrato(idx, 'placa', this.value); };
+  return sel;
+}
+
 function freteRenderContratos() {
   const tbody = document.getElementById('frete-contratos-body');
   if (!tbody) return;
@@ -7236,11 +7303,7 @@ function freteRenderContratos() {
 
     var tdPlaca = document.createElement('td');
     tdPlaca.style.cssText = 'padding:7px 8px;font-weight:600;color:var(--text);';
-    var inpPlaca = document.createElement('input');
-    inpPlaca.value = c.placa || ''; inpPlaca.placeholder = 'Placa';
-    inpPlaca.style.cssText = _freteInputStyle('width:100%;font-weight:600;');
-    inpPlaca.onchange = function() { freteEditarContrato(i, 'placa', this.value); };
-    tdPlaca.appendChild(inpPlaca); tr.appendChild(tdPlaca);
+    tdPlaca.appendChild(_freteSelectPlaca(c, i, contratos)); tr.appendChild(tdPlaca);
 
     var tdTransp = document.createElement('td');
     tdTransp.style.cssText = 'padding:7px 8px;';
@@ -7385,22 +7448,52 @@ function freteRenderSpot() {
 // ── CRUD ─────────────────────────────────────────────────────────────────────
 function freteAdicionarContrato() {
   var arr = freteCarregarContratos();
-  var placasCadastradas = new Set(arr.map(function(c) { return c.placa; }));
-  var proxV = veiculos.find(function(v) { return !placasCadastradas.has(v.placa); });
-  arr.push({ placa: proxV ? proxV.placa : '', transportadora: proxV ? (proxV.transportadora||'') : '', tipo:'fixo_km', kmModo:'ida_volta', fixo:'', km:'', m3:'', diaria:'' });
+  var placasCadastradas = new Set(arr.map(function(c) { return _freteNormPlaca(c.placa); }).filter(Boolean));
+  var existeDisponivel = (veiculos || []).some(function(v) {
+    var placa = _freteNormPlaca(v.placa);
+    return placa && !placasCadastradas.has(placa);
+  });
+  if (!existeDisponivel) {
+    alert('Todos os veículos cadastrados já possuem contrato de frete.');
+    return;
+  }
+  arr.push({ placa: '', transportadora: '', tipo:'fixo_km', kmModo:'ida_volta', fixo:'', km:'', m3:'', diaria:'' });
   freteSalvarContratos(arr); freteRenderContratos();
 }
 
 function freteEditarContrato(i, campo, valor) {
   var arr = freteCarregarContratos();
   if (!arr[i]) return;
-  arr[i][campo] = valor;
   if (campo === 'placa') {
-    var v = veiculos.find(function(v) { return v.placa === valor; });
+    valor = _freteNormPlaca(valor);
+    if (valor && _fretePlacaEmOutroContrato(arr, valor, i)) {
+      alert('Esta placa já está cadastrada em outro contrato de frete.');
+      arr[i].placa = '';
+      freteSalvarContratos(arr);
+      freteRenderContratos();
+      return;
+    }
+    var vPlaca = (veiculos || []).find(function(v) { return _freteNormPlaca(v.placa) === valor; });
+    if (valor && (!vPlaca || (arr[i].transportadora && (vPlaca.transportadora || '') !== arr[i].transportadora))) {
+      alert('Selecione uma placa cadastrada para a transportadora escolhida.');
+      arr[i].placa = '';
+      freteSalvarContratos(arr);
+      freteRenderContratos();
+      return;
+    }
+  }
+  arr[i][campo] = valor;
+  if (campo === 'transportadora') {
+    var placaAtual = _freteNormPlaca(arr[i].placa);
+    var placaPertence = _freteVeiculosTransportadora(valor).some(function(v) { return _freteNormPlaca(v.placa) === placaAtual; });
+    if (!valor || !placaPertence || _fretePlacaEmOutroContrato(arr, placaAtual, i)) arr[i].placa = '';
+  }
+  if (campo === 'placa') {
+    var v = (veiculos || []).find(function(v) { return _freteNormPlaca(v.placa) === _freteNormPlaca(valor); });
     if (v) arr[i].transportadora = v.transportadora || arr[i].transportadora;
   }
   freteSalvarContratos(arr);
-  if (campo === 'tipo') freteRenderContratos();
+  if (campo === 'tipo' || campo === 'transportadora' || campo === 'placa') freteRenderContratos();
 }
 
 function freteRemoverContrato(i) {
@@ -7593,7 +7686,7 @@ async function freteCalcular() {
 
   Object.keys(viagensMap).forEach(function(placa) {
     var entradas = viagensMap[placa];
-    var contrato = contratos.find(function(c) { return c.placa === placa; });
+    var contrato = contratos.find(function(c) { return _freteNormPlaca(c.placa) === _freteNormPlaca(placa); });
     entradas.forEach(function(entry) {
       var custo = contrato ? custoViagem(entry, contrato) : 0;
       var kmDisplay = kmEfetivo(entry, contrato);
