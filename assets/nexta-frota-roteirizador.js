@@ -7448,15 +7448,6 @@ function freteRenderSpot() {
 // ── CRUD ─────────────────────────────────────────────────────────────────────
 function freteAdicionarContrato() {
   var arr = freteCarregarContratos();
-  var placasCadastradas = new Set(arr.map(function(c) { return _freteNormPlaca(c.placa); }).filter(Boolean));
-  var existeDisponivel = (veiculos || []).some(function(v) {
-    var placa = _freteNormPlaca(v.placa);
-    return placa && !placasCadastradas.has(placa);
-  });
-  if (!existeDisponivel) {
-    alert('Todos os veículos cadastrados já possuem contrato de frete.');
-    return;
-  }
   arr.push({ placa: '', transportadora: '', tipo:'fixo_km', kmModo:'ida_volta', fixo:'', km:'', m3:'', diaria:'' });
   freteSalvarContratos(arr); freteRenderContratos();
 }
