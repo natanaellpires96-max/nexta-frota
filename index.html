@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="assets/pedagios-utils.js"></script>
 <script type="module" src="assets/nexta-frota-main.js?v=frete-placas-pai-20260702"></script>
 <link rel="stylesheet" href="assets/nexta-frota-main.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
@@ -315,6 +316,14 @@
         <div class="field" style="flex:2;"><label>Transportadora</label><input id="v-transportadora" placeholder="Ex: TransLog"/></div>
         <div class="field"><label>Tipo</label>
           <select id="v-tipo"><option>Truck</option><option>Bitruck</option><option>Cavalo Mecânico</option></select>
+        </div>
+        <div class="field"><label>Eixos</label>
+          <select id="v-eixos">
+            <option value="2">2 eixos (Truck)</option>
+            <option value="3">3 eixos (Bitruck)</option>
+            <option value="5">5 eixos (Cavalo + Reboque)</option>
+            <option value="6">6 eixos (Cavalo + 2 Reboques)</option>
+          </select>
         </div>
         <div class="field"><label>Disponibilidade</label>
           <select id="v-disponibilidade">
