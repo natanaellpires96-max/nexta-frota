@@ -985,6 +985,36 @@ function fecharModalViagem(ev=null) {
 // (mais completa: zoomControl, limpeza de _mvPolylines/_mvUserWaypoints/
 // _mvWaypoints e do badge de vias). Mantida apenas uma definição para evitar
 // ambiguidade.
+// ─── Monta a lista de pontos COM coordenadas (origem → paradas → retorno) ──
+// Usada tanto para desenhar o mapa da viagem quanto para detectar pedágios.
+// IMPORTANTE: viagem.paradas[i] não tem .lat/.lon direto (as coordenadas do
+// cliente ficam em p.pedido, via latLonEfetivo) — e não inclui o terminal de
+// origem. Passar viagem.paradas "cru" para detectarPedagiosNaRota() faz a
+// detecção falhar sempre: ou por faltar o 2º ponto (viagens com 1 destino,
+// paradas.length < 2) ou por p.lat/p.lon virem undefined em todo mundo.
+function obterPontosRotaComCoords(v, viagem) {
+  if (!v || !viagem || !viagem.paradas || !viagem.paradas.length) return [];
+  const terminalNomeOrigem = viagem.terminalOrigem || v.terminal || viagem.paradas[0]?.pedido?.terminal || '';
+  const terminal = terminaisCad.find(t => t.nome === terminalNomeOrigem);
+  const pontos = [];
+  if (terminal) {
+    pontos.push({ nome: `Origem: ${terminal.nome}`, lat: terminal.lat, lon: terminal.lon, tipo: 'origem' });
+  }
+  viagem.paradas.forEach((p, i) => {
+    const _coord = latLonEfetivo(p.pedido);
+    pontos.push({
+      nome: `${i+1}. ${p.pedido?.cliente || ''}`,
+      lat: _coord.lat,
+      lon: _coord.lon,
+      tipo: 'destino',
+    });
+  });
+  const ultimo = viagem.paradas[viagem.paradas.length - 1];
+  if (terminal && (ultimo?.deslocVazioMin || 0) > 0) {
+    pontos.push({ nome: `Retorno: ${terminal.nome}`, lat: terminal.lat, lon: terminal.lon, tipo: 'retorno' });
+  }
+  return pontos.filter(p => !isNaN(parseFloat(p.lat)) && !isNaN(parseFloat(p.lon)));
+}
 function abrirModalViagem(veiculoId, idxViagem) {
   if (!ultimoResultado || !ultimoResultado[veiculoId]) return;
   const v = veiculos.find(x => x.id === veiculoId);
@@ -5309,7 +5339,7 @@ function renderCustoMapaViagem() {
   // ──────────────────────────────────────────────────────────────────────────
   // DETECÇÃO DE PEDÁGIOS E CÁLCULO DE CUSTO ADICIONAL
   // ──────────────────────────────────────────────────────────────────────────
-  const paradas = viagem.paradas || [];
+  const paradas = obterPontosRotaComCoords(v, viagem);
   const eixosVeiculo = v.eixos || 2; // Usa eixos do veículo ou padrão 2
   const pedagios = window.detectarPedagiosNaRota ? window.detectarPedagiosNaRota(paradas, eixosVeiculo) : [];
   const custoPedagios = window.calcularCustoPedagios ? window.calcularCustoPedagios(pedagios, 1) : 0;
@@ -5766,7 +5796,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
         if (!viagem.paradas || viagem.paradas.length === 0) return;
         
         // Detecta pedágios nesta viagem com eixos do veículo
-        const pedagios = window.detectarPedagiosNaRota(viagem.paradas, eixosVeic);
+        const pedagios = window.detectarPedagiosNaRota(obterPontosRotaComCoords(v, viagem), eixosVeic);
         pedagios.forEach((ped) => {
           if (!todosOsPedagios.has(ped.nome)) {
             todosOsPedagios.set(ped.nome, { ...ped, contagem: 0, eixosUsados: eixosVeic });
