@@ -383,15 +383,56 @@ const TIPOS_CAMINHAO = ['Truck','Bitruck','Cavalo Mecânico'];
 // ║  Coloque os arquivos na mesma pasta do HTML.                                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 // ── Helpers de leitura de célula Excel ───────────────────────────────────────
+// Normaliza um cabeçalho de coluna para comparação tolerante:
+// remove acentos, espaços extras, e ignora maiúsculo/minúsculo.
+// Isso evita que uma coluna nova (ex.: "Nº Eixos", "EIXOS ", "Eixo")
+// seja ignorada silenciosamente só porque não bate 100% com a string esperada.
+function _xlsxNormKey(k) {
+  return String(k)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+// Cria (uma vez por linha) um mapa normalizado das chaves originais,
+// para não precisar refazer o normalize em toda leitura de célula.
+function _xlsxRowNormMap(row) {
+  if (row.__normMap) return row.__normMap;
+  const map = {};
+  for (const k of Object.keys(row)) {
+    if (k === '__normMap') continue;
+    map[_xlsxNormKey(k)] = k;
+  }
+  try { Object.defineProperty(row, '__normMap', { value: map, enumerable: false }); } catch (e) { row.__normMap = map; }
+  return map;
+}
 function xlsxStr(row, ...keys) {
   for (const k of keys) {
     const v = row[k];
     if (v !== undefined && v !== null && v !== '') return String(v).trim();
   }
+  // 2ª passada: tenta casar por nome de coluna normalizado (sem acento/case/espaço)
+  const map = _xlsxRowNormMap(row);
+  for (const k of keys) {
+    const realKey = map[_xlsxNormKey(k)];
+    if (realKey !== undefined) {
+      const v = row[realKey];
+      if (v !== undefined && v !== null && v !== '') return String(v).trim();
+    }
+  }
   return '';
 }
 function xlsxNum(row, fallback, ...keys) {
   for (const k of keys) { const v = parseFloat(row[k]); if (!isNaN(v)) return v; }
+  // 2ª passada: casar por nome de coluna normalizado
+  const map = _xlsxRowNormMap(row);
+  for (const k of keys) {
+    const realKey = map[_xlsxNormKey(k)];
+    if (realKey !== undefined) {
+      const v = parseFloat(row[realKey]);
+      if (!isNaN(v)) return v;
+    }
+  }
   return fallback;
 }
 function xlsxHora(val) {
@@ -464,7 +505,12 @@ function xlsxMapPlaca(r, i) {
   }
   
   // Detecta eixos automaticamente baseado no tipo, ou lê da coluna Eixos
-  let eixosValue = xlsxNum(r, NaN, 'Eixos', 'eixos');
+  // (aceita variações comuns de cabeçalho: Nº Eixos, Numero de Eixos, Qtd Eixos, Eixo, etc.
+  //  a normalização em xlsxNum já ignora acento/maiúsculo/espaço, então listamos só as variações de palavra)
+  let eixosValue = xlsxNum(r, NaN, 'Eixos', 'eixos', 'Eixo', 'Nº Eixos', 'No Eixos', 'N Eixos', 'Numero de Eixos', 'Qtd Eixos', 'Quantidade de Eixos', 'Qtde Eixos');
+  if (isNaN(eixosValue)) {
+    console.warn(`[Eixos] Coluna "Eixos" não encontrada/vazia para o veículo placa "${xlsxStr(r,'Placa') || '(sem placa)'}" — usando padrão pelo Tipo. Verifique o nome exato da coluna na planilha.`);
+  }
   if (isNaN(eixosValue)) {
     // Fallback: mapeia tipo para eixos padrão
     const tipo = xlsxStr(r, 'Tipo') || 'Truck';
@@ -2952,6 +2998,7 @@ function limparFormVeiculo() {
   document.getElementById('v-placa').value = '';
   document.getElementById('v-transportadora').value = '';
   document.getElementById('v-tipo').value = 'Truck';
+  document.getElementById('v-eixos').value = '2';
   document.getElementById('v-terminal').innerHTML = optsTerminais('');
   document.getElementById('v-cidade-base').value = '';
   document.getElementById('v-vel-carregado').value = 45;
