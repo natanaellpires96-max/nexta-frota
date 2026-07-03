@@ -71,11 +71,23 @@ function distanciaHaversine(lat1, lon1, lat2, lon2) {
 }
 
 // ─── Obter tarifa de um pedágio para número de eixos ───────────────────────
+// O pedágio brasileiro é cobrado de forma proporcional ao número de eixos:
+// cada eixo acima do 2º custa o mesmo valor unitário (tarifas[2] / 2).
+// Por isso, em vez de só aceitar os eixos fixos que vieram cadastrados
+// (2, 3, 5, 6), calculamos a tarifa para QUALQUER quantidade de eixos
+// (4, 7, 9...) com base nesse valor unitário — assim veículos com 4 eixos
+// (comuns na frota) não caem incorretamente na tarifa de 2 eixos.
 function obterTarifaPedagio(pedagio, eixos = 2) {
   if (!pedagio || !pedagio.tarifas) return 0;
-  // Normaliza para valores válidos (2, 3, 5, 6)
-  const eixosValido = [2, 3, 5, 6].includes(eixos) ? eixos : 2;
-  return pedagio.tarifas[eixosValido] || pedagio.tarifas[2] || 0;
+  const eixosNum = parseInt(eixos, 10);
+  if (!eixosNum || eixosNum < 2) return pedagio.tarifas[2] || 0;
+  // Se a tarifa exata pra esse número de eixos já estiver cadastrada, usa ela.
+  if (pedagio.tarifas[eixosNum] != null) return pedagio.tarifas[eixosNum];
+  // Caso contrário, deriva proporcionalmente a partir da tarifa de 2 eixos.
+  const base2 = pedagio.tarifas[2];
+  if (base2 == null) return 0;
+  const tarifaUnitaria = base2 / 2;
+  return +(tarifaUnitaria * eixosNum).toFixed(2);
 }
 
 // ─── Detecta pedágios próximos à rota ───────────────────────────────────────

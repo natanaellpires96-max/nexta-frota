@@ -3008,6 +3008,22 @@ function aplicarTurnoVeiculo() {
     fim.value = presets[turno][1];
   }
 }
+// Garante que o <select id="v-eixos"> tenha uma <option> para o valor informado.
+// Isso deixa o campo à prova de qualquer configuração de eixos que apareça na
+// planilha (4, 7, 9...), sem depender de uma lista fixa cadastrada no HTML.
+function _garantirOpcaoEixos(valor) {
+  const sel = document.getElementById('v-eixos');
+  if (!sel) return;
+  const v = String(parseInt(valor, 10) || '');
+  if (!v) return;
+  const existe = Array.from(sel.options).some(o => o.value === v);
+  if (!existe) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = `${v} eixos`;
+    sel.appendChild(opt);
+  }
+}
 function limparFormVeiculo() {
   numComps = 0;
   editandoVeiculoId = null;
@@ -3042,6 +3058,11 @@ function abrirFormVeiculo(id=null) {
     document.getElementById('v-implemento').value = v.implemento || '';
     document.getElementById('v-transportadora').value = v.transportadora || '';
     document.getElementById('v-tipo').value = v.tipo || 'Bitrem';
+    // Garante que existe uma <option> pro valor vindo da planilha antes de
+    // selecionar — sem isso, veículos com 4, 7, 9 eixos (comuns na frota e
+    // fora das opções fixas 2/3/5/6) ficavam com o campo em branco, mesmo
+    // com o dado correto já carregado em v.eixos.
+    _garantirOpcaoEixos(v.eixos || 3);
     document.getElementById('v-eixos').value = v.eixos || 3;
     document.getElementById('v-terminal').innerHTML = optsTerminais(v.terminal || '');
     document.getElementById('v-cidade-base').value = v.cidadeBase || v.cidade || cidadeDoTerminal(v.terminal) || '';
