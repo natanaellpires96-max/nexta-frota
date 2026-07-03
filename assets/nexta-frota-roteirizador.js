@@ -1062,8 +1062,13 @@ function abrirModalViagem(veiculoId, idxViagem) {
     _mvAtualizarBadgeVias();
   }
   const latlngs = validos.map(p => [p.lat, p.lon]);
-  // Desenha rota arrastável (sem bloquear UI)
-  mvDesenharRota().catch(() => {});
+  // Desenha rota arrastável — chamada mais abaixo, DEPOIS que os marcadores
+  // de parada (_mvWaypoints[i].marker) já existirem. Antes, essa chamada ficava
+  // aqui e disparava mvDesenharRota() antes do loop que cria os marcadores
+  // (mais abaixo), criando uma corrida: quando mvDesenharRota tentava
+  // "w.marker.bringToFront()" o marker podia não ser o objeto Leaflet esperado
+  // ainda, lançando "w.marker.bringToFront is not a function" e interrompendo
+  // o desenho do traçado. Ver chamada movida logo após o fitBounds abaixo.
   // Distâncias para popups (em background) — não desenha polylines aqui, mvDesenharRota faz isso
   const distAcum = [];
   // Calcula horário absoluto de chegada para cada parada
@@ -1179,6 +1184,19 @@ function abrirModalViagem(veiculoId, idxViagem) {
     if (_mvWaypoints[idx]) _mvWaypoints[idx].marker = marker;
   });
   mapaViagem.fitBounds(latlngs, { padding: [32, 32] });
+  // Agora sim: marcadores já existem (_mvWaypoints[i].marker preenchido acima),
+  // então é seguro desenhar a rota. Depois que a rota real (via OSRM) terminar
+  // de desenhar, reajustamos o zoom para os limites do traçado real — não só
+  // dos pontos em linha reta — porque a estrada pode contornar obstáculos
+  // (represas, serras etc.) e ficar fora da área enquadrada pelos pontos originais.
+  mvDesenharRota().then(() => {
+    try {
+      if (_mvPolylines && _mvPolylines.length) {
+        const bounds = L.latLngBounds(_mvPolylines.flatMap(pl => pl.getLatLngs()));
+        if (bounds.isValid()) mapaViagem.fitBounds(bounds, { padding: [32, 32] });
+      }
+    } catch (e) { /* mantém o fitBounds original em caso de erro */ }
+  }).catch(() => {});
   // OBS: não chamar mvRecalcularDistancia() aqui — mvDesenharRota() (chamada acima,
   // logo após montar os waypoints) já recalcula e exibe a distância ao final.
   // Chamar de novo aqui criava uma segunda execução concorrente que invalidava

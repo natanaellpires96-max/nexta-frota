@@ -149,7 +149,14 @@ async function mvDesenharRota() {
       _mvDesenharMarcadorVia(uw);
     });
     // Re-trazer marcadores de parada para frente
-    _mvWaypoints.forEach(w => { if (w.marker) w.marker.bringToFront(); });
+    // Defensivo: se por alguma condição de corrida (modal reaberto rápido, drag
+    // simultâneo) w.marker ainda não for um L.Marker de verdade, isso não pode
+    // interromper o resto da função — daí o typeof + try/catch por item.
+    _mvWaypoints.forEach(w => {
+      if (w.marker && typeof w.marker.bringToFront === 'function') {
+        try { w.marker.bringToFront(); } catch (e) { console.warn('[mvDesenharRota] falha ao trazer marcador para frente:', e); }
+      }
+    });
   } catch (e) {
     // Qualquer erro inesperado não previsto pelos try/catch internos acima
     // (ex.: falha ao desenhar um marcador) cai aqui. Não é re-lançado: graças
