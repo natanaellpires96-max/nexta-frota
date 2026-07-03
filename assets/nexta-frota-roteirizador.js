@@ -462,12 +462,26 @@ function xlsxMapPlaca(r, i) {
     if (!cidadeBase) cidadeBase = terminalRaw;
     terminal = '';
   }
+  
+  // Detecta eixos automaticamente baseado no tipo, ou lê da coluna Eixos
+  let eixosValue = xlsxNum(r, NaN, 'Eixos', 'eixos');
+  if (isNaN(eixosValue)) {
+    // Fallback: mapeia tipo para eixos padrão
+    const tipo = xlsxStr(r, 'Tipo') || 'Truck';
+    const tipoLower = tipo.toLowerCase();
+    if (tipoLower.includes('cavalo') || tipoLower.includes('treminhão') || tipoLower.includes('6 eixo')) eixosValue = 6;
+    else if (tipoLower.includes('bi') || tipoLower.includes('bitruck') || tipoLower.includes('3 eixo')) eixosValue = 3;
+    else if (tipoLower.includes('reboque')) eixosValue = 5;
+    else eixosValue = 2; // Truck padrão
+  }
+  
   return {
     id: 200 + i,
     placa:            xlsxStr(r, 'Placa'),
     implemento:       xlsxStr(r, 'Implemento'),
     transportadora:   xlsxStr(r, 'Transportadora'),
     tipo:             xlsxStr(r, 'Tipo') || 'Truck',
+    eixos:            parseInt(eixosValue) || 3,
     terminal,
     cidadeBase,
     turno:            xlsxStr(r, 'Turno') || 'personalizado',
@@ -2963,6 +2977,7 @@ function abrirFormVeiculo(id=null) {
     document.getElementById('v-implemento').value = v.implemento || '';
     document.getElementById('v-transportadora').value = v.transportadora || '';
     document.getElementById('v-tipo').value = v.tipo || 'Bitrem';
+    document.getElementById('v-eixos').value = v.eixos || 3;
     document.getElementById('v-terminal').innerHTML = optsTerminais(v.terminal || '');
     document.getElementById('v-cidade-base').value = v.cidadeBase || v.cidade || cidadeDoTerminal(v.terminal) || '';
     document.getElementById('v-vel-carregado').value = v.velMediaCarregado || 45;
@@ -3033,6 +3048,7 @@ function salvarVeiculo() {
     implemento: document.getElementById('v-implemento').value.trim(),
     transportadora: document.getElementById('v-transportadora').value.trim(),
     tipo:  document.getElementById('v-tipo').value,
+    eixos: parseInt(document.getElementById('v-eixos').value) || 3,
     terminal,
     cidadeBase,
     turno,
@@ -5203,8 +5219,18 @@ function renderCustoMapaViagem() {
   if (!v || !viagem) return;
   const kmOriginal = (viagem.paradas || []).reduce((s, p) => s + (p.distanciaKm || 0), 0);
   const calc = calcularFreteViagemAtual(v, viagem, viagem._kmAjustado != null ? viagem._kmAjustado : kmOriginal);
+  
+  // ──────────────────────────────────────────────────────────────────────────
+  // DETECÇÃO DE PEDÁGIOS E CÁLCULO DE CUSTO ADICIONAL
+  // ──────────────────────────────────────────────────────────────────────────
+  const paradas = viagem.paradas || [];
+  const eixosVeiculo = v.eixos || 2; // Usa eixos do veículo ou padrão 2
+  const pedagios = window.detectarPedagiosNaRota ? window.detectarPedagiosNaRota(paradas, eixosVeiculo) : [];
+  const custoPedagios = window.calcularCustoPedagios ? window.calcularCustoPedagios(pedagios, 1) : 0;
+  const custoTotalComPedagios = calc.custo + custoPedagios;
+  
   const totalLitros = calc.volumeM3 * 1000;
-  const custoLitroMedio = totalLitros > 0 ? calc.custo / totalLitros : 0;
+  const custoLitroMedio = totalLitros > 0 ? custoTotalComPedagios / totalLitros : 0;
   const paradasFrete = viagem.paradas || [];
   const somaKmParadas = paradasFrete.reduce((s, p) => s + (p.distanciaKm > 0 ? p.distanciaKm : 0), 0);
   let somaPesoRateio = 0;
@@ -5221,7 +5247,9 @@ function renderCustoMapaViagem() {
     somaPesoRateio = paradasFrete.reduce((s, p) => s + (p.volumeTotal || 0), 0);
     pesosRateio.forEach((r, i) => { r.peso = paradasFrete[i]?.volumeTotal || 0; });
   }
-  const custoTotalCent = Math.round((calc.custo || 0) * 100);
+  
+  // Agora usa o custo total (incluindo pedágios) para rateio
+  const custoTotalCent = Math.round(custoTotalComPedagios * 100);
   let custoRateadoAcumCent = 0;
   const clienteHtml = paradasFrete.map((p, i) => {
     const vol = p.volumeTotal || 0;
@@ -5242,15 +5270,20 @@ function renderCustoMapaViagem() {
       <span style="color:#3730A3;background:rgba(79,70,229,0.09);border:1px solid rgba(79,70,229,0.2);border-radius:999px;padding:1px 7px;white-space:nowrap;">R$ ${custoLitro.toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})}/L</span>
     </div>`;
   }).join('');
+  
+  // Renderiza alerta de pedágios (se houver) com número de eixos
+  const alertaPedagios = window.renderizarAlertaPedagios ? window.renderizarAlertaPedagios(pedagios, custoPedagios, eixosVeiculo) : '';
+  
   box.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:7px;">
       <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Contrato</div><div style="font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${calc.tipo}</div></div>
       <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">KM mapa</div><div style="font-weight:700;color:#3730A3;">${calc.km.toFixed(1)} km</div></div>
-      <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Custo viagem</div><div style="font-weight:800;color:#15803d;">${_freteMoeda(calc.custo)}</div></div>
+      <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Custo viagem</div><div style="font-weight:800;color:#15803d;">${_freteMoeda(custoTotalComPedagios)}</div></div>
       <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Media</div><div style="font-weight:700;color:var(--text);">R$ ${custoLitroMedio.toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})}/L</div></div>
     </div>
     <div style="font-size:10px;color:var(--text-3);margin-bottom:5px;">${calc.detalhe || '&nbsp;'} · Rateio por volume x distancia da parada; ultimo cliente ajusta centavos para fechar o total.</div>
-    <div style="display:grid;gap:4px;font-size:11px;line-height:1.35;">${clienteHtml || '<span style="color:var(--text-3);">Sem clientes para rateio.</span>'}</div>`;
+    <div style="display:grid;gap:4px;font-size:11px;line-height:1.35;">${clienteHtml || '<span style="color:var(--text-3);">Sem clientes para rateio.</span>'}</div>
+    ${alertaPedagios}`;
 }
 window.renderCustoMapaViagem = renderCustoMapaViagem;
 const CORES_VIAGEM = ['#7CB82B','#2255CC','#F97316','#7C3AED','#E11D48','#0EA5E9'];
@@ -5632,6 +5665,69 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
     const chaves = [...new Set(pendComp.map(it => `${it.pedido?.cliente || '-'} (${it.produto})`))];
     html += `<div class="alert alert-warn">⚠ Falta de compartimento específico (carga parcial por compartimento não permitida). Acionar comercial para: ${chaves.join(', ')}.</div>`;
   }
+  
+  // ────────────────────────────────────────────────────────────────────────
+  // ALERTA GLOBAL DE PEDÁGIOS NA ROTEIRIZAÇÃO
+  // ────────────────────────────────────────────────────────────────────────
+  if (window.detectarPedagiosNaRota && rotasRaw.length > 0) {
+    const todosOsPedagios = new Map(); // Map<nome, { ...ped, contagem, eixosUsados }>
+    let custoPedagiosTotalGlobal = 0;
+    
+    // Itera todas as viagens de todos os veículos COM EIXOS
+    rotasRaw.forEach(({v, viagens}) => {
+      const eixosVeic = v.eixos || 2; // Eixos do veículo
+      (viagens || []).forEach((viagem) => {
+        if (!viagem.paradas || viagem.paradas.length === 0) return;
+        
+        // Detecta pedágios nesta viagem com eixos do veículo
+        const pedagios = window.detectarPedagiosNaRota(viagem.paradas, eixosVeic);
+        pedagios.forEach((ped) => {
+          if (!todosOsPedagios.has(ped.nome)) {
+            todosOsPedagios.set(ped.nome, { ...ped, contagem: 0, eixosUsados: eixosVeic });
+          }
+          const registro = todosOsPedagios.get(ped.nome);
+          registro.contagem += 1;
+          custoPedagiosTotalGlobal += ped.valor;
+        });
+      });
+    });
+    
+    // Se houver pedágios detectados, exibe alerta global
+    if (todosOsPedagios.size > 0) {
+      const listaPedagiosUnicos = Array.from(todosOsPedagios.values())
+        .sort((a, b) => b.contagem - a.contagem)
+        .map((ped) => `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(220,38,38,0.06);border-radius:6px;font-size:11px;">
+            <span>
+              <strong>${ped.nome}</strong> · ${ped.rodovia}
+              <span style="color:#6B7280;font-size:10px;margin-left:4px;">(${ped.regiao} • ${ped.eixosUsados} eixos) · ${ped.contagem}x</span>
+            </span>
+            <span style="color:#DC2626;font-weight:700;white-space:nowrap;">R$ ${(ped.valor * ped.contagem).toFixed(2)}</span>
+          </div>
+        `)
+        .join('');
+      
+      html += `<div class="alert alert-warn" style="background:#FEF2F2;border-color:#FCA5A5;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:18px;">🚧</span>
+          <div>
+            <div style="font-weight:700;color:#7F1D1D;font-size:12px;">PEDÁGIOS DETECTADOS NA ROTEIRIZAÇÃO</div>
+            <div style="font-size:10px;color:#92400E;margin-top:2px;">Inclua Vale-Pedágio no Sistema Sem Parar antes de enviar para transportadoras</div>
+          </div>
+        </div>
+        <div style="display:grid;gap:4px;margin-bottom:8px;max-height:150px;overflow-y:auto;border:1px solid #FECACA;border-radius:6px;padding:6px;background:rgba(255,255,255,0.5);">
+          ${listaPedagiosUnicos}
+        </div>
+        <div style="padding:8px;background:rgba(220,38,38,0.08);border-radius:6px;border-left:3px solid #DC2626;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:11px;color:#7F1D1D;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Custo total de pedágios:</span>
+            <span style="font-size:14px;font-weight:700;color:#DC2626;">R$ ${custoPedagiosTotalGlobal.toFixed(2)}</span>
+          </div>
+        </div>
+      </div>`;
+    }
+  }
+  
   // ── Separa alertas de métricas do grid de rotas ──────────────────────────
   const htmlAlertas = html;
   html = '';

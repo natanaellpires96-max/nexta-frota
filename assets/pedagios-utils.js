@@ -1,0 +1,247 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// NEXTA — DETECTOR DE PEDÁGIOS E CÁLCULO DE CUSTOS
+// ═══════════════════════════════════════════════════════════════════════════
+// Detecta pedágios na rota usando geolocalização e distância de pontos
+// Integra valores ao custo final da viagem com tarifas variáveis por eixo
+
+// ─── Base de Dados de Pedágios Brasileiros ─────────────────────────────────
+// Formato: { nome, lat, lon, tarifas: { 2: valor, 3: valor, 5: valor, 6: valor }, rodovia, regiao }
+// Tarifas por número de eixos (2, 3, 5, 6)
+const PEDAGIOS_BR = [
+  // INTERIOR DE SP - Rodovia Anhanguera
+  { nome: 'Pedágio Jundiaí', lat: -23.1881, lon: -46.8786, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'Anhanguera', regiao: 'SP' },
+  { nome: 'Pedágio Campinas (Sul)', lat: -22.9062, lon: -47.0583, tarifas: { 2: 31.50, 3: 47.25, 5: 78.75, 6: 94.50 }, rodovia: 'Anhanguera', regiao: 'SP' },
+  { nome: 'Pedágio Campinas (Norte)', lat: -22.8856, lon: -47.0628, tarifas: { 2: 31.50, 3: 47.25, 5: 78.75, 6: 94.50 }, rodovia: 'Anhanguera', regiao: 'SP' },
+  
+  // INTERIOR DE SP - Rodovia Imigrantes / Cônego Domênico
+  { nome: 'Pedágio Limeira', lat: -22.5644, lon: -47.4090, tarifas: { 2: 24.60, 3: 36.90, 5: 61.50, 6: 73.80 }, rodovia: 'Imigrantes', regiao: 'SP' },
+  { nome: 'Pedágio Americana', lat: -22.7408, lon: -47.3261, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'Imigrantes', regiao: 'SP' },
+  { nome: 'Pedágio Paulínia', lat: -22.7589, lon: -47.1539, tarifas: { 2: 31.50, 3: 47.25, 5: 78.75, 6: 94.50 }, rodovia: 'Cônego Domênico', regiao: 'SP' },
+  
+  // INTERIOR DE SP - Rodovia Castelo Branco
+  { nome: 'Pedágio Barueri', lat: -23.5090, lon: -46.8667, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'Castelo Branco', regiao: 'SP' },
+  { nome: 'Pedágio Osasco', lat: -23.5291, lon: -46.7892, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'Castelo Branco', regiao: 'SP' },
+  { nome: 'Pedágio Itapetininga', lat: -23.5873, lon: -48.0486, tarifas: { 2: 34.50, 3: 51.75, 5: 86.25, 6: 103.50 }, rodovia: 'Castelo Branco', regiao: 'SP' },
+  
+  // INTERIOR DE SP - Rodovia Raposo Tavares
+  { nome: 'Pedágio Mairinque', lat: -23.5291, lon: -47.3389, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'Raposo Tavares', regiao: 'SP' },
+  { nome: 'Pedágio Salto', lat: -23.1962, lon: -47.3089, tarifas: { 2: 24.60, 3: 36.90, 5: 61.50, 6: 73.80 }, rodovia: 'Raposo Tavares', regiao: 'SP' },
+  
+  // INTERIOR DE SP - Rodovia Washington Luiz
+  { nome: 'Pedágio Ribeirão Preto', lat: -21.1949, lon: -47.8078, tarifas: { 2: 31.50, 3: 47.25, 5: 78.75, 6: 94.50 }, rodovia: 'Washington Luiz', regiao: 'SP' },
+  { nome: 'Pedágio Araraquara', lat: -22.0140, lon: -48.1738, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'Washington Luiz', regiao: 'SP' },
+  
+  // MINAS GERAIS - Rodovia Fernão Dias
+  { nome: 'Pedágio Bragança Paulista', lat: -22.9574, lon: -46.5306, tarifas: { 2: 24.60, 3: 36.90, 5: 61.50, 6: 73.80 }, rodovia: 'Fernão Dias', regiao: 'SP/MG' },
+  { nome: 'Pedágio Entre Rios', lat: -22.5708, lon: -46.3281, tarifas: { 2: 31.50, 3: 47.25, 5: 78.75, 6: 94.50 }, rodovia: 'Fernão Dias', regiao: 'MG' },
+  { nome: 'Pedágio Três Corações', lat: -21.7879, lon: -45.2574, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'Fernão Dias', regiao: 'MG' },
+  
+  // MINAS GERAIS - Outras rodovias
+  { nome: 'Pedágio Juiz de Fora', lat: -21.7626, lon: -43.3551, tarifas: { 2: 26.80, 3: 40.20, 5: 67.00, 6: 80.40 }, rodovia: 'BR-116', regiao: 'MG' },
+  { nome: 'Pedágio Belo Horizonte', lat: -19.8661, lon: -43.9758, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'BR-381', regiao: 'MG' },
+  
+  // RIO DE JANEIRO
+  { nome: 'Pedágio Volta Redonda', lat: -22.5215, lon: -44.0687, tarifas: { 2: 26.80, 3: 40.20, 5: 67.00, 6: 80.40 }, rodovia: 'BR-116', regiao: 'RJ' },
+  { nome: 'Pedágio Dutra', lat: -22.4650, lon: -44.1987, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'BR-116', regiao: 'RJ' },
+  
+  // GOIÁS
+  { nome: 'Pedágio Goiânia', lat: -15.7867, lon: -48.0055, tarifas: { 2: 31.50, 3: 47.25, 5: 78.75, 6: 94.50 }, rodovia: 'BR-040', regiao: 'GO' },
+  { nome: 'Pedágio Anápolis', lat: -15.9436, lon: -48.9564, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'BR-153', regiao: 'GO' },
+  
+  // BAHIA
+  { nome: 'Pedágio Feira de Santana', lat: -12.2652, lon: -38.9667, tarifas: { 2: 34.50, 3: 51.75, 5: 86.25, 6: 103.50 }, rodovia: 'BR-116', regiao: 'BA' },
+  { nome: 'Pedágio Salvador', lat: -12.9789, lon: -38.5106, tarifas: { 2: 31.50, 3: 47.25, 5: 78.75, 6: 94.50 }, rodovia: 'BR-116', regiao: 'BA' },
+  
+  // CEARÁ
+  { nome: 'Pedágio Fortaleza', lat: -3.7319, lon: -38.5433, tarifas: { 2: 36.00, 3: 54.00, 5: 90.00, 6: 108.00 }, rodovia: 'BR-116', regiao: 'CE' },
+  
+  // PERNAMBUCO
+  { nome: 'Pedágio Recife', lat: -8.0476, lon: -34.8770, tarifas: { 2: 34.50, 3: 51.75, 5: 86.25, 6: 103.50 }, rodovia: 'BR-101', regiao: 'PE' },
+];
+
+// ─── Haversine: Distância entre dois pontos (lat/lon) ──────────────────────
+function distanciaHaversine(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Raio da Terra em km
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// ─── Obter tarifa de um pedágio para número de eixos ───────────────────────
+function obterTarifaPedagio(pedagio, eixos = 2) {
+  if (!pedagio || !pedagio.tarifas) return 0;
+  // Normaliza para valores válidos (2, 3, 5, 6)
+  const eixosValido = [2, 3, 5, 6].includes(eixos) ? eixos : 2;
+  return pedagio.tarifas[eixosValido] || pedagio.tarifas[2] || 0;
+}
+
+// ─── Detecta pedágios próximos à rota ───────────────────────────────────────
+// Rayio de detecção: 3 km (rota pode desviar levemente)
+function detectarPedagiosNaRota(paradas, eixos = 2) {
+  if (!paradas || paradas.length < 2) return [];
+  
+  const pedagiosEncontrados = [];
+  const RAIO_DETECCAO_KM = 3.0;
+  
+  // Itera sobre todas as paradas consecutivas
+  for (let i = 0; i < paradas.length - 1; i++) {
+    const p1 = paradas[i];
+    const p2 = paradas[i + 1];
+    
+    if (!p1 || !p2 || p1.lat == null || p1.lon == null || p2.lat == null || p2.lon == null) continue;
+    
+    // Para cada pedágio, verifica se está próximo ao segmento da rota
+    PEDAGIOS_BR.forEach((ped) => {
+      // Distância do pedágio ao ponto 1
+      const dist1 = distanciaHaversine(p1.lat, p1.lon, ped.lat, ped.lon);
+      // Distância do pedágio ao ponto 2
+      const dist2 = distanciaHaversine(p2.lat, p2.lon, ped.lat, ped.lon);
+      
+      // Se o pedágio está próximo a qualquer um dos pontos, há chance dele estar na rota
+      const distMinima = Math.min(dist1, dist2);
+      
+      if (distMinima <= RAIO_DETECCAO_KM) {
+        // Verifica se já não foi detectado
+        const jaExiste = pedagiosEncontrados.find(
+          (p) => p.nome === ped.nome && Math.abs(p.distanciaKm - distMinima) < 0.5
+        );
+        
+        if (!jaExiste) {
+          // Calcula valor com base em eixos
+          const valor = obterTarifaPedagio(ped, eixos);
+          pedagiosEncontrados.push({
+            nome: ped.nome,
+            lat: ped.lat,
+            lon: ped.lon,
+            tarifas: ped.tarifas,
+            valor: valor,
+            rodovia: ped.rodovia,
+            regiao: ped.regiao,
+            distanciaKm: distMinima,
+            eixos: eixos,
+          });
+        }
+      }
+    });
+  }
+  
+  // Remove duplicatas por nome e ordena por distância
+  const unicos = Array.from(new Map(pedagiosEncontrados.map(p => [p.nome, p])).values());
+  return unicos.sort((a, b) => a.distanciaKm - b.distanciaKm);
+}
+
+// ─── Calcula custo total de pedágios para uma viagem ───────────────────────
+function calcularCustoPedagios(pedagios, quantidadeVeiculos = 1) {
+  return pedagios.reduce((total, ped) => total + (ped.valor * quantidadeVeiculos), 0);
+}
+
+// ─── Gera HTML com alerta de pedágios ──────────────────────────────────────
+function renderizarAlertaPedagios(pedagios, custoPedagios, eixos = 2) {
+  if (!pedagios || pedagios.length === 0) return '';
+  
+  const listaPedagios = pedagios
+    .map((ped) => {
+      const tarifaAtual = obterTarifaPedagio(ped, eixos);
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(220,38,38,0.08);border-radius:6px;font-size:11px;">
+          <span>
+            <strong>${ped.nome}</strong> • ${ped.rodovia}
+            <span style="color:#6B7280;font-size:10px;margin-left:4px;">(${ped.regiao} • ${eixos} eixos)</span>
+          </span>
+          <span style="color:#DC2626;font-weight:700;white-space:nowrap;">R$ ${tarifaAtual.toFixed(2)}</span>
+        </div>
+      `;
+    })
+    .join('');
+  
+  return `
+    <div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:12px;margin-top:8px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-size:16px;">⚠️</span>
+        <span style="font-weight:700;color:#7F1D1D;font-size:12px;">PEDÁGIO DETECTADO NA ROTA</span>
+      </div>
+      <div style="display:grid;gap:4px;margin-bottom:8px;max-height:120px;overflow-y:auto;">
+        ${listaPedagios}
+      </div>
+      <div style="padding:8px;background:#FEF9F3;border-radius:6px;border-left:3px solid #D97706;">
+        <div style="font-size:10px;color:#92400E;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">Vale-Pedágio Necessário</div>
+        <div style="font-size:13px;color:#DC2626;font-weight:700;margin-top:2px;">
+          💰 R$ ${custoPedagios.toFixed(2)} 
+          <span style="font-size:11px;font-weight:400;color:#7F1D1D;">
+            — Inclua Vale-Pedágio no Sistema Sem Parar
+          </span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ─── Marca pedágios no mapa com marcadores ─────────────────────────────────
+function adicionarMarcadorPedagiosNoMapa(mapa, pedagios) {
+  if (!mapa || !pedagios || pedagios.length === 0) return [];
+  
+  const marcadores = [];
+  
+  pedagios.forEach((ped) => {
+    // Cria ícone customizado para pedágio
+    const iconHtml = `
+      <div style="
+        width: 32px;
+        height: 32px;
+        background: #DC2626;
+        border: 2px solid white;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        cursor: pointer;
+      ">💰</div>
+    `;
+    
+    const popup = `
+      <div style="font-size:12px;min-width:200px;">
+        <div style="font-weight:700;color:#DC2626;margin-bottom:4px;">${ped.nome}</div>
+        <div style="color:#666;font-size:11px;margin-bottom:8px;">
+          <strong>Rodovia:</strong> ${ped.rodovia}<br/>
+          <strong>Região:</strong> ${ped.regiao}
+        </div>
+        <div style="background:#FEF2F2;padding:6px;border-radius:4px;text-align:center;">
+          <div style="font-size:10px;color:#666;margin-bottom:2px;">Tarifa (${ped.eixos} eixos)</div>
+          <div style="font-size:14px;font-weight:700;color:#DC2626;">R$ ${ped.valor.toFixed(2)}</div>
+        </div>
+      </div>
+    `;
+    
+    try {
+      if (window.L && window.L.marker) {
+        const marker = window.L.marker([ped.lat, ped.lon], {
+          icon: window.L.divIcon({
+            html: iconHtml,
+            className: 'custom-icon-pedagio',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16],
+            popupAnchor: [0, -16],
+          }),
+        }).addTo(mapa).bindPopup(popup);
+        marcadores.push(marker);
+      }
+    } catch (e) {
+      console.warn('[Pedágios] Erro ao adicionar marcador:', e);
+    }
+  });
+  
+  return marcadores;
+}
+
+// ─── Exporta funções globais ───────────────────────────────────────────────
+window.detectarPedagiosNaRota = detectarPedagiosNaRota;
+window.calcularCustoPedagios = calcularCustoPedagios;
+window.renderizarAlertaPedagios = renderizarAlertaPedagios;
+window.adicionarMarcadorPedagiosNoMapa = adicionarMarcadorPedagiosNoMapa;
+window.distanciaHaversine = distanciaHaversine;
+window.obterTarifaPedagio = obterTarifaPedagio;
