@@ -4408,11 +4408,23 @@ async function exportarHrrlog() {
           : vi.paradas.reduce((s, p) => s + (p.distanciaKm || 0), 0)
       );
       const codViagem = vi.petId || `VIA${v.placa}${idx + 1}`;
+      // Atraso de carga da 1ª parada: quando o cliente só abre depois do horário
+      // de chegada calculado, o sistema prefere atrasar a SAÍDA do terminal
+      // (em vez de fazer o caminhão esperar já carregado no cliente). Esse é
+      // exatamente o mesmo cálculo usado pela tela para preencher o campo "Carga"
+      // — precisa ser aplicado ANTES de gravar "Início Previsto" e o evento
+      // "Carregamento", senão esses dois saem com o horário cru de chegada ao
+      // terminal (adiantado), o que também pode empurrar a data errada quando
+      // o atraso cruza a meia-noite.
+      const p0Hrr = vi.paradas[0];
+      const espOrigP0 = p0Hrr?.tempoEsperaRestricaoMin || 0;
+      const atrasoP0 = (!temOverrideCarga && !p0Hrr?.overnight && espOrigP0 > 0 && (p0Hrr?.tempoCarregamentoMin || 0) > 0) ? espOrigP0 : 0;
+      const inicioCargaRealMin = inicioCargaMin + atrasoP0;
       // ── Linha Viagens ────────────────────────────────────────────────────────
       rowsViagens.push({
         'Código da Viagem*': codViagem,
         'Status': 'Programado',
-        'Início Previsto*': fmtHrr(baseDate, inicioCargaMin),
+        'Início Previsto*': fmtHrr(baseDate, inicioCargaRealMin),
         'Placa*': v.placa || '',
         'Trailers*': v.implemento || v.placa || '',
         'Tipo de atendimento': 'CIF',
@@ -4431,14 +4443,14 @@ async function exportarHrrlog() {
         'Código da Viagem*': codViagem,
         'Codigo do Cliente*': codigoTerminal,
         'Tipo Evento*': 'Carregamento',
-        'Data Planejada*': fmtHrr(baseDate, inicioCargaMin),
+        'Data Planejada*': fmtHrr(baseDate, inicioCargaRealMin),
       });
       // ── Eventos: Descarga (cada parada) ──────────────────────────────────────
       let clock = inicioCargaMin;
       vi.paradas.forEach((p, idxP) => {
         const espOrig = p.tempoEsperaRestricaoMin || 0;
         const wal = p.overnight ? (p.waitAfterLoadingMin || 0) : 0;
-        const atraso = (!temOverrideCarga && !p.overnight && idxP === 0 && espOrig > 0 && (p.tempoCarregamentoMin || 0) > 0) ? espOrig : 0;
+        const atraso = idxP === 0 ? atrasoP0 : 0;
         const fimCarga = clock + atraso + (p.tempoCarregamentoMin || 0);
         const chegada  = fimCarga + wal + (p.deslocCarregadoMin || 0);
         const espVis   = p.overnight ? 0 : (espOrig - atraso);
