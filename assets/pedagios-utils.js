@@ -5,8 +5,12 @@
 // Integra valores ao custo final da viagem com tarifas variáveis por eixo
 
 // ─── Base de Dados de Pedágios Brasileiros ─────────────────────────────────
-// Formato: { nome, lat, lon, tarifas: { 2: valor, 3: valor, 5: valor, 6: valor }, rodovia, regiao }
-// Tarifas por número de eixos (2, 3, 5, 6)
+// Formato: { nome, lat, lon, tarifas: { 2: valor, 3: valor, 5: valor, 6: valor }, rodovia, regiao, modelo }
+// Tarifas por número de eixos — obterTarifaPedagio() calcula proporcionalmente
+// pra qualquer eixo mesmo se só o valor de 2 eixos estiver cadastrado.
+// modelo: 'praca' (padrão, cabine física com vale-pedágio) ou 'free_flow'
+// (pórtico eletrônico sem cabine — cobrança automática por tag/placa, sem
+// vale-pedágio físico). Se "modelo" não for informado, assume-se 'praca'.
 const PEDAGIOS_BR = [
   // INTERIOR DE SP - Rodovia Anhanguera
   { nome: 'Pedágio Jundiaí', lat: -23.1881, lon: -46.8786, tarifas: { 2: 28.70, 3: 43.05, 5: 71.75, 6: 86.10 }, rodovia: 'Anhanguera', regiao: 'SP' },
@@ -57,6 +61,14 @@ const PEDAGIOS_BR = [
   
   // PERNAMBUCO
   { nome: 'Pedágio Recife', lat: -8.0476, lon: -34.8770, tarifas: { 2: 34.50, 3: 51.75, 5: 86.25, 6: 103.50 }, rodovia: 'BR-101', regiao: 'PE' },
+
+  // LITORAL SP - Pórticos Free Flow (Concessionária Novo Litoral / CNL)
+  // Sem cabine física — cobrança automática por tag ou placa (30 dias p/ pagar).
+  // ATENÇÃO: coordenada abaixo é uma ESTIMATIVA a partir do km da rodovia
+  // (não achei o lat/lon oficial do pórtico em fonte pública). Se o alerta não
+  // disparar na rota certa (ou disparar num lugar errado), ajuste lat/lon aqui
+  // comparando com o ponto real no mapa da viagem.
+  { nome: 'Pórtico Free Flow Bertioga (P03)', lat: -23.8320, lon: -46.1500, tarifas: { 2: 6.95 }, rodovia: 'SP-098 (Mogi-Bertioga, km 92)', regiao: 'SP', modelo: 'free_flow' },
 ];
 
 // ─── Haversine: Distância entre dois pontos (lat/lon) ──────────────────────
@@ -90,6 +102,32 @@ function obterTarifaPedagio(pedagio, eixos = 2) {
   return +(tarifaUnitaria * eixosNum).toFixed(2);
 }
 
+// ─── Distância mínima entre um ponto e um SEGMENTO (não só as pontas) ──────
+// Antes a detecção só comparava o pedágio aos 2 pontos extremos de cada
+// trecho (origem/destino) — então um pedágio que fica no MEIO do caminho,
+// mas longe dos dois extremos, nunca era visto (comum quando o endereço
+// exato do cliente fica um pouco afastado da rodovia principal).
+// Aqui amostramos pontos ao longo da linha reta entre p1 e p2 e pegamos a
+// menor distância — captura pedágios "no caminho", não só nas pontas.
+// A quantidade de amostras se adapta ao tamanho do segmento: quando a função
+// recebe o traçado REAL (centenas de pontos já bem próximos uns dos outros,
+// ~50-100m de distância), não faz sentido gastar 25 amostras num segmento
+// de 80m — 2 bastam. Quando recebe só as paradas (linha reta de dezenas de
+// km), usa mais amostras pra não pular por cima do pedágio no meio do caminho.
+function _distanciaPontoSegmento(lat1, lon1, lat2, lon2, latP, lonP) {
+  const comprimentoKm = distanciaHaversine(lat1, lon1, lat2, lon2);
+  const amostras = Math.max(2, Math.min(25, Math.ceil(comprimentoKm / 0.5)));
+  let menor = Infinity;
+  for (let i = 0; i <= amostras; i++) {
+    const t = i / amostras;
+    const lat = lat1 + (lat2 - lat1) * t;
+    const lon = lon1 + (lon2 - lon1) * t;
+    const d = distanciaHaversine(lat, lon, latP, lonP);
+    if (d < menor) menor = d;
+  }
+  return menor;
+}
+
 // ─── Detecta pedágios próximos à rota ───────────────────────────────────────
 // Rayio de detecção: 3 km (rota pode desviar levemente)
 function detectarPedagiosNaRota(paradas, eixos = 2) {
@@ -105,15 +143,9 @@ function detectarPedagiosNaRota(paradas, eixos = 2) {
     
     if (!p1 || !p2 || p1.lat == null || p1.lon == null || p2.lat == null || p2.lon == null) continue;
     
-    // Para cada pedágio, verifica se está próximo ao segmento da rota
+    // Para cada pedágio, verifica se está próximo ao TRAJETO (não só nas pontas)
     PEDAGIOS_BR.forEach((ped) => {
-      // Distância do pedágio ao ponto 1
-      const dist1 = distanciaHaversine(p1.lat, p1.lon, ped.lat, ped.lon);
-      // Distância do pedágio ao ponto 2
-      const dist2 = distanciaHaversine(p2.lat, p2.lon, ped.lat, ped.lon);
-      
-      // Se o pedágio está próximo a qualquer um dos pontos, há chance dele estar na rota
-      const distMinima = Math.min(dist1, dist2);
+      const distMinima = _distanciaPontoSegmento(p1.lat, p1.lon, p2.lat, p2.lon, ped.lat, ped.lon);
       
       if (distMinima <= RAIO_DETECCAO_KM) {
         // Verifica se já não foi detectado
@@ -134,6 +166,7 @@ function detectarPedagiosNaRota(paradas, eixos = 2) {
             regiao: ped.regiao,
             distanciaKm: distMinima,
             eixos: eixos,
+            modelo: ped.modelo || 'praca',
           });
         }
       }
@@ -153,14 +186,21 @@ function calcularCustoPedagios(pedagios, quantidadeVeiculos = 1) {
 // ─── Gera HTML com alerta de pedágios ──────────────────────────────────────
 function renderizarAlertaPedagios(pedagios, custoPedagios, eixos = 2) {
   if (!pedagios || pedagios.length === 0) return '';
-  
+
+  const temPraca = pedagios.some(p => (p.modelo || 'praca') === 'praca');
+  const temFreeFlow = pedagios.some(p => p.modelo === 'free_flow');
+
   const listaPedagios = pedagios
     .map((ped) => {
       const tarifaAtual = obterTarifaPedagio(ped, eixos);
+      const isFreeFlow = ped.modelo === 'free_flow';
+      const tagModelo = isFreeFlow
+        ? `<span style="background:#DBEAFE;color:#1E40AF;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px;">FREE FLOW</span>`
+        : '';
       return `
         <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(220,38,38,0.08);border-radius:6px;font-size:11px;">
           <span>
-            <strong>${ped.nome}</strong> • ${ped.rodovia}
+            <strong>${ped.nome}</strong>${tagModelo} • ${ped.rodovia}
             <span style="color:#6B7280;font-size:10px;margin-left:4px;">(${ped.regiao} • ${eixos} eixos)</span>
           </span>
           <span style="color:#DC2626;font-weight:700;white-space:nowrap;">R$ ${tarifaAtual.toFixed(2)}</span>
@@ -168,7 +208,39 @@ function renderizarAlertaPedagios(pedagios, custoPedagios, eixos = 2) {
       `;
     })
     .join('');
-  
+
+  // Texto do rodapé muda conforme o que foi detectado: praça física exige
+  // vale-pedágio antecipado; pórtico free flow é cobrado depois, sem vale físico.
+  let rodape;
+  if (temPraca && temFreeFlow) {
+    rodape = `
+      <div style="font-size:10px;color:#92400E;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">Vale-Pedágio + Pórtico(s) Free Flow</div>
+      <div style="font-size:13px;color:#DC2626;font-weight:700;margin-top:2px;">
+        💰 R$ ${custoPedagios.toFixed(2)}
+        <span style="font-size:11px;font-weight:400;color:#7F1D1D;">
+          — Lance o Vale-Pedágio (praças físicas) no Sem Parar; os pórticos Free Flow são cobrados depois, por tag/placa
+        </span>
+      </div>`;
+  } else if (temFreeFlow) {
+    rodape = `
+      <div style="font-size:10px;color:#1E40AF;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">Pórtico(s) Free Flow — sem cabine</div>
+      <div style="font-size:13px;color:#DC2626;font-weight:700;margin-top:2px;">
+        💰 R$ ${custoPedagios.toFixed(2)}
+        <span style="font-size:11px;font-weight:400;color:#7F1D1D;">
+          — Cobrado automaticamente pela tag ou pela placa (não precisa comprar vale-pedágio pra isso, mas o valor deve entrar no custo da viagem)
+        </span>
+      </div>`;
+  } else {
+    rodape = `
+      <div style="font-size:10px;color:#92400E;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">Vale-Pedágio Necessário</div>
+      <div style="font-size:13px;color:#DC2626;font-weight:700;margin-top:2px;">
+        💰 R$ ${custoPedagios.toFixed(2)}
+        <span style="font-size:11px;font-weight:400;color:#7F1D1D;">
+          — Inclua Vale-Pedágio no Sistema Sem Parar
+        </span>
+      </div>`;
+  }
+
   return `
     <div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:12px;margin-top:8px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
@@ -179,13 +251,7 @@ function renderizarAlertaPedagios(pedagios, custoPedagios, eixos = 2) {
         ${listaPedagios}
       </div>
       <div style="padding:8px;background:#FEF9F3;border-radius:6px;border-left:3px solid #D97706;">
-        <div style="font-size:10px;color:#92400E;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">Vale-Pedágio Necessário</div>
-        <div style="font-size:13px;color:#DC2626;font-weight:700;margin-top:2px;">
-          💰 R$ ${custoPedagios.toFixed(2)} 
-          <span style="font-size:11px;font-weight:400;color:#7F1D1D;">
-            — Inclua Vale-Pedágio no Sistema Sem Parar
-          </span>
-        </div>
+        ${rodape}
       </div>
     </div>
   `;

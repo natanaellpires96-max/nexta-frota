@@ -41,6 +41,9 @@ var _mvDragMarker = null;    // marcador fantasma que aparece ao hover na linha
 var _mvRenderToken = 0;      // token incremental — evita que uma chamada antiga de mvDesenharRota
                               // sobrescreva o resultado de uma chamada mais recente (race condition)
 var _mvCanvasRenderer = null; // renderer Canvas dedicado para a polyline (evita bug de SVG no html2canvas)
+var _mvRoutePoints = [];     // [{lat,lon}] pontos REAIS do traçado (extraídos das polylines do OSRM),
+                              // em ordem, do início ao fim da viagem — usado pra detectar pedágio
+                              // ao longo do trajeto de verdade, não só numa linha reta entre paradas.
 // ─── State para salvar rota ajustada na viagem ────────────────────────────
 // Salva os waypoints do usuário por chave "vId||iV" para persistir durante a sessão
 var _mvRotasSalvas = {};
@@ -66,6 +69,7 @@ function garantirMapaViagem() {
   if (camadaViagem) camadaViagem.remove();
   camadaViagem = L.layerGroup().addTo(mapaViagem);
   _mvPolylines = [];
+  _mvRoutePoints = [];
   _mvUserWaypoints = [];
   _mvWaypoints = [];
   const badge = document.getElementById('mv-vias-badge');
@@ -143,12 +147,27 @@ async function mvDesenharRota() {
     // polylines antigas e assume as novas.
     _mvPolylines.forEach(pl => { try { camadaViagem.removeLayer(pl); } catch(e){} });
     _mvPolylines = novasPolylines;
+    // Extrai os pontos REAIS do traçado (em ordem) pra detecção de pedágio
+    // ao longo do trajeto de verdade — não só entre as pontas das paradas.
+    try {
+      _mvRoutePoints = novasPolylines
+        .flatMap(pl => pl.getLatLngs())
+        .map(ll => ({ lat: ll.lat, lon: ll.lng }));
+    } catch (e) {
+      _mvRoutePoints = [];
+      console.warn('[mvDesenharRota] não foi possível extrair pontos do traçado real:', e);
+    }
     // Re-desenhar marcadores de via por cima das polylines
     _mvUserWaypoints.forEach(uw => {
       if (uw.marker) { try { camadaViagem.removeLayer(uw.marker); } catch(e){} }
       _mvDesenharMarcadorVia(uw);
     });
-    // Re-trazer marcadores de parada para frente
+    // Traçado real agora disponível em _mvRoutePoints — recalcula o custo/pedágio
+    // com o caminho de verdade em vez da aproximação por linha reta, e atualiza
+    // isso toda vez que a rota é redesenhada (abertura do modal OU arrasto manual).
+    if (typeof renderCustoMapaViagem === 'function') {
+      try { renderCustoMapaViagem(); } catch (e) { console.warn('[mvDesenharRota] falha ao atualizar custo com traçado real:', e); }
+    }
     // Defensivo: se por alguma condição de corrida (modal reaberto rápido, drag
     // simultâneo) w.marker ainda não for um L.Marker de verdade, isso não pode
     // interromper o resto da função — daí o typeof + try/catch por item.

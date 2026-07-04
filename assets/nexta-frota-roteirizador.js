@@ -1226,6 +1226,9 @@ function abrirModalViagem(veiculoId, idxViagem) {
         if (bounds.isValid()) mapaViagem.fitBounds(bounds, { padding: [32, 32] });
       }
     } catch (e) { /* mantém o fitBounds original em caso de erro */ }
+    // OBS: renderCustoMapaViagem() já é chamada de dentro do próprio mvDesenharRota()
+    // assim que _mvRoutePoints é populado — cobre tanto esta chamada inicial quanto
+    // os redesenhos disparados por arrasto manual da rota.
   }).catch(() => {});
   // OBS: não chamar mvRecalcularDistancia() aqui — mvDesenharRota() (chamada acima,
   // logo após montar os waypoints) já recalcula e exibe a distância ao final.
@@ -5339,7 +5342,15 @@ function renderCustoMapaViagem() {
   // ──────────────────────────────────────────────────────────────────────────
   // DETECÇÃO DE PEDÁGIOS E CÁLCULO DE CUSTO ADICIONAL
   // ──────────────────────────────────────────────────────────────────────────
-  const paradas = obterPontosRotaComCoords(v, viagem);
+  // Usa o traçado REAL (já buscado no OSRM pra desenhar a linha do mapa) quando
+  // disponível — detecta pedágio no caminho de verdade, não numa reta entre
+  // as paradas. Se o mapa ainda não desenhou a rota (ex.: primeiro render do
+  // modal, antes de mvDesenharRota terminar), cai de volta na aproximação por
+  // linha reta só pra não deixar a tela sem nenhum valor por um instante —
+  // assim que a rota real terminar de desenhar, esta função é chamada de novo
+  // e o valor é recalculado com precisão total.
+  const temTracadoReal = Array.isArray(_mvRoutePoints) && _mvRoutePoints.length >= 2;
+  const paradas = temTracadoReal ? _mvRoutePoints : obterPontosRotaComCoords(v, viagem);
   const eixosVeiculo = v.eixos || 2; // Usa eixos do veículo ou padrão 2
   const pedagios = window.detectarPedagiosNaRota ? window.detectarPedagiosNaRota(paradas, eixosVeiculo) : [];
   const custoPedagios = window.calcularCustoPedagios ? window.calcularCustoPedagios(pedagios, 1) : 0;
