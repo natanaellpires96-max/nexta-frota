@@ -6549,6 +6549,12 @@ async function salvarNoHistorico(silencioso = false) {
     veiculos:      JSON.parse(JSON.stringify(veiculos)),
     resultado:     JSON.parse(JSON.stringify(ultimoResultado)),
     controleTempo: JSON.parse(JSON.stringify(ultimoControleTempo || {})),
+    // Backup dos contratos de frete e rotas spot: essa informação normalmente
+    // fica só no localStorage do navegador (não sincroniza entre computadores
+    // e some se o cache for limpo). Gravamos uma cópia aqui a cada salvamento
+    // para servir de backup recuperável — ver freteAbrirRestaurarBackup().
+    freteContratos: JSON.parse(JSON.stringify(freteCarregarContratos())),
+    freteSpot:      JSON.parse(JSON.stringify(freteCarregarSpot())),
   };
   const now = new Date();
   const p2  = n => String(n).padStart(2, '0');
@@ -7831,6 +7837,89 @@ function freteRemoverContrato(i) {
   freteSalvarContratos(arr); freteRenderContratos();
 }
 
+// ── Restaurar contratos/spot de frete a partir de um backup do Histórico ────
+// Como os contratos de frete vivem só no localStorage (não sincronizam entre
+// navegadores/computadores), oferecemos aqui uma forma de recuperá-los a
+// partir de qualquer roteirização salva no Histórico (que agora inclui uma
+// cópia de freteContratos/freteSpot — ver salvarNoHistorico()).
+async function freteAbrirRestaurarBackup() {
+  if (!dirHandleHistorico) {
+    alert('Selecione primeiro a pasta do Histórico na aba Histórico. É de lá que os backups de contrato são lidos.');
+    return;
+  }
+  if (!await _histGarantirPermissao()) { alert('Permissão de acesso à pasta do Histórico negada.'); return; }
+
+  const sel = document.getElementById('frete-restaurar-select');
+  const info = document.getElementById('frete-restaurar-info');
+  sel.innerHTML = '<option value="">Carregando backups...</option>';
+  info.textContent = '';
+  document.getElementById('modal-frete-restaurar').classList.add('show');
+
+  const entries = [];
+  try {
+    for await (const [name, handle] of dirHandleHistorico.entries()) {
+      if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+      try {
+        const data = JSON.parse(await (await handle.getFile()).text());
+        if (data.versao && data.savedAt && (data.freteContratos?.length || data.freteSpot?.length)) {
+          entries.push({ name, data });
+        }
+      } catch (e) {}
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">Erro ao ler a pasta do Histórico</option>';
+    return;
+  }
+  entries.sort((a, b) => b.data.savedAt.localeCompare(a.data.savedAt));
+
+  if (!entries.length) {
+    sel.innerHTML = '<option value="">Nenhum backup com contratos de frete encontrado</option>';
+    info.textContent = 'Nenhuma roteirização salva no Histórico contém contratos de frete até agora.';
+    return;
+  }
+  sel.innerHTML = entries.map(({ name, data }) => {
+    const dt = new Date(data.savedAt);
+    const p2 = n => String(n).padStart(2, '0');
+    const dtStr = `${p2(dt.getDate())}/${p2(dt.getMonth()+1)}/${dt.getFullYear()} ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
+    const qtd = data.freteContratos?.length || 0;
+    const safeName = name.replace(/"/g, '&quot;');
+    return `<option value="${safeName}">${dtStr} — ${qtd} contrato(s)</option>`;
+  }).join('');
+  _freteBackupsCache = entries;
+  sel.onchange = () => _freteAtualizarInfoBackup();
+  _freteAtualizarInfoBackup();
+}
+var _freteBackupsCache = [];
+function _freteAtualizarInfoBackup() {
+  const sel = document.getElementById('frete-restaurar-select');
+  const info = document.getElementById('frete-restaurar-info');
+  const entry = _freteBackupsCache.find(e => e.name === sel.value);
+  if (!entry) { info.textContent = ''; return; }
+  const atual = freteCarregarContratos();
+  info.textContent = `Este backup tem ${entry.data.freteContratos?.length || 0} contrato(s) e ${entry.data.freteSpot?.length || 0} rota(s) spot. `
+    + (atual.length ? `Isso vai SUBSTITUIR os ${atual.length} contrato(s) atualmente cadastrados.` : 'Você não tem nenhum contrato cadastrado agora.');
+}
+function freteFecharRestaurarBackup(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('modal-frete-restaurar').classList.remove('show');
+}
+function freteConfirmarRestaurarBackup() {
+  const sel = document.getElementById('frete-restaurar-select');
+  const entry = _freteBackupsCache.find(e => e.name === sel.value);
+  if (!entry) { alert('Selecione um backup.'); return; }
+  const atual = freteCarregarContratos();
+  const msg = atual.length
+    ? `Isso vai SUBSTITUIR os ${atual.length} contrato(s) atuais pelos ${entry.data.freteContratos?.length || 0} contrato(s) do backup de ${new Date(entry.data.savedAt).toLocaleString('pt-BR')}. Deseja continuar?`
+    : `Restaurar ${entry.data.freteContratos?.length || 0} contrato(s) do backup de ${new Date(entry.data.savedAt).toLocaleString('pt-BR')}?`;
+  if (!confirm(msg)) return;
+  freteSalvarContratos(entry.data.freteContratos || []);
+  freteSalvarSpot(entry.data.freteSpot || []);
+  freteFecharRestaurarBackup();
+  freteRenderContratos();
+  freteRenderSpot();
+  showToast('Contratos de frete restaurados do backup ✅', true);
+}
+
 function freteAdicionarSpot() {
   var arr = freteCarregarSpot();
   arr.push({ origem:'', destino:'', transportadora:'', valor:'' });
@@ -8145,3 +8234,6 @@ window.freteRemoverSpot       = freteRemoverSpot;
 window.freteSetVista          = freteSetVista;
 window.freteSetOrdem          = freteSetOrdem;
 window.freteToggleGrupo       = freteToggleGrupo;
+window.freteAbrirRestaurarBackup    = freteAbrirRestaurarBackup;
+window.freteFecharRestaurarBackup   = freteFecharRestaurarBackup;
+window.freteConfirmarRestaurarBackup = freteConfirmarRestaurarBackup;
