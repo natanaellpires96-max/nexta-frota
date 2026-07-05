@@ -345,6 +345,16 @@ function _atualizarPetSeq(resultado) {
 var resultadoOriginal    = null;   // cópia do resultado puro da otimização
 var historicoManual      = [];     // pilha de estados para desfazer
 var dragInfo             = null;   // { tipo, veiculoId, tripIndex, ... } durante drag
+// ── Pedágios (rota real) ────────────────────────────────────────────────────
+// Token incrementado a cada renderResultado(): usado pra descartar a resposta
+// de uma busca assíncrona de rota real que ficou "presa" no ar depois que o
+// usuário já mexeu de novo na roteirização (evita sobrescrever o alerta com
+// dado de uma versão antiga da rota).
+var _pedagiosGlobalToken = 0;
+// Cache por viagem: evita rechamar o OSRM toda vez que a tela é redesenhada
+// (o que acontece a cada pequeno ajuste manual) quando a viagem não mudou.
+// Chave = assinatura da viagem (terminal + paradas + eixos); valor = { pedagios, custo }.
+var _pedagiosGlobalCache = new Map();
 var dirHandleHistorico = null; // precisa ficar em window para ser
 // Cache de metadados do histórico: { [filename]: { savedAt, resumo, datasEntrega, salvoPor, versao } }
 // Evita reler arquivos completos a cada "Atualizar lista" — só relê arquivos novos/modificados.
@@ -5628,6 +5638,133 @@ function editarHorarioCarga(vid, ti, hhmm) {
   renderResultado(ultimoResultado, ultimoControleTempo || {});
   renderTemplateOperacao();
 }
+// ── Pedágios: cálculo (linha reta) e montagem do HTML do alerta global ─────
+function _calcularPedagiosGlobais(rotasRaw, pontosFn) {
+  const todosOsPedagios = new Map(); // Map<nome, { ...ped, contagem, eixosUsados }>
+  let custoPedagiosTotalGlobal = 0;
+  rotasRaw.forEach(({ v, viagens }) => {
+    const eixosVeic = v.eixos || 2;
+    (viagens || []).forEach((viagem) => {
+      if (!viagem.paradas || viagem.paradas.length === 0) return;
+      const pedagios = window.detectarPedagiosNaRota(pontosFn(v, viagem), eixosVeic);
+      pedagios.forEach((ped) => {
+        if (!todosOsPedagios.has(ped.nome)) {
+          todosOsPedagios.set(ped.nome, { ...ped, contagem: 0, eixosUsados: eixosVeic });
+        }
+        const registro = todosOsPedagios.get(ped.nome);
+        registro.contagem += 1;
+        custoPedagiosTotalGlobal += ped.valor;
+      });
+    });
+  });
+  return { todosOsPedagios, custoPedagiosTotalGlobal };
+}
+function _htmlAlertaPedagiosGlobal(todosOsPedagios, custoPedagiosTotalGlobal, preciso) {
+  const listaPedagiosUnicos = Array.from(todosOsPedagios.values())
+    .sort((a, b) => b.contagem - a.contagem)
+    .map((ped) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(220,38,38,0.06);border-radius:6px;font-size:11px;">
+        <span>
+          <strong>${ped.nome}</strong> · ${ped.rodovia}
+          <span style="color:#6B7280;font-size:10px;margin-left:4px;">(${ped.regiao} • ${ped.eixosUsados} eixos) · ${ped.contagem}x</span>
+        </span>
+        <span style="color:#DC2626;font-weight:700;white-space:nowrap;">R$ ${(ped.valor * ped.contagem).toFixed(2)}</span>
+      </div>
+    `)
+    .join('');
+  // Enquanto a rota real ainda não voltou do OSRM, avisa que é uma estimativa
+  // por linha reta — evita o usuário confiar de olhos fechados num número que
+  // ainda pode aumentar assim que o trajeto real terminar de ser conferido.
+  const notaPrecisao = preciso
+    ? `<div style="font-size:9.5px;color:#4A6535;margin-top:6px;">✓ Conferido com o trajeto real da estrada</div>`
+    : `<div style="font-size:9.5px;color:#92400E;margin-top:6px;">⏳ Estimativa inicial (linha reta) — conferindo com o trajeto real da estrada...</div>`;
+  return `<div class="alert alert-warn" style="background:#FEF2F2;border-color:#FCA5A5;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+      <span style="font-size:18px;">🚧</span>
+      <div>
+        <div style="font-weight:700;color:#7F1D1D;font-size:12px;">PEDÁGIOS DETECTADOS NA ROTEIRIZAÇÃO</div>
+        <div style="font-size:10px;color:#92400E;margin-top:2px;">Inclua Vale-Pedágio no Sistema Sem Parar antes de enviar para transportadoras</div>
+      </div>
+    </div>
+    <div style="display:grid;gap:4px;margin-bottom:8px;max-height:150px;overflow-y:auto;border:1px solid #FECACA;border-radius:6px;padding:6px;background:rgba(255,255,255,0.5);">
+      ${listaPedagiosUnicos}
+    </div>
+    <div style="padding:8px;background:rgba(220,38,38,0.08);border-radius:6px;border-left:3px solid #DC2626;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-size:11px;color:#7F1D1D;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Custo total de pedágios:</span>
+        <span style="font-size:14px;font-weight:700;color:#DC2626;">R$ ${custoPedagiosTotalGlobal.toFixed(2)}</span>
+      </div>
+      ${notaPrecisao}
+    </div>
+  </div>`;
+}
+// ── Pedágios: refina o alerta global usando o trajeto REAL da estrada ──────
+// Usa osrmFetchSegmento() (mesma função que desenha o trajeto real no mapa
+// individual da viagem) para buscar, segmento a segmento, o caminho de
+// verdade entre origem → paradas → retorno, e roda a detecção de pedágios
+// em cima dele — em vez da linha reta entre os pontos, que pode passar longe
+// de pedágios que a estrada real cruza (rota faz curva, contorna serra etc.).
+// Isso é assíncrono e roda em 2º plano: o token evita que um resultado que
+// demorou pra voltar sobrescreva a tela depois que o usuário já mexeu de novo
+// na roteirização; o cache evita rechamar o OSRM pra viagens que não mudaram.
+async function _atualizarPedagiosGlobalReal(rotasRaw, meuToken) {
+  if (typeof osrmFetchSegmento !== 'function') return; // script do dashboard ainda não carregou
+  const tarefas = [];
+  rotasRaw.forEach(({ v, viagens }) => {
+    const eixosVeic = v.eixos || 2;
+    (viagens || []).forEach((viagem) => {
+      if (viagem.paradas && viagem.paradas.length > 0) tarefas.push({ v, viagem, eixosVeic });
+    });
+  });
+  if (!tarefas.length) return;
+
+  const todosOsPedagios = new Map();
+  let custoPedagiosTotalGlobal = 0;
+  const CONCORRENCIA = 3; // não sobrecarrega o servidor público do OSRM
+  let cursor = 0;
+  async function processarProxima() {
+    while (cursor < tarefas.length) {
+      const { v, viagem, eixosVeic } = tarefas[cursor++];
+      if (_pedagiosGlobalToken !== meuToken) return; // roteirização mudou, aborta
+      try {
+        const pontosRetos = obterPontosRotaComCoords(v, viagem);
+        if (pontosRetos.length < 2) continue;
+        const chave = eixosVeic + '|' + pontosRetos.map(p => `${(+p.lat).toFixed(4)},${(+p.lon).toFixed(4)}`).join('|');
+        let pedagiosViagem = _pedagiosGlobalCache.get(chave);
+        if (!pedagiosViagem) {
+          const pontosReais = [{ lat: +pontosRetos[0].lat, lon: +pontosRetos[0].lon }];
+          for (let i = 0; i < pontosRetos.length - 1; i++) {
+            const seg = await osrmFetchSegmento(
+              { lat: +pontosRetos[i].lat, lon: +pontosRetos[i].lon },
+              { lat: +pontosRetos[i + 1].lat, lon: +pontosRetos[i + 1].lon }
+            );
+            (seg.coords || []).forEach(([lat, lon]) => pontosReais.push({ lat, lon }));
+          }
+          pedagiosViagem = window.detectarPedagiosNaRota(pontosReais, eixosVeic);
+          _pedagiosGlobalCache.set(chave, pedagiosViagem);
+        }
+        pedagiosViagem.forEach((ped) => {
+          if (!todosOsPedagios.has(ped.nome)) {
+            todosOsPedagios.set(ped.nome, { ...ped, contagem: 0, eixosUsados: eixosVeic });
+          }
+          const registro = todosOsPedagios.get(ped.nome);
+          registro.contagem += 1;
+          custoPedagiosTotalGlobal += ped.valor;
+        });
+      } catch (e) {
+        // Falha de rede numa viagem não deve derrubar as demais; osrmFetchSegmento
+        // já cai pra linha reta sozinho em caso de erro, então isso só pega
+        // falhas inesperadas (ex.: detectarPedagiosNaRota ausente no meio do caminho).
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCORRENCIA, tarefas.length) }, processarProxima));
+
+  if (_pedagiosGlobalToken !== meuToken) return; // resultado obsoleto, descarta
+  const box = document.getElementById('pedagios-alerta-global-box');
+  if (!box) return; // usuário saiu da tela de resultado
+  box.innerHTML = todosOsPedagios.size > 0 ? _htmlAlertaPedagiosGlobal(todosOsPedagios, custoPedagiosTotalGlobal, true) : '';
+}
 function renderResultado(resultado, controleTempo={}) {
   // Garante que toda viagem real tenha petId (cobre ajustes manuais pós-otimização)
   // Recria o contador a partir do histórico ANTES de atribuir IDs — evita repetições
@@ -5808,63 +5945,20 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
   // ────────────────────────────────────────────────────────────────────────
   // ALERTA GLOBAL DE PEDÁGIOS NA ROTEIRIZAÇÃO
   // ────────────────────────────────────────────────────────────────────────
+  // Estratégia em 2 passos:
+  //  1) Calcula na hora com a aproximação por linha reta entre paradas (rápido,
+  //     sem rede) e já mostra isso — pra tela não ficar vazia esperando.
+  //  2) Em paralelo, busca o trajeto REAL de cada viagem no OSRM (mesma fonte
+  //     usada no mapa individual da viagem) e, quando terminar, substitui o
+  //     alerta pelo resultado preciso — que pode incluir pedágios que a linha
+  //     reta não pegava por passarem longe demais da rota "no papel".
+  const meuTokenPedagios = ++_pedagiosGlobalToken;
   if (window.detectarPedagiosNaRota && rotasRaw.length > 0) {
-    const todosOsPedagios = new Map(); // Map<nome, { ...ped, contagem, eixosUsados }>
-    let custoPedagiosTotalGlobal = 0;
-    
-    // Itera todas as viagens de todos os veículos COM EIXOS
-    rotasRaw.forEach(({v, viagens}) => {
-      const eixosVeic = v.eixos || 2; // Eixos do veículo
-      (viagens || []).forEach((viagem) => {
-        if (!viagem.paradas || viagem.paradas.length === 0) return;
-        
-        // Detecta pedágios nesta viagem com eixos do veículo
-        const pedagios = window.detectarPedagiosNaRota(obterPontosRotaComCoords(v, viagem), eixosVeic);
-        pedagios.forEach((ped) => {
-          if (!todosOsPedagios.has(ped.nome)) {
-            todosOsPedagios.set(ped.nome, { ...ped, contagem: 0, eixosUsados: eixosVeic });
-          }
-          const registro = todosOsPedagios.get(ped.nome);
-          registro.contagem += 1;
-          custoPedagiosTotalGlobal += ped.valor;
-        });
-      });
-    });
-    
-    // Se houver pedágios detectados, exibe alerta global
-    if (todosOsPedagios.size > 0) {
-      const listaPedagiosUnicos = Array.from(todosOsPedagios.values())
-        .sort((a, b) => b.contagem - a.contagem)
-        .map((ped) => `
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(220,38,38,0.06);border-radius:6px;font-size:11px;">
-            <span>
-              <strong>${ped.nome}</strong> · ${ped.rodovia}
-              <span style="color:#6B7280;font-size:10px;margin-left:4px;">(${ped.regiao} • ${ped.eixosUsados} eixos) · ${ped.contagem}x</span>
-            </span>
-            <span style="color:#DC2626;font-weight:700;white-space:nowrap;">R$ ${(ped.valor * ped.contagem).toFixed(2)}</span>
-          </div>
-        `)
-        .join('');
-      
-      html += `<div class="alert alert-warn" style="background:#FEF2F2;border-color:#FCA5A5;">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-          <span style="font-size:18px;">🚧</span>
-          <div>
-            <div style="font-weight:700;color:#7F1D1D;font-size:12px;">PEDÁGIOS DETECTADOS NA ROTEIRIZAÇÃO</div>
-            <div style="font-size:10px;color:#92400E;margin-top:2px;">Inclua Vale-Pedágio no Sistema Sem Parar antes de enviar para transportadoras</div>
-          </div>
-        </div>
-        <div style="display:grid;gap:4px;margin-bottom:8px;max-height:150px;overflow-y:auto;border:1px solid #FECACA;border-radius:6px;padding:6px;background:rgba(255,255,255,0.5);">
-          ${listaPedagiosUnicos}
-        </div>
-        <div style="padding:8px;background:rgba(220,38,38,0.08);border-radius:6px;border-left:3px solid #DC2626;">
-          <div style="display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-size:11px;color:#7F1D1D;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Custo total de pedágios:</span>
-            <span style="font-size:14px;font-weight:700;color:#DC2626;">R$ ${custoPedagiosTotalGlobal.toFixed(2)}</span>
-          </div>
-        </div>
-      </div>`;
-    }
+    const { todosOsPedagios, custoPedagiosTotalGlobal } = _calcularPedagiosGlobais(rotasRaw, obterPontosRotaComCoords);
+    const conteudoInicial = todosOsPedagios.size > 0 ? _htmlAlertaPedagiosGlobal(todosOsPedagios, custoPedagiosTotalGlobal, false) : '';
+    html += `<div id="pedagios-alerta-global-box" data-token="${meuTokenPedagios}">${conteudoInicial}</div>`;
+    // Dispara a busca da rota real em segundo plano (não bloqueia o render).
+    _atualizarPedagiosGlobalReal(rotasRaw, meuTokenPedagios);
   }
   
   // ── Separa alertas de métricas do grid de rotas ──────────────────────────
@@ -8017,6 +8111,39 @@ async function freteCalcular() {
 
   var viagensMap = {}, mesMapa = {};
 
+  // ── Pedágio por viagem histórica ─────────────────────────────────────────
+  // Reaproveita a mesma detecção usada no alerta de pedágios do roteirizador.
+  // Se aquela viagem já teve o trajeto real conferido via OSRM em algum
+  // momento (cache _pedagiosGlobalCache, populado em _atualizarPedagiosGlobalReal),
+  // usamos o valor preciso; senão caímos na aproximação por linha reta — mais
+  // rápida, mas que pode subestimar levemente o valor (mesma limitação do
+  // alerta antes de a rota real ser conferida).
+  function _freteObterPontosRota(v, vi, terminaisSnap) {
+    if (!v || !vi || !vi.paradas || !vi.paradas.length) return [];
+    var terminalNomeOrigem = vi.terminalOrigem || v.terminal || (vi.paradas[0] && vi.paradas[0].pedido && vi.paradas[0].pedido.terminal) || '';
+    var terminal = (terminaisSnap || terminaisCad).find(function(t) { return t.nome === terminalNomeOrigem; });
+    var pontos = [];
+    if (terminal) pontos.push({ lat: terminal.lat, lon: terminal.lon });
+    vi.paradas.forEach(function(p) {
+      var c = latLonEfetivo(p.pedido);
+      pontos.push({ lat: c.lat, lon: c.lon });
+    });
+    var ultimoP = vi.paradas[vi.paradas.length - 1];
+    if (terminal && ((ultimoP && ultimoP.deslocVazioMin) || 0) > 0) pontos.push({ lat: terminal.lat, lon: terminal.lon });
+    return pontos.filter(function(p) { return !isNaN(parseFloat(p.lat)) && !isNaN(parseFloat(p.lon)); });
+  }
+  function _fretePedagiosDaViagem(v, vi, terminaisSnap) {
+    if (!window.detectarPedagiosNaRota) return { custo: 0, preciso: false };
+    var eixosVeic = v.eixos || 2;
+    var pontosRetos = _freteObterPontosRota(v, vi, terminaisSnap);
+    if (pontosRetos.length < 2) return { custo: 0, preciso: false };
+    var chave = eixosVeic + '|' + pontosRetos.map(function(p) { return (+p.lat).toFixed(4) + ',' + (+p.lon).toFixed(4); }).join('|');
+    var cache = typeof _pedagiosGlobalCache !== 'undefined' ? _pedagiosGlobalCache.get(chave) : null;
+    if (cache) return { custo: cache.reduce(function(s,p){ return s + p.valor; }, 0), preciso: true };
+    var pedagios = window.detectarPedagiosNaRota(pontosRetos, eixosVeic);
+    return { custo: pedagios.reduce(function(s,p){ return s + p.valor; }, 0), preciso: false };
+  }
+
   snaps.forEach(function(snap) {
     var res = snap.resultado || {}, veics = snap.veiculos || [];
     var dataSnap = (snap.savedAt || '').slice(0,10);
@@ -8045,7 +8172,8 @@ async function freteCalcular() {
             + (p.deslocVazioMin || 0);
         }, 0);
         var fatorJornada = jornadaDispMin > 0 ? Math.min(1, Math.max(0, jornadaUsadaMin / jornadaDispMin)) : 0;
-        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa, jornadaDispMin: jornadaDispMin, jornadaUsadaMin: jornadaUsadaMin, fatorJornada: fatorJornada };
+        var pedInfo = _fretePedagiosDaViagem(v, vi, snap.terminais);
+        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa, jornadaDispMin: jornadaDispMin, jornadaUsadaMin: jornadaUsadaMin, fatorJornada: fatorJornada, custoPedagios: pedInfo.custo, pedagiosPreciso: pedInfo.preciso };
         viagensMap[placa].push(entry);
         mesMapa[placa][mesKey].viagens.push(entry);
       });
@@ -8100,24 +8228,29 @@ async function freteCalcular() {
     return 'Total do período';
   }
 
-  var grupos = {}, totalGeral = 0;
+  var grupos = {}, totalGeral = 0, totalPedagiosGeral = 0;
 
   Object.keys(viagensMap).forEach(function(placa) {
     var entradas = viagensMap[placa];
     var contrato = contratos.find(function(c) { return _freteNormPlaca(c.placa) === _freteNormPlaca(placa); });
     entradas.forEach(function(entry) {
-      var custo = contrato ? custoViagem(entry, contrato) : 0;
+      var custoFrete = contrato ? custoViagem(entry, contrato) : 0;
+      var pedagio = entry.custoPedagios || 0;
+      var custo = custoFrete + pedagio;
       var kmDisplay = kmEfetivo(entry, contrato);
       var chave = chaveVista(entry);
       if (!grupos[chave]) {
         var transp = contrato ? contrato.transportadora : (veiculos.find(function(v) { return v.placa === placa; }) || {}).transportadora || '—';
-        grupos[chave] = { placa: placa, transportadora: transp, custo: 0, km: 0, m3: 0, nViagens: 0, label: chave };
+        grupos[chave] = { placa: placa, transportadora: transp, custo: 0, pedagio: 0, km: 0, m3: 0, nViagens: 0, label: chave, pedagioImpreciso: false };
       }
       grupos[chave].custo    += custo;
+      grupos[chave].pedagio  += pedagio;
       grupos[chave].km       += kmDisplay;
       grupos[chave].m3       += entry.m3Total;
       grupos[chave].nViagens += 1;
+      if (pedagio > 0 && !entry.pedagiosPreciso) grupos[chave].pedagioImpreciso = true;
       totalGeral             += custo;
+      totalPedagiosGeral     += pedagio;
     });
   });
 
@@ -8130,6 +8263,7 @@ async function freteCalcular() {
     var totalVi = linhas.reduce(function(s,g){return s+g.nViagens;},0);
     resumoEl.innerHTML = [
       ['💰 Custo Total', fmt(totalGeral)],
+      ['🚧 Pedágios (incluso)', fmt(totalPedagiosGeral)],
       ['🚛 Viagens', totalVi],
       ['📏 KM Total (est.)', totalKm.toFixed(0) + ' km'],
       ['📦 Volume Total', totalM3.toFixed(1) + ' m³'],
@@ -8163,7 +8297,8 @@ async function freteCalcular() {
     '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">VIAGENS</th>' +
     '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">KM EST.</th>' +
     '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">VOLUME (m³)</th>' +
-    '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">CUSTO</th>' +
+    '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">PEDÁGIO</th>' +
+    '<th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--text-3);">CUSTO TOTAL</th>' +
     '</tr></thead><tbody>';
 
   if (linhas.length) {
@@ -8187,10 +8322,12 @@ async function freteCalcular() {
     ordemPlacas.forEach(function(placa, gi) {
       var itens = porPlaca[placa];
       var custoPlaca = itens.reduce(function(s,g){return s+g.custo;},0);
+      var pedagioPlaca = itens.reduce(function(s,g){return s+g.pedagio;},0);
       var kmPlaca    = itens.reduce(function(s,g){return s+g.km;},0);
       var m3Placa    = itens.reduce(function(s,g){return s+g.m3;},0);
       var viPlaca    = itens.reduce(function(s,g){return s+g.nViagens;},0);
       var transpPlaca = itens[0].transportadora || '';
+      var impPlaca = itens.some(function(g){return g.pedagioImpreciso;});
       var groupId = 'frete-grp-' + gi;
       html += '<tr onclick="freteToggleGrupo(\'' + groupId + '\')" style="border-top:1px solid var(--border-dk);cursor:pointer;background:rgba(0,0,0,0.025);">' +
         '<td style="padding:10px 14px;font-weight:700;color:var(--text);white-space:nowrap;">' +
@@ -8200,6 +8337,7 @@ async function freteCalcular() {
         '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + viPlaca + '</td>' +
         '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + kmPlaca.toFixed(0) + ' km</td>' +
         '<td style="padding:10px 14px;text-align:right;color:var(--text-2);">' + m3Placa.toFixed(1) + '</td>' +
+        '<td style="padding:10px 14px;text-align:right;color:#B45309;">' + fmt(pedagioPlaca) + (impPlaca ? ' <span title="Estimativa por linha reta — ainda não conferida com o trajeto real da estrada. Abra o mapa dessas viagens no roteirizador para refinar." style="cursor:help;">≈</span>' : '') + '</td>' +
         '<td style="padding:10px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(custoPlaca) + '</td></tr>';
       itens.forEach(function(g, ii) {
         html += '<tr class="' + groupId + '-row" style="display:none;border-top:1px solid var(--border-dk);' + (ii%2===1?'background:rgba(0,0,0,0.015)':'') + '">' +
@@ -8209,15 +8347,17 @@ async function freteCalcular() {
           '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.nViagens + '</td>' +
           '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.km.toFixed(0) + ' km</td>' +
           '<td style="padding:8px 14px;text-align:right;color:var(--text-2);">' + g.m3.toFixed(1) + '</td>' +
+          '<td style="padding:8px 14px;text-align:right;color:#B45309;">' + fmt(g.pedagio) + (g.pedagioImpreciso ? ' <span title="Estimativa por linha reta" style="cursor:help;">≈</span>' : '') + '</td>' +
           '<td style="padding:8px 14px;text-align:right;font-weight:700;color:var(--pet-green,#84cc16);">' + fmt(g.custo) + '</td></tr>';
       });
     });
   } else {
-    html += '<tr><td colspan="7" style="padding:32px;text-align:center;color:var(--text-3);">Nenhum dado calculado. Verifique os contratos cadastrados.</td></tr>';
+    html += '<tr><td colspan="8" style="padding:32px;text-align:center;color:var(--text-3);">Nenhum dado calculado. Verifique os contratos cadastrados.</td></tr>';
   }
 
   html += '<tr style="border-top:2px solid var(--border-dk);background:rgba(0,0,0,0.03);">' +
     '<td colspan="6" style="padding:10px 14px;font-weight:700;color:var(--text);text-align:right;">TOTAL GERAL</td>' +
+    '<td style="padding:10px 14px;text-align:right;font-weight:700;color:#B45309;">' + fmt(totalPedagiosGeral) + '</td>' +
     '<td style="padding:10px 14px;text-align:right;font-weight:800;font-size:14px;color:var(--pet-green,#84cc16);">' + fmt(totalGeral) + '</td>' +
     '</tr></tbody></table>';
 
