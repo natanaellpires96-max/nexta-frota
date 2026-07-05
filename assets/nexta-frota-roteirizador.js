@@ -5628,10 +5628,19 @@ function editarHorarioCarga(vid, ti, hhmm) {
       viagem._alertaCargaManual = sobrepoe
         ? `⚠ Horário manual (${hhmm}) é anterior ao retorno estimado da viagem anterior. Verifique se há tempo suficiente.`
         : null;
+    } else if (v._horarioDisponivelAPartirDe) {
+      // 1ª viagem do dia: só um AVISO, não bloqueia — o horário preenchido pelo
+      // transportador no Painel de Disponibilidade é informativo aqui, quem decide
+      // é quem está roteirizando (ex.: pode ter combinado adiantar com o motorista).
+      const dispMin = parseHoraMin(v._horarioDisponivelAPartirDe);
+      viagem._alertaCargaManual = (!isNaN(dispMin) && min < dispMin)
+        ? `⚠ Horário de viagem (${hhmm}) é anterior ao preenchido na disponibilidade do transportador (${v._horarioDisponivelAPartirDe}).`
+        : null;
     } else {
       viagem._alertaCargaManual = null;
     }
   }
+
 
   recalcularTimingViagem(viagem, v);
   recalcularControleTempo();
