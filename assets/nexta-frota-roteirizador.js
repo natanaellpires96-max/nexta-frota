@@ -6626,7 +6626,11 @@ async function salvarNoHistorico(silencioso = false) {
         totalVolume  += p.volumeTotal || 0;
         totalPedidos++;
       });
-      if (v.terminal) terminaisUsados.add(v.terminal);
+      // Nome curto da base (ex: "São Caetano") em vez do texto completo do
+      // campo terminal (ex: "São Caetano VIBRA Nexta") — fica mais limpo
+      // pra exibir vários terminais lado a lado no card do histórico.
+      const baseNome = cidadeBaseVeiculo(v);
+      if (baseNome) terminaisUsados.add(baseNome);
     });
   });
   const datasEntrega = [...new Set(pedidos.map(p => p.dataEntregaLogistica).filter(Boolean))];
@@ -6755,19 +6759,20 @@ async function carregarListaHistorico() {
     const dtStr = `${p2(dt.getDate())}/${p2(dt.getMonth()+1)}/${dt.getFullYear()} às ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
     const { totalRotas = 0, totalViagens = 0, totalPedidos = 0, totalVolume_m3 = 0, terminaisUsados = [] } = data.resumo;
     const entrega     = data.datasEntrega?.length ? data.datasEntrega.join(', ') : '—';
-    const terminaisStr = terminaisUsados.length ? terminaisUsados.join(' · ') : '';
+    // Nomes dos terminais/bases roteirizados nesse lote, exibidos ao lado da
+    // data/hora (ex.: "São Caetano / Paulínia / Duque de Caxias").
+    const terminaisStr = terminaisUsados.length ? terminaisUsados.join(' / ') : '';
     const safeNome    = name.replace(/'/g, "\\'");
     return `
       <div class="hist-entry">
         <div class="hist-entry-info">
-          <div class="hist-entry-date">${dtStr}</div>
+          <div class="hist-entry-date">${dtStr}${terminaisStr ? ` &nbsp;·&nbsp; <span class="hist-entry-terminais">${terminaisStr}</span>` : ''}</div>
           <div class="hist-entry-meta">Entrega: <strong>${entrega}</strong>${data.salvoPor ? ` &nbsp;·&nbsp; Salvo por: <strong>${data.salvoPor === 'Desconhecido' ? ((S && S.user && window.USERS_DB && window.USERS_DB[S.user]) ? (window.USERS_DB[S.user].name || S.user) : data.salvoPor) : data.salvoPor}</strong>` : ''}</div>
           <div class="hist-entry-chips">
             <span class="tag tag-green">${totalRotas} rota${totalRotas !== 1 ? 's' : ''}</span>
             <span class="tag tag-blue">${totalViagens} ${totalViagens !== 1 ? 'viagens' : 'viagem'}</span>
             <span class="tag tag-gray">${totalPedidos} pedido${totalPedidos !== 1 ? 's' : ''}</span>
             <span class="tag tag-yellow">${String(totalVolume_m3).replace('.', ',')} m³</span>
-            ${terminaisStr ? `<span class="pill">${terminaisStr}</span>` : ''}
           </div>
         </div>
         <div class="hist-entry-actions">
