@@ -696,6 +696,16 @@ function dashAgregar(snapshots) {
         totalViagens++;
         const rotaPontos = { termLat: tLat, termLon: tLon, placa: v.placa, paradas: [] };
         let volViagem = 0;
+        // Km real da viagem: se o usuário ajustou a rota manualmente no mapa
+        // (aba Otimização Rotas), vi._kmAjustado guarda a distância real
+        // recalculada via OSRM — essa é a fonte mais fiel disponível.
+        // Quando não há ajuste manual, mantém o cálculo padrão (Haversine
+        // sequencial entre paradas, sem nenhum fator de inflação aplicado).
+        const _kmAjustadoViagem = (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0) ? vi._kmAjustado : null;
+        let _somaKmOriginalViagem = null;
+        if (_kmAjustadoViagem != null) {
+          _somaKmOriginalViagem = vi.paradas.reduce((s, p) => s + (p.distanciaKm || 0), 0);
+        }
         vi.paradas.forEach(par => {
           const ped = par.pedido || {};
           const nome = ped.cliente || ped.nomeCliente || par.nome || '?';
@@ -704,11 +714,18 @@ function dashAgregar(snapshots) {
           const coords = latLonEfetivo ? latLonEfetivo(ped) : { lat: par.lat, lon: par.lon };
           const lat = coords?.lat || par.lat;
           const lon = coords?.lon || par.lon;
-          // Usa distanciaKm da parada (calculado na roteirização com fator de tortuosidade 1.3x)
-          // em vez de Haversine direto terminal→cliente, que ignora a sequência de paradas.
-          // Para clientes com múltiplas entregas, acumula e divide pela contagem → km médio.
-          const km = par.distanciaKm > 0 ? par.distanciaKm
+          // Km base da parada: distanciaKm calculado na roteirização (Haversine
+          // sequencial entre paradas), com fallback para Haversine terminal→cliente.
+          const kmBase = par.distanciaKm > 0 ? par.distanciaKm
             : ((tLat && tLon && lat && lon) ? haversine(tLat, tLon, lat, lon) : 0);
+          // Se a viagem foi ajustada manualmente no mapa, rateia o km real (OSRM)
+          // entre as paradas na mesma proporção do km original de cada uma —
+          // preserva o km médio por cliente mesmo com a rota redesenhada.
+          const km = (_kmAjustadoViagem != null)
+            ? (_somaKmOriginalViagem > 0
+                ? _kmAjustadoViagem * (kmBase / _somaKmOriginalViagem)
+                : _kmAjustadoViagem / vi.paradas.length)
+            : kmBase;
           const chave = dashChaveCliente(ped);
           if (!clientes[chave]) clientes[chave] = { nome, cidade, entregas:0, volume:0, km:0, kmTotal:0, lat, lon, capTotal:0, viagensIds: new Set() };
           clientes[chave].nome = dashNomeCanônico(clientes[chave].nome, nome);
