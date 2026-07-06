@@ -995,15 +995,15 @@ function dashRender(snapshots) {
   set('dk-km',       Math.round(_kpiKm).toLocaleString('pt-BR') + ' km');
   set('dk-clientes', clientesFiltrados.length);
   // Gráfico de barras: volume por cliente
-  dashBarChart('dash-chart-vol', clientesFiltrados.slice(0,30), c=>c.volume.toFixed(1),
+  dashBarChart('dash-chart-vol', clientesFiltrados, c=>c.volume.toFixed(1),
     '#f0be40', 'm³', c=>c.nome);
   // Gráfico de barras: entregas por cliente
-  dashBarChart('dash-chart-ent', clientesFiltrados.slice(0,30).sort((a,b)=>b.entregas-a.entregas),
+  dashBarChart('dash-chart-ent', clientesFiltrados.slice().sort((a,b)=>b.entregas-a.entregas),
     c=>c.entregas, '#70a8f0', 'ent.', c=>c.nome);
   // Gráfico Km vs Volume
-  dashKmVolChart('dash-chart-km', clientesFiltrados.slice(0,30));
+  dashKmVolChart('dash-chart-km', clientesFiltrados);
   // Gráfico de ocupação por cliente
-  dashOcupClienteChart('dash-chart-ocup', ocupFiltrados.slice(0,30));
+  dashOcupClienteChart('dash-chart-ocup', ocupFiltrados);
   // Mapa
   dashRenderMapa(d.rotasMap);
   // Tabela
@@ -1050,7 +1050,7 @@ function dashKmVolChart(containerId, clientes) {
   const el = document.getElementById(containerId);
   if (!el) return;
   // Mostra só clientes com km calculado, ordenados por km decrescente
-  const itens = clientes.filter(c => c.km > 0).sort((a, b) => b.km - a.km).slice(0, 30);
+  const itens = clientes.filter(c => c.km > 0).sort((a, b) => b.km - a.km);
   if (!itens.length) { el.innerHTML = '<div style="color:#888;font-size:12px;padding:12px">Sem dados de distância — abra o mapa de cada viagem para calcular.</div>'; return; }
   const maxKm  = Math.max(...itens.map(c => c.km  || 0), 1);
   const maxVol = Math.max(...itens.map(c => c.volume || 0), 1);
