@@ -890,80 +890,6 @@ function selecionarCompartimentos(comps, volumeAlvo, modo='exact') {
   if (modo === 'geq') return melhorGeq;
   return modo === 'maxLE' ? melhor : null;
 }
-// ── TRAVA DE COMPARTIMENTAÇÃO (edição manual: drag&drop / troca de placa) ────
-// A roteirização automática (função otimizar) já confronta compartimentação
-// via podeFitar/veicOkCompartimentos. As ações manuais abaixo NÃO faziam essa
-// checagem (só validavam volume total x capacidade do veículo), permitindo
-// alocar um pedido em um veículo cuja compartimentação é incompatível com os
-// produtos do pedido — e o excedente "desaparecia" sem aviso. As funções
-// desta seção fecham essa lacuna: bloqueiam a ação e avisam o usuário do erro
-// em vez de roteirizar de forma incorreta. Aplicam-se a todas as operações,
-// pois são utilitários globais usados por qualquer veículo/pedido.
-function _itensDeParadas(paradas) {
-  const itens = [];
-  (paradas || []).forEach(p => (p.itens || []).forEach(it => {
-    if ((it.volume || 0) > 0.0001) itens.push({ produto: it.produto, volume: it.volume });
-  }));
-  return itens;
-}
-// Verifica (sem efeito colateral) se TODOS os itens informados cabem nos
-// compartimentos do veículo `vDest`, respeitando produto fixo por compartimento
-// (mesma regra usada na roteirização automática: exact primeiro, geq depois).
-function itensCabemNosCompartimentos(itens, vDest) {
-  const comps = criarCompsDisp(vDest || {});
-  if (!comps.length) return true; // veículo sem compartimentos fixos cadastrados → não bloqueia
-  const copia = comps.map(c => ({ ...c }));
-  for (const it of (itens || [])) {
-    if ((it.volume || 0) <= 0.0001) continue;
-    const el = copia.filter(c => compElegivelProduto(c, it.produto) && c.disponivel > 0);
-    let aloc = selecionarCompartimentos(el, it.volume, 'exact');
-    if (!aloc) aloc = selecionarCompartimentos(el, it.volume, 'geq');
-    if (!aloc) return false;
-    aloc.forEach(c => { c.disponivel = 0; });
-  }
-  return true;
-}
-// Verifica se existe encaixe válido (viagem existente com espaço OU nova
-// viagem) para `parada` dentro do veículo `veiculoId`, respeitando capacidade
-// total E compartimentação. Não modifica nada — apenas consulta.
-function existeEncaixeCompativel(parada, veiculoId, tripIndexPref) {
-  const vDest = veiculos.find(x => x.id === veiculoId);
-  if (!vDest) return true; // veículo não encontrado: fora do escopo desta trava
-  const cap  = vDest.capacidade ?? Infinity;
-  const viagens = ultimoResultado[veiculoId] || [];
-  const vol  = parada.volumeTotal || 0;
-  const itensNovos = _itensDeParadas([parada]);
-  const cabeNaViagem = (vi) => {
-    const ocupado = (vi.paradas || []).reduce((s, p) => s + (p.volumeTotal || 0), 0);
-    if (ocupado + vol > cap + 0.001) return false;
-    return itensCabemNosCompartimentos([..._itensDeParadas(vi.paradas), ...itensNovos], vDest);
-  };
-  if (tripIndexPref != null && viagens[tripIndexPref] && cabeNaViagem(viagens[tripIndexPref])) return true;
-  if (viagens.some(cabeNaViagem)) return true;
-  // Viagem nova: parte do zero, só precisa acomodar os itens da própria parada
-  return itensCabemNosCompartimentos(itensNovos, vDest);
-}
-// Mensagem de erro clara para o usuário quando a ação manual é bloqueada.
-function alertCompartimentoIncompativel(parada, veiculoId) {
-  const v = veiculos.find(x => x.id === veiculoId);
-  const cliente = parada?.pedido?.cliente || 'este pedido';
-  const comps = (v?.compartimentos || [])
-    .map(c => `${c.cap}m³${c.produto ? ' (' + c.produto + ')' : ''}`).join(' + ') || 'sem compartimentos cadastrados';
-  const itensTxt = (parada?.itens || [])
-    .map(it => `${(it.volume || 0).toFixed(1)}m³ de ${it.produto || 'produto'}`).join(', ') || 'volumes do pedido';
-  alert(
-    '⚠ Roteirização bloqueada — incompatibilidade de compartimentos\n\n' +
-    `Veículo ${v?.placa || ''}: ${comps}\n` +
-    `Pedido de ${cliente}: ${itensTxt}\n\n` +
-    'Os volumes do pedido não cabem na compartimentação deste veículo. ' +
-    'Selecione um veículo com compartimentos compatíveis.'
-  );
-}
-// Verifica se TODAS as viagens de uma lista cabem no veículo `vDest` (usado na
-// troca de placa, que move viagens inteiras entre veículos).
-function viagensCompativeisComVeiculo(viagens, vDest) {
-  return (viagens || []).every(vi => itensCabemNosCompartimentos(_itensDeParadas(vi.paradas), vDest));
-}
 function atualizarFiltroMapaTransportadora() {
   const el = document.getElementById('f-map-transp');
   if (!el) return;
@@ -4983,27 +4909,21 @@ function _alocarParada(parada, veiculoId, tripIndexPref) {
   const cap     = vDest?.capacidade ?? Infinity;
   const viagens = ultimoResultado[veiculoId] || [];
   const vol     = parada.volumeTotal || 0;
-  const itensNovos = _itensDeParadas([parada]);
-  const cabeCompart = (vi) => itensCabemNosCompartimentos([..._itensDeParadas(vi.paradas), ...itensNovos], vDest);
   // Tenta a viagem preferida primeiro
   if (tripIndexPref != null) {
     const vi = viagens[tripIndexPref];
     if (vi) {
       const ocupado = vi.paradas.reduce((s,p)=>s+(p.volumeTotal||0), 0);
-      if (ocupado + vol <= cap + 0.001 && cabeCompart(vi)) { vi.paradas.push(parada); return false; }
+      if (ocupado + vol <= cap + 0.001) { vi.paradas.push(parada); return false; }
     }
   }
-  // Tenta qualquer viagem com espaço (e compartimentação compatível)
+  // Tenta qualquer viagem com espaço
   const viLivre = viagens.find(vi => {
     const ocupado = vi.paradas.reduce((s,p)=>s+(p.volumeTotal||0), 0);
-    return ocupado + vol <= cap + 0.001 && cabeCompart(vi);
+    return ocupado + vol <= cap + 0.001;
   });
   if (viLivre) { viLivre.paradas.push(parada); return false; }
-  // Nenhuma viagem existente comporta → só cria viagem nova se a própria
-  // parada couber na compartimentação do veículo (senão, bloqueia).
-  if (vDest && !itensCabemNosCompartimentos(itensNovos, vDest)) {
-    return 'bloqueado';
-  }
+  // Nenhuma viagem comporta → cria viagem nova com terminal do pedido da parada
   const termOrig = parada?.pedido?.terminal || viagens[0]?.terminalOrigem || vDest?.terminal || '';
   if (!ultimoResultado[veiculoId]) ultimoResultado[veiculoId] = [];
   const novaVi = { paradas: [parada], quebras: [], terminalOrigem: termOrig, esperaTerminalMin: 0, tempoConsumidoMin: 0 };
@@ -5031,12 +4951,6 @@ function dropNaCard(event, veiculoDestId) {
   } else if (dragInfo.tipo === 'parada') {
     if (dragInfo.veiculoId === veiculoDestId) { dragInfo = null; return; }
     const { veiculoId: origId, tripIndex: origTripIdx, stopIndex } = dragInfo;
-    const paradaMovida = ultimoResultado[origId]?.[origTripIdx]?.paradas?.[stopIndex];
-    if (paradaMovida && !existeEncaixeCompativel(paradaMovida, veiculoDestId, null)) {
-      dragInfo = null;
-      alertCompartimentoIncompativel(paradaMovida, veiculoDestId);
-      return;
-    }
     dragInfo = null;
     historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
     limparFantasma(origId);
@@ -5095,18 +5009,8 @@ function dropNaStop(event, veiculoDestId, tripDestIdx, stopDestIdx) {
   event.currentTarget.classList.remove('stop-reorder-alvo');
   if (!dragInfo || dragInfo.tipo !== 'parada') return;
   const { veiculoId: origId, tripIndex: origTripIdx, stopIndex: origStopIdx } = dragInfo;
-  if (origId === veiculoDestId && origTripIdx === tripDestIdx && origStopIdx === stopDestIdx) { dragInfo = null; return; }
-  // Pré-checagem de compartimentação quando o destino é outro veículo (ou outra
-  // viagem do mesmo veículo) — bloqueia e avisa em vez de mover incorretamente.
-  if (!(origId === veiculoDestId && origTripIdx === tripDestIdx)) {
-    const paradaMovida = ultimoResultado[origId]?.[origTripIdx]?.paradas?.[origStopIdx];
-    if (paradaMovida && !existeEncaixeCompativel(paradaMovida, veiculoDestId, tripDestIdx)) {
-      dragInfo = null;
-      alertCompartimentoIncompativel(paradaMovida, veiculoDestId);
-      return;
-    }
-  }
   dragInfo = null;
+  if (origId === veiculoDestId && origTripIdx === tripDestIdx && origStopIdx === stopDestIdx) return;
   historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
   limparFantasma(origId);
   if (origId === veiculoDestId && origTripIdx === tripDestIdx) {
@@ -5128,11 +5032,10 @@ function dropNaStop(event, veiculoDestId, tripDestIdx, stopDestIdx) {
     const destVi = (ultimoResultado[veiculoDestId] || [])[tripDestIdx];
     if (destVi) {
       const volDest = destVi.paradas.reduce((s,p) => s + (p.volumeTotal||0), 0);
-      const compOk  = itensCabemNosCompartimentos([..._itensDeParadas(destVi.paradas), ..._itensDeParadas([parada])], vDest);
-      if (volDest + (parada.volumeTotal||0) <= cap + 0.001 && compOk) {
+      if (volDest + (parada.volumeTotal||0) <= cap + 0.001) {
         destVi.paradas.splice(stopDestIdx, 0, parada); // insere na posição exata
       } else {
-        _alocarParada(parada, veiculoDestId, null); // cria nova viagem se cheio/incompatível
+        _alocarParada(parada, veiculoDestId, null); // cria nova viagem se cheio
       }
     } else {
       _alocarParada(parada, veiculoDestId, null);
@@ -5198,14 +5101,8 @@ function dropNaViagem(event, veiculoId, tripIndex) {
   }
   if (dragInfo.tipo !== 'parada') return;
   const { veiculoId: origVeicId, tripIndex: origTripIdx, stopIndex } = dragInfo;
-  if (origVeicId === veiculoId && origTripIdx === tripIndex) { dragInfo = null; return; }
-  const paradaMovida = ultimoResultado[origVeicId]?.[origTripIdx]?.paradas?.[stopIndex];
-  if (paradaMovida && !existeEncaixeCompativel(paradaMovida, veiculoId, tripIndex)) {
-    dragInfo = null;
-    alertCompartimentoIncompativel(paradaMovida, veiculoId);
-    return;
-  }
   dragInfo = null;
+  if (origVeicId === veiculoId && origTripIdx === tripIndex) return;
   historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
   // Remove parada da origem
   limparFantasma(origVeicId);
@@ -5280,27 +5177,11 @@ function confirmarTrocaPlaca(veiculoDestId) {
   const menu = document.getElementById('placa-dropdown-menu');
   if (menu) menu.style.display = 'none';
   if (!_placaDropOrigId || _placaDropOrigId === veiculoDestId) { _placaDropOrigId = null; return; }
+  historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
   const origId = _placaDropOrigId;
-  const vOrig = veiculos.find(x => x.id === origId);
-  const vDest = veiculos.find(x => x.id === veiculoDestId);
+  // Troca as viagens entre os dois veículos
   const tripOrig = ultimoResultado[origId]       ? [...ultimoResultado[origId]]       : [];
   const tripDest = ultimoResultado[veiculoDestId] ? [...ultimoResultado[veiculoDestId]] : [];
-  // Trava: cada conjunto de viagens só pode ir para o veículo cuja
-  // compartimentação comporta os produtos já alocados nelas.
-  const destComportaOrig = viagensCompativeisComVeiculo(tripOrig, vDest);
-  const origComportaDest = viagensCompativeisComVeiculo(tripDest, vOrig);
-  if (!destComportaOrig || !origComportaDest) {
-    _placaDropOrigId = null;
-    const vSemEncaixe = !destComportaOrig ? vDest : vOrig;
-    alert(
-      '⚠ Troca de placa bloqueada — incompatibilidade de compartimentos\n\n' +
-      `O veículo ${vSemEncaixe?.placa || ''} tem compartimentação incompatível com os produtos ` +
-      'já alocados nas viagens que seriam movidas para ele. A troca não foi realizada.'
-    );
-    return;
-  }
-  historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
-  // Troca as viagens entre os dois veículos
   ultimoResultado[origId]        = tripDest;
   ultimoResultado[veiculoDestId] = tripOrig;
   // Marca como vazio se ficou sem viagens reais
@@ -7178,72 +7059,89 @@ window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() 
 // e gera texto formatado para WhatsApp
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Popula o seletor de datas no Envio Transportadora com os dias únicos do histórico
+// Popula o seletor de datas no Envio Transportadora com as DATAS DE ENTREGA
+// (não mais o dia em que a roteirização foi salva). Antes, cada opção
+// representava um dia de roteirização e podia misturar várias datas de
+// entrega diferentes dentro dele (ex.: "06/07/2026 — Entrega: 06/07/2026,
+// 07/07/2026") — e o resumo gerado juntava tudo isso no mesmo texto. Agora
+// cada opção é UMA data de entrega específica; gerarResumoDia() varre todo o
+// histórico e usa só os pedidos daquela data (ver _coletarPedidosPorEntrega).
 async function popularSeletorResumoDia() {
   const sel = document.getElementById('resumo-dia-sel');
   if (!sel) return;
-  sel.innerHTML = '<option value="">— Selecionar data —</option>';
+  sel.innerHTML = '<option value="">— Selecionar data de entrega —</option>';
   if (!dirHandleHistorico) return;
   let permOk = false;
   try { permOk = (await dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
   if (!permOk) return;
 
-  // Coleta todas as entradas e agrupa por dia (YYYYMMDD = primeiros 8 chars do nome)
-  const diasMap = new Map(); // YYYYMMDD → { label, datasEntrega[] }
+  // Varre todo o histórico e agrupa por DATA DE ENTREGA (não pelo dia salvo).
+  // Uma mesma data de entrega pode aparecer em snapshots salvos em dias
+  // diferentes (ex.: roteirização feita hoje já programando entregas de
+  // amanhã) — por isso a busca é sobre TODOS os arquivos, sem filtrar por
+  // prefixo de nome/dia.
+  const entregaMap = new Map(); // "DD/MM/YYYY" → { arquivos: Set(nome), pedidos: 0 }
   for await (const [name, handle] of dirHandleHistorico.entries()) {
     if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
-    const diaKey = name.slice(0, 8); // ex: "20260624"
-    if (!/^\d{8}$/.test(diaKey)) continue;
     try {
       const file = await handle.getFile();
       const data = JSON.parse(await file.text());
       if (!data.versao || !data.savedAt || !data.resumo) continue;
-      if (!diasMap.has(diaKey)) {
-        const y = diaKey.slice(0,4), m = diaKey.slice(4,6), d = diaKey.slice(6,8);
-        diasMap.set(diaKey, { label: `${d}/${m}/${y}`, datasEntrega: new Set() });
-      }
-      (data.datasEntrega || []).forEach(de => diasMap.get(diaKey).datasEntrega.add(de));
+      const datas = data.datasEntrega && data.datasEntrega.length
+        ? data.datasEntrega
+        : (data.pedidos || []).map(p => p.dataEntregaLogistica).filter(Boolean);
+      new Set(datas).forEach(de => {
+        if (!entregaMap.has(de)) entregaMap.set(de, { arquivos: new Set() });
+        entregaMap.get(de).arquivos.add(name);
+      });
     } catch(e) {}
   }
 
-  // Ordena decrescente (mais recente primeiro)
-  const dias = [...diasMap.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-  dias.forEach(([key, info]) => {
+  // Ordena por data (mais recente primeiro). Datas vêm em "DD/MM/YYYY";
+  // convertemos pra "YYYYMMDD" só pra comparar, sem alterar o valor original.
+  const paraOrdenar = (de) => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(de || '');
+    return m ? `${m[3]}${m[2]}${m[1]}` : (de || '');
+  };
+  const entregas = [...entregaMap.entries()].sort((a, b) => paraOrdenar(b[0]).localeCompare(paraOrdenar(a[0])));
+  entregas.forEach(([de, info]) => {
     const opt = document.createElement('option');
-    opt.value = key;
-    const entrega = info.datasEntrega.size ? ` — Entrega: ${[...info.datasEntrega].join(', ')}` : '';
-    opt.textContent = `${info.label}${entrega}`;
+    opt.value = de;
+    const qtdArq = info.arquivos.size;
+    opt.textContent = `${de} (${qtdArq} roteirização${qtdArq === 1 ? '' : 'ões'})`;
     sel.appendChild(opt);
   });
 }
 
 async function gerarResumoDia() {
-  const sel    = document.getElementById('resumo-dia-sel');
-  const diaKey = sel?.value; // "YYYYMMDD" ou ""
+  const sel         = document.getElementById('resumo-dia-sel');
+  const dataEntrega = sel?.value; // "DD/MM/YYYY" ou ""
 
   let snaps = [];
 
-  if (diaKey) {
-    // Carrega TODOS os snapshots do dia selecionado
+  if (dataEntrega) {
+    // Varre TODO o histórico (não só um dia) procurando snapshots que tenham
+    // pedidos com essa data de entrega — uma roteirização feita num dia
+    // qualquer pode conter entregas programadas pra outro dia.
     if (!await _histGarantirPermissao()) {
       showToast('Permissão negada. Selecione a pasta do histórico novamente.', false);
       return;
     }
     for await (const [name, handle] of dirHandleHistorico.entries()) {
       if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
-      if (!name.startsWith(diaKey)) continue;
       try {
         const file = await handle.getFile();
         const data = JSON.parse(await file.text());
-        if (data.versao && data.savedAt && data.resumo) snaps.push(data);
+        if (!data.versao || !data.savedAt || !data.resumo) continue;
+        const temEssaData = (data.datasEntrega || []).includes(dataEntrega)
+          || (data.pedidos || []).some(p => p.dataEntregaLogistica === dataEntrega);
+        if (temEssaData) snaps.push(data);
       } catch(e) {}
     }
     if (!snaps.length) {
-      showToast('Nenhuma roteirização encontrada para este dia.', false);
+      showToast('Nenhuma roteirização encontrada para essa data de entrega.', false);
       return;
     }
-    // Ordena por hora (mais recente último — a última roteirização do dia tem prioridade
-    // para a lista de veículos disponíveis)
     snaps.sort((a, b) => a.savedAt.localeCompare(b.savedAt));
   } else if (ultimoResultado) {
     // Usa a roteirização atual em memória
@@ -7257,11 +7155,14 @@ async function gerarResumoDia() {
       pedidos,
     }];
   } else {
-    showToast('Selecione uma data ou execute a otimização primeiro.', false);
+    showToast('Selecione uma data de entrega ou execute a otimização primeiro.', false);
     return;
   }
 
-  const texto = _montarTextoResumoDia(snaps);
+  // Quando uma data de entrega específica foi escolhida, o texto é filtrado
+  // pedido a pedido pra essa data (ver _montarTextoResumoDia). Quando não há
+  // seleção (roteirização atual em memória), usa tudo que estiver carregado.
+  const texto = _montarTextoResumoDia(snaps, dataEntrega || null);
   try {
     await navigator.clipboard.writeText(texto);
   } catch(e) {
@@ -7272,26 +7173,59 @@ async function gerarResumoDia() {
     document.execCommand('copy');
     document.body.removeChild(ta);
   }
-  showToast('✅ Resumo do dia copiado! Cole no WhatsApp.', true);
+  showToast('✅ Resumo copiado! Cole no WhatsApp.', true);
 }
 
-// Agrega N snapshots do mesmo dia e monta o texto
-function _montarTextoResumoDia(snaps) {
+// Converte "DD/MM/YYYY" pra "YYYYMMDD" só pra permitir ordenação/comparação
+// cronológica de datas de entrega (o valor original nunca é alterado).
+function _entregaParaOrdenar(de) {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(de || '');
+  return m ? `${m[3]}${m[2]}${m[1]}` : (de || '');
+}
+
+// Dado um resultado de roteirização (res[v.id]) e uma data de entrega alvo,
+// devolve só as viagens/paradas que pertencem àquela data — descartando
+// paradas de outras datas e viagens que não sobrarem com nenhuma parada.
+// Se dataAlvo for null (ex.: resumo da roteirização atual em memória, sem
+// filtro explícito), devolve tudo, sem filtrar.
+function _viagensFiltradasPorEntrega(res, vId, dataAlvo) {
+  const viagens = (res[vId] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+  if (!dataAlvo) return viagens;
+  return viagens
+    .map(vi => ({ ...vi, paradas: vi.paradas.filter(p => (p.pedido?.dataEntregaLogistica || '') === dataAlvo) }))
+    .filter(vi => vi.paradas.length > 0);
+}
+
+// Agrega N snapshots e monta o texto do resumo.
+// dataAlvoEntrega: quando informado ("DD/MM/YYYY"), filtra pedido a pedido
+// pra essa data específica — é o que resolve o problema de datas de entrega
+// diferentes ficando misturadas no mesmo resumo. Quando null (resumo da
+// roteirização atual em memória, sem seleção de data no dropdown), agrega
+// tudo que estiver carregado, como antes.
+function _montarTextoResumoDia(snaps, dataAlvoEntrega = null) {
   const p2 = n => String(n).padStart(2, '0');
 
-  // Data de entrega: une todas as datas de entrega únicas de todos os snaps
-  const datasEntregaSet = new Set();
-  snaps.forEach(s => (s.datasEntrega || []).forEach(d => datasEntregaSet.add(d)));
-  const dataEntregaStr = datasEntregaSet.size
-    ? [...datasEntregaSet].sort().join(', ')
-    : (() => {
-        const d = new Date(snaps[snaps.length - 1].savedAt);
-        return `${p2(d.getDate())}/${p2(d.getMonth()+1)}/${d.getFullYear()}`;
-      })();
+  let dataEntregaStr;
+  if (dataAlvoEntrega) {
+    dataEntregaStr = dataAlvoEntrega;
+  } else {
+    const datasSet = new Set();
+    snaps.forEach(s => {
+      (s.datasEntrega || []).forEach(d => datasSet.add(d));
+      (s.pedidos || []).forEach(p => { if (p.dataEntregaLogistica) datasSet.add(p.dataEntregaLogistica); });
+    });
+    dataEntregaStr = datasSet.size
+      ? [...datasSet].sort((a, b) => _entregaParaOrdenar(a).localeCompare(_entregaParaOrdenar(b))).join(', ')
+      : (() => {
+          const d = new Date(snaps[snaps.length - 1].savedAt);
+          return `${p2(d.getDate())}/${p2(d.getMonth()+1)}/${d.getFullYear()}`;
+        })();
+  }
 
   // ── Agrega métricas de todos os snapshots ────────────────────────────────
   // Para placas: usa o snapshot mais recente como fonte de verdade
-  // Para volumes/viagens/pedidos/jornada: soma tudo
+  // Para volumes/viagens/pedidos/jornada: soma tudo (já filtrado pela data
+  // de entrega alvo, quando houver uma selecionada).
   let totalVolume      = 0;
   let totalViagens     = 0;
   let totalPedidos     = 0;
@@ -7301,6 +7235,10 @@ function _montarTextoResumoDia(snaps) {
   const pedidosComProblema   = new Set();
   const placasComProgramacao = new Set();
   const placasDisponiveisMap = new Map(); // placa → { transportadora }
+  // Dados extras só pra deixar a introdução mais específica (não genérica):
+  const clientesAtendidos = new Set();
+  const terminaisUsados   = new Set();
+  const produtoVolume     = new Map(); // nome do produto → m³ total
 
   snaps.forEach(snap => {
     const res   = snap.resultado || {};
@@ -7318,14 +7256,20 @@ function _montarTextoResumoDia(snaps) {
         });
       }
 
-      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      const viagens = _viagensFiltradasPorEntrega(res, v.id, dataAlvoEntrega);
       const ctV = ct[String(v.id)] || {};
 
       viagens.forEach(vi => {
         totalViagens++;
+        terminaisUsados.add(vi.terminalOrigem || v.terminal || '');
         vi.paradas.forEach(p => {
           totalVolume += p.volumeTotal || 0;
           totalPedidos++;
+          clientesAtendidos.add(p.pedido?.cliente || p.pedido?.nomeCliente || p.nome || '?');
+          (p.pedido?.produtos || []).forEach(pr => {
+            const nm = (pr.produto || '').replace(/^\d+\s*-\s*/, '') || 'Produto';
+            produtoVolume.set(nm, (produtoVolume.get(nm) || 0) + (pr.volume || 0));
+          });
           if (p.tempoEsperaRestricaoMin > 0) {
             pedidosComProblema.add(p.pedido?.cliente || p.pedido?.nomeCliente || '?');
           }
@@ -7333,11 +7277,18 @@ function _montarTextoResumoDia(snaps) {
         placasComProgramacao.add(v.placa);
       });
 
-      const limMin   = ctV.limiteMin  || 0;
-      const usadoMin = ctV.usadoMin   || 0;
-      horasDisponiveis += limMin;
-      horasConsumidas  += usadoMin;
-      if (usadoMin > limMin + 1) temEstouroJornada = true;
+      // Jornada consumida/disponível: como o controle de tempo é por viagem
+      // completa (não por parada), quando há filtro de data de entrega essas
+      // horas refletem o veículo inteiro naquele dia sempre que ele tiver ao
+      // menos 1 parada da data selecionada — não dá pra fatiar jornada por
+      // data de entrega dentro de uma mesma viagem com precisão.
+      if (viagens.length) {
+        const limMin   = ctV.limiteMin  || 0;
+        const usadoMin = ctV.usadoMin   || 0;
+        horasDisponiveis += limMin;
+        horasConsumidas  += usadoMin;
+        if (usadoMin > limMin + 1) temEstouroJornada = true;
+      }
     });
   });
 
@@ -7345,7 +7296,9 @@ function _montarTextoResumoDia(snaps) {
     .filter(([placa]) => !placasComProgramacao.has(placa))
     .sort(([a], [b]) => a.localeCompare(b));
 
-  // Ocupação da frota
+  // Ocupação da frota (mesmo cuidado: reflete o volume da data filtrada
+  // sobre a capacidade do veículo, útil pra ver quanto da capacidade foi
+  // usado especificamente pelas entregas daquela data)
   let totalCapacidade = 0;
   let totalVolumeAlocado = 0;
   let veiculosOcupacaoTotal = 0;
@@ -7354,7 +7307,7 @@ function _montarTextoResumoDia(snaps) {
     const res  = snap.resultado || {};
     const veics = snap.veiculos || [];
     veics.forEach(v => {
-      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      const viagens = _viagensFiltradasPorEntrega(res, v.id, dataAlvoEntrega);
       if (!viagens.length) return;
       const volVeiculo = viagens.reduce((s, vi) => s + vi.paradas.reduce((ss, p) => ss + (p.volumeTotal || 0), 0), 0);
       const cap = v.capacidade || 0;
@@ -7374,31 +7327,44 @@ function _montarTextoResumoDia(snaps) {
   const volumeStr  = totalVolume.toFixed(1).replace('.', ',');
   const semProblemas = pedidosComProblema.size === 0 && !temEstouroJornada;
 
+  const terminaisLista = [...terminaisUsados].filter(Boolean);
+  const qtdClientes  = clientesAtendidos.size;
+  const produtoTop = [...produtoVolume.entries()].sort((a, b) => b[1] - a[1])[0];
+
   // ── Monta texto ───────────────────────────────────────────────────────────
   const L = [];
   L.push(`*Resumo do Outbound - ${dataEntregaStr}*`);
   L.push('');
 
+  // Introdução data-driven: em vez de uma frase fixa igual todo dia, monta a
+  // partir dos números reais dessa operação (volume, clientes, terminais,
+  // viagens, ocupação) — só o desfecho muda conforme há ou não problemas.
+  const origemTexto = terminaisLista.length > 1
+    ? ` a partir de ${terminaisLista.length} terminais (${terminaisLista.join(', ')})`
+    : (terminaisLista[0] ? ` a partir do terminal ${terminaisLista[0]}` : '');
+  const aberturaFatos =
+    `A operação com entrega em ${dataEntregaStr} somou ${volumeStr} m³ distribuídos entre ` +
+    `${qtdClientes} cliente${qtdClientes === 1 ? '' : 's'}${origemTexto}, em ${totalViagens} ` +
+    `viagem${totalViagens === 1 ? '' : 'ns'} com ${pctFrota}% de ocupação média da frota.`;
+
   if (semProblemas) {
     L.push(
-      `A programação para o dia ${dataEntregaStr} foi concluída com bom nível de aproveitamento ` +
-      `da frota e atendimento integral da demanda prevista. A operação foi estruturada sem quebras ` +
-      `de pedido e as rotas foram importadas em lote para a Herrlog.`
+      `${aberturaFatos} Nenhuma restrição de horário ou estouro de jornada foi identificado; ` +
+      `as rotas já foram importadas em lote para a Herrlog.`
     );
   } else {
     const prob = [];
     if (pedidosComProblema.size > 0) prob.push(`${pedidosComProblema.size} pedido(s) com restrição de horário`);
     if (temEstouroJornada) prob.push('possível estouro de jornada em alguma programação');
-    L.push(
-      `A programação para o dia ${dataEntregaStr} foi concluída. ` +
-      `Foram identificados: ${prob.join(' e ')}.`
-    );
+    L.push(`${aberturaFatos} Foram identificados: ${prob.join(' e ')}.`);
   }
   L.push('');
 
   L.push(`• *Volume planejado:* ${volumeStr} m³`);
   L.push(`• *Pedidos atendidos:* ${totalPedidos}`);
+  L.push(`• *Clientes atendidos:* ${qtdClientes}`);
   L.push(`• *Viagens geradas:* ${totalViagens} — importadas em lote para a Herrlog`);
+  if (produtoTop) L.push(`• *Produto de maior volume:* ${produtoTop[0]} (${produtoTop[1].toFixed(1)} m³)`);
   L.push(`• *Possível estouro de jornada:* ${temEstouroJornada ? '⚠️ Sim' : '✅ Não'}`);
   L.push(`• *Ocupação da frota:* ${pctFrota}% · ${veiculosOcupacaoTotal} veículo(s) com ocupação total · ${veiculosOcupacaoParcial} parcial`);
 
