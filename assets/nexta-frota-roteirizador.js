@@ -890,6 +890,80 @@ function selecionarCompartimentos(comps, volumeAlvo, modo='exact') {
   if (modo === 'geq') return melhorGeq;
   return modo === 'maxLE' ? melhor : null;
 }
+// ── TRAVA DE COMPARTIMENTAÇÃO (edição manual: drag&drop / troca de placa) ────
+// A roteirização automática (função otimizar) já confronta compartimentação
+// via podeFitar/veicOkCompartimentos. As ações manuais abaixo NÃO faziam essa
+// checagem (só validavam volume total x capacidade do veículo), permitindo
+// alocar um pedido em um veículo cuja compartimentação é incompatível com os
+// produtos do pedido — e o excedente "desaparecia" sem aviso. As funções
+// desta seção fecham essa lacuna: bloqueiam a ação e avisam o usuário do erro
+// em vez de roteirizar de forma incorreta. Aplicam-se a todas as operações,
+// pois são utilitários globais usados por qualquer veículo/pedido.
+function _itensDeParadas(paradas) {
+  const itens = [];
+  (paradas || []).forEach(p => (p.itens || []).forEach(it => {
+    if ((it.volume || 0) > 0.0001) itens.push({ produto: it.produto, volume: it.volume });
+  }));
+  return itens;
+}
+// Verifica (sem efeito colateral) se TODOS os itens informados cabem nos
+// compartimentos do veículo `vDest`, respeitando produto fixo por compartimento
+// (mesma regra usada na roteirização automática: exact primeiro, geq depois).
+function itensCabemNosCompartimentos(itens, vDest) {
+  const comps = criarCompsDisp(vDest || {});
+  if (!comps.length) return true; // veículo sem compartimentos fixos cadastrados → não bloqueia
+  const copia = comps.map(c => ({ ...c }));
+  for (const it of (itens || [])) {
+    if ((it.volume || 0) <= 0.0001) continue;
+    const el = copia.filter(c => compElegivelProduto(c, it.produto) && c.disponivel > 0);
+    let aloc = selecionarCompartimentos(el, it.volume, 'exact');
+    if (!aloc) aloc = selecionarCompartimentos(el, it.volume, 'geq');
+    if (!aloc) return false;
+    aloc.forEach(c => { c.disponivel = 0; });
+  }
+  return true;
+}
+// Verifica se existe encaixe válido (viagem existente com espaço OU nova
+// viagem) para `parada` dentro do veículo `veiculoId`, respeitando capacidade
+// total E compartimentação. Não modifica nada — apenas consulta.
+function existeEncaixeCompativel(parada, veiculoId, tripIndexPref) {
+  const vDest = veiculos.find(x => x.id === veiculoId);
+  if (!vDest) return true; // veículo não encontrado: fora do escopo desta trava
+  const cap  = vDest.capacidade ?? Infinity;
+  const viagens = ultimoResultado[veiculoId] || [];
+  const vol  = parada.volumeTotal || 0;
+  const itensNovos = _itensDeParadas([parada]);
+  const cabeNaViagem = (vi) => {
+    const ocupado = (vi.paradas || []).reduce((s, p) => s + (p.volumeTotal || 0), 0);
+    if (ocupado + vol > cap + 0.001) return false;
+    return itensCabemNosCompartimentos([..._itensDeParadas(vi.paradas), ...itensNovos], vDest);
+  };
+  if (tripIndexPref != null && viagens[tripIndexPref] && cabeNaViagem(viagens[tripIndexPref])) return true;
+  if (viagens.some(cabeNaViagem)) return true;
+  // Viagem nova: parte do zero, só precisa acomodar os itens da própria parada
+  return itensCabemNosCompartimentos(itensNovos, vDest);
+}
+// Mensagem de erro clara para o usuário quando a ação manual é bloqueada.
+function alertCompartimentoIncompativel(parada, veiculoId) {
+  const v = veiculos.find(x => x.id === veiculoId);
+  const cliente = parada?.pedido?.cliente || 'este pedido';
+  const comps = (v?.compartimentos || [])
+    .map(c => `${c.cap}m³${c.produto ? ' (' + c.produto + ')' : ''}`).join(' + ') || 'sem compartimentos cadastrados';
+  const itensTxt = (parada?.itens || [])
+    .map(it => `${(it.volume || 0).toFixed(1)}m³ de ${it.produto || 'produto'}`).join(', ') || 'volumes do pedido';
+  alert(
+    '⚠ Roteirização bloqueada — incompatibilidade de compartimentos\n\n' +
+    `Veículo ${v?.placa || ''}: ${comps}\n` +
+    `Pedido de ${cliente}: ${itensTxt}\n\n` +
+    'Os volumes do pedido não cabem na compartimentação deste veículo. ' +
+    'Selecione um veículo com compartimentos compatíveis.'
+  );
+}
+// Verifica se TODAS as viagens de uma lista cabem no veículo `vDest` (usado na
+// troca de placa, que move viagens inteiras entre veículos).
+function viagensCompativeisComVeiculo(viagens, vDest) {
+  return (viagens || []).every(vi => itensCabemNosCompartimentos(_itensDeParadas(vi.paradas), vDest));
+}
 function atualizarFiltroMapaTransportadora() {
   const el = document.getElementById('f-map-transp');
   if (!el) return;
@@ -4909,21 +4983,27 @@ function _alocarParada(parada, veiculoId, tripIndexPref) {
   const cap     = vDest?.capacidade ?? Infinity;
   const viagens = ultimoResultado[veiculoId] || [];
   const vol     = parada.volumeTotal || 0;
+  const itensNovos = _itensDeParadas([parada]);
+  const cabeCompart = (vi) => itensCabemNosCompartimentos([..._itensDeParadas(vi.paradas), ...itensNovos], vDest);
   // Tenta a viagem preferida primeiro
   if (tripIndexPref != null) {
     const vi = viagens[tripIndexPref];
     if (vi) {
       const ocupado = vi.paradas.reduce((s,p)=>s+(p.volumeTotal||0), 0);
-      if (ocupado + vol <= cap + 0.001) { vi.paradas.push(parada); return false; }
+      if (ocupado + vol <= cap + 0.001 && cabeCompart(vi)) { vi.paradas.push(parada); return false; }
     }
   }
-  // Tenta qualquer viagem com espaço
+  // Tenta qualquer viagem com espaço (e compartimentação compatível)
   const viLivre = viagens.find(vi => {
     const ocupado = vi.paradas.reduce((s,p)=>s+(p.volumeTotal||0), 0);
-    return ocupado + vol <= cap + 0.001;
+    return ocupado + vol <= cap + 0.001 && cabeCompart(vi);
   });
   if (viLivre) { viLivre.paradas.push(parada); return false; }
-  // Nenhuma viagem comporta → cria viagem nova com terminal do pedido da parada
+  // Nenhuma viagem existente comporta → só cria viagem nova se a própria
+  // parada couber na compartimentação do veículo (senão, bloqueia).
+  if (vDest && !itensCabemNosCompartimentos(itensNovos, vDest)) {
+    return 'bloqueado';
+  }
   const termOrig = parada?.pedido?.terminal || viagens[0]?.terminalOrigem || vDest?.terminal || '';
   if (!ultimoResultado[veiculoId]) ultimoResultado[veiculoId] = [];
   const novaVi = { paradas: [parada], quebras: [], terminalOrigem: termOrig, esperaTerminalMin: 0, tempoConsumidoMin: 0 };
@@ -4951,6 +5031,12 @@ function dropNaCard(event, veiculoDestId) {
   } else if (dragInfo.tipo === 'parada') {
     if (dragInfo.veiculoId === veiculoDestId) { dragInfo = null; return; }
     const { veiculoId: origId, tripIndex: origTripIdx, stopIndex } = dragInfo;
+    const paradaMovida = ultimoResultado[origId]?.[origTripIdx]?.paradas?.[stopIndex];
+    if (paradaMovida && !existeEncaixeCompativel(paradaMovida, veiculoDestId, null)) {
+      dragInfo = null;
+      alertCompartimentoIncompativel(paradaMovida, veiculoDestId);
+      return;
+    }
     dragInfo = null;
     historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
     limparFantasma(origId);
@@ -5009,8 +5095,18 @@ function dropNaStop(event, veiculoDestId, tripDestIdx, stopDestIdx) {
   event.currentTarget.classList.remove('stop-reorder-alvo');
   if (!dragInfo || dragInfo.tipo !== 'parada') return;
   const { veiculoId: origId, tripIndex: origTripIdx, stopIndex: origStopIdx } = dragInfo;
+  if (origId === veiculoDestId && origTripIdx === tripDestIdx && origStopIdx === stopDestIdx) { dragInfo = null; return; }
+  // Pré-checagem de compartimentação quando o destino é outro veículo (ou outra
+  // viagem do mesmo veículo) — bloqueia e avisa em vez de mover incorretamente.
+  if (!(origId === veiculoDestId && origTripIdx === tripDestIdx)) {
+    const paradaMovida = ultimoResultado[origId]?.[origTripIdx]?.paradas?.[origStopIdx];
+    if (paradaMovida && !existeEncaixeCompativel(paradaMovida, veiculoDestId, tripDestIdx)) {
+      dragInfo = null;
+      alertCompartimentoIncompativel(paradaMovida, veiculoDestId);
+      return;
+    }
+  }
   dragInfo = null;
-  if (origId === veiculoDestId && origTripIdx === tripDestIdx && origStopIdx === stopDestIdx) return;
   historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
   limparFantasma(origId);
   if (origId === veiculoDestId && origTripIdx === tripDestIdx) {
@@ -5032,10 +5128,11 @@ function dropNaStop(event, veiculoDestId, tripDestIdx, stopDestIdx) {
     const destVi = (ultimoResultado[veiculoDestId] || [])[tripDestIdx];
     if (destVi) {
       const volDest = destVi.paradas.reduce((s,p) => s + (p.volumeTotal||0), 0);
-      if (volDest + (parada.volumeTotal||0) <= cap + 0.001) {
+      const compOk  = itensCabemNosCompartimentos([..._itensDeParadas(destVi.paradas), ..._itensDeParadas([parada])], vDest);
+      if (volDest + (parada.volumeTotal||0) <= cap + 0.001 && compOk) {
         destVi.paradas.splice(stopDestIdx, 0, parada); // insere na posição exata
       } else {
-        _alocarParada(parada, veiculoDestId, null); // cria nova viagem se cheio
+        _alocarParada(parada, veiculoDestId, null); // cria nova viagem se cheio/incompatível
       }
     } else {
       _alocarParada(parada, veiculoDestId, null);
@@ -5101,8 +5198,14 @@ function dropNaViagem(event, veiculoId, tripIndex) {
   }
   if (dragInfo.tipo !== 'parada') return;
   const { veiculoId: origVeicId, tripIndex: origTripIdx, stopIndex } = dragInfo;
+  if (origVeicId === veiculoId && origTripIdx === tripIndex) { dragInfo = null; return; }
+  const paradaMovida = ultimoResultado[origVeicId]?.[origTripIdx]?.paradas?.[stopIndex];
+  if (paradaMovida && !existeEncaixeCompativel(paradaMovida, veiculoId, tripIndex)) {
+    dragInfo = null;
+    alertCompartimentoIncompativel(paradaMovida, veiculoId);
+    return;
+  }
   dragInfo = null;
-  if (origVeicId === veiculoId && origTripIdx === tripIndex) return;
   historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
   // Remove parada da origem
   limparFantasma(origVeicId);
@@ -5177,11 +5280,27 @@ function confirmarTrocaPlaca(veiculoDestId) {
   const menu = document.getElementById('placa-dropdown-menu');
   if (menu) menu.style.display = 'none';
   if (!_placaDropOrigId || _placaDropOrigId === veiculoDestId) { _placaDropOrigId = null; return; }
-  historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
   const origId = _placaDropOrigId;
-  // Troca as viagens entre os dois veículos
+  const vOrig = veiculos.find(x => x.id === origId);
+  const vDest = veiculos.find(x => x.id === veiculoDestId);
   const tripOrig = ultimoResultado[origId]       ? [...ultimoResultado[origId]]       : [];
   const tripDest = ultimoResultado[veiculoDestId] ? [...ultimoResultado[veiculoDestId]] : [];
+  // Trava: cada conjunto de viagens só pode ir para o veículo cuja
+  // compartimentação comporta os produtos já alocados nelas.
+  const destComportaOrig = viagensCompativeisComVeiculo(tripOrig, vDest);
+  const origComportaDest = viagensCompativeisComVeiculo(tripDest, vOrig);
+  if (!destComportaOrig || !origComportaDest) {
+    _placaDropOrigId = null;
+    const vSemEncaixe = !destComportaOrig ? vDest : vOrig;
+    alert(
+      '⚠ Troca de placa bloqueada — incompatibilidade de compartimentos\n\n' +
+      `O veículo ${vSemEncaixe?.placa || ''} tem compartimentação incompatível com os produtos ` +
+      'já alocados nas viagens que seriam movidas para ele. A troca não foi realizada.'
+    );
+    return;
+  }
+  historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
+  // Troca as viagens entre os dois veículos
   ultimoResultado[origId]        = tripDest;
   ultimoResultado[veiculoDestId] = tripOrig;
   // Marca como vazio se ficou sem viagens reais
