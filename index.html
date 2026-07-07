@@ -226,6 +226,7 @@
         <button class="btn btn-yellow btn-sm" onclick="document.getElementById('upload-pedidos-input').click()">Importar Excel</button>
         <button class="btn btn-green btn-sm" onclick="abrirFormPedido(null)">+ Inserir</button>
         <button class="btn btn-danger btn-sm" onclick="limparTodosPedidos()">Limpar todos</button>
+        <button class="btn btn-sm" id="btn-pedidos-mapa-toggle" onclick="togglePedidosMapa()">🗺️ Ver no Mapa</button>
       </div>
     </div>
     <div class="filter-bar">
@@ -235,6 +236,21 @@
       <button class="btn btn-sm" onclick="limparFiltros('pedidos')">Limpar</button>
     </div>
     <div id="pedidos-list"></div>
+    <div id="pedidos-mapa-wrap" class="hidden" style="margin-top:8px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:8px 10px;background:var(--bg-2,#F4F6F1);border-radius:8px;">
+        <label style="font-size:11px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;">Terminal de carga</label>
+        <select id="pmapa-terminal" onchange="renderPedidosMapa()" style="padding:5px 8px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;min-width:180px;"></select>
+        <button class="btn btn-sm" id="pmapa-btn-lasso" onclick="_pmapaAtivarSelecao()">✏️ Selecionar área</button>
+        <button class="btn btn-sm" onclick="pmapaLimparSelecao()">✕ Limpar seleção</button>
+        <span style="font-size:11px;color:var(--text-3);margin-left:auto;">Desenhe um contorno ao redor dos pedidos no mapa para selecioná-los.</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-start;">
+        <div id="pedidos-mapa" style="flex:1;min-width:0;height:520px;border-radius:10px;overflow:hidden;border:1px solid var(--border);"></div>
+        <div id="pmapa-painel" style="width:300px;flex-shrink:0;border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--bg);max-height:520px;overflow-y:auto;">
+          <!-- gerado pelo JS -->
+        </div>
+      </div>
+    </div>
     <div id="form-pedido" class="card-form hidden" style="margin-top:12px;">
       <div class="sec-title" id="form-pedido-title">Novo pedido</div>
       <!-- Importar de cliente -->
