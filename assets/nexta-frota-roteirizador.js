@@ -2821,6 +2821,302 @@ function renderPedidos() {
     </div>`;
   }).join('');
 }
+// ═══════════════════════════════════════════════════════════════════════════
+// MAPA DE PEDIDOS — visualização + fechamento manual de carga
+// ═══════════════════════════════════════════════════════════════════════════
+// Mostra os pedidos ainda não roteirizados (ou parcialmente) num mapa,
+// localizados por lat/lon do próprio pedido (com fallback pro centróide da
+// cidade — mesma regra usada no resto do sistema, ver latLonEfetivo()).
+// Permite desenhar uma área à mão livre ao redor de vários pedidos pra
+// selecioná-los de uma vez e fechar uma carga escolhendo um veículo — igual
+// ao fluxo comum em roteirizadores comerciais. Reaproveita a MESMA engine de
+// tempo/compartimento usada pela roteirização automática (dadosIncrementoParada,
+// alocarItem, recalcularTimingViagem, itensCabemNosCompartimentos) — inclusive
+// a trava de encaixe exato de compartimentos.
+var mapaPedidosMap      = null;
+var _pmapaMarkers       = {};        // pedidoId -> { marker, pedido }
+var _pmapaSelecionados  = new Set(); // ids de pedido selecionados
+var _pmapaModoSelecao   = false;
+var _pmapaLassoPontos   = [];
+var _pmapaLassoLayer    = null;
+var _pmapaMoveHandler   = null;
+var _pmapaUpHandler     = null;
+
+function togglePedidosMapa() {
+  const wrap  = document.getElementById('pedidos-mapa-wrap');
+  const lista = document.getElementById('pedidos-list');
+  const btn   = document.getElementById('btn-pedidos-mapa-toggle');
+  if (!wrap || !lista) return;
+  const vaiMostrar = wrap.classList.contains('hidden');
+  wrap.classList.toggle('hidden', !vaiMostrar);
+  lista.classList.toggle('hidden', vaiMostrar);
+  if (btn) btn.textContent = vaiMostrar ? '📋 Ver Lista' : '🗺️ Ver no Mapa';
+  if (vaiMostrar) {
+    _pmapaPopularTerminais();
+    setTimeout(() => { _pmapaGarantirMapa(); renderPedidosMapa(); }, 30); // aguarda o container ficar visível (dimensão correta)
+  }
+}
+function _pmapaGarantirMapa() {
+  if (mapaPedidosMap) { mapaPedidosMap.invalidateSize(); return; }
+  if (typeof L === 'undefined') return;
+  mapaPedidosMap = L.map('pedidos-mapa');
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap &copy; CARTO'
+  }).addTo(mapaPedidosMap);
+  mapaPedidosMap.setView([-14.235, -51.925], 4);
+  mapaPedidosMap.invalidateSize();
+}
+// Junta terminais cadastrados + terminais usados em pedidos (fallback), sem duplicar.
+function _pmapaOpcoesTerminais() {
+  const nomes = new Set();
+  (terminaisCad || []).forEach(t => { if (t.nome) nomes.add(t.nome); });
+  (pedidos || []).forEach(p => { if (p.terminal) nomes.add(p.terminal); });
+  return [...nomes].sort((a, b) => a.localeCompare(b));
+}
+function _pmapaPopularTerminais() {
+  const sel = document.getElementById('pmapa-terminal');
+  if (!sel) return;
+  const atual = sel.value;
+  const opcoes = _pmapaOpcoesTerminais();
+  sel.innerHTML = opcoes.map(n => `<option value="${n}">${n}</option>`).join('');
+  if (opcoes.includes(atual)) sel.value = atual;
+}
+// Volume já alocado de um pedido em ultimoResultado (0 se ainda não roteirizado).
+function _pmapaVolumeAlocado(pedidoId) {
+  if (!ultimoResultado) return 0;
+  let soma = 0;
+  Object.values(ultimoResultado).forEach(viagens => (viagens || []).forEach(vi =>
+    (vi.paradas || []).forEach(pa => { if (pa.pedido && pa.pedido.id === pedidoId) soma += (pa.volumeTotal || 0); })
+  ));
+  return soma;
+}
+function _pmapaVolumePendente(p) { return Math.max(0, totalVolPedido(p) - _pmapaVolumeAlocado(p.id)); }
+
+function renderPedidosMapa() {
+  _pmapaGarantirMapa();
+  if (!mapaPedidosMap) return;
+  Object.values(_pmapaMarkers).forEach(m => m.marker.remove());
+  _pmapaMarkers = {};
+  const terminalSel     = valId('pmapa-terminal');
+  const filtroCliente   = valId('f-ped-cliente');
+  const filtroCidade    = valId('f-ped-cidade');
+  const bounds = [];
+  pedidos
+    .filter(p => containsFiltro(p.cliente, filtroCliente) && containsFiltro(p.cidade, filtroCidade))
+    .filter(p => !terminalSel || p.terminal === terminalSel)
+    .forEach(p => {
+      const c = latLonEfetivo(p);
+      if (isNaN(c.lat) || isNaN(c.lon)) return;
+      const volPendente = _pmapaVolumePendente(p);
+      const totalmenteAlocado = volPendente <= 0.0001;
+      const selecionado = _pmapaSelecionados.has(p.id);
+      const bg = selecionado ? '#F97316' : (totalmenteAlocado ? '#9CA3AF' : '#4A6535');
+      const icon = L.divIcon({
+        className: '',
+        html: `<div style="width:22px;height:22px;border-radius:50%;background:${bg};border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.35);"></div>`,
+        iconSize: [22, 22], iconAnchor: [11, 11]
+      });
+      const marker = L.marker([c.lat, c.lon], { icon }).addTo(mapaPedidosMap);
+      const produtosHtml = (p.produtos || []).map(pr => `${pr.produto}: ${pr.volume} m³`).join('<br/>');
+      marker.bindPopup(`
+        <div style="font-size:12px;min-width:180px;">
+          <div style="font-weight:700;margin-bottom:3px;">${p.cliente}</div>
+          <div style="color:#666;margin-bottom:6px;">${p.cidade || ''}${p.terminal ? ' · ' + p.terminal : ''}</div>
+          <div style="margin-bottom:6px;">${produtosHtml}</div>
+          <div style="font-weight:700;color:${totalmenteAlocado ? '#6B7280' : '#4A6535'};">
+            ${totalmenteAlocado ? '✓ Já roteirizado' : `Pendente: ${volPendente.toFixed(1)} m³ de ${totalVolPedido(p).toFixed(1)} m³`}
+          </div>
+        </div>
+      `);
+      if (!totalmenteAlocado) {
+        marker.on('click', () => {
+          if (_pmapaModoSelecao) return; // durante o desenho, clique não seleciona
+          if (_pmapaSelecionados.has(p.id)) _pmapaSelecionados.delete(p.id);
+          else _pmapaSelecionados.add(p.id);
+          renderPedidosMapa();
+        });
+      }
+      _pmapaMarkers[p.id] = { marker, pedido: p };
+      bounds.push([c.lat, c.lon]);
+    });
+  if (bounds.length) mapaPedidosMap.fitBounds(bounds, { padding: [32, 32], maxZoom: 12 });
+  pmapaAtualizarPainel();
+}
+// ── Seleção por área (lasso à mão livre) ─────────────────────────────────────
+function _pmapaAtivarSelecao() {
+  if (!mapaPedidosMap) return;
+  _pmapaModoSelecao = true;
+  mapaPedidosMap.dragging.disable();
+  const container = mapaPedidosMap.getContainer();
+  container.style.cursor = 'crosshair';
+  const onDown = (e) => {
+    _pmapaLassoPontos = [mapaPedidosMap.mouseEventToLatLng(e)];
+    if (_pmapaLassoLayer) { _pmapaLassoLayer.remove(); _pmapaLassoLayer = null; }
+    _pmapaLassoLayer = L.polyline([_pmapaLassoPontos[0]], { color: '#F97316', weight: 2, dashArray: '5,5' }).addTo(mapaPedidosMap);
+    _pmapaMoveHandler = (ev) => {
+      _pmapaLassoPontos.push(mapaPedidosMap.mouseEventToLatLng(ev));
+      _pmapaLassoLayer.setLatLngs(_pmapaLassoPontos);
+    };
+    _pmapaUpHandler = () => {
+      container.removeEventListener('mousemove', _pmapaMoveHandler);
+      container.removeEventListener('mouseup', _pmapaUpHandler);
+      if (_pmapaLassoLayer) { _pmapaLassoLayer.remove(); _pmapaLassoLayer = null; }
+      if (_pmapaLassoPontos.length >= 3) _pmapaAplicarSelecaoPoligono(_pmapaLassoPontos);
+      _pmapaLassoPontos = [];
+      _pmapaModoSelecao = false;
+      mapaPedidosMap.dragging.enable();
+      container.style.cursor = '';
+      container.removeEventListener('mousedown', onDown);
+    };
+    container.addEventListener('mousemove', _pmapaMoveHandler);
+    container.addEventListener('mouseup', _pmapaUpHandler);
+  };
+  container.addEventListener('mousedown', onDown, { once: true });
+}
+function _pontoDentroPoligono(lat, lon, poligono) {
+  let dentro = false;
+  for (let i = 0, j = poligono.length - 1; i < poligono.length; j = i++) {
+    const yi = poligono[i].lat, xi = poligono[i].lng;
+    const yj = poligono[j].lat, xj = poligono[j].lng;
+    const intersecta = ((yi > lat) !== (yj > lat)) &&
+      (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+    if (intersecta) dentro = !dentro;
+  }
+  return dentro;
+}
+function _pmapaAplicarSelecaoPoligono(poligono) {
+  Object.values(_pmapaMarkers).forEach(({ marker, pedido }) => {
+    if (_pmapaVolumePendente(pedido) <= 0.0001) return; // já roteirizado, não seleciona
+    const ll = marker.getLatLng();
+    if (_pontoDentroPoligono(ll.lat, ll.lng, poligono)) _pmapaSelecionados.add(pedido.id);
+  });
+  renderPedidosMapa();
+}
+function pmapaLimparSelecao() {
+  _pmapaSelecionados.clear();
+  renderPedidosMapa();
+}
+function pmapaRemoverDaSelecao(id) {
+  _pmapaSelecionados.delete(id);
+  renderPedidosMapa();
+}
+// ── Painel lateral: lista selecionada + veículo + fechar carga ──────────────
+function _pmapaVeiculosCompativeis(pedidosSel, terminalNome) {
+  return veiculos.filter(v => {
+    if ((v.disponibilidade || 'Disponível') === 'Indisponível') return false;
+    if (terminalNome && !veiculoAtendeTerminal(v, terminalNome)) return false;
+    return pedidosSel.every(p =>
+      (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
+      (!p.identidadePetronas || !!v.identidadePetronas)
+    );
+  });
+}
+function pmapaAtualizarPainel() {
+  const box = document.getElementById('pmapa-painel');
+  if (!box) return;
+  const terminalSel = valId('pmapa-terminal');
+  const selecionados = [...(_pmapaSelecionados)].map(id => pedidos.find(p => p.id === id)).filter(Boolean);
+  if (!selecionados.length) {
+    box.innerHTML = `<div style="font-size:12px;color:var(--text-3);">Nenhum pedido selecionado.<br/><br/>Clique num pedido no mapa, ou use "✏️ Selecionar área" e desenhe um contorno ao redor de vários.</div>`;
+    return;
+  }
+  const totalVol = selecionados.reduce((s, p) => s + _pmapaVolumePendente(p), 0);
+  const veicsOk  = _pmapaVeiculosCompativeis(selecionados, terminalSel);
+  const listaHtml = selecionados.map(p => `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;">
+      <div style="min-width:0;">
+        <div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.cliente}</div>
+        <div style="color:var(--text-3);">${_pmapaVolumePendente(p).toFixed(1)} m³</div>
+      </div>
+      <button class="btn btn-sm btn-danger" style="padding:2px 6px;" onclick="pmapaRemoverDaSelecao(${p.id})">✕</button>
+    </div>
+  `).join('');
+  box.innerHTML = `
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);margin-bottom:6px;">
+      ${selecionados.length} pedido(s) selecionado(s)
+    </div>
+    <div style="max-height:220px;overflow-y:auto;margin-bottom:8px;">${listaHtml}</div>
+    <div style="font-size:12px;font-weight:700;color:var(--pet-green);margin-bottom:10px;">Total pendente: ${totalVol.toFixed(1)} m³</div>
+    <label style="font-size:11px;font-weight:700;color:var(--text-3);">Veículo</label>
+    <select id="pmapa-veiculo" style="width:100%;padding:6px 8px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;margin:4px 0 10px;">
+      ${veicsOk.length
+        ? veicsOk.map(v => `<option value="${v.id}">${v.placa} · ${v.tipo} · ${v.capacidade}m³</option>`).join('')
+        : '<option value="">Nenhum veículo compatível com o terminal/restrições</option>'}
+    </select>
+    <button class="btn btn-green btn-sm" style="width:100%;" ${veicsOk.length ? '' : 'disabled'} onclick="pmapaFecharCarga()">🚚 Fechar Carga</button>
+  `;
+}
+// ── Constrói a viagem de verdade (mesma engine da roteirização automática) ──
+function _pmapaGarantirEstruturaResultado() {
+  if (!ultimoResultado) ultimoResultado = {};
+  veiculos.forEach(v => { if (!ultimoResultado[v.id]) ultimoResultado[v.id] = []; });
+  if (!ultimoControleTempo) ultimoControleTempo = {};
+  veiculos.forEach(v => {
+    if (!ultimoControleTempo[v.id]) {
+      const limiteMin = Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720;
+      ultimoControleTempo[v.id] = { usadoMin: 0, limiteMin };
+    }
+  });
+}
+function pmapaFecharCarga() {
+  const veiculoId = parseInt(valId('pmapa-veiculo'), 10);
+  const v = veiculos.find(x => x.id === veiculoId);
+  const terminalSel = valId('pmapa-terminal');
+  const selecionados = [...(_pmapaSelecionados)].map(id => pedidos.find(p => p.id === id)).filter(Boolean);
+  if (!v || !selecionados.length) return;
+  _pmapaGarantirEstruturaResultado();
+  // Produtos ainda pendentes de cada pedido selecionado (não roteiriza de novo o que já foi)
+  const grupos = selecionados.map(p => {
+    const alocado = _pmapaVolumeAlocado(p.id);
+    let restante = alocado;
+    const produtosPend = [];
+    (p.produtos || []).forEach(pr => {
+      const consumir = Math.min(pr.volume || 0, restante);
+      restante -= consumir;
+      const pend = (pr.volume || 0) - consumir;
+      if (pend > 0.0001) produtosPend.push({ produto: pr.produto, volume: pend, ordemSAP: pr.ordemSAP || '' });
+    });
+    return { pedido: p, produtos: produtosPend };
+  }).filter(g => g.produtos.length);
+  if (!grupos.length) { alert('Os pedidos selecionados já estão totalmente roteirizados.'); return; }
+  // Trava de compartimentação — encaixe EXATO obrigatório, mesma regra de todo o sistema.
+  const todosItens = grupos.flatMap(g => g.produtos);
+  if (!itensCabemNosCompartimentos(todosItens, v)) {
+    const comps = (v.compartimentos || []).map(c => `${c.cap}m³${c.produto ? ' (' + c.produto + ')' : ''}`).join(' + ') || 'sem compartimentos cadastrados';
+    const itensTxt = todosItens.map(it => `${(it.volume || 0).toFixed(1)}m³ de ${it.produto || 'produto'}`).join(', ');
+    alert(
+      '⚠ Carga bloqueada — incompatibilidade de compartimentos\n\n' +
+      `Veículo ${v.placa}: ${comps}\n` +
+      `Pedidos selecionados: ${itensTxt}\n\n` +
+      'Não há combinação de compartimentos que feche exatamente com esses volumes. Ajuste a seleção ou escolha outro veículo.'
+    );
+    return;
+  }
+  const viagem = { compsDisp: criarCompsDisp(v), paradas: [], quebras: [], terminalOrigem: terminalSel || v.terminal || '', esperaTerminalMin: 0, tempoConsumidoMin: 0 };
+  let custoProdutivoTotal = 0;
+  grupos.forEach(({ pedido, produtos }) => {
+    const detalhe = dadosIncrementoParada(viagem, v, pedido, viagem.terminalOrigem);
+    let primeiro = true;
+    produtos.forEach(pr => {
+      const el = viagem.compsDisp.filter(c => compElegivelProduto(c, pr.produto) && c.disponivel > 0);
+      const aloc = selecionarCompartimentos(el, pr.volume, 'exact');
+      if (!aloc) return; // não deveria ocorrer — já validado acima
+      const item = { pedidoId: pedido.id, pedido, produto: pr.produto, volume: pr.volume, ordemSAP: pr.ordemSAP || '' };
+      alocarItem(viagem, item, pr.volume, primeiro ? detalhe : null, 0, aloc);
+      primeiro = false;
+    });
+    custoProdutivoTotal += detalhe.incrementoMin || detalhe.cicloMin || 0;
+  });
+  ultimoResultado[veiculoId].push(viagem);
+  ultimoControleTempo[veiculoId].usadoMin += custoProdutivoTotal;
+  recalcularTimingViagem(viagem, v);
+  _pmapaSelecionados.clear();
+  renderPedidosMapa();
+  try { if (typeof renderResultado === 'function') renderResultado(ultimoResultado, ultimoControleTempo || {}); } catch (e) { /* tela de resultado pode não estar montada ainda */ }
+  if (typeof window.showToast === 'function') window.showToast(`Carga fechada: ${v.placa} (${grupos.length} pedido(s))`, true);
+  else alert(`Carga fechada com sucesso no veículo ${v.placa}.`);
+}
 // ─── Quebrar Pedido ────────────────────────────────────────────────────────────
 var _quebraIdAtual = null;
 function abrirQuebraPedido(id) {
