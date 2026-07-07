@@ -114,9 +114,9 @@ function obterTarifaPedagio(pedagio, eixos = 2) {
 // ~50-100m de distância), não faz sentido gastar amostras extras num segmento
 // de 80m — 2 bastam. Quando recebe só as paradas (linha reta de dezenas de
 // km, usada apenas como fallback antes do trajeto real carregar), amostra a
-// cada 150m — mais fino do que antes, já que o raio de detecção caiu de 3km
-// pra 300m e uma amostragem grossa poderia "pular" por cima do ponto exato
-// onde a reta passa mais perto do pedágio.
+// cada 150m — fino o bastante mesmo com o raio de detecção reduzido (500m),
+// pra uma amostragem grossa não "pular" por cima do ponto exato onde a reta
+// passa mais perto do pedágio.
 function _distanciaPontoSegmento(lat1, lon1, lat2, lon2, latP, lonP) {
   const comprimentoKm = distanciaHaversine(lat1, lon1, lat2, lon2);
   const amostras = Math.max(2, Math.min(80, Math.ceil(comprimentoKm / 0.15)));
@@ -132,28 +132,30 @@ function _distanciaPontoSegmento(lat1, lon1, lat2, lon2, latP, lonP) {
 }
 
 // ─── Detecta pedágios próximos à rota ───────────────────────────────────────
-// Raio de detecção configurável via `raioKm` (padrão 300m). Antes era 3 km
-// fixo, o que gerava falsos positivos — bastava a rota passar em algum
-// bairro nas redondezas do pedágio (sem necessariamente usar aquele trecho
-// da rodovia) pra ele ser acusado. Com o traçado REAL vindo do OSRM (ver
+// Raio de detecção configurável via `raioKm` (padrão 500m, ajustado a partir
+// de 300m — em uso real 300m estava deixando passar pedágios legítimos: a
+// coordenada cadastrada em PEDAGIOS_BR nem sempre cai exatamente em cima do
+// ponto por onde a polyline do OSRM passa, e 300m tinha pouca margem pra essa
+// pequena imprecisão). Com o traçado REAL vindo do OSRM (ver
 // obterPontosRotaComCoords / _mvRoutePoints), um raio pequeno é o certo: se
 // o trajeto de verdade passa pelo pedágio, os pontos da polyline ficam a
 // poucos metros dele; se o trajeto vai por outra via (mesmo perto), a
-// distância mínima sobe bem acima de 300m e o pedágio não é mais acusado à
-// toa.
-// IMPORTANTE: 300m só faz sentido quando `paradas` é o traçado real (polyline
+// distância mínima sobe bem acima de 500m e o pedágio não é acusado à toa.
+// IMPORTANTE: 500m só faz sentido quando `paradas` é o traçado real (polyline
 // do OSRM). Para chamadas que usam só a LINHA RETA entre pontos (fallback
 // antes do trajeto real carregar, ou relatórios que nunca buscam o trajeto
-// real, como o relatório de custo de frete), 300m é curto demais — a reta
-// entre origem/destino se afasta facilmente mais de 300m do ponto onde a
-// estrada real (que curva) passa perto do pedágio, e o pedágio deixa de ser
-// detectado. Quem só tem a linha reta deve passar um `raioKm` maior
-// (ex.: 3) explicitamente.
-// ATENÇÃO: se um pedágio real deixar de ser detectado com o traçado REAL, o
-// mais provável é a coordenada cadastrada em PEDAGIOS_BR estar um pouco
-// deslocada da posição exata da praça/pórtico — ajuste lat/lon da entrada em
-// vez de aumentar esse raio de volta.
-function detectarPedagiosNaRota(paradas, eixos = 2, raioKm = 0.3) {
+// real, como o relatório de custo de frete), 500m ainda é curto demais — a
+// reta entre origem/destino se afasta facilmente mais que isso do ponto onde
+// a estrada real (que curva) passa perto do pedágio, e o pedágio deixa de
+// ser detectado. Quem só tem a linha reta deve passar um `raioKm` maior
+// (ex.: 3) explicitamente — ver chamada em nexta-frota-roteirizador.js
+// (relatório de frete), que já faz isso.
+// Se algum pedágio real específico ainda ficar de fora mesmo com 500m, é
+// bem provável que a coordenada cadastrada em PEDAGIOS_BR esteja deslocada
+// da posição exata da praça/pórtico — vale checar isso antes de aumentar o
+// raio de novo (aumentar demais volta a trazer falsos positivos de pedágios
+// próximos que não estão de fato no trajeto).
+function detectarPedagiosNaRota(paradas, eixos = 2, raioKm = 0.5) {
   if (!paradas || paradas.length < 2) return [];
   
   const pedagiosEncontrados = [];
