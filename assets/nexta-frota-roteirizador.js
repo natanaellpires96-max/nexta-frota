@@ -2867,20 +2867,33 @@ function _pmapaGarantirMapa() {
   mapaPedidosMap.setView([-14.235, -51.925], 4);
   mapaPedidosMap.invalidateSize();
 }
-// Junta terminais cadastrados + terminais usados em pedidos (fallback), sem duplicar.
+// Lista só terminais que têm pelo menos 1 pedido PENDENTE (evita cair, por
+// padrão, num terminal cadastrado mas sem nenhum pedido — o que deixava o
+// mapa vazio). Ordena pelo terminal com mais pedidos primeiro.
 function _pmapaOpcoesTerminais() {
-  const nomes = new Set();
-  (terminaisCad || []).forEach(t => { if (t.nome) nomes.add(t.nome); });
-  (pedidos || []).forEach(p => { if (p.terminal) nomes.add(p.terminal); });
-  return [...nomes].sort((a, b) => a.localeCompare(b));
+  const contagem = new Map();
+  (pedidos || []).forEach(p => {
+    if (!p.terminal) return;
+    if (_pmapaVolumePendente(p) <= 0.0001) return; // já roteirizado não conta
+    contagem.set(p.terminal, (contagem.get(p.terminal) || 0) + 1);
+  });
+  return [...contagem.entries()].sort((a, b) => b[1] - a[1]); // [ [nome, qtd], ... ]
 }
 function _pmapaPopularTerminais() {
   const sel = document.getElementById('pmapa-terminal');
   if (!sel) return;
   const atual = sel.value;
   const opcoes = _pmapaOpcoesTerminais();
-  sel.innerHTML = opcoes.map(n => `<option value="${n}">${n}</option>`).join('');
-  if (opcoes.includes(atual)) sel.value = atual;
+  if (!opcoes.length) {
+    sel.innerHTML = '<option value="">Nenhum pedido pendente cadastrado</option>';
+    return;
+  }
+  const optsHtml = opcoes.map(([nome, qtd]) => `<option value="${nome}">${nome} (${qtd})</option>`).join('');
+  sel.innerHTML = `<option value="">— Todos os terminais (somente visualização) —</option>${optsHtml}`;
+  // Mantém a seleção atual se ainda for válida; senão, escolhe o terminal
+  // com mais pedidos pendentes (opcoes já vem ordenado por quantidade).
+  if (atual && opcoes.some(([nome]) => nome === atual)) sel.value = atual;
+  else sel.value = opcoes[0][0];
 }
 // Volume já alocado de um pedido em ultimoResultado (0 se ainda não roteirizado).
 function _pmapaVolumeAlocado(pedidoId) {
@@ -3021,8 +3034,18 @@ function pmapaAtualizarPainel() {
     box.innerHTML = `<div style="font-size:12px;color:var(--text-3);">Nenhum pedido selecionado.<br/><br/>Clique num pedido no mapa, ou use "✏️ Selecionar área" e desenhe um contorno ao redor de vários.</div>`;
     return;
   }
+  // Um caminhão carrega numa base só — bloqueia se a seleção misturar terminais
+  // (só é possível chegar nesse estado com "Todos os terminais" selecionado).
+  const terminaisDistintos = [...new Set(selecionados.map(p => p.terminal || '(sem terminal)'))];
+  if (terminaisDistintos.length > 1) {
+    box.innerHTML = `<div style="font-size:12px;color:#B45309;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:10px;">
+      ⚠ A seleção mistura pedidos de terminais diferentes: <b>${terminaisDistintos.join(', ')}</b>.<br/><br/>
+      Um veículo carrega em uma única base — escolha um terminal específico no filtro acima, ou remova os pedidos de fora dele.
+    </div>`;
+    return;
+  }
   const totalVol = selecionados.reduce((s, p) => s + _pmapaVolumePendente(p), 0);
-  const veicsOk  = _pmapaVeiculosCompativeis(selecionados, terminalSel);
+  const veicsOk  = _pmapaVeiculosCompativeis(selecionados, terminaisDistintos[0]);
   const listaHtml = selecionados.map(p => `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;">
       <div style="min-width:0;">
@@ -3062,9 +3085,11 @@ function _pmapaGarantirEstruturaResultado() {
 function pmapaFecharCarga() {
   const veiculoId = parseInt(valId('pmapa-veiculo'), 10);
   const v = veiculos.find(x => x.id === veiculoId);
-  const terminalSel = valId('pmapa-terminal');
   const selecionados = [...(_pmapaSelecionados)].map(id => pedidos.find(p => p.id === id)).filter(Boolean);
   if (!v || !selecionados.length) return;
+  const terminaisDistintos = [...new Set(selecionados.map(p => p.terminal || ''))];
+  if (terminaisDistintos.length !== 1) { alert('A seleção mistura pedidos de terminais diferentes. Ajuste a seleção antes de fechar a carga.'); return; }
+  const terminalSel = terminaisDistintos[0];
   _pmapaGarantirEstruturaResultado();
   // Produtos ainda pendentes de cada pedido selecionado (não roteiriza de novo o que já foi)
   const grupos = selecionados.map(p => {
