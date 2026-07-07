@@ -132,23 +132,32 @@ function _distanciaPontoSegmento(lat1, lon1, lat2, lon2, latP, lonP) {
 }
 
 // ─── Detecta pedágios próximos à rota ───────────────────────────────────────
-// Raio de detecção: 300m. Antes era 3 km, o que gerava falsos positivos —
-// bastava a rota passar em algum bairro nas redondezas do pedágio (sem
-// necessariamente usar aquele trecho da rodovia) pra ele ser acusado. Com o
-// traçado REAL vindo do OSRM (ver obterPontosRotaComCoords / _mvRoutePoints),
-// um raio pequeno é o certo: se o trajeto de verdade passa pelo pedágio, os
-// pontos da polyline ficam a poucos metros dele; se o trajeto vai por outra
-// via (mesmo perto), a distância mínima sobe bem acima de 300m e o pedágio
-// não é mais acusado à toa.
-// ATENÇÃO: se um pedágio real deixar de ser detectado, o mais provável é a
-// coordenada cadastrada em PEDAGIOS_BR estar um pouco deslocada da posição
-// exata da praça/pórtico — ajuste lat/lon da entrada em vez de aumentar este
-// raio de volta.
-function detectarPedagiosNaRota(paradas, eixos = 2) {
+// Raio de detecção configurável via `raioKm` (padrão 300m). Antes era 3 km
+// fixo, o que gerava falsos positivos — bastava a rota passar em algum
+// bairro nas redondezas do pedágio (sem necessariamente usar aquele trecho
+// da rodovia) pra ele ser acusado. Com o traçado REAL vindo do OSRM (ver
+// obterPontosRotaComCoords / _mvRoutePoints), um raio pequeno é o certo: se
+// o trajeto de verdade passa pelo pedágio, os pontos da polyline ficam a
+// poucos metros dele; se o trajeto vai por outra via (mesmo perto), a
+// distância mínima sobe bem acima de 300m e o pedágio não é mais acusado à
+// toa.
+// IMPORTANTE: 300m só faz sentido quando `paradas` é o traçado real (polyline
+// do OSRM). Para chamadas que usam só a LINHA RETA entre pontos (fallback
+// antes do trajeto real carregar, ou relatórios que nunca buscam o trajeto
+// real, como o relatório de custo de frete), 300m é curto demais — a reta
+// entre origem/destino se afasta facilmente mais de 300m do ponto onde a
+// estrada real (que curva) passa perto do pedágio, e o pedágio deixa de ser
+// detectado. Quem só tem a linha reta deve passar um `raioKm` maior
+// (ex.: 3) explicitamente.
+// ATENÇÃO: se um pedágio real deixar de ser detectado com o traçado REAL, o
+// mais provável é a coordenada cadastrada em PEDAGIOS_BR estar um pouco
+// deslocada da posição exata da praça/pórtico — ajuste lat/lon da entrada em
+// vez de aumentar esse raio de volta.
+function detectarPedagiosNaRota(paradas, eixos = 2, raioKm = 0.3) {
   if (!paradas || paradas.length < 2) return [];
   
   const pedagiosEncontrados = [];
-  const RAIO_DETECCAO_KM = 0.3;
+  const RAIO_DETECCAO_KM = raioKm;
   
   // Itera sobre todas as paradas consecutivas
   for (let i = 0; i < paradas.length - 1; i++) {

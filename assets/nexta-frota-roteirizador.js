@@ -908,7 +908,9 @@ function _itensDeParadas(paradas) {
 }
 // Verifica (sem efeito colateral) se TODOS os itens informados cabem nos
 // compartimentos do veículo `vDest`, respeitando produto fixo por compartimento
-// (mesma regra usada na roteirização automática: exact primeiro, geq depois).
+// (regra: encaixe EXATO obrigatório — um compartimento maior que o volume do
+// pedido NÃO é aceito. Se não existir compartimento do tamanho exato, a ação
+// é bloqueada, mesmo que exista compartimento maior que caberia o volume.)
 function itensCabemNosCompartimentos(itens, vDest) {
   const comps = criarCompsDisp(vDest || {});
   if (!comps.length) return true; // veículo sem compartimentos fixos cadastrados → não bloqueia
@@ -916,8 +918,7 @@ function itensCabemNosCompartimentos(itens, vDest) {
   for (const it of (itens || [])) {
     if ((it.volume || 0) <= 0.0001) continue;
     const el = copia.filter(c => compElegivelProduto(c, it.produto) && c.disponivel > 0);
-    let aloc = selecionarCompartimentos(el, it.volume, 'exact');
-    if (!aloc) aloc = selecionarCompartimentos(el, it.volume, 'geq');
+    const aloc = selecionarCompartimentos(el, it.volume, 'exact');
     if (!aloc) return false;
     aloc.forEach(c => { c.disponivel = 0; });
   }
@@ -3538,14 +3539,16 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     return pend;
   };
   // Simula se todos os produtos do pedido cabem EXATAMENTE nos compartimentos
-  // (cópia — sem efeito colateral)
+  // (cópia — sem efeito colateral). Encaixe EXATO obrigatório: um compartimento
+  // maior que o volume do produto não é aceito (ex.: pedido de 3m³ não entra
+  // num compartimento de 5m³). Se não houver compartimento do tamanho exato
+  // disponível, o pedido não é alocado nesse veículo — mesmo que a soma da
+  // capacidade total do veículo seja suficiente.
   const podeFitar = (produtos, compsDisp) => {
     const copia = compsDisp.map(c => ({ ...c }));
     for (const pr of produtos) {
       const el  = copia.filter(c => compElegivelProduto(c, pr.produto) && c.disponivel > 0);
-      // Tenta exact primeiro (ideal); se não houver combinação exata, aceita >= (compartimento maior)
-      let aloc = selecionarCompartimentos(el, pr.volume, 'exact');
-      if (!aloc) aloc = selecionarCompartimentos(el, pr.volume, 'geq');
+      const aloc = selecionarCompartimentos(el, pr.volume, 'exact');
       if (!aloc) return false;
       aloc.forEach(c => { c.disponivel = 0; });
     }
@@ -3569,8 +3572,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     let primeiro = true;
     for (const pr of (produtosSelecionados || [])) {
       const el  = viagem.compsDisp.filter(c => compElegivelProduto(c, pr.produto) && c.disponivel > 0);
-      let aloc = selecionarCompartimentos(el, pr.volume, 'exact');
-      if (!aloc) aloc = selecionarCompartimentos(el, pr.volume, 'geq'); // aceita compartimento maior
+      const aloc = selecionarCompartimentos(el, pr.volume, 'exact'); // encaixe exato obrigatório — sem fallback pra compartimento maior
       if (!aloc) return false;
       const item = { pedidoId: pedido.id, pedido, produto: pr.produto, volume: pr.volume, restante: 0, ordemSAP: pr.ordemSAP || '' };
       // Primeiro produto do pedido → cria a parada com timing; demais → adiciona à parada existente
@@ -6025,10 +6027,29 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
       return !pool.some(v => veiculoAtendeTerminal(v, p.terminal));
     });
     const semFrotaIds     = new Set(semFrota.map(p => p.id));
-    // Cat 4 — frota compatível existe mas capacidade/jornada esgotou
-    const semCap          = naoProgr.filter(p =>
+    // Cat 4 — frota compatível existe mas capacidade/jornada esgotou OU a
+    // compartimentação não tem o tamanho exato pedido (ver Cat 5 abaixo).
+    const semCapBase      = naoProgr.filter(p =>
       !semCadastroIds.has(p.id) && !semVeicTermIds.has(p.id) && !semFrotaIds.has(p.id)
     );
+    // Cat 5 — compartimentação estruturalmente incompatível: existe veículo
+    // elegível (terminal/tipo/Petronas ok) mas NENHUM deles, mesmo vazio/livre,
+    // tem compartimento do tamanho EXATO dos produtos do pedido (encaixe exato
+    // é obrigatório — não aceitamos "sobra de espaço" num compartimento maior).
+    // Isso é diferente de "esgotou capacidade": aqui, nem um veículo desse tipo
+    // recém-carregado (compsDisp cheio) conseguiria receber o pedido.
+    const semCompartimento = semCapBase.filter(p => {
+      const pool = veiculos.filter(v =>
+        veiculoAtendeTerminal(v, p.terminal) &&
+        (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
+        (!p.identidadePetronas || !!v.identidadePetronas)
+      );
+      if (!pool.length) return false;
+      const itensPedido = (p.produtos || []).map(pr => ({ produto: pr.produto, volume: pr.volume }));
+      return !pool.some(v => itensCabemNosCompartimentos(itensPedido, v));
+    });
+    const semCompartimentoIds = new Set(semCompartimento.map(p => p.id));
+    const semCap = semCapBase.filter(p => !semCompartimentoIds.has(p.id));
     // Agrupa cada categoria de alerta por terminal
     const alertaPorTerminal = (lista, labelFn) => {
       if (!lista.length) return '';
@@ -6051,6 +6072,9 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
     if (semFrota.length)
       html += `<div class="alert alert-warn">⚠ <b>Restrição de frota</b> — tipo de veículo ou identidade Petronas não disponível:
         ${alertaPorTerminal(semFrota, p => p.cliente)}</div>`;
+    if (semCompartimento.length)
+      html += `<div class="alert alert-warn">⚠ <b>Compartimentação incompatível</b> — encaixe exato obrigatório: nenhum veículo elegível tem compartimento do tamanho exato dos produtos deste pedido (nem um veículo desse tipo totalmente livre encaixaria). Pedido NÃO roteirizado — resolva manualmente ou ajuste a compartimentação da frota:
+        ${alertaPorTerminal(semCompartimento, p => `${p.cliente} (${(p.produtos||[]).map(pr=>`${(pr.volume||0).toFixed(1)}m³ ${pr.produto||''}`).join(' + ')})`)}</div>`;
     if (semCap.length)
       html += `<div class="alert alert-warn">⚠ <b>Sem capacidade</b> — frota compatível existe mas jornada/espaço esgotou:
         ${alertaPorTerminal(semCap, p => p.cliente)}</div>`;
@@ -8358,7 +8382,7 @@ async function freteCalcular() {
     var chave = eixosVeic + '|' + pontosRetos.map(function(p) { return (+p.lat).toFixed(4) + ',' + (+p.lon).toFixed(4); }).join('|');
     var cache = typeof _pedagiosGlobalCache !== 'undefined' ? _pedagiosGlobalCache.get(chave) : null;
     if (cache) return { custo: cache.reduce(function(s,p){ return s + p.valor; }, 0), preciso: true };
-    var pedagios = window.detectarPedagiosNaRota(pontosRetos, eixosVeic);
+    var pedagios = window.detectarPedagiosNaRota(pontosRetos, eixosVeic, 3); // linha reta sem refino: raio maior (3km) pra não perder pedágio em estrada que curva
     return { custo: pedagios.reduce(function(s,p){ return s + p.valor; }, 0), preciso: false };
   }
 
