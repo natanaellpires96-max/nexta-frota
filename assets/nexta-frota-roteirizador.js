@@ -2852,8 +2852,21 @@ function togglePedidosMapa() {
   lista.classList.toggle('hidden', vaiMostrar);
   if (btn) btn.textContent = vaiMostrar ? '📋 Ver Lista' : '🗺️ Ver no Mapa';
   if (vaiMostrar) {
-    _pmapaPopularTerminais();
-    setTimeout(() => { _pmapaGarantirMapa(); renderPedidosMapa(); }, 30); // aguarda o container ficar visível (dimensão correta)
+    try {
+      _pmapaPopularTerminais();
+    } catch (e) {
+      console.error('[Mapa de Pedidos] erro ao popular terminais:', e);
+      const sel = document.getElementById('pmapa-terminal');
+      if (sel) sel.innerHTML = '<option value="">Erro ao carregar terminais — ver console</option>';
+    }
+    setTimeout(() => {
+      try { _pmapaGarantirMapa(); renderPedidosMapa(); }
+      catch (e) {
+        console.error('[Mapa de Pedidos] erro ao renderizar:', e);
+        const box = document.getElementById('pedidos-mapa');
+        if (box) box.innerHTML = `<div style="padding:20px;font-size:13px;color:#B91C1C;">⚠ Erro ao carregar o mapa: ${e.message || e}. Veja o console do navegador (F12) para detalhes.</div>`;
+      }
+    }, 30); // aguarda o container ficar visível (dimensão correta)
   }
 }
 function _pmapaGarantirMapa() {
@@ -2896,12 +2909,19 @@ function _pmapaPopularTerminais() {
   else sel.value = opcoes[0][0];
 }
 // Volume já alocado de um pedido em ultimoResultado (0 se ainda não roteirizado).
+// OBS: ultimoResultado guarda viagens por id de veículo, mas também carrega
+// campos extras de metadado (ex.: ultimoResultado._baseDataEntrega, que é uma
+// data, não uma lista de viagens) — por isso iteramos só pelos ids reais dos
+// veículos cadastrados, em vez de Object.values(ultimoResultado) direto (que
+// pegava esse campo extra e quebrava ao tentar .forEach nele).
 function _pmapaVolumeAlocado(pedidoId) {
   if (!ultimoResultado) return 0;
   let soma = 0;
-  Object.values(ultimoResultado).forEach(viagens => (viagens || []).forEach(vi =>
-    (vi.paradas || []).forEach(pa => { if (pa.pedido && pa.pedido.id === pedidoId) soma += (pa.volumeTotal || 0); })
-  ));
+  veiculos.forEach(v => {
+    (ultimoResultado[v.id] || []).forEach(vi =>
+      (vi.paradas || []).forEach(pa => { if (pa.pedido && pa.pedido.id === pedidoId) soma += (pa.volumeTotal || 0); })
+    );
+  });
   return soma;
 }
 function _pmapaVolumePendente(p) { return Math.max(0, totalVolPedido(p) - _pmapaVolumeAlocado(p.id)); }
