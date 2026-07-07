@@ -2925,6 +2925,25 @@ function _pmapaVolumeAlocado(pedidoId) {
   return soma;
 }
 function _pmapaVolumePendente(p) { return Math.max(0, totalVolPedido(p) - _pmapaVolumeAlocado(p.id)); }
+// Produtos ainda pendentes de um pedido (desconta o que já foi roteirizado,
+// produto a produto — usado pelo painel de "pedidos não roteirizados" da tela
+// de resultado, pra permitir arrastar manualmente sem re-roteirizar o que já
+// está feito).
+function produtosPendentesDoPedido(p) {
+  const alocPorProduto = new Map();
+  if (ultimoResultado) {
+    veiculos.forEach(v => (ultimoResultado[v.id] || []).forEach(vi => (vi.paradas || []).forEach(pa => {
+      if (pa.pedido && pa.pedido.id === p.id) {
+        (pa.itens || []).forEach(it => alocPorProduto.set(it.produto, (alocPorProduto.get(it.produto) || 0) + (it.volume || 0)));
+      }
+    })));
+  }
+  return (p.produtos || []).map(pr => {
+    const usado = alocPorProduto.get(pr.produto) || 0;
+    const pend = Math.max(0, (pr.volume || 0) - usado);
+    return { produto: pr.produto, volume: pend, ordemSAP: pr.ordemSAP || '' };
+  }).filter(pr => pr.volume > 0.0001);
+}
 
 function renderPedidosMapa() {
   _pmapaGarantirMapa();
@@ -5390,6 +5409,62 @@ function dropNaCard(event, veiculoDestId) {
     }
     limparFantasma(veiculoDestId);
     _alocarParada(parada, veiculoDestId, null);
+  } else if (dragInfo.tipo === 'pedido-pendente') {
+    const pedido = pedidos.find(x => x.id === dragInfo.pedidoId);
+    dragInfo = null;
+    if (!pedido) return;
+    const v = veiculos.find(x => x.id === veiculoDestId);
+    if (!v) return;
+    const pend = produtosPendentesDoPedido(pedido);
+    if (!pend.length) { alert('Este pedido já está totalmente roteirizado.'); return; }
+    // Checagens de compatibilidade — aqui são AVISOS com confirmação, não
+    // bloqueio automático: a roteirização automática já barrou esse pedido
+    // (por isso ele está pendente); a alocação manual fica a critério de quem
+    // está operando, mas sempre com o aviso explícito antes de prosseguir.
+    const motivos = [];
+    if (!veiculoAtendeTerminal(v, pedido.terminal)) motivos.push(`veículo não atende o terminal "${pedido.terminal || '-'}"`);
+    if (pedido.tiposCaminhao?.length && !pedido.tiposCaminhao.includes(v.tipo)) motivos.push(`tipo de veículo incompatível (pedido exige ${pedido.tiposCaminhao.join('/')}, veículo é ${v.tipo})`);
+    if (pedido.identidadePetronas && !v.identidadePetronas) motivos.push('veículo sem credencial ID Petronas exigida pelo pedido');
+    const compOk = itensCabemNosCompartimentos(pend, v);
+    if (!compOk) motivos.push('compartimentação não bate exatamente com os volumes do pedido (vai sobrar espaço não utilizável no(s) compartimento(s))');
+    let forcar = false;
+    if (motivos.length) {
+      const confirmou = confirm(
+        `⚠ Este pedido tem incompatibilidade(s) com o veículo ${v.placa}:\n\n- ${motivos.join('\n- ')}\n\n` +
+        'Isso é uma alocação manual, fora da regra automática. Você pode confirmar mesmo assim, mas revise antes de despachar.\n\n' +
+        'Deseja alocar mesmo assim?'
+      );
+      if (!confirmou) return;
+      forcar = true;
+    }
+    historicoManual.push(JSON.parse(JSON.stringify(ultimoResultado)));
+    _pmapaGarantirEstruturaResultado();
+    const viagem = { compsDisp: criarCompsDisp(v), paradas: [], quebras: [], terminalOrigem: pedido.terminal || v.terminal || '', esperaTerminalMin: 0, tempoConsumidoMin: 0 };
+    const detalhe = dadosIncrementoParada(viagem, v, pedido, viagem.terminalOrigem);
+    let primeiro = true;
+    pend.forEach(pr => {
+      const el = viagem.compsDisp.filter(c => compElegivelProduto(c, pr.produto) && c.disponivel > 0);
+      let aloc = selecionarCompartimentos(el, pr.volume, 'exact');
+      if (!aloc && forcar) aloc = selecionarCompartimentos(el, pr.volume, 'geq'); // só entra aqui com confirmação explícita do usuário
+      if (!aloc) return; // nem forçando coube (veículo sem espaço nenhum) — item fica de fora
+      const item = { pedidoId: pedido.id, pedido, produto: pr.produto, volume: pr.volume, ordemSAP: pr.ordemSAP || '' };
+      alocarItem(viagem, item, pr.volume, primeiro ? detalhe : null, 0, aloc);
+      primeiro = false;
+    });
+    if (!viagem.paradas.length) {
+      alert(`Não foi possível alocar nenhum item deste pedido no veículo ${v.placa} — não há espaço suficiente, mesmo forçando.`);
+      historicoManual.pop();
+      return;
+    }
+    if (!ultimoResultado[veiculoDestId]) ultimoResultado[veiculoDestId] = [];
+    ultimoResultado[veiculoDestId].push(viagem);
+    if (!ultimoControleTempo) ultimoControleTempo = {};
+    if (!ultimoControleTempo[veiculoDestId]) {
+      const limiteMin = Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720;
+      ultimoControleTempo[veiculoDestId] = { usadoMin: 0, limiteMin };
+    }
+    ultimoControleTempo[veiculoDestId].usadoMin += (detalhe.incrementoMin || detalhe.cicloMin || 0);
+    recalcularTimingViagem(viagem, v);
   } else { dragInfo = null; return; }
   atualizarBarraManual();
   renderResultado(ultimoResultado, ultimoControleTempo || {});
@@ -5403,6 +5478,11 @@ function desfazerManual() {
 // ── Drag de parada (entrega individual) ──────────────────────────────────────
 function iniciarDragParada(veiculoId, tripIndex, stopIndex, el) {
   dragInfo = { tipo: 'parada', veiculoId, tripIndex, stopIndex };
+  setTimeout(() => el.classList.add('stop-draggando'), 0);
+}
+// ── Drag de pedido NÃO roteirizado (painel de pendências) ───────────────────
+function iniciarDragPedidoPendente(pedidoId, el) {
+  dragInfo = { tipo: 'pedido-pendente', pedidoId };
   setTimeout(() => el.classList.add('stop-draggando'), 0);
 }
 function fimDragParada(el) {
@@ -6433,6 +6513,40 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
   if (pendComp.length) {
     const chaves = [...new Set(pendComp.map(it => `${it.pedido?.cliente || '-'} (${it.produto})`))];
     html += `<div class="alert alert-warn">⚠ Falta de compartimento específico (carga parcial por compartimento não permitida). Acionar comercial para: ${chaves.join(', ')}.</div>`;
+  }
+  // ────────────────────────────────────────────────────────────────────────
+  // PAINEL DE PEDIDOS NÃO ROTEIRIZADOS — arrastar manualmente pra um veículo.
+  // A roteirização automática bloqueia (e avisa acima) quando não acha
+  // encaixe exato; aqui, em vez de o pedido simplesmente sumir da tela, ele
+  // fica disponível pra alocação manual. Ao soltar num veículo, se houver
+  // incompatibilidade (compartimento, terminal, tipo, credencial Petronas), o
+  // sistema avisa e pede confirmação — a decisão final fica com quem está
+  // operando, não é mais um bloqueio automático.
+  // ────────────────────────────────────────────────────────────────────────
+  if (naoProgr.length) {
+    const cardsHtml = naoProgr.map(p => {
+      const pend = produtosPendentesDoPedido(p);
+      if (!pend.length) return '';
+      const volPend = pend.reduce((s, pr) => s + pr.volume, 0);
+      const produtosTxt = pend.map(pr => `${pr.produto}: ${pr.volume.toFixed(1)}m³`).join(' + ');
+      return `
+        <div class="stop" draggable="true" ondragstart="iniciarDragPedidoPendente(${p.id}, this)" ondragend="fimDragParada(this)"
+             style="min-width:220px;max-width:260px;background:#fff;border:1px solid #FDE68A;border-radius:8px;padding:8px 10px;cursor:grab;">
+          <div style="font-weight:700;font-size:12px;">${p.cliente}</div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px;">${p.cidade || ''}${p.terminal ? ' · ' + p.terminal : ''}</div>
+          <div style="font-size:11px;">${produtosTxt}</div>
+          <div style="font-size:11px;font-weight:700;color:#B45309;margin-top:2px;">Pendente: ${volPend.toFixed(1)} m³</div>
+        </div>`;
+    }).join('');
+    if (cardsHtml) {
+      html += `
+        <div style="margin:10px 0;padding:10px 12px;background:#FFF7ED;border:1px solid #FDE68A;border-radius:10px;">
+          <div style="font-size:12px;font-weight:700;color:#92400E;margin-bottom:8px;">
+            📋 ${naoProgr.length} pedido(s) não roteirizado(s) — arraste o cartão pra cima de um veículo pra alocar manualmente
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;">${cardsHtml}</div>
+        </div>`;
+    }
   }
   
   // ────────────────────────────────────────────────────────────────────────
