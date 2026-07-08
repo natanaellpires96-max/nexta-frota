@@ -684,6 +684,7 @@ function dashCidadeOperacaoViagem(vi, v, terms) {
 }
 function dashAgregar(snapshots, cidadesFiltro = null) {
   const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade, capTotal}
+  const operacoes = {};  // key=cidade da operação: {cidade, volume, capTotal, viagens} — pro gráfico Ocupação vs Volume por Operação
   const viagens_ocup = []; // {label, ocup}
   let totalViagens = 0, totalKm = 0, totalVol = 0, totalCap = 0;
   // veiculos_escalados: lista de {id, snapIdx, capV, viagensIds} para cálculo de ocupação filtrada
@@ -788,6 +789,18 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
               + (p.waitAfterLoadingMin || 0) + (p.deslocCarregadoMin || 0)
               + (p.tempoEsperaRestricaoMin || 0) + (p.tempoDescargaMin || 0) + (p.deslocVazioMin || 0), 0),
         });
+        // Acumula por OPERAÇÃO (cidade do terminal desta viagem) — volume e
+        // capacidade, uma vez por viagem (mesma regra usada pra ocupação de
+        // cliente/frota acima), pro gráfico "Ocupação vs Volume por Operação".
+        // Já sai filtrado corretamente porque `viagens` acima já respeitou
+        // cidadesFiltro antes de chegar aqui.
+        {
+          const cidadeOp = dashCidadeOperacaoViagem(vi, v, terms);
+          if (!operacoes[cidadeOp]) operacoes[cidadeOp] = { cidade: cidadeOp, volume: 0, capTotal: 0, viagens: 0 };
+          operacoes[cidadeOp].volume += volViagem;
+          operacoes[cidadeOp].viagens += 1;
+          if (capV > 0) operacoes[cidadeOp].capTotal += capV;
+        }
         if (capV > 0) {
           const ocup = Math.round((volViagem / capV) * 100);
           viagens_ocup.push({ label: `${v.placa} V${iV+1}`, ocup, snapIdx, vid: v.id, iV });
@@ -809,10 +822,23 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
       volMedio: parseFloat((c.volume / c.entregas).toFixed(1))
     }))
     .sort((a, b) => b.ocup - a.ocup);
+  // Ocupação por operação (cidade): volume da operação / capacidade acumulada
+  // dos veículos que operaram a partir dela — mesma lógica de clientes_ocup,
+  // só que agrupado por cidade em vez de por cliente.
+  const operacoes_ocup = Object.values(operacoes)
+    .filter(o => o.capTotal > 0)
+    .map(o => ({
+      nome: o.cidade,
+      ocup: Math.min(100, Math.round((o.volume / o.capTotal) * 100)),
+      volume: parseFloat(o.volume.toFixed(1)),
+      viagens: o.viagens,
+    }))
+    .sort((a, b) => b.volume - a.volume);
   return {
     clientes: Object.values(clientes).sort((a,b)=>b.volume-a.volume),
     viagens_ocup,
     clientes_ocup,
+    operacoes_ocup,
     veiculos_escalados, // [{snapIdx, vid, capV}] para cálculo de ocupação filtrada
     totalViagens,
     totalEntregas,
@@ -1277,6 +1303,10 @@ function dashRender(snapshots) {
   dashKmVolChart('dash-chart-km', clientesFiltrados);
   // Gráfico de ocupação por cliente
   dashOcupClienteChart('dash-chart-ocup', ocupFiltrados);
+  // Gráfico de Ocupação vs Volume por Operação (cidade) — usa d.operacoes_ocup
+  // direto (já veio filtrado por cidade dentro de dashAgregar); não é afetado
+  // pelo filtro de CLIENTE de propósito, é uma visão por operação.
+  dashOcupVolPorOperacaoChart('dash-chart-op-ocup-vol', d.operacoes_ocup);
   // Mapa
   dashRenderMapa(d.rotasMap);
   // Ranking de Transportadoras — já vem filtrado por cidade (d.entradasTransportadora
@@ -1352,6 +1382,45 @@ function dashKmVolChart(containerId, clientes) {
           <div style="width:${pctVol}%;height:100%;background:#f0be40;border-radius:99px;"></div>
         </div>
         <span style="font-size:10px;font-weight:700;color:#000000;width:52px;">${c.volume.toFixed(1)} m³</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+// ── Gráfico de Ocupação vs Volume por Operação (cidade) ────────────────────
+// Mesmo estilo de barra dupla do dashKmVolChart, mas agrupado por cidade da
+// operação (terminal) em vez de cliente. Sempre reflete o filtro de cidade
+// ativo, porque os dados já vêm filtrados de dashAgregar.
+function dashOcupVolPorOperacaoChart(containerId, operacoes) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!operacoes.length) {
+    el.innerHTML = '<div style="color:#888;font-size:12px;padding:12px">Sem dados de operação para este período/filtro.</div>';
+    return;
+  }
+  const itens = [...operacoes].sort((a, b) => b.volume - a.volume);
+  const maxVol = Math.max(...itens.map(o => o.volume || 0), 1);
+  el.innerHTML = itens.map(o => {
+    const pctVol = Math.round((o.volume / maxVol) * 100);
+    const pctOcup = Math.min(Math.round(o.ocup), 100);
+    const corOcup = pctOcup >= 90 ? '#4caf50' : pctOcup >= 60 ? '#f0be40' : '#f06060';
+    return `<div style="margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+        <span style="font-size:12px;font-weight:700;color:var(--text,#111);">${o.nome}</span>
+        <span style="font-size:10.5px;color:var(--text-3,#777);">${o.viagens} viagem${o.viagens>1?'ns':''}</span>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;">
+        <span style="font-size:10px;font-weight:700;color:${corOcup};width:52px;text-align:right;">ocup.</span>
+        <div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
+          <div style="width:${pctOcup}%;height:100%;background:${corOcup};border-radius:99px;"></div>
+        </div>
+        <span style="font-size:10px;font-weight:700;color:${corOcup};width:38px;">${pctOcup}%</span>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
+        <span style="font-size:10px;font-weight:700;color:#000000;width:52px;text-align:right;">volume</span>
+        <div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
+          <div style="width:${pctVol}%;height:100%;background:#f0be40;border-radius:99px;"></div>
+        </div>
+        <span style="font-size:10px;font-weight:700;color:#000000;width:60px;">${o.volume.toFixed(1)} m³</span>
       </div>
     </div>`;
   }).join('');
