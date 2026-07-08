@@ -731,6 +731,12 @@
   border-radius: 0 !important;
   overflow: visible !important;
 }
+/* A regra "#roteirizador-shell > div:not([id])" (mais acima no arquivo, do
+   design antigo em formato de cartão centralizado) ainda limita header,
+   tabs e cada .page a max-width:980px — sobrou de antes do sistema virar
+   tela cheia e nunca foi neutralizada aqui, por isso o cabeçalho e as abas
+   paravam de estender até o fim da tela em telas largas. */
+#roteirizador-shell > div:not([id]) { max-width: none; }
 /* Mount sem padding */
 #roteirizador-mount { padding: 0 !important; background: transparent !important; border-radius: 0 !important; }
 /* Tabs sem radius */
