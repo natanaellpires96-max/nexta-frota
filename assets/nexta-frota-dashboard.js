@@ -859,6 +859,11 @@ function dashAgregarTransportadoras(entradasTransportadora) {
   const contratos = (typeof freteCarregarContratos === 'function') ? freteCarregarContratos() : [];
   const spots     = (typeof freteCarregarSpot === 'function') ? freteCarregarSpot() : [];
   const normPlaca = (typeof _freteNormPlaca === 'function') ? _freteNormPlaca : (p => (p||'').toString().trim().toUpperCase());
+  // Índice placa normalizada → contrato, montado UMA VEZ (O(m)) em vez de
+  // varrer a lista de contratos pra cada viagem (O(n×m) — era o gargalo que
+  // travava o dashboard em qualquer filtro com muitos dados).
+  const contratoPorPlaca = new Map();
+  contratos.forEach(c => { if (c.placa) contratoPorPlaca.set(normPlaca(c.placa), c); });
   // fatorJornada por entrada (precisa antes do custo, igual ao Frete)
   entradasTransportadora.forEach(e => {
     e.fatorJornada = e.jornadaDispMin > 0 ? Math.min(1, Math.max(0, e.jornadaUsadaMin / e.jornadaDispMin)) : 0;
@@ -871,7 +876,7 @@ function dashAgregarTransportadoras(entradasTransportadora) {
   });
   const porTransportadora = {};
   entradasTransportadora.forEach(e => {
-    const contrato = contratos.find(c => normPlaca(c.placa) === normPlaca(e.placa));
+    const contrato = contratoPorPlaca.get(normPlaca(e.placa));
     const nMes = nViagensPorPlacaMes[e.placa + '__' + e.mesKey] || 1;
     const custo = contrato ? _dashCustoViagemRanking(e, contrato, nMes, spots) : 0;
     const key = e.transportadora;

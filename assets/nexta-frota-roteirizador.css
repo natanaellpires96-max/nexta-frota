@@ -156,6 +156,14 @@
   display: flex; background: var(--surface);
   border-bottom: 0.5px solid var(--border);
   padding: 0; overflow-x: auto;
+  /* Sobrescreve explicitamente as propriedades da regra genérica ".tabs" de
+     nexta-frota-main.css (pensada pra outra tela) que "vazavam" pra cá por
+     não serem tocadas pela regra mais específica acima: flex-wrap:wrap e
+     width:fit-content faziam a última aba quebrar pra uma 2ª linha em vez de
+     ficar na mesma fileira, e gap/border/border-radius destoavam do visual
+     do Roteirizador. Sem isso, qualquer aba nova adicionada aqui corre o
+     mesmo risco de quebrar de novo. */
+  flex-wrap: nowrap; width: 100%; gap: 0; border: none; border-radius: 0; margin-bottom: 0;
 }
 #roteirizador-shell .tab {
   flex: 1; text-align: center;
