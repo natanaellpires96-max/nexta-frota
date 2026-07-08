@@ -5079,9 +5079,13 @@ async function exportarHrrlog() {
       // cliente, não atraso de carregamento no terminal).
       const p0 = vi.paradas[0];
       const inicioCargaMin = temOverrideCarga ? relogioMin : (vi._inicioCargaMin ?? relogioMin);
-      // Terminal desta viagem (fallback ao terminal do pedido se terminalOrigem ausente)
+      // Terminal desta viagem — o terminal do PEDIDO (dado vivo, o mesmo que
+      // aparece na Otimização Rotas e já foi corrigido no Envio Transportadora)
+      // tem prioridade sobre vi.terminalOrigem, que fica congelado no valor
+      // do momento em que a viagem foi criada e pode ficar desatualizado se o
+      // terminal do pedido for alterado depois.
       const _termPedidoHrr = vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || '';
-      const termNome = vi.terminalOrigem || _termPedidoHrr || v.terminal || '';
+      const termNome = _termPedidoHrr || vi.terminalOrigem || v.terminal || '';
       const term = terminaisCad.find(t => t.nome === termNome);
       const codigoTerminal = term?.empresaLocalExpedicao || term?.nome || termNome;
       // Produtos únicos (nome resumido)
@@ -5218,7 +5222,8 @@ function renderTemplateOperacao() {
   veiculos.forEach(v => {
     const viagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
     viagens.forEach((vi, idx) => {
-      const base = vi.terminalOrigem || v.terminal || cidadeBaseVeiculo(v) || '-';
+      const _termPedidoFiltro = vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || '';
+      const base = _termPedidoFiltro || vi.terminalOrigem || v.terminal || cidadeBaseVeiculo(v) || '-';
       const paradasOrig = vi.paradas || [];
       const paradasFiltradas = paradasOrig.filter(p =>
         containsFiltro(p.pedido?.cliente, filtroCliente) &&
