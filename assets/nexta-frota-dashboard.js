@@ -673,19 +673,40 @@ function dashNomeCanônico(atual, novo) {
   // Prefere o nome mais longo (mais completo), sem truncamentos
   return novo.length > atual.length ? novo : atual;
 }
-function dashAgregar(snapshots) {
+// Retorna a cidade da operação (terminal) de uma viagem — usa terminalOrigem
+// da própria viagem (mais preciso) com fallback pro terminal cadastrado no
+// veículo. Terminal já tem campo `cidade` próprio (import Excel), separado
+// do nome da base (ex.: nome "Betim POTENCIAL Nexta" → cidade "Betim").
+function dashCidadeOperacaoViagem(vi, v, terms) {
+  const nomeTerm = vi.terminalOrigem || v.terminal || '';
+  const term = terms.find(t => t.nome === nomeTerm);
+  return term?.cidade || '(sem cidade)';
+}
+function dashAgregar(snapshots, cidadesFiltro = null) {
   const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade, capTotal}
   const viagens_ocup = []; // {label, ocup}
   let totalViagens = 0, totalKm = 0, totalVol = 0, totalCap = 0;
   // veiculos_escalados: lista de {id, snapIdx, capV, viagensIds} para cálculo de ocupação filtrada
   const veiculos_escalados = [];
   const rotasMap = [];   // para o mapa: [{termLat,termLon,paradas:[{lat,lon,nome}]}]
+  // Entradas cruas por viagem, usadas pelo Ranking de Transportadoras
+  // (dashAgregarTransportadoras) — evita rodar esse loop duas vezes.
+  const entradasTransportadora = [];
   snapshots.forEach((snap, snapIdx) => {
     const res = snap.resultado || {};
     const vecs = snap.veiculos || [];
     const terms = snap.terminais || [];
+    const mesKeySnap = (snap.savedAt || '').slice(0,7);
+    const dataSnap = (snap.savedAt || '').slice(0,10);
     vecs.forEach(v => {
-      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+      const viagensTodas = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+      if (!viagensTodas.length) return;
+      // Filtro de cidade da operação: aplica ANTES de qualquer acumulação, pra
+      // que viagens, entregas, ocupação, km — tudo — reflita só a(s) cidade(s)
+      // selecionada(s). null = sem filtro (todas as cidades).
+      const viagens = cidadesFiltro
+        ? viagensTodas.filter(vi => cidadesFiltro.has(dashCidadeOperacaoViagem(vi, v, terms)))
+        : viagensTodas;
       if (!viagens.length) return;
       // capV é acumulado por VIAGEM realizada (dentro do loop de viagens abaixo)
       // Terminal lat/lon
@@ -696,8 +717,10 @@ function dashAgregar(snapshots) {
         totalViagens++;
         const rotaPontos = { termLat: tLat, termLon: tLon, placa: v.placa, paradas: [] };
         let volViagem = 0;
+        let kmIdaViagem = 0; // soma do km "base" (sem duplicar ida+volta) — usado no Ranking de Transportadoras
         // Km real da viagem: se o usuário ajustou a rota manualmente no mapa
         // (aba Otimização Rotas), vi._kmAjustado guarda a distância real
+
         // recalculada via OSRM — essa é a fonte mais fiel disponível.
         // Quando não há ajuste manual, mantém o cálculo padrão (Haversine
         // sequencial entre paradas, sem nenhum fator de inflação aplicado).
@@ -743,9 +766,28 @@ function dashAgregar(snapshots) {
           totalVol += vol;
           volViagem += vol;
           totalKm += km;
+          kmIdaViagem += km;
           rotaPontos.paradas.push({ lat, lon, nome, vol });
         });
         rotasMap.push(rotaPontos);
+        // Entrada crua desta viagem para o Ranking de Transportadoras — cálculo
+        // de custo (contrato) é feito depois, em dashAgregarTransportadoras,
+        // porque precisa do total de viagens do mês (rateio do valor fixo).
+        entradasTransportadora.push({
+          transportadora: v.transportadora || '(sem transportadora)',
+          placa: v.placa,
+          data: dataSnap,
+          mesKey: mesKeySnap,
+          termOrigem: vi.terminalOrigem || v.terminal || '',
+          destinos: Array.from(new Set(vi.paradas.map(p => (p.pedido?.cidade || p.pedido?.cliente || '')))).join(', '),
+          kmIda: kmIdaViagem,
+          volume: volViagem,
+          jornadaDispMin: Number(v.jornadaMin) || (typeof duracaoJornadaMin === 'function' ? duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') : 720) || 720,
+          jornadaUsadaMin: Number(vi.tempoConsumidoMin) || vi.paradas.reduce((s,p,idx) =>
+            s + (idx === 0 ? (p.tempoCarregamentoMin || 0) : 0)
+              + (p.waitAfterLoadingMin || 0) + (p.deslocCarregadoMin || 0)
+              + (p.tempoEsperaRestricaoMin || 0) + (p.tempoDescargaMin || 0) + (p.deslocVazioMin || 0), 0),
+        });
         if (capV > 0) {
           const ocup = Math.round((volViagem / capV) * 100);
           viagens_ocup.push({ label: `${v.placa} V${iV+1}`, ocup, snapIdx, vid: v.id, iV });
@@ -779,11 +821,124 @@ function dashAgregar(snapshots) {
     totalOcup: totalVec,
     totalClientes: Object.keys(clientes).length,
     rotasMap,
+    entradasTransportadora,
   };
 }
+// ── Ranking de Transportadoras ───────────────────────────────────────────────
+// Reaproveita os contratos já cadastrados na aba Frete (freteCarregarContratos/
+// freteCarregarSpot) e replica as MESMAS fórmulas de custo usadas lá
+// (kmEfetivo + custoViagem), pra o valor pago aqui bater com o que aparece
+// no relatório de Frete. Se uma placa não tiver contrato cadastrado, o custo
+// dela entra como 0 e ela é marcada `semContrato: true` — aparece no ranking
+// por volume/km normalmente, só o valor pago fica indefinido (mostrado como
+// "—", nunca inventado).
+function _dashKmEfetivoRanking(entry, contrato) {
+  const modo = (contrato && contrato.kmModo) || 'ida_volta';
+  return modo === 'ida' ? entry.kmIda : entry.kmIda * 2;
+}
+function _dashCustoViagemRanking(entry, contrato, nViagensMesPlaca, spots) {
+  const nViagMes = nViagensMesPlaca || 1;
+  const fixo = parseFloat(contrato.fixo) || 0;
+  const fixoRateado = fixo / Math.max(nViagMes, 1);
+  const km = _dashKmEfetivoRanking(entry, contrato);
+  if (contrato.tipo === 'fixo_km') return fixoRateado + (parseFloat(contrato.km)||0) * km;
+  if (contrato.tipo === 'fixo_m3') return fixoRateado + (parseFloat(contrato.m3)||0) * entry.volume;
+  if (contrato.tipo === 'diaria')  return (parseFloat(contrato.diaria) || 0) * (entry.fatorJornada || 0);
+  if (contrato.tipo === 'diaria_km') return ((parseFloat(contrato.diaria)||0) * (entry.fatorJornada || 0)) + (parseFloat(contrato.km)||0) * km;
+  if (contrato.tipo === 'spot') {
+    const sp = (spots || []).find(s =>
+      entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
+      entry.destinos.toLowerCase().includes((s.destino||'').toLowerCase()) &&
+      (!s.transportadora || s.transportadora === contrato.transportadora)
+    );
+    return sp ? (parseFloat(sp.valor)||0) * entry.volume : 0;
+  }
+  return 0;
+}
+function dashAgregarTransportadoras(entradasTransportadora) {
+  const contratos = (typeof freteCarregarContratos === 'function') ? freteCarregarContratos() : [];
+  const spots     = (typeof freteCarregarSpot === 'function') ? freteCarregarSpot() : [];
+  const normPlaca = (typeof _freteNormPlaca === 'function') ? _freteNormPlaca : (p => (p||'').toString().trim().toUpperCase());
+  // fatorJornada por entrada (precisa antes do custo, igual ao Frete)
+  entradasTransportadora.forEach(e => {
+    e.fatorJornada = e.jornadaDispMin > 0 ? Math.min(1, Math.max(0, e.jornadaUsadaMin / e.jornadaDispMin)) : 0;
+  });
+  // Nº de viagens por placa+mês, pra ratear o valor fixo mensal (igual ao Frete)
+  const nViagensPorPlacaMes = {};
+  entradasTransportadora.forEach(e => {
+    const k = e.placa + '__' + e.mesKey;
+    nViagensPorPlacaMes[k] = (nViagensPorPlacaMes[k] || 0) + 1;
+  });
+  const porTransportadora = {};
+  entradasTransportadora.forEach(e => {
+    const contrato = contratos.find(c => normPlaca(c.placa) === normPlaca(e.placa));
+    const nMes = nViagensPorPlacaMes[e.placa + '__' + e.mesKey] || 1;
+    const custo = contrato ? _dashCustoViagemRanking(e, contrato, nMes, spots) : 0;
+    const key = e.transportadora;
+    if (!porTransportadora[key]) porTransportadora[key] = { transportadora: key, volume: 0, km: 0, viagens: 0, custo: 0, temContrato: false, placas: new Set() };
+    porTransportadora[key].volume += e.volume;
+    porTransportadora[key].km += _dashKmEfetivoRanking(e, contrato || { kmModo: 'ida_volta' });
+    porTransportadora[key].viagens += 1;
+    porTransportadora[key].placas.add(e.placa);
+    if (contrato) { porTransportadora[key].custo += custo; porTransportadora[key].temContrato = true; }
+  });
+  return Object.values(porTransportadora)
+    .map(t => ({ ...t, nPlacas: t.placas.size, placas: undefined }))
+    .sort((a, b) => b.volume - a.volume);
+}
+let _dashRankingOrdem = 'volume'; // 'volume' | 'km' | 'custo'
+function dashRankingSetOrdem(campo) {
+  _dashRankingOrdem = campo;
+  document.querySelectorAll('.dash-rank-tab').forEach(b => {
+    const ativo = b.dataset.campo === campo;
+    b.classList.toggle('active-rank', ativo);
+    b.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    b.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+  dashRenderRankingTransportadoras(_dashUltimoRanking || []);
+}
+let _dashUltimoRanking = [];
+function dashRenderRankingTransportadoras(lista) {
+  _dashUltimoRanking = lista;
+  const box = document.getElementById('dash-ranking-transp');
+  if (!box) return;
+  if (!lista.length) {
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum dado de transportadora para este período/filtro.</div>`;
+    return;
+  }
+  const campo = _dashRankingOrdem;
+  const ordenado = [...lista].sort((a, b) => b[campo] - a[campo]);
+  const max = Math.max(...ordenado.map(t => t[campo]), 0.001);
+  const medalhas = ['🥇', '🥈', '🥉'];
+  const fmtValor = (t) => {
+    if (campo === 'volume') return t.volume.toFixed(1) + ' m³';
+    if (campo === 'km')     return Math.round(t.km).toLocaleString('pt-BR') + ' km';
+    return t.temContrato ? 'R$ ' + t.custo.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+  };
+  const cores = { volume: '#f0be40', km: '#6ee04a', custo: '#70a8f0' };
+  box.innerHTML = ordenado.map((t, i) => {
+    const val = t[campo];
+    const pct = max > 0 ? Math.max(2, (val / max) * 100) : 2;
+    const rank = i < 3 ? medalhas[i] : `#${i+1}`;
+    const semContratoTag = (campo === 'custo' && !t.temContrato) ? `<span title="Sem contrato cadastrado na aba Frete para nenhuma placa desta transportadora" style="font-size:9px;color:#F59E0B;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 6px;margin-left:6px;">sem contrato</span>` : '';
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--border-dk);">
+        <div style="width:28px;flex-shrink:0;text-align:center;font-size:${i<3?'16px':'12px'};font-weight:700;color:${i<3?'inherit':'var(--text-3)'};">${rank}</div>
+        <div style="width:170px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);" title="${t.transportadora}">${t.transportadora}${semContratoTag}</div>
+        <div style="flex:1;background:rgba(255,255,255,.06);border-radius:6px;height:20px;position:relative;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:${cores[campo]};border-radius:6px;transition:width .3s;"></div>
+        </div>
+        <div style="width:110px;flex-shrink:0;text-align:right;font-size:12.5px;font-weight:700;color:var(--text);">${fmtValor(t)}</div>
+        <div style="width:110px;flex-shrink:0;text-align:right;font-size:10.5px;color:var(--text-3);">${t.viagens} viag. · ${t.nPlacas} placa${t.nPlacas>1?'s':''}</div>
+      </div>`;
+  }).join('');
+}
+window.dashRankingSetOrdem = dashRankingSetOrdem;
 // ── Renderizar Dashboard ───────────────────────────────────────────────────
 // ── Filtro de clientes ────────────────────────────────────────────────────
 let _dashClientesSelecionados = null; // null = todos; Set = filtro ativo
+let _dashCidadesSelecionadas  = null; // null = todas as cidades de operação; Set = filtro ativo
+let _dashTodasCidades         = [];   // lista completa de cidades de operação do período
 let _dashSnapshotsAtivos = [];        // snapshots atualmente carregados
 let _dashTodosClientes   = [];        // lista completa de clientes do período
 
@@ -900,6 +1055,93 @@ window.dashFiltrarListaClientes    = dashFiltrarListaClientes;
 window.dashSelecionarTodosClientes = dashSelecionarTodosClientes;
 window.dashAplicarFiltroClientes   = dashAplicarFiltroClientes;
 
+// ── Filtro de Cidade da Operação ─────────────────────────────────────────────
+// Mesmo padrão visual/funcional do filtro de clientes acima, mas filtra pela
+// cidade cadastrada no TERMINAL (base), não pelo nome da base em si — ex.:
+// "Betim POTENCIAL Nexta" e "Betim RBZ" são bases diferentes, mas a mesma
+// cidade de operação "Betim". Esse filtro atua na FONTE dos dados (dentro de
+// dashAgregar), então todo KPI/gráfico/tabela reflete só a(s) cidade(s)
+// escolhida(s) — não é um filtro só de exibição.
+function dashToggleFiltroCidades() {
+  const panel = document.getElementById('dash-cid-panel');
+  if (!panel) return;
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : 'flex';
+  if (!visible) {
+    document.getElementById('dash-cid-search').value = '';
+    dashFiltrarListaCidades('');
+  }
+}
+function dashPopularListaCidades() {
+  const list = document.getElementById('dash-cid-list');
+  if (!list) return;
+  list.innerHTML = _dashTodasCidades.map(nome => {
+    const sel      = !_dashCidadesSelecionadas || _dashCidadesSelecionadas.has(nome);
+    const nomeSafe = nome.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    const chk      = sel ? _dashCheckSVG() : '';
+    const bc       = sel ? 'var(--pet-green,#b5e51d)' : '#bbb';
+    const bg       = sel ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    return `<div data-cid="${nomeSafe}" data-checked="${sel ? '1' : '0'}"
+      style="display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;border-radius:6px;margin:0 4px;user-select:none;">
+      <span class="dash-cb-box" style="flex-shrink:0;width:20px;height:20px;border-radius:5px;border:2px solid ${bc};background:${bg};display:flex;align-items:center;justify-content:center;transition:all .12s;">${chk}</span>
+      <span style="font-size:12px;color:var(--text,#111);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${nome}</span>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('div[data-cid]').forEach(row => {
+    row.addEventListener('mouseenter', () => row.style.background = 'rgba(0,0,0,0.04)');
+    row.addEventListener('mouseleave', () => row.style.background = '');
+    row.addEventListener('click', () => {
+      const checked = row.dataset.checked !== '1';
+      row.dataset.checked = checked ? '1' : '0';
+      _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), checked);
+    });
+  });
+}
+function dashSelecionarTodosCidadesVisual(sel) {
+  const list = document.getElementById('dash-cid-list');
+  if (!list) return;
+  list.querySelectorAll('div[data-cid]').forEach(row => {
+    if (row.style.display === 'none') return;
+    row.dataset.checked = sel ? '1' : '0';
+    _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), sel);
+  });
+}
+function dashFiltrarListaCidades(busca) {
+  const list = document.getElementById('dash-cid-list');
+  if (!list) return;
+  const b = (busca || '').toLowerCase();
+  list.querySelectorAll('div[data-cid]').forEach(row => {
+    row.style.display = row.dataset.cid.toLowerCase().includes(b) ? '' : 'none';
+  });
+}
+function dashSelecionarTodosCidades(sel) { dashSelecionarTodosCidadesVisual(sel); }
+function dashAplicarFiltroCidades() {
+  const list = document.getElementById('dash-cid-list');
+  if (!list) return;
+  const selecionadas = new Set();
+  const _dec = s => s.replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+  list.querySelectorAll('div[data-checked="1"]').forEach(row => selecionadas.add(_dec(row.dataset.cid)));
+  _dashCidadesSelecionadas = selecionadas.size === _dashTodasCidades.length ? null : selecionadas;
+  const badge = document.getElementById('dash-cid-badge');
+  if (badge) {
+    if (_dashCidadesSelecionadas) { badge.textContent = selecionadas.size; badge.style.display = ''; }
+    else badge.style.display = 'none';
+  }
+  document.getElementById('dash-cid-panel').style.display = 'none';
+  dashRenderComFiltro();
+}
+document.addEventListener('click', function(e) {
+  const panel = document.getElementById('dash-cid-panel');
+  const btn   = document.getElementById('dash-cid-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && !btn?.contains(e.target)) {
+    panel.style.display = 'none';
+  }
+});
+window.dashToggleFiltroCidades   = dashToggleFiltroCidades;
+window.dashFiltrarListaCidades    = dashFiltrarListaCidades;
+window.dashSelecionarTodosCidades = dashSelecionarTodosCidades;
+window.dashAplicarFiltroCidades   = dashAplicarFiltroCidades;
+
 function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
   if (!snapshots || !snapshots.length) {
@@ -909,7 +1151,27 @@ function dashRender(snapshots) {
       '<tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:32px;">Nenhum dado para este período</td></tr>';
     return;
   }
-  const d = dashAgregar(snapshots);
+  // Atualiza lista global de cidades de operação (pro filtro) — olha TODOS os
+  // terminais dos snapshots carregados, mesmo antes de aplicar o filtro,
+  // senão o próprio filtro nunca teria opções pra mostrar.
+  const _novaListaCidades = Array.from(new Set(
+    snapshots.flatMap(s => (s.terminais || []).map(t => t.cidade).filter(Boolean))
+  )).sort((a,b) => a.localeCompare(b, 'pt-BR'));
+  const _listaCidIgual = _novaListaCidades.length === _dashTodasCidades.length &&
+    _novaListaCidades.every((n,i) => n === _dashTodasCidades[i]);
+  if (!_listaCidIgual) {
+    _dashTodasCidades = _novaListaCidades;
+    if (_dashCidadesSelecionadas) {
+      const novasCid = new Set(_dashTodasCidades);
+      const filtroAtualizadoCid = new Set([..._dashCidadesSelecionadas].filter(n => novasCid.has(n)));
+      _dashCidadesSelecionadas = filtroAtualizadoCid.size === _dashTodasCidades.length ? null : filtroAtualizadoCid;
+    }
+  }
+  dashPopularListaCidades();
+  // Filtro de cidade da operação aplicado NA FONTE (dentro de dashAgregar) —
+  // por isso todo o resto do dashboard (KPIs, gráficos, mapa, ranking) já sai
+  // filtrado corretamente, sem precisar re-filtrar depois.
+  const d = dashAgregar(snapshots, _dashCidadesSelecionadas);
   // Atualiza lista global de clientes para o filtro
   // Só reinicia a lista visual se não houver filtro ativo (evita resetar seleção do usuário)
   const _novaListaClientes = d.clientes.map(c => c.nome).sort();
@@ -941,16 +1203,20 @@ function dashRender(snapshots) {
   // Ocupação = volume total de pedidos / capacidade total da frota escalada.
   // Sem filtro: d.totalOcup (calculado em dashAgregar: totalVol / totalCap por veículo).
   // Com filtro de cliente: volume dos clientes filtrados / cap dos veículos que os atenderam.
+  // As duas re-varreduras abaixo (ocupação e viagens) respeitam TAMBÉM o
+  // filtro de cidade ativo (_dashCidadesSelecionadas), já que elas iteram os
+  // snapshots crus (não passam por dashAgregar).
   let _kpiOcup = d.totalOcup;
   if (_dashClientesSelecionados) {
     let _filtVol = 0, _filtCap = 0;
     const _nomesF = _dashClientesSelecionados;
     _dashSnapshotsAtivos.forEach((snap, sIdx) => {
-      const res = snap.resultado || {}, vecs = snap.veiculos || [];
+      const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
       vecs.forEach(v => {
         const capV = v.capacidade || v.capacidadeTotal || 0;
         const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
         viagens.forEach(vi => {
+          if (_dashCidadesSelecionadas && !_dashCidadesSelecionadas.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
           // Verifica se esta viagem atende ao menos um cliente filtrado
           const atendeCliente = vi.paradas.some(par => {
             const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
@@ -977,8 +1243,10 @@ function dashRender(snapshots) {
     _dashSnapshotsAtivos.forEach(snap => {
       const res  = snap.resultado || {};
       const vecs = snap.veiculos  || [];
+      const terms = snap.terminais || [];
       vecs.forEach(v => {
         (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length).forEach(vi => {
+          if (_dashCidadesSelecionadas && !_dashCidadesSelecionadas.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
           const temCliente = vi.paradas.some(par => {
             const nome = (par.pedido||{}).cliente || (par.pedido||{}).nomeCliente || par.nome || '';
             return _nomesFilter.has(nome);
@@ -1006,6 +1274,12 @@ function dashRender(snapshots) {
   dashOcupClienteChart('dash-chart-ocup', ocupFiltrados);
   // Mapa
   dashRenderMapa(d.rotasMap);
+  // Ranking de Transportadoras — já vem filtrado por cidade (d.entradasTransportadora
+  // é derivado de dashAgregar, que já aplicou o filtro de cidade na fonte).
+  // NÃO é filtrado por cliente de propósito: o ranking é sobre quem prestou o
+  // serviço, faz sentido continuar mostrando a transportadora inteira mesmo
+  // filtrando por um cliente específico na tabela abaixo.
+  dashRenderRankingTransportadoras(dashAgregarTransportadoras(d.entradasTransportadora));
   // Tabela
   const tbody = document.getElementById('dash-tabela-cli-body');
   if (tbody) {

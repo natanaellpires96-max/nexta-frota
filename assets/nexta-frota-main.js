@@ -4396,6 +4396,14 @@ window.doLogin=doLogin; window.logout=logout;
 window.refreshSystem=refreshSystem;
 window.chDate=chDate; window.setTab=setTab;
 window.onStChange=onStChange; window.saveAll=saveAll;
+// Firestore — exposto para o Roteirizador (script não-module) poder ler/gravar
+// os dados do "Aprendizado do Otimizador" (padrões de não-consolidação e
+// parâmetros auto-ajustados). Só o necessário é exposto, não o app inteiro.
+window.fbDb = db;
+window.fbDoc = doc; window.fbGetDoc = getDoc; window.fbSetDoc = setDoc;
+window.fbCollection = collection; window.fbGetDocs = getDocs;
+window.fbQuery = query; window.fbWhere = where; window.fbOrderBy = orderBy;
+window.fbLimit = limit; window.fbWriteBatch = writeBatch; window.fbDeleteDoc = deleteDoc;
 async function reiniciarRoteirizador(){
   // ── 1. Zera arrays de dados de todas as abas ──────────────────────────────
   if(typeof pedidos       !== 'undefined') pedidos       = [];

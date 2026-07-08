@@ -655,12 +655,13 @@ function baixarModeloExcel() {
 // ─── Utilitários ──────────────────────────────────────────────────────────────
 function nomeTerminais() { return terminaisCad.map(t => t.nome); }
 function showTab(name) {
-  const tabNames = ['terminais','clientes','pedidos','veiculos','resultado','mapa','operacao','dashboard_rot','frete','historico'];
+  const tabNames = ['terminais','clientes','pedidos','veiculos','resultado','mapa','operacao','dashboard_rot','frete','historico','aprendizado'];
   const routeRoot = document.getElementById('roteirizador-shell') || document;
   routeRoot.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', tabNames[i] === name));
   routeRoot.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   routeRoot.querySelector('#tab-' + name)?.classList.add('active');
   if (name === 'operacao') renderTemplateOperacao();
+  if (name === 'aprendizado') renderAprendizado();
   if (name === 'frete') {
     freteRenderContratos();
     freteRenderSpot();
@@ -2822,6 +2823,179 @@ function renderPedidos() {
   }).join('');
 }
 // ═══════════════════════════════════════════════════════════════════════════
+// APRENDIZADO DO OTIMIZADOR — estatística acumulada no Firestore, compartilhada
+// entre todas as roteirizações de todos os usuários.
+// ═══════════════════════════════════════════════════════════════════════════
+// IMPORTANTE — o que isto É e o que NÃO é:
+// NÃO é uma IA/rede neural que decide sozinha. É um acumulador de eventos:
+// toda vez que a roteirização automática não consegue consolidar um pedido
+// num veículo já em uso, o motivo (terminal, compartimento, jornada, janela,
+// tipo) é salvo em `otimizador_eventos`. Isso serve pra 2 coisas:
+//  1) Painel de padrões (🧠 Aprendizado): mostra ONDE isso mais acontece —
+//     na prática, quase todo evento é uma restrição real de cadastro
+//     (terminal errado, compartimentação sem o tamanho certo, janela
+//     apertada), então o valor maior é te apontar o que corrigir.
+//  2) Ajuste fino de UM parâmetro que realmente é "peso de preferência" (não
+//     restrição dura): a tolerância de jornada usada no Passo 2.5 (hoje 5%
+//     fixo). Se um terminal specific mostra repetidamente que o pedido só não
+//     coube por uma folga pequena de jornada, o painel SUGERE aumentar essa
+//     tolerância pra aquele terminal — mas nunca aplica sozinho; alguém
+//     precisa clicar "Aplicar" (mudar isso afeta jornada real de motorista,
+//     não é algo pra silenciosamente automatizar).
+// Falha de rede no Firestore NUNCA deve travar a roteirização — todas as
+// chamadas abaixo são best-effort (try/catch, sem await bloqueante no loop
+// principal do otimizador).
+function _aprendizadoDisponivel() {
+  return typeof window.fbDb !== 'undefined' && window.fbDb && window.fbSetDoc && window.fbCollection && window.fbDoc;
+}
+// Registra 1 evento de "não consolidado em veículo ativo" — fire-and-forget,
+// não bloqueia o loop do otimizador (chamado sem await de propósito).
+function _aprendizadoRegistrarEvento(evento) {
+  if (!_aprendizadoDisponivel()) return;
+  try {
+    const ref = window.fbDoc(window.fbCollection(window.fbDb, 'otimizador_eventos'));
+    window.fbSetDoc(ref, { ...evento, timestamp: new Date().toISOString() }).catch(() => {});
+  } catch (e) { /* nunca deixa isso quebrar a roteirização */ }
+}
+// Parâmetros aprendidos — carregados 1x no início de cada otimizar() e usados
+// no lugar das constantes fixas. Se o Firestore falhar ou o doc não existir
+// ainda, cai nos valores padrão de sempre (0 mudança de comportamento).
+const APRENDIZADO_PADRAO = { ativoBonus: 4, toleranciasJornadaPorTerminal: {} };
+async function _aprendizadoCarregarParametros() {
+  if (!_aprendizadoDisponivel()) return { ...APRENDIZADO_PADRAO };
+  try {
+    const ref = window.fbDoc(window.fbDb, 'otimizador_parametros', 'global');
+    const snap = await window.fbGetDoc(ref);
+    if (!snap.exists()) return { ...APRENDIZADO_PADRAO };
+    const data = snap.data() || {};
+    return {
+      ativoBonus: typeof data.ativoBonus === 'number' ? data.ativoBonus : APRENDIZADO_PADRAO.ativoBonus,
+      toleranciasJornadaPorTerminal: data.toleranciasJornadaPorTerminal || {},
+    };
+  } catch (e) {
+    return { ...APRENDIZADO_PADRAO };
+  }
+}
+async function _aprendizadoCarregarEventos(maxN = 500) {
+  if (!_aprendizadoDisponivel()) return [];
+  try {
+    const q = window.fbQuery(
+      window.fbCollection(window.fbDb, 'otimizador_eventos'),
+      window.fbOrderBy('timestamp', 'desc'),
+      window.fbLimit(maxN)
+    );
+    const snap = await window.fbGetDocs(q);
+    const out = [];
+    snap.forEach(d => out.push({ id: d.id, ...d.data() }));
+    return out;
+  } catch (e) {
+    return [];
+  }
+}
+function _aprendizadoAgregar(eventos) {
+  const porMotivo = {};
+  const porTerminal = {};
+  const porTerminalMotivo = {}; // terminal|motivo -> { count, somaExcessoMin }
+  eventos.forEach(ev => {
+    porMotivo[ev.motivoPrincipal] = (porMotivo[ev.motivoPrincipal] || 0) + 1;
+    const t = ev.terminal || '(sem terminal)';
+    porTerminal[t] = (porTerminal[t] || 0) + 1;
+    const chave = t + '|' + ev.motivoPrincipal;
+    if (!porTerminalMotivo[chave]) porTerminalMotivo[chave] = { terminal: t, motivo: ev.motivoPrincipal, count: 0, somaExcessoMin: 0, comExcesso: 0 };
+    porTerminalMotivo[chave].count++;
+    if (typeof ev.excessoJornadaMin === 'number') {
+      porTerminalMotivo[chave].somaExcessoMin += ev.excessoJornadaMin;
+      porTerminalMotivo[chave].comExcesso++;
+    }
+  });
+  return { total: eventos.length, porMotivo, porTerminal, porTerminalMotivo };
+}
+// Gera sugestões de ajuste — só pra jornada (o único parâmetro que não é
+// restrição dura). Critério: terminal com ≥5 eventos de motivo "jornada" e
+// excesso médio pequeno (≤15min) é candidato a folga maior.
+function _aprendizadoGerarSugestoes(agregado) {
+  const sugestoes = [];
+  Object.values(agregado.porTerminalMotivo).forEach(g => {
+    if (g.motivo !== 'jornada' || g.count < 5 || g.comExcesso === 0) return;
+    const mediaExcessoMin = g.somaExcessoMin / g.comExcesso;
+    if (mediaExcessoMin > 0 && mediaExcessoMin <= 15) {
+      sugestoes.push({
+        terminal: g.terminal,
+        campo: 'toleranciaJornada',
+        atual: 1.05,
+        sugerido: 1.05 + Math.min(0.05, Math.ceil(mediaExcessoMin / 60 * 100) / 100), // pequeno incremento proporcional
+        motivo: `${g.count} pedido(s) neste terminal só não consolidaram por excesso médio de ${mediaExcessoMin.toFixed(0)}min de jornada.`,
+      });
+    }
+  });
+  return sugestoes;
+}
+async function _aprendizadoAplicarSugestao(terminal, novoValor) {
+  if (!_aprendizadoDisponivel()) { alert('Firestore indisponível.'); return; }
+  try {
+    const ref = window.fbDoc(window.fbDb, 'otimizador_parametros', 'global');
+    const snap = await window.fbGetDoc(ref);
+    const atual = snap.exists() ? (snap.data() || {}) : {};
+    const toleranciasNovas = { ...(atual.toleranciasJornadaPorTerminal || {}), [terminal]: novoValor };
+    const historico = Array.isArray(atual.historico) ? atual.historico.slice(-49) : [];
+    historico.push({ data: new Date().toISOString(), campo: `toleranciaJornada[${terminal}]`, valorAntigo: atual.toleranciasJornadaPorTerminal?.[terminal] || 1.05, valorNovo: novoValor });
+    await window.fbSetDoc(ref, { ...atual, toleranciasJornadaPorTerminal: toleranciasNovas, historico, ultimaAtualizacao: new Date().toISOString() }, { merge: true });
+    alert(`Aplicado: tolerância de jornada de ${terminal} agora é ${(novoValor*100).toFixed(0)}%. Vai valer a partir da próxima roteirização.`);
+    renderAprendizado();
+  } catch (e) {
+    alert('Erro ao aplicar sugestão: ' + e.message);
+  }
+}
+async function renderAprendizado() {
+  const box = document.getElementById('aprendizado-conteudo');
+  if (!box) return;
+  if (!_aprendizadoDisponivel()) {
+    box.innerHTML = `<div class="alert alert-warn">⚠ Firestore não está disponível nesta sessão (script do Cadastro ainda não carregou, ou você está sem conexão). Os eventos continuam sendo registrados normalmente durante a roteirização — recarregue a página e volte aqui.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="empty">Carregando eventos...</div>`;
+  const [eventos, params] = await Promise.all([_aprendizadoCarregarEventos(500), _aprendizadoCarregarParametros()]);
+  if (!eventos.length) {
+    box.innerHTML = `<div class="empty">Nenhum evento registrado ainda. Assim que a roteirização automática rodar e algum pedido não conseguir consolidar num veículo já em uso, os motivos vão aparecer aqui.</div>`;
+    return;
+  }
+  const agregado = _aprendizadoAgregar(eventos);
+  const sugestoes = _aprendizadoGerarSugestoes(agregado);
+  const labelMotivo = { terminal: 'Terminal diferente', compartimento: 'Compartimento não fecha exato', jornada: 'Só excedendo jornada', janela: 'Janela de horário', tipo: 'Tipo de veículo' };
+  const motivoRows = Object.entries(agregado.porMotivo)
+    .sort((a,b) => b[1]-a[1])
+    .map(([m,c]) => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px;"><span>${labelMotivo[m]||m}</span><b>${c}</b></div>`)
+    .join('');
+  const terminalRows = Object.entries(agregado.porTerminal)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0, 12)
+    .map(([t,c]) => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px;"><span>${t}</span><b>${c}</b></div>`)
+    .join('');
+  const sugestoesHtml = sugestoes.length
+    ? sugestoes.map(s => `
+        <div style="background:#F0F9EB;border:1px solid #C4E87A;border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:700;color:#365314;">💡 ${s.terminal}</div>
+          <div style="font-size:11.5px;color:#3F6212;margin:3px 0 8px;">${s.motivo} Sugestão: aumentar a folga de jornada de ${((s.atual)*100-100).toFixed(0)}% para ${((s.sugerido)*100-100).toFixed(0)}%.</div>
+          <button class="btn btn-green btn-sm" onclick="_aprendizadoAplicarSugestao('${s.terminal.replace(/'/g,"\\'")}', ${s.sugerido})">Aplicar</button>
+        </div>`).join('')
+    : `<div style="font-size:12px;color:var(--text-3);">Nenhuma sugestão automática no momento — a maioria dos eventos registrados são restrições reais de cadastro (veja a coluna "Motivos" ao lado), não algo que um parâmetro resolva.</div>`;
+  box.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);margin-bottom:6px;">Motivos (${agregado.total} eventos, últimos ${eventos.length})</div>
+        ${motivoRows}
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);margin-bottom:6px;">Top terminais com mais casos</div>
+        ${terminalRows}
+      </div>
+    </div>
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);margin-bottom:6px;">Sugestões de ajuste (revisão manual)</div>
+    ${sugestoesHtml}
+    <div style="font-size:10.5px;color:var(--text-3);margin-top:14px;">Parâmetro atual — bônus de veículo ativo: ${params.ativoBonus} m³ (usado na priorização de consolidação, não muda por sugestão automática ainda).</div>
+  `;
+}
+// ═══════════════════════════════════════════════════════════════════════════
 // MAPA DE PEDIDOS — visualização + fechamento manual de carga
 // ═══════════════════════════════════════════════════════════════════════════
 // Mostra os pedidos ainda não roteirizados (ou parcialmente) num mapa,
@@ -3753,6 +3927,10 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   // ══════════════════════════════════════════════════════════════════════════
   if (!pedidos.length)  { showTab('pedidos');  alert('Adicione ao menos um pedido.'); return; }
   if (!veiculos.length) { showTab('veiculos'); alert('Adicione ao menos um veículo.'); return; }
+  // Carrega os parâmetros aprendidos (Firestore) — se falhar ou não existir
+  // ainda, usa os mesmos valores padrão de sempre (0 mudança de comportamento
+  // pra quem nunca usou o painel 🧠 Aprendizado).
+  const _aprendizadoParametros = await _aprendizadoCarregarParametros();
   Object.keys(_motoristasOverride).forEach(k => delete _motoristasOverride[k]);
   const todosBtn = document.querySelectorAll('.btn-otimizar-ded');
   todosBtn.forEach(b => { b.disabled = true; b.style.opacity = '0.7'; });
@@ -3867,10 +4045,16 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     if (!d) return null;
     return Math.round((d.getTime() - baseDataEntrega.getTime()) / 86400000);
   };
-  // Veículo atende as restrições do pedido (tipo, Petronas, terminal)?
+  // Veículo atende as restrições do pedido (tipo, terminal)?
+  // NOTA: "Identidade Petronas" NÃO é mais bloqueio automático — a
+  // compartimentação (encaixe exato) é a única trava dura. Se o pedido exige
+  // ID Petronas e o veículo não tem, a roteirização acontece mesmo assim
+  // (prioriza atender o cliente + compartimento correto); o sistema apenas
+  // AVISA depois (ver bloco de violações no render e o alerta global de
+  // "sem credencial Petronas"), pra quem está operando decidir se aceita ou
+  // resolve manualmente. Isso é intencional — não reintroduzir o filtro aqui.
   const veicOk = (v, p) =>
     (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
-    (!p.identidadePetronas || !!v.identidadePetronas) &&
     veiculoAtendeTerminal(v, p.terminal);
   const totalVolProdutos = (produtos=[]) => produtos.reduce((s, pr) => s + (pr?.volume || 0), 0);
   const produtosPendentesPedido = (pedido) => {
@@ -3961,6 +4145,15 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     return veiculos
       .filter(v => !lockedTerminals.has(baseVeiculoLabel(v)) && (v.disponibilidade || 'Disponível') !== 'Indisponível' && veicOkCompartimentos(v, pedido) && (permitirCapacidadeMenor || v.capacidade >= vol - 0.001))
       .sort((a, b) => {
+        // 0. Se o pedido exige ID Petronas, prefere veículo credenciado —
+        //    mas NÃO é obrigatório (só desempate): se o único candidato com
+        //    compartimento certo não tiver a credencial, ele ainda é usado,
+        //    só perde a prioridade para quem tem quando os dois servem.
+        if (pedido.identidadePetronas) {
+          const aCred = a.identidadePetronas ? 1 : 0;
+          const bCred = b.identidadePetronas ? 1 : 0;
+          if (bCred !== aCred) return bCred - aCred;
+        }
         // 1. Dedicado antes de Spot
         const aDedicado = (a.contrato || 'Dedicado') !== 'Spot' ? 1 : 0;
         const bDedicado = (b.contrato || 'Dedicado') !== 'Spot' ? 1 : 0;
@@ -3981,7 +4174,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         //   Exemplo (BONUS=4, pedido 15 m³):
         //     ativo 20 m³ → score 16  vs  inativo 15 m³ → score 15  → inativo ganha
         //     ativo 20 m³ → score 16  vs  inativo 20 m³ → score 20  → ativo ganha
-        const ATIVO_BONUS = 4;
+        const ATIVO_BONUS = _aprendizadoParametros.ativoBonus;
         const aAtivo = resultado[a.id].length > 0 ? 1 : 0;
         const bAtivo = resultado[b.id].length > 0 ? 1 : 0;
         // Modo dedicado: bônus negativo para dedicados → prefere ativar os ociosos (spreading)
@@ -4008,9 +4201,12 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     if (!podeFitar(produtosSelecionados, viagem.compsDisp)) return null;
     const idxV = resultado[v.id].indexOf(viagem);
     const n    = viagem.paradas.length;
-    // Cap de jornada: normal = 100%, fallback de sobra = 130%
+    // Cap de jornada: normal = 100%, fallback de sobra = tolerância aprendida
+    // pra esse terminal (painel 🧠 Aprendizado), ou 5% padrão se nunca foi
+    // ajustada.
+    const _tolTerminal = _aprendizadoParametros.toleranciasJornadaPorTerminal[viagem.terminalOrigem] || 1.05;
     const limiteEfetivo = permitirExcederJornada
-      ? controleTempo[v.id].limiteMin * 1.05
+      ? controleTempo[v.id].limiteMin * _tolTerminal
       : controleTempo[v.id].limiteMin;
     for (const pos of posicoesCandidatas(viagem, v, pedido)) {
       const isEnd = pos.idx >= n;
@@ -4290,6 +4486,54 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       if (alocado) break;
     }
     if (alocado) continue;
+    // Diagnóstico: pedido não coube em NENHUMA viagem já ativa — antes de abrir
+    // um caminhão novo (Passo 2), registra POR QUE cada veículo já em uso não
+    // serviu. Ajuda a distinguir "faltou consolidar por bug" de "não dava
+    // mesmo" (janela de horário, jornada ou compartimento) quando o usuário
+    // reportar que 2 pedidos pequenos foram pra 2 caminhões em vez de 1.
+    // Também alimenta o painel 🧠 Aprendizado (Firestore) com o motivo
+    // categorizado — ver _aprendizadoRegistrarEvento.
+    {
+      const ativosElegiveis = veiculos.filter(v =>
+        resultado[v.id]?.some(vi => vi.paradas?.length > 0) &&
+        !lockedTerminals.has(baseVeiculoLabel(v)) &&
+        (v.disponibilidade || 'Disponível') !== 'Indisponível'
+      );
+      if (ativosElegiveis.length) {
+        const detalhesPorVeic = ativosElegiveis.map(v => {
+          if (!veicOk(v, pedido)) {
+            const motivos = [];
+            if (pedido.tiposCaminhao?.length && !pedido.tiposCaminhao.includes(v.tipo)) motivos.push('tipo');
+            if (!veiculoAtendeTerminal(v, pedido.terminal)) motivos.push('terminal');
+            return { placa: v.placa, motivo: motivos[0] || 'tipo', texto: motivos.join('/') || 'veicOk=false' };
+          }
+          const viagensAtivas = resultado[v.id].filter(vi => vi.paradas?.length > 0);
+          let melhor = { placa: v.placa, motivo: 'janela', texto: 'sem posição válida (janela de horário)' };
+          for (const vi of viagensAtivas) {
+            if (pedido.terminal && vi.terminalOrigem !== pedido.terminal) { melhor = { placa: v.placa, motivo: 'terminal', texto: 'terminal da viagem diferente' }; continue; }
+            if (!podeFitar(pedido.produtos, vi.compsDisp)) { melhor = { placa: v.placa, motivo: 'compartimento', texto: 'compartimento não fecha exato' }; continue; }
+            const t2 = tentarEncaixe(pedido, v, vi, pedido.produtos, { permitirExcederJornada: true });
+            if (t2) { melhor = { placa: v.placa, motivo: 'jornada', texto: 'só encaixaria excedendo jornada', excessoMin: t2.detalhe?._jornadaExcedenteMin || 0 }; break; } // jornada é o motivo mais "acionável" — prioriza no log se aparecer
+          }
+          return melhor;
+        });
+        console.log('[Otimizador] Não consolidado em veículo ativo —', pedido.cliente,
+          `(${totalVolPedido(pedido).toFixed(1)}m³):`, detalhesPorVeic.map(d => `${d.placa}: ${d.texto}`).join(' ;; '));
+        // Motivo principal do pedido = o mais "fraco" entre os veículos ativos
+        // (prioriza jornada > janela > compartimento > terminal > tipo, porque
+        // é o que mais indica "quase deu, faltou pouco" vs. restrição estrutural).
+        const prioridade = { jornada: 5, janela: 4, compartimento: 3, terminal: 2, tipo: 1 };
+        const principal = detalhesPorVeic.reduce((a, b) => (prioridade[b.motivo] > prioridade[a.motivo] ? b : a));
+        _aprendizadoRegistrarEvento({
+          cliente: pedido.cliente,
+          terminal: pedido.terminal || '',
+          volume: totalVolPedido(pedido),
+          motivoPrincipal: principal.motivo,
+          excessoJornadaMin: principal.motivo === 'jornada' ? (principal.excessoMin || 0) : undefined,
+          modo,
+        });
+      }
+    }
     // PASSO 1.5 (modo dedicado): Spreading proativo — divide produtos de um pedido
     // entre EXATAMENTE 2 dedicados ociosos quando nenhum truck sozinho resolve.
     // Guardas que evitam fragmentação excessiva (problema aprendido com Americana):
@@ -6422,6 +6666,23 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
   }
   if (totalQuebras > 0) html += `<div class="alert alert-warn">⚠ ${totalQuebras} item(ns) de pedido divididos por limitação de capacidade.</div>`;
   else html += `<div class="alert alert-success">✓ Todos os itens alocados sem quebras de pedido.</div>`;
+  // ── Alerta global: pedido roteirizado num veículo sem a credencial ID
+  // Petronas que ele exige. Não é mais bloqueio automático (só a
+  // compartimentação bloqueia) — o sistema atende o cliente e avisa aqui,
+  // além do badge "⚠ ID Petronas" que já aparece na própria entrega e do
+  // contador "⚠ N restrições" no cabeçalho de cada veículo.
+  const semCredencialPetronas = [];
+  rotasRaw.forEach(({ v, viagens }) => (viagens || []).forEach(vi => (vi.paradas || []).forEach(pa => {
+    if (pa.pedido?.identidadePetronas && !v.identidadePetronas) {
+      semCredencialPetronas.push({ cliente: pa.pedido.cliente, placa: v.placa });
+    }
+  })));
+  if (semCredencialPetronas.length) {
+    const itensPet = semCredencialPetronas
+      .map(x => `${x.cliente} → ${x.placa}`)
+      .join(', ');
+    html += `<div class="alert alert-warn">⚠ <b>Sem credencial ID Petronas</b> — roteirizado mesmo assim pra atender o cliente e priorizar a compartimentação correta: ${itensPet}. Confirme se o veículo pode acessar o terminal antes de despachar.</div>`;
+  }
   // Avisos devem usar visão global (sem filtros da tela), para evitar falso
   // "sem alocação" ao filtrar cidade/cliente/terminal.
   const allocMapGlobal = new Map();
@@ -6439,12 +6700,12 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
       !veiculos.some(v => veiculoAtendeTerminal(v, p.terminal))
     );
     const semVeicTermIds  = new Set(semVeicTerm.map(p => p.id));
-    // Cat 3 — veículo existe para o terminal mas tipo/Petronas bloqueia
+    // Cat 3 — veículo existe para o terminal mas tipo do caminhão bloqueia
+    // (ID Petronas NÃO entra mais aqui — deixou de ser bloqueio automático)
     const semFrota        = naoProgr.filter(p => {
       if (semCadastroIds.has(p.id) || semVeicTermIds.has(p.id)) return false;
       const pool = veiculos
-        .filter(v => !p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo))
-        .filter(v => !p.identidadePetronas || !!v.identidadePetronas);
+        .filter(v => !p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo));
       return !pool.some(v => veiculoAtendeTerminal(v, p.terminal));
     });
     const semFrotaIds     = new Set(semFrota.map(p => p.id));
@@ -6454,16 +6715,17 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
       !semCadastroIds.has(p.id) && !semVeicTermIds.has(p.id) && !semFrotaIds.has(p.id)
     );
     // Cat 5 — compartimentação estruturalmente incompatível: existe veículo
-    // elegível (terminal/tipo/Petronas ok) mas NENHUM deles, mesmo vazio/livre,
+    // elegível (terminal/tipo ok) mas NENHUM deles, mesmo vazio/livre,
     // tem compartimento do tamanho EXATO dos produtos do pedido (encaixe exato
     // é obrigatório — não aceitamos "sobra de espaço" num compartimento maior).
+    // ID Petronas NÃO entra no filtro do pool: não é mais bloqueio, é só aviso
+    // (ver alerta "sem credencial ID Petronas" logo abaixo).
     // Isso é diferente de "esgotou capacidade": aqui, nem um veículo desse tipo
     // recém-carregado (compsDisp cheio) conseguiria receber o pedido.
     const semCompartimento = semCapBase.filter(p => {
       const pool = veiculos.filter(v =>
         veiculoAtendeTerminal(v, p.terminal) &&
-        (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
-        (!p.identidadePetronas || !!v.identidadePetronas)
+        (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo))
       );
       if (!pool.length) return false;
       const itensPedido = (p.produtos || []).map(pr => ({ produto: pr.produto, volume: pr.volume }));
@@ -6522,25 +6784,38 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
   // incompatibilidade (compartimento, terminal, tipo, credencial Petronas), o
   // sistema avisa e pede confirmação — a decisão final fica com quem está
   // operando, não é mais um bloqueio automático.
+  // Cartão compacto por padrão (base, cliente, volume); clique em "Detalhes"
+  // expande cidade, janela e a quebra por produto sem poluir a lista inteira.
   // ────────────────────────────────────────────────────────────────────────
   if (naoProgr.length) {
-    const cardsHtml = naoProgr.map(p => {
+    const cardsHtml = naoProgr.map((p, idx) => {
       const pend = produtosPendentesDoPedido(p);
       if (!pend.length) return '';
       const volPend = pend.reduce((s, pr) => s + pr.volume, 0);
-      const produtosTxt = pend.map(pr => `${pr.produto}: ${pr.volume.toFixed(1)}m³`).join(' + ');
+      const produtosTxt = pend.map(pr => `${pr.produto}: ${pr.volume.toFixed(1)} m³`).join('<br/>');
+      const detId = `pend-det-${p.id}-${idx}`;
       return `
         <div class="stop" draggable="true" ondragstart="iniciarDragPedidoPendente(${p.id}, this)" ondragend="fimDragParada(this)"
-             style="min-width:220px;max-width:260px;background:#fff;border:1px solid #FDE68A;border-radius:8px;padding:8px 10px;cursor:grab;">
-          <div style="font-weight:700;font-size:12px;">${p.cliente}</div>
-          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px;">${p.cidade || ''}${p.terminal ? ' · ' + p.terminal : ''}</div>
-          <div style="font-size:11px;">${produtosTxt}</div>
-          <div style="font-size:11px;font-weight:700;color:#B45309;margin-top:2px;">Pendente: ${volPend.toFixed(1)} m³</div>
+             style="width:198px;background:#fff;border:1px solid #F0DFB8;border-radius:9px;padding:9px 10px;cursor:grab;transition:box-shadow .15s,border-color .15s;"
+             onmouseover="this.style.boxShadow='0 2px 8px rgba(180,83,9,0.12)';this.style.borderColor='#F3CD86'" onmouseout="this.style.boxShadow='';this.style.borderColor='#F0DFB8'">
+          <div style="font-weight:700;font-size:12px;line-height:1.3;color:#292524;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.cliente}">${p.cliente}</div>
+          <div style="font-size:10.5px;color:var(--text-3);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.terminal || '—'}</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:7px;">
+            <span style="font-size:12px;font-weight:700;color:#B45309;background:#FEF3C7;padding:2px 8px;border-radius:20px;">${volPend.toFixed(1)} m³</span>
+            <button type="button" onclick="event.stopPropagation();this.closest('.stop').querySelector('.pend-detalhes').classList.toggle('hidden');this.querySelector('.pend-caret').style.transform=this.closest('.stop').querySelector('.pend-detalhes').classList.contains('hidden')?'rotate(0deg)':'rotate(180deg)'"
+                    style="border:none;background:none;font-size:10.5px;color:var(--text-3);cursor:pointer;display:flex;align-items:center;gap:2px;padding:2px 4px;">
+              Detalhes <span class="pend-caret" style="display:inline-block;transition:transform .15s;font-size:9px;">▾</span>
+            </button>
+          </div>
+          <div class="pend-detalhes hidden" style="margin-top:7px;padding-top:7px;border-top:1px dashed #F0DFB8;font-size:10.5px;color:#57534E;line-height:1.6;">
+            <div>${p.cidade || ''}</div>
+            <div style="margin-top:3px;">${produtosTxt}</div>
+          </div>
         </div>`;
     }).join('');
     if (cardsHtml) {
       html += `
-        <div style="margin:10px 0;padding:10px 12px;background:#FFF7ED;border:1px solid #FDE68A;border-radius:10px;">
+        <div style="margin:10px 0;padding:10px 12px;background:#FFFBF2;border:1px solid #F0DFB8;border-radius:10px;">
           <div style="font-size:12px;font-weight:700;color:#92400E;margin-bottom:8px;">
             📋 ${naoProgr.length} pedido(s) não roteirizado(s) — arraste o cartão pra cima de um veículo pra alocar manualmente
           </div>
@@ -8809,12 +9084,16 @@ async function freteCalcular() {
   var viagensMap = {}, mesMapa = {};
 
   // ── Pedágio por viagem histórica ─────────────────────────────────────────
-  // Reaproveita a mesma detecção usada no alerta de pedágios do roteirizador.
-  // Se aquela viagem já teve o trajeto real conferido via OSRM em algum
-  // momento (cache _pedagiosGlobalCache, populado em _atualizarPedagiosGlobalReal),
-  // usamos o valor preciso; senão caímos na aproximação por linha reta — mais
-  // rápida, mas que pode subestimar levemente o valor (mesma limitação do
-  // alerta antes de a rota real ser conferida).
+  // Sempre busca o trajeto REAL no OSRM (mesma fonte usada no Mapa da Viagem
+  // e no alerta de pedágios da roteirização) em vez da aproximação por linha
+  // reta — mesmo raio de detecção fino (500m) e mesma precisão em todo o
+  // sistema. Como o relatório pode ter centenas de viagens no período, o
+  // trabalho é feito em 2 passos: 1) monta a lista de rotas ÚNICAS que
+  // precisam de pedágio (rotas repetidas em dias diferentes reusam o mesmo
+  // resultado); 2) busca essas rotas no OSRM com concorrência limitada
+  // (não sobrecarrega o servidor público) e cache compartilhado com o resto
+  // do sistema (_pedagiosGlobalCache) — se a viagem já foi conferida antes
+  // (ex.: alguém abriu o Mapa da Viagem dela), nem precisa buscar de novo.
   function _freteObterPontosRota(v, vi, terminaisSnap) {
     if (!v || !vi || !vi.paradas || !vi.paradas.length) return [];
     var terminalNomeOrigem = vi.terminalOrigem || v.terminal || (vi.paradas[0] && vi.paradas[0].pedido && vi.paradas[0].pedido.terminal) || '';
@@ -8829,17 +9108,34 @@ async function freteCalcular() {
     if (terminal && ((ultimoP && ultimoP.deslocVazioMin) || 0) > 0) pontos.push({ lat: terminal.lat, lon: terminal.lon });
     return pontos.filter(function(p) { return !isNaN(parseFloat(p.lat)) && !isNaN(parseFloat(p.lon)); });
   }
-  function _fretePedagiosDaViagem(v, vi, terminaisSnap) {
-    if (!window.detectarPedagiosNaRota) return { custo: 0, preciso: false };
-    var eixosVeic = v.eixos || 2;
-    var pontosRetos = _freteObterPontosRota(v, vi, terminaisSnap);
-    if (pontosRetos.length < 2) return { custo: 0, preciso: false };
-    var chave = eixosVeic + '|' + pontosRetos.map(function(p) { return (+p.lat).toFixed(4) + ',' + (+p.lon).toFixed(4); }).join('|');
-    var cache = typeof _pedagiosGlobalCache !== 'undefined' ? _pedagiosGlobalCache.get(chave) : null;
-    if (cache) return { custo: cache.reduce(function(s,p){ return s + p.valor; }, 0), preciso: true };
-    var pedagios = window.detectarPedagiosNaRota(pontosRetos, eixosVeic, 3); // linha reta sem refino: raio maior (3km) pra não perder pedágio em estrada que curva
-    return { custo: pedagios.reduce(function(s,p){ return s + p.valor; }, 0), preciso: false };
+  function _freteChaveRota(eixosVeic, pontosRetos) {
+    return eixosVeic + '|' + pontosRetos.map(function(p) { return (+p.lat).toFixed(4) + ',' + (+p.lon).toFixed(4); }).join('|');
   }
+  // Busca o trajeto real de UMA rota no OSRM (segmento a segmento, igual ao
+  // Mapa da Viagem) e roda a detecção de pedágio em cima do trajeto real.
+  async function _freteResolverPedagioReal(eixosVeic, pontosRetos) {
+    if (typeof osrmFetchSegmento !== 'function') {
+      // Script do dashboard ainda não carregou — cai pra linha reta com raio
+      // largo (3km) só como último recurso, pra não deixar o relatório vazio.
+      var pedFallback = window.detectarPedagiosNaRota ? window.detectarPedagiosNaRota(pontosRetos, eixosVeic, 3) : [];
+      return { custo: pedFallback.reduce(function(s,p){ return s + p.valor; }, 0), preciso: false };
+    }
+    var pontosReais = [{ lat: +pontosRetos[0].lat, lon: +pontosRetos[0].lon }];
+    for (var i = 0; i < pontosRetos.length - 1; i++) {
+      var seg = await osrmFetchSegmento(
+        { lat: +pontosRetos[i].lat, lon: +pontosRetos[i].lon },
+        { lat: +pontosRetos[i + 1].lat, lon: +pontosRetos[i + 1].lon }
+      );
+      (seg.coords || []).forEach(function(c) { pontosReais.push({ lat: c[0], lon: c[1] }); });
+    }
+    var pedagios = window.detectarPedagiosNaRota(pontosReais, eixosVeic); // raio padrão (500m) — trajeto real já é preciso
+    return { custo: pedagios.reduce(function(s,p){ return s + p.valor; }, 0), preciso: true, pedagios: pedagios };
+  }
+
+  // Passo 1: monta todas as entradas (sem pedágio ainda) e coleta as rotas
+  // únicas que precisam de cálculo.
+  var entriesPendentes = []; // { entry, chave, eixosVeic, pontosRetos }
+  var rotasUnicas = new Map(); // chave -> { eixosVeic, pontosRetos }
 
   snaps.forEach(function(snap) {
     var res = snap.resultado || {}, veics = snap.veiculos || [];
@@ -8869,12 +9165,63 @@ async function freteCalcular() {
             + (p.deslocVazioMin || 0);
         }, 0);
         var fatorJornada = jornadaDispMin > 0 ? Math.min(1, Math.max(0, jornadaUsadaMin / jornadaDispMin)) : 0;
-        var pedInfo = _fretePedagiosDaViagem(v, vi, snap.terminais);
-        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa, jornadaDispMin: jornadaDispMin, jornadaUsadaMin: jornadaUsadaMin, fatorJornada: fatorJornada, custoPedagios: pedInfo.custo, pedagiosPreciso: pedInfo.preciso };
+
+        var eixosVeic = v.eixos || 2;
+        var pontosRetos = _freteObterPontosRota(v, vi, snap.terminais);
+        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa, jornadaDispMin: jornadaDispMin, jornadaUsadaMin: jornadaUsadaMin, fatorJornada: fatorJornada, custoPedagios: 0, pedagiosPreciso: false };
         viagensMap[placa].push(entry);
         mesMapa[placa][mesKey].viagens.push(entry);
+
+        if (pontosRetos.length >= 2 && window.detectarPedagiosNaRota) {
+          var chave = _freteChaveRota(eixosVeic, pontosRetos);
+          entriesPendentes.push({ entry: entry, chave: chave });
+          if (!rotasUnicas.has(chave)) rotasUnicas.set(chave, { eixosVeic: eixosVeic, pontosRetos: pontosRetos });
+        }
       });
     });
+  });
+
+  // Passo 2: resolve as rotas únicas — usa cache compartilhado quando existe,
+  // busca no OSRM quando não existe. Mostra progresso porque isso pode levar
+  // um tempo em períodos longos (cada rota nova é 1+ chamadas ao OSRM).
+  var chaves = Array.from(rotasUnicas.keys());
+  var resolvidas = new Map(); // chave -> { custo, preciso }
+  var jaCacheadas = 0, aBuscar = 0;
+  chaves.forEach(function(chave) {
+    var cache = typeof _pedagiosGlobalCache !== 'undefined' ? _pedagiosGlobalCache.get(chave) : null;
+    if (cache) { resolvidas.set(chave, { custo: cache.reduce(function(s,p){ return s + p.valor; }, 0), preciso: true }); jaCacheadas++; }
+    else aBuscar++;
+  });
+  if (aBuscar > 0) {
+    el.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-3);font-size:13px;">Conferindo trajeto real de ' + aBuscar + ' rota(s) no mapa (pedágios)... isso pode levar um tempo em períodos longos.</div>';
+  }
+  var CONCORRENCIA_FRETE = 3; // mesmo limite usado no alerta de pedágios da roteirização
+  var cursorFrete = 0;
+  async function _freteProcessarProximaRota() {
+    while (cursorFrete < chaves.length) {
+      var chave = chaves[cursorFrete++];
+      if (resolvidas.has(chave)) continue; // já veio do cache no passo anterior
+      var info = rotasUnicas.get(chave);
+      try {
+        var res2 = await _freteResolverPedagioReal(info.eixosVeic, info.pontosRetos);
+        resolvidas.set(chave, { custo: res2.custo, preciso: res2.preciso });
+        if (res2.preciso && res2.pedagios && typeof _pedagiosGlobalCache !== 'undefined') {
+          _pedagiosGlobalCache.set(chave, res2.pedagios); // alimenta o cache global — outras telas também se beneficiam
+        }
+      } catch (e) {
+        resolvidas.set(chave, { custo: 0, preciso: false }); // falha de rede numa rota não deve travar o relatório inteiro
+      }
+    }
+  }
+  if (aBuscar > 0) {
+    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, aBuscar) }, _freteProcessarProximaRota));
+  }
+
+  // Passo 3: aplica o resultado de cada rota única de volta em todas as
+  // entradas que a usam (uma mesma rota pode se repetir em vários dias).
+  entriesPendentes.forEach(function(item) {
+    var res3 = resolvidas.get(item.chave);
+    if (res3) { item.entry.custoPedagios = res3.custo; item.entry.pedagiosPreciso = res3.preciso; }
   });
 
   function kmEfetivo(entry, contrato) {
