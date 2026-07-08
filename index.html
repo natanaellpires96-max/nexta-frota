@@ -574,8 +574,18 @@
         <div id="dash-ranking-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:20px;overflow:hidden;">
-        <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:2px;">Ocupação vs Volume por Operação (Cidade)</div>
-        <div style="font-size:10.5px;color:var(--text-3);margin-bottom:12px;">Acompanha o filtro de "🏙️ Operação (Cidade)" acima — filtre pra ver só as operações que interessam</div>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:2px;">Ocupação vs Volume por Operação (Cidade)</div>
+            <div style="font-size:10.5px;color:var(--text-3);">Acompanha o filtro de "🏙️ Operação (Cidade)" acima — filtre pra ver só as operações que interessam</div>
+          </div>
+          <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
+            <button class="dash-opocup-tab active-rank" data-campo="volume" onclick="dashOpOcupVolSetOrdem('volume')"
+              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior Volume</button>
+            <button class="dash-opocup-tab" data-campo="ocup" onclick="dashOpOcupVolSetOrdem('ocup')"
+              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior Ocupação</button>
+          </div>
+        </div>
         <div id="dash-chart-op-ocup-vol" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px;">
