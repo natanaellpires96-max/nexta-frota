@@ -372,6 +372,35 @@ function detectarPedagiosNaRota(paradas, eixos = 2, raioKm = 0.5) {
   
   const pedagiosEncontrados = [];
   const RAIO_DETECCAO_KM = raioKm;
+
+  // ── Pré-filtro geográfico (bounding box) ──────────────────────────────────
+  // Com a base ampliada pra 244 pedágios (antes eram só 3), comparar TODOS
+  // eles contra cada segmento da rota ficou caro (~130ms por rota só nisso,
+  // sem nenhuma chamada de rede) — o suficiente pra travar a tela por vários
+  // segundos quando o Frete precisa calcular dezenas de rotas de uma vez.
+  // Antes de rodar a checagem detalhada (ponto-a-ponto ao longo do segmento),
+  // descarta de cara os pedágios que nem chegam perto da caixa delimitadora
+  // de toda a rota — qualquer segmento entre dois pontos dessa caixa fica
+  // contido nela (é um retângulo convexo), então isso nunca deixa passar um
+  // pedágio de verdade, só corta os que estão obviamente longe. Reduz a
+  // varredura de ~244 pra normalmente menos de 20 pedágios por rota.
+  let lat1 = Infinity, lat2 = -Infinity, lon1 = Infinity, lon2 = -Infinity;
+  paradas.forEach(p => {
+    if (p && p.lat != null && p.lon != null) {
+      if (p.lat < lat1) lat1 = p.lat;
+      if (p.lat > lat2) lat2 = p.lat;
+      if (p.lon < lon1) lon1 = p.lon;
+      if (p.lon > lon2) lon2 = p.lon;
+    }
+  });
+  // Margem generosa (~15km) em graus — cobre o raio de detecção (até 3km nos
+  // casos de fallback) com folga, sem risco de cortar pedágio válido.
+  const MARGEM_GRAUS = 0.15;
+  const pedagiosCandidatos = (lat1 <= lat2)
+    ? PEDAGIOS_BR.filter(ped =>
+        ped.lat >= lat1 - MARGEM_GRAUS && ped.lat <= lat2 + MARGEM_GRAUS &&
+        ped.lon >= lon1 - MARGEM_GRAUS && ped.lon <= lon2 + MARGEM_GRAUS)
+    : PEDAGIOS_BR; // paradas sem coordenada válida — mantém comportamento antigo (não deveria ocorrer)
   
   // Itera sobre todas as paradas consecutivas
   for (let i = 0; i < paradas.length - 1; i++) {
@@ -380,8 +409,9 @@ function detectarPedagiosNaRota(paradas, eixos = 2, raioKm = 0.5) {
     
     if (!p1 || !p2 || p1.lat == null || p1.lon == null || p2.lat == null || p2.lon == null) continue;
     
-    // Para cada pedágio, verifica se está próximo ao TRAJETO (não só nas pontas)
-    PEDAGIOS_BR.forEach((ped) => {
+    // Para cada pedágio candidato (já filtrado pela caixa delimitadora),
+    // verifica se está próximo ao TRAJETO (não só nas pontas)
+    pedagiosCandidatos.forEach((ped) => {
       const distMinima = _distanciaPontoSegmento(p1.lat, p1.lon, p2.lat, p2.lon, ped.lat, ped.lon);
       
       if (distMinima <= RAIO_DETECCAO_KM) {

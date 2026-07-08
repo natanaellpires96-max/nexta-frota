@@ -6796,18 +6796,18 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
       const detId = `pend-det-${p.id}-${idx}`;
       return `
         <div class="stop" draggable="true" ondragstart="iniciarDragPedidoPendente(${p.id}, this)" ondragend="fimDragParada(this)"
-             style="width:198px;background:#fff;border:1px solid #F0DFB8;border-radius:9px;padding:9px 10px;cursor:grab;transition:box-shadow .15s,border-color .15s;"
+             style="display:block;width:230px;background:#fff;border:1px solid #F0DFB8;border-radius:9px;padding:10px 12px;cursor:grab;transition:box-shadow .15s,border-color .15s;"
              onmouseover="this.style.boxShadow='0 2px 8px rgba(180,83,9,0.12)';this.style.borderColor='#F3CD86'" onmouseout="this.style.boxShadow='';this.style.borderColor='#F0DFB8'">
-          <div style="font-weight:700;font-size:12px;line-height:1.3;color:#292524;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.cliente}">${p.cliente}</div>
-          <div style="font-size:10.5px;color:var(--text-3);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.terminal || '—'}</div>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:7px;">
+          <div style="font-weight:700;font-size:12.5px;line-height:1.35;color:#292524;word-break:break-word;" title="${p.cliente}">${p.cliente}</div>
+          <div style="font-size:10.5px;color:var(--text-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.terminal || ''}">${p.terminal || '—'}</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;">
             <span style="font-size:12px;font-weight:700;color:#B45309;background:#FEF3C7;padding:2px 8px;border-radius:20px;">${volPend.toFixed(1)} m³</span>
             <button type="button" onclick="event.stopPropagation();this.closest('.stop').querySelector('.pend-detalhes').classList.toggle('hidden');this.querySelector('.pend-caret').style.transform=this.closest('.stop').querySelector('.pend-detalhes').classList.contains('hidden')?'rotate(0deg)':'rotate(180deg)'"
                     style="border:none;background:none;font-size:10.5px;color:var(--text-3);cursor:pointer;display:flex;align-items:center;gap:2px;padding:2px 4px;">
               Detalhes <span class="pend-caret" style="display:inline-block;transition:transform .15s;font-size:9px;">▾</span>
             </button>
           </div>
-          <div class="pend-detalhes hidden" style="margin-top:7px;padding-top:7px;border-top:1px dashed #F0DFB8;font-size:10.5px;color:#57534E;line-height:1.6;">
+          <div class="pend-detalhes hidden" style="margin-top:8px;padding-top:8px;border-top:1px dashed #F0DFB8;font-size:10.5px;color:#57534E;line-height:1.6;">
             <div>${p.cidade || ''}</div>
             <div style="margin-top:3px;">${produtosTxt}</div>
           </div>
@@ -9007,6 +9007,7 @@ function freteRemoverSpot(i) {
 
 // ── Vista e Ordem ─────────────────────────────────────────────────────────────
 var _freteVista = 'viagem';
+var _freteCalcToken = 0; // incrementado a cada freteCalcular() — descarta refinamentos de pedágio em segundo plano que ficaram obsoletos
 var _freteOrdem = 'custo';
 
 function freteSetVista(v) {
@@ -9082,18 +9083,21 @@ async function freteCalcular() {
   }
 
   var viagensMap = {}, mesMapa = {};
+  var _meuTokenFrete = ++_freteCalcToken; // descarta atualização em segundo plano se o usuário clicar "Calcular" de novo antes dela terminar
 
   // ── Pedágio por viagem histórica ─────────────────────────────────────────
-  // Sempre busca o trajeto REAL no OSRM (mesma fonte usada no Mapa da Viagem
-  // e no alerta de pedágios da roteirização) em vez da aproximação por linha
-  // reta — mesmo raio de detecção fino (500m) e mesma precisão em todo o
-  // sistema. Como o relatório pode ter centenas de viagens no período, o
-  // trabalho é feito em 2 passos: 1) monta a lista de rotas ÚNICAS que
-  // precisam de pedágio (rotas repetidas em dias diferentes reusam o mesmo
-  // resultado); 2) busca essas rotas no OSRM com concorrência limitada
-  // (não sobrecarrega o servidor público) e cache compartilhado com o resto
-  // do sistema (_pedagiosGlobalCache) — se a viagem já foi conferida antes
-  // (ex.: alguém abriu o Mapa da Viagem dela), nem precisa buscar de novo.
+  // Estratégia em 2 passos, igual ao alerta de pedágios da roteirização —
+  // pra NUNCA travar a tela esperando rede:
+  //  1) Calcula na hora com a aproximação por linha reta (raio largo, sem
+  //     rede) e RENDERIZA IMEDIATAMENTE — usa cache compartilhado quando já
+  //     existe (ex.: viagem já conferida no Mapa da Viagem antes).
+  //  2) Em paralelo/depois, busca o trajeto REAL no OSRM só das rotas que
+  //     ainda não têm cache, com concorrência limitada, e quando termina,
+  //     RE-renderiza a tabela com os valores precisos — sem bloquear nada
+  //     nesse meio tempo. Se o período tiver poucas rotas novas, isso é
+  //     quase instantâneo; se tiver muitas, a tela já está utilizável desde
+  //     o primeiro instante e só o pedágio de algumas linhas atualiza depois
+  //     (marcadas com "≈" enquanto isso).
   function _freteObterPontosRota(v, vi, terminaisSnap) {
     if (!v || !vi || !vi.paradas || !vi.paradas.length) return [];
     var terminalNomeOrigem = vi.terminalOrigem || v.terminal || (vi.paradas[0] && vi.paradas[0].pedido && vi.paradas[0].pedido.terminal) || '';
@@ -9114,12 +9118,7 @@ async function freteCalcular() {
   // Busca o trajeto real de UMA rota no OSRM (segmento a segmento, igual ao
   // Mapa da Viagem) e roda a detecção de pedágio em cima do trajeto real.
   async function _freteResolverPedagioReal(eixosVeic, pontosRetos) {
-    if (typeof osrmFetchSegmento !== 'function') {
-      // Script do dashboard ainda não carregou — cai pra linha reta com raio
-      // largo (3km) só como último recurso, pra não deixar o relatório vazio.
-      var pedFallback = window.detectarPedagiosNaRota ? window.detectarPedagiosNaRota(pontosRetos, eixosVeic, 3) : [];
-      return { custo: pedFallback.reduce(function(s,p){ return s + p.valor; }, 0), preciso: false };
-    }
+    if (typeof osrmFetchSegmento !== 'function') return null; // dashboard.js ainda não carregou — mantém a estimativa
     var pontosReais = [{ lat: +pontosRetos[0].lat, lon: +pontosRetos[0].lon }];
     for (var i = 0; i < pontosRetos.length - 1; i++) {
       var seg = await osrmFetchSegmento(
@@ -9128,14 +9127,14 @@ async function freteCalcular() {
       );
       (seg.coords || []).forEach(function(c) { pontosReais.push({ lat: c[0], lon: c[1] }); });
     }
-    var pedagios = window.detectarPedagiosNaRota(pontosReais, eixosVeic); // raio padrão (500m) — trajeto real já é preciso
-    return { custo: pedagios.reduce(function(s,p){ return s + p.valor; }, 0), preciso: true, pedagios: pedagios };
+    return window.detectarPedagiosNaRota(pontosReais, eixosVeic); // raio padrão (500m) — trajeto real já é preciso
   }
 
-  // Passo 1: monta todas as entradas (sem pedágio ainda) e coleta as rotas
-  // únicas que precisam de cálculo.
+  // Passo 1: monta todas as entradas com pedágio IMEDIATO (cache ou linha
+  // reta) e coleta as rotas únicas que ainda não têm valor preciso.
   var entriesPendentes = []; // { entry, chave, eixosVeic, pontosRetos }
   var rotasUnicas = new Map(); // chave -> { eixosVeic, pontosRetos }
+  var chavesParaRefinar = [];
 
   snaps.forEach(function(snap) {
     var res = snap.resultado || {}, veics = snap.veiculos || [];
@@ -9175,54 +9174,33 @@ async function freteCalcular() {
         if (pontosRetos.length >= 2 && window.detectarPedagiosNaRota) {
           var chave = _freteChaveRota(eixosVeic, pontosRetos);
           entriesPendentes.push({ entry: entry, chave: chave });
-          if (!rotasUnicas.has(chave)) rotasUnicas.set(chave, { eixosVeic: eixosVeic, pontosRetos: pontosRetos });
+          if (!rotasUnicas.has(chave)) {
+            rotasUnicas.set(chave, { eixosVeic: eixosVeic, pontosRetos: pontosRetos });
+            var cache = typeof _pedagiosGlobalCache !== 'undefined' ? _pedagiosGlobalCache.get(chave) : null;
+            if (!cache) chavesParaRefinar.push(chave);
+          }
         }
       });
     });
   });
 
-  // Passo 2: resolve as rotas únicas — usa cache compartilhado quando existe,
-  // busca no OSRM quando não existe. Mostra progresso porque isso pode levar
-  // um tempo em períodos longos (cada rota nova é 1+ chamadas ao OSRM).
-  var chaves = Array.from(rotasUnicas.keys());
-  var resolvidas = new Map(); // chave -> { custo, preciso }
-  var jaCacheadas = 0, aBuscar = 0;
-  chaves.forEach(function(chave) {
-    var cache = typeof _pedagiosGlobalCache !== 'undefined' ? _pedagiosGlobalCache.get(chave) : null;
-    if (cache) { resolvidas.set(chave, { custo: cache.reduce(function(s,p){ return s + p.valor; }, 0), preciso: true }); jaCacheadas++; }
-    else aBuscar++;
-  });
-  if (aBuscar > 0) {
-    el.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-3);font-size:13px;">Conferindo trajeto real de ' + aBuscar + ' rota(s) no mapa (pedágios)... isso pode levar um tempo em períodos longos.</div>';
-  }
-  var CONCORRENCIA_FRETE = 3; // mesmo limite usado no alerta de pedágios da roteirização
-  var cursorFrete = 0;
-  async function _freteProcessarProximaRota() {
-    while (cursorFrete < chaves.length) {
-      var chave = chaves[cursorFrete++];
-      if (resolvidas.has(chave)) continue; // já veio do cache no passo anterior
-      var info = rotasUnicas.get(chave);
-      try {
-        var res2 = await _freteResolverPedagioReal(info.eixosVeic, info.pontosRetos);
-        resolvidas.set(chave, { custo: res2.custo, preciso: res2.preciso });
-        if (res2.preciso && res2.pedagios && typeof _pedagiosGlobalCache !== 'undefined') {
-          _pedagiosGlobalCache.set(chave, res2.pedagios); // alimenta o cache global — outras telas também se beneficiam
-        }
-      } catch (e) {
-        resolvidas.set(chave, { custo: 0, preciso: false }); // falha de rede numa rota não deve travar o relatório inteiro
+  // Aplica o valor JÁ DISPONÍVEL (cache preciso, ou estimativa rápida por
+  // linha reta) em cada entrada — isso é síncrono e instantâneo, não espera rede.
+  function _freteAplicarPedagiosDisponiveis() {
+    entriesPendentes.forEach(function(item) {
+      var cache = typeof _pedagiosGlobalCache !== 'undefined' ? _pedagiosGlobalCache.get(item.chave) : null;
+      if (cache) {
+        item.entry.custoPedagios = cache.reduce(function(s,p){ return s + p.valor; }, 0);
+        item.entry.pedagiosPreciso = true;
+        return;
       }
-    }
+      var info = rotasUnicas.get(item.chave);
+      var pedFallback = window.detectarPedagiosNaRota(info.pontosRetos, info.eixosVeic, 3); // linha reta, raio largo
+      item.entry.custoPedagios = pedFallback.reduce(function(s,p){ return s + p.valor; }, 0);
+      item.entry.pedagiosPreciso = false;
+    });
   }
-  if (aBuscar > 0) {
-    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, aBuscar) }, _freteProcessarProximaRota));
-  }
-
-  // Passo 3: aplica o resultado de cada rota única de volta em todas as
-  // entradas que a usam (uma mesma rota pode se repetir em vários dias).
-  entriesPendentes.forEach(function(item) {
-    var res3 = resolvidas.get(item.chave);
-    if (res3) { item.entry.custoPedagios = res3.custo; item.entry.pedagiosPreciso = res3.preciso; }
-  });
+  _freteAplicarPedagiosDisponiveis();
 
   function kmEfetivo(entry, contrato) {
     var modo = (contrato && contrato.kmModo) || 'ida_volta';
@@ -9272,6 +9250,7 @@ async function freteCalcular() {
     return 'Total do período';
   }
 
+  function _freteRenderizarTabela() {
   var grupos = {}, totalGeral = 0, totalPedagiosGeral = 0;
 
   Object.keys(viagensMap).forEach(function(placa) {
@@ -9406,6 +9385,38 @@ async function freteCalcular() {
     '</tr></tbody></table>';
 
   el.innerHTML = html;
+  } // fim de _freteRenderizarTabela
+
+  _freteRenderizarTabela(); // 1ª renderização — instantânea, com pedágio em cache ou estimado por linha reta
+
+  // Refinamento em segundo plano: busca o trajeto real no OSRM só das rotas
+  // que ainda não tinham cache, com concorrência limitada, e RE-renderiza
+  // quando terminar — sem travar a tela nesse meio tempo. Se o usuário clicar
+  // "Calcular" de novo antes disso terminar, o token muda e essa atualização
+  // antiga é descartada (evita sobrescrever um resultado mais novo).
+  if (chavesParaRefinar.length && typeof osrmFetchSegmento === 'function') {
+    (async function() {
+      var CONCORRENCIA_FRETE = 3; // mesmo limite usado no alerta de pedágios da roteirização
+      var cursorFrete = 0;
+      async function processarProxima() {
+        while (cursorFrete < chavesParaRefinar.length) {
+          var chave = chavesParaRefinar[cursorFrete++];
+          if (_freteCalcToken !== _meuTokenFrete) return; // usuário já recalculou — aborta
+          var info = rotasUnicas.get(chave);
+          try {
+            var pedagios = await _freteResolverPedagioReal(info.eixosVeic, info.pontosRetos);
+            if (pedagios && typeof _pedagiosGlobalCache !== 'undefined') {
+              _pedagiosGlobalCache.set(chave, pedagios); // alimenta o cache global — outras telas também se beneficiam
+            }
+          } catch (e) { /* falha de rede numa rota não deve travar as demais */ }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, chavesParaRefinar.length) }, processarProxima));
+      if (_freteCalcToken !== _meuTokenFrete) return; // resultado obsoleto — descarta
+      _freteAplicarPedagiosDisponiveis(); // agora várias rotas já têm cache preciso
+      _freteRenderizarTabela(); // re-renderiza com os valores refinados
+    })();
+  }
 }
 
 window.freteCalcular          = freteCalcular;

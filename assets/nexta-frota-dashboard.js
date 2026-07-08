@@ -1395,7 +1395,14 @@ function dashRenderMapa(rotasMap) {
   if (!el) return;
   // Inicializar mapa uma só vez
   if (!_dashMap) {
-    _dashMap = L.map('dash-mapa', { zoomControl: true, attributionControl: false });
+    // renderer: L.canvas() faz TODAS as linhas (polylines) do mapa serem
+    // desenhadas numa única camada <canvas> compartilhada, em vez de 1
+    // elemento SVG por linha no DOM. Com muito histórico (uma linha por
+    // trecho de cada viagem já roteirizada), isso evita centenas/milhares
+    // de elementos DOM e é bem mais rápido pra desenhar e pra rolar a
+    // página. Não muda a aparência nem os marcadores (que continuam
+    // divIcon, sempre DOM — só as linhas usam canvas).
+    _dashMap = L.map('dash-mapa', { zoomControl: true, attributionControl: false, renderer: L.canvas() });
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       maxZoom: 18,
       attribution: '&copy; OpenStreetMap &copy; CARTO'
