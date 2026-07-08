@@ -9202,6 +9202,82 @@ async function freteCalcular() {
   }
   _freteAplicarPedagiosDisponiveis();
 
+  // ── Diária de veículo Dedicado: cobra por DIA CORRIDO, viajando ou não ────
+  // Contratos tipo "diaria"/"diaria_km" são uma reserva do caminhão — o valor
+  // é devido todo santo dia dentro do período escolhido (inclusive fins de
+  // semana/feriados), não só nos dias em que ele efetivamente rodou. O loop
+  // acima só cria uma "entrada" na tabela pra dias com viagem de verdade —
+  // aqui a gente completa os dias sem viagem com uma entrada "vazia" (0 km,
+  // 0 m³) só pra carregar a cobrança da diária, e marca em QUAL entrada de
+  // cada dia a diária cheia deve ser cobrada (._diariaFlatHoje) — evita cobrar
+  // 2x se o veículo fez mais de uma viagem no mesmo dia.
+  (function _freteAplicarDiariaPorDiaCorrido() {
+    var placasDiaria = new Set();
+    contratos.forEach(function(c) {
+      if ((c.tipo === 'diaria' || c.tipo === 'diaria_km') && c.placa) placasDiaria.add(_freteNormPlaca(c.placa));
+    });
+    if (!placasDiaria.size) return;
+    // Período de referência: usa o "de"/"até" escolhidos na tela; se algum
+    // dos dois estiver vazio, cai pro menor/maior dia realmente carregado do
+    // histórico (evita "todos os dias da história" quando o filtro é aberto).
+    var diasCarregados = snaps.map(function(s) { return (s.savedAt||'').slice(0,10); }).filter(Boolean).sort();
+    var periodoDe  = de  || diasCarregados[0] || '';
+    var periodoAte = ate || diasCarregados[diasCarregados.length-1] || '';
+    if (!periodoDe || !periodoAte) return;
+    var dIni = new Date(periodoDe + 'T00:00:00');
+    var dFim = new Date(periodoAte + 'T00:00:00');
+    if (isNaN(dIni) || isNaN(dFim) || dIni > dFim) return;
+
+    // Garante que TODA placa com contrato de diária entra no loop abaixo,
+    // mesmo que nunca tenha feito nenhuma viagem no período inteiro (senão
+    // ela nem aparece em viagensMap e ficaria de fora da cobrança).
+    contratos.forEach(function(c) {
+      if ((c.tipo !== 'diaria' && c.tipo !== 'diaria_km') || !c.placa) return;
+      var placaNorm = _freteNormPlaca(c.placa);
+      var jaExiste = Object.keys(viagensMap).some(function(p) { return _freteNormPlaca(p) === placaNorm; });
+      if (!jaExiste) { viagensMap[c.placa] = []; if (!mesMapa[c.placa]) mesMapa[c.placa] = {}; }
+    });
+
+    Object.keys(viagensMap).forEach(function(placa) {
+      if (!placasDiaria.has(_freteNormPlaca(placa))) return;
+      // Entradas reais já existentes, indexadas por dia (pode ter mais de 1
+      // viagem no mesmo dia)
+      var porDia = {};
+      viagensMap[placa].forEach(function(e) {
+        if (!porDia[e.data]) porDia[e.data] = [];
+        porDia[e.data].push(e);
+      });
+      // Dados do veículo (jornada padrão etc.) pra montar a entrada sintética
+      // dos dias parados — pega do cadastro atual pela placa, com fallback.
+      var vCad = veiculos.find(function(vv) { return _freteNormPlaca(vv.placa) === _freteNormPlaca(placa); });
+      var jornadaDispMinPadrao = (vCad && Number(vCad.jornadaMin)) || duracaoJornadaMin((vCad&&vCad.jornadaInicio)||'06:00', (vCad&&vCad.jornadaFim)||'18:00') || 720;
+
+      for (var d = new Date(dIni); d <= dFim; d.setDate(d.getDate()+1)) {
+        var diaStr = d.toISOString().slice(0,10);
+        var entradasHoje = porDia[diaStr];
+        if (entradasHoje && entradasHoje.length) {
+          // Já viajou nesse dia — a PRIMEIRA entrada do dia leva a diária cheia,
+          // as demais (se houver 2+ viagens no mesmo dia) não cobram de novo.
+          entradasHoje.forEach(function(e, idx) { e._diariaFlatHoje = (idx === 0); });
+        } else {
+          // Dia parado — cria uma entrada só pra carregar a cobrança da diária.
+          var mesKeyDia = diaStr.slice(0,7);
+          var diaKeyDia = diaStr.replace(/-/g,'');
+          var entradaVazia = {
+            data: diaStr, diaKey: diaKeyDia, mesKey: mesKeyDia,
+            kmIda: 0, m3Total: 0, termOrigem: '', destinos: '(sem viagem — diária)',
+            placa: placa, jornadaDispMin: jornadaDispMinPadrao, jornadaUsadaMin: 0, fatorJornada: 0,
+            custoPedagios: 0, pedagiosPreciso: true, _semViagem: true, _diariaFlatHoje: true,
+          };
+          viagensMap[placa].push(entradaVazia);
+          if (!mesMapa[placa]) mesMapa[placa] = {};
+          if (!mesMapa[placa][mesKeyDia]) mesMapa[placa][mesKeyDia] = { viagens: [] };
+          mesMapa[placa][mesKeyDia].viagens.push(entradaVazia);
+        }
+      }
+    });
+  })();
+
   function kmEfetivo(entry, contrato) {
     var modo = (contrato && contrato.kmModo) || 'ida_volta';
     return modo === 'ida' ? entry.kmIda : entry.kmIda * 2;
@@ -9209,14 +9285,24 @@ async function freteCalcular() {
 
   function custoViagem(entry, contrato) {
     var mes = mesMapa[entry.placa] && mesMapa[entry.placa][entry.mesKey];
-    var nViagMes = mes ? mes.viagens.length : 1;
+    // nViagMes só conta viagens DE VERDADE (exclui os dias sem viagem
+    // injetados pra cobrança de diária — ver bloco "dias parados" acima) —
+    // senão o rateio do valor FIXO mensal (fixo_km/fixo_m3) ficaria diluído
+    // por dias que não são viagem nenhuma.
+    var viagensReaisMes = mes ? mes.viagens.filter(function(e){ return !e._semViagem; }) : [];
+    var nViagMes = viagensReaisMes.length || 1;
     var fixo = parseFloat(contrato.fixo) || 0;
     var fixoRateado = fixo / Math.max(nViagMes, 1);
     var km = kmEfetivo(entry, contrato);
     if (contrato.tipo === 'fixo_km') return fixoRateado + (parseFloat(contrato.km)||0) * km;
     if (contrato.tipo === 'fixo_m3') return fixoRateado + (parseFloat(contrato.m3)||0) * entry.m3Total;
-    if (contrato.tipo === 'diaria')  return (parseFloat(contrato.diaria) || 0) * (entry.fatorJornada || 0);
-    if (contrato.tipo === 'diaria_km') return ((parseFloat(contrato.diaria)||0) * (entry.fatorJornada || 0)) + (parseFloat(contrato.km)||0) * km;
+    // Diária = obrigação por DIA CORRIDO do veículo Dedicado, não por uso —
+    // se viajou ou ficou parado, cobra o valor cheio da diária uma vez por
+    // dia (entry._diariaFlatHoje marca qual entrada do dia leva essa cobrança,
+    // pra não duplicar em dias com mais de uma viagem). O componente por Km
+    // (diaria_km) continua sendo só sobre o km rodado de verdade naquele dia.
+    if (contrato.tipo === 'diaria')  return (parseFloat(contrato.diaria) || 0) * (entry._diariaFlatHoje ? 1 : 0);
+    if (contrato.tipo === 'diaria_km') return ((parseFloat(contrato.diaria)||0) * (entry._diariaFlatHoje ? 1 : 0)) + (parseFloat(contrato.km)||0) * km;
     if (contrato.tipo === 'spot') {
       var sp = spots.find(function(s) {
         var bateRota = entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
@@ -9270,7 +9356,7 @@ async function freteCalcular() {
       grupos[chave].pedagio  += pedagio;
       grupos[chave].km       += kmDisplay;
       grupos[chave].m3       += entry.m3Total;
-      grupos[chave].nViagens += 1;
+      if (!entry._semViagem) grupos[chave].nViagens += 1; // dias parados (diária) não contam como viagem no KPI
       if (pedagio > 0 && !entry.pedagiosPreciso) grupos[chave].pedagioImpreciso = true;
       totalGeral             += custo;
       totalPedagiosGeral     += pedagio;

@@ -869,8 +869,11 @@ function _dashCustoViagemRanking(entry, contrato, nViagensMesPlaca, spots) {
   const km = _dashKmEfetivoRanking(entry, contrato);
   if (contrato.tipo === 'fixo_km') return fixoRateado + (parseFloat(contrato.km)||0) * km;
   if (contrato.tipo === 'fixo_m3') return fixoRateado + (parseFloat(contrato.m3)||0) * entry.volume;
-  if (contrato.tipo === 'diaria')  return (parseFloat(contrato.diaria) || 0) * (entry.fatorJornada || 0);
-  if (contrato.tipo === 'diaria_km') return ((parseFloat(contrato.diaria)||0) * (entry.fatorJornada || 0)) + (parseFloat(contrato.km)||0) * km;
+  // Diária = obrigação por dia corrido do veículo Dedicado (viajou ou não) —
+  // mesma regra aplicada no Frete. entry._diariaFlatHoje marca qual entrada
+  // do dia leva a cobrança cheia (evita duplicar em dias com 2+ viagens).
+  if (contrato.tipo === 'diaria')  return (parseFloat(contrato.diaria) || 0) * (entry._diariaFlatHoje ? 1 : 0);
+  if (contrato.tipo === 'diaria_km') return ((parseFloat(contrato.diaria)||0) * (entry._diariaFlatHoje ? 1 : 0)) + (parseFloat(contrato.km)||0) * km;
   if (contrato.tipo === 'spot') {
     const sp = (spots || []).find(s =>
       entry.termOrigem.toLowerCase().includes((s.origem||'').toLowerCase()) &&
@@ -881,6 +884,64 @@ function _dashCustoViagemRanking(entry, contrato, nViagensMesPlaca, spots) {
   }
   return 0;
 }
+// Completa os dias sem viagem de placas com contrato "diaria"/"diaria_km"
+// com uma entrada vazia (0 km, 0 m³) só pra carregar a cobrança da diária
+// daquele dia — mesma lógica do Frete. Período de referência: min/max data
+// já presente nas entradas carregadas (reflete o mês/período que o usuário
+// escolheu no filtro do Dashboard).
+function _dashCompletarDiasParados(entradas, contratos) {
+  const normPlaca = (typeof _freteNormPlaca === 'function') ? _freteNormPlaca : (p => (p||'').toString().trim().toUpperCase());
+  const placasDiaria = new Set();
+  contratos.forEach(c => { if ((c.tipo === 'diaria' || c.tipo === 'diaria_km') && c.placa) placasDiaria.add(normPlaca(c.placa)); });
+  if (!placasDiaria.size) return entradas;
+  // Período de referência: usa o intervalo dos snapshots REALMENTE carregados
+  // (mês selecionado / todos os períodos) — não só os dias com viagem, senão
+  // dias parados no fim do mês (sem NENHUMA viagem de ninguém naquele dia)
+  // ficariam de fora da cobrança por engano.
+  const datasSnap = (typeof _dashSnapshotsAtivos !== 'undefined' ? _dashSnapshotsAtivos : [])
+    .map(s => (s.savedAt || '').slice(0,10)).filter(Boolean).sort();
+  if (!datasSnap.length) return entradas;
+  const dIni = new Date(datasSnap[0] + 'T00:00:00');
+  const dFim = new Date(datasSnap[datasSnap.length-1] + 'T00:00:00');
+  if (isNaN(dIni) || isNaN(dFim)) return entradas;
+
+  const porPlaca = {};
+  entradas.forEach(e => { (porPlaca[e.placa] ||= []).push(e); });
+  // Garante que TODA placa com contrato de diária entra no loop abaixo, mesmo
+  // que nunca tenha feito nenhuma viagem no período carregado (senão ela nem
+  // aparece em `entradas` e ficaria de fora da cobrança e do próprio ranking).
+  contratos.forEach(c => {
+    if ((c.tipo !== 'diaria' && c.tipo !== 'diaria_km') || !c.placa) return;
+    const placaNorm = normPlaca(c.placa);
+    const jaExiste = Object.keys(porPlaca).some(p => normPlaca(p) === placaNorm);
+    if (!jaExiste) porPlaca[c.placa] = [];
+  });
+  const extras = [];
+  Object.keys(porPlaca).forEach(placa => {
+    if (!placasDiaria.has(normPlaca(placa))) return;
+    const porDia = {};
+    porPlaca[placa].forEach(e => { (porDia[e.data] ||= []).push(e); });
+    const vCad = (typeof veiculos !== 'undefined') ? veiculos.find(v => normPlaca(v.placa) === normPlaca(placa)) : null;
+    const contratoDaPlaca = contratos.find(c => normPlaca(c.placa) === normPlaca(placa));
+    const transp = (porPlaca[placa][0] && porPlaca[placa][0].transportadora) || (contratoDaPlaca && contratoDaPlaca.transportadora) || (vCad && vCad.transportadora) || '(sem transportadora)';
+    const mesKeyOf = d => d.slice(0,7);
+    for (let d = new Date(dIni); d <= dFim; d.setDate(d.getDate()+1)) {
+      const diaStr = d.toISOString().slice(0,10);
+      const entradasHoje = porDia[diaStr];
+      if (entradasHoje && entradasHoje.length) {
+        entradasHoje.forEach((e, idx) => { e._diariaFlatHoje = (idx === 0); });
+      } else {
+        extras.push({
+          transportadora: transp, placa, data: diaStr, mesKey: mesKeyOf(diaStr),
+          termOrigem: '', destinos: '(sem viagem — diária)', kmIda: 0, volume: 0,
+          jornadaDispMin: 720, jornadaUsadaMin: 0, fatorJornada: 0,
+          _semViagem: true, _diariaFlatHoje: true,
+        });
+      }
+    }
+  });
+  return entradas.concat(extras);
+}
 function dashAgregarTransportadoras(entradasTransportadora) {
   const contratos = (typeof freteCarregarContratos === 'function') ? freteCarregarContratos() : [];
   const spots     = (typeof freteCarregarSpot === 'function') ? freteCarregarSpot() : [];
@@ -890,18 +951,24 @@ function dashAgregarTransportadoras(entradasTransportadora) {
   // travava o dashboard em qualquer filtro com muitos dados).
   const contratoPorPlaca = new Map();
   contratos.forEach(c => { if (c.placa) contratoPorPlaca.set(normPlaca(c.placa), c); });
+  // Completa dias parados de veículos com diária ANTES de tudo — precisa
+  // rodar cedo pra esses dias entrarem na contagem de nViagensPorPlacaMes
+  // (que, note, exclui _semViagem logo abaixo) e no fatorJornada.
+  const entradasCompletas = _dashCompletarDiasParados(entradasTransportadora, contratos);
   // fatorJornada por entrada (precisa antes do custo, igual ao Frete)
-  entradasTransportadora.forEach(e => {
+  entradasCompletas.forEach(e => {
     e.fatorJornada = e.jornadaDispMin > 0 ? Math.min(1, Math.max(0, e.jornadaUsadaMin / e.jornadaDispMin)) : 0;
   });
-  // Nº de viagens por placa+mês, pra ratear o valor fixo mensal (igual ao Frete)
+  // Nº de viagens por placa+mês, pra ratear o valor fixo mensal (igual ao
+  // Frete) — exclui os dias parados sintéticos, senão dilui o rateio do fixo.
   const nViagensPorPlacaMes = {};
-  entradasTransportadora.forEach(e => {
+  entradasCompletas.forEach(e => {
+    if (e._semViagem) return;
     const k = e.placa + '__' + e.mesKey;
     nViagensPorPlacaMes[k] = (nViagensPorPlacaMes[k] || 0) + 1;
   });
   const porTransportadora = {};
-  entradasTransportadora.forEach(e => {
+  entradasCompletas.forEach(e => {
     const contrato = contratoPorPlaca.get(normPlaca(e.placa));
     const nMes = nViagensPorPlacaMes[e.placa + '__' + e.mesKey] || 1;
     const custo = contrato ? _dashCustoViagemRanking(e, contrato, nMes, spots) : 0;
@@ -909,7 +976,7 @@ function dashAgregarTransportadoras(entradasTransportadora) {
     if (!porTransportadora[key]) porTransportadora[key] = { transportadora: key, volume: 0, km: 0, viagens: 0, custo: 0, temContrato: false, placas: new Set() };
     porTransportadora[key].volume += e.volume;
     porTransportadora[key].km += _dashKmEfetivoRanking(e, contrato || { kmModo: 'ida_volta' });
-    porTransportadora[key].viagens += 1;
+    if (!e._semViagem) porTransportadora[key].viagens += 1; // dia parado (diária) não conta como viagem
     porTransportadora[key].placas.add(e.placa);
     if (contrato) { porTransportadora[key].custo += custo; porTransportadora[key].temContrato = true; }
   });
@@ -1390,14 +1457,30 @@ function dashKmVolChart(containerId, clientes) {
 // Mesmo estilo de barra dupla do dashKmVolChart, mas agrupado por cidade da
 // operação (terminal) em vez de cliente. Sempre reflete o filtro de cidade
 // ativo, porque os dados já vêm filtrados de dashAgregar.
+let _dashOpOcupVolOrdem = 'volume'; // 'volume' | 'ocup'
+let _dashUltimoOpOcupVol = [];
+function dashOpOcupVolSetOrdem(campo) {
+  _dashOpOcupVolOrdem = campo;
+  document.querySelectorAll('.dash-opocup-tab').forEach(b => {
+    const ativo = b.dataset.campo === campo;
+    b.classList.toggle('active-rank', ativo);
+    b.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    b.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+  dashOcupVolPorOperacaoChart('dash-chart-op-ocup-vol', _dashUltimoOpOcupVol);
+}
+window.dashOpOcupVolSetOrdem = dashOpOcupVolSetOrdem;
 function dashOcupVolPorOperacaoChart(containerId, operacoes) {
   const el = document.getElementById(containerId);
   if (!el) return;
+  _dashUltimoOpOcupVol = operacoes;
   if (!operacoes.length) {
     el.innerHTML = '<div style="color:#888;font-size:12px;padding:12px">Sem dados de operação para este período/filtro.</div>';
     return;
   }
-  const itens = [...operacoes].sort((a, b) => b.volume - a.volume);
+  const itens = [...operacoes].sort((a, b) =>
+    _dashOpOcupVolOrdem === 'ocup' ? b.ocup - a.ocup : b.volume - a.volume
+  );
   const maxVol = Math.max(...itens.map(o => o.volume || 0), 1);
   el.innerHTML = itens.map((o, i) => {
     const pctVol = Math.round((o.volume / maxVol) * 100);
