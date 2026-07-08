@@ -540,14 +540,25 @@ async function dashLerHistoricoDisco() {
     if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
     total++;
     try {
-      const text = await (await handle.getFile()).text();
+      const file = await handle.getFile();
+      const text = await file.text();
       const data = JSON.parse(text);
       console.log(`[DASH] arquivo: ${name} | versao=${data.versao} | savedAt=${data.savedAt} | temResultado=${!!data.resultado} | datasEntrega=`, data.datasEntrega);
-      if (!data.versao || !data.savedAt) {
-        console.warn(`[DASH] rejeitado (sem versao/savedAt): ${name}`);
+      // Antes, arquivo sem "versao" OU sem "savedAt" era descartado inteiro —
+      // igual ao Frete, agora só exige QUE HAJA DADOS DE ROTEIRIZAÇÃO
+      // (resultado ou pedidos), e preenche savedAt que falte com a data de
+      // modificação do arquivo (mesmo fallback já usado no Frete), em vez de
+      // simplesmente jogar a roteirização inteira fora. Isso fazia o
+      // Dashboard mostrar menos viagens/km/volume que o Frete pro "mesmo"
+      // período, porque roteirizações salvas antes de o campo "versao" achar
+      // uma casa no JSON (ou qualquer salvamento sem savedAt) sumiam aqui
+      // mas continuavam contando lá.
+      if (!data.resultado && !data.pedidos && !data.versao) {
+        console.warn(`[DASH] rejeitado (sem resultado/pedidos/versao): ${name}`);
         rejeitados++;
         continue;
       }
+      if (!data.savedAt) data.savedAt = new Date(file.lastModified).toISOString();
       const dataRef = (() => {
         const de = data.datasEntrega && data.datasEntrega[0];
         if (de) {
