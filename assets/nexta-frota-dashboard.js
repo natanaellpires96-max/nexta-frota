@@ -1399,24 +1399,25 @@ function dashOcupVolPorOperacaoChart(containerId, operacoes) {
   }
   const itens = [...operacoes].sort((a, b) => b.volume - a.volume);
   const maxVol = Math.max(...itens.map(o => o.volume || 0), 1);
-  el.innerHTML = itens.map(o => {
+  el.innerHTML = itens.map((o, i) => {
     const pctVol = Math.round((o.volume / maxVol) * 100);
     const pctOcup = Math.min(Math.round(o.ocup), 100);
     const corOcup = pctOcup >= 90 ? '#4caf50' : pctOcup >= 60 ? '#f0be40' : '#f06060';
-    return `<div style="margin-bottom:12px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
-        <span style="font-size:12px;font-weight:700;color:var(--text,#111);">${o.nome}</span>
-        <span style="font-size:10.5px;color:var(--text-3,#777);">${o.viagens} viagem${o.viagens>1?'ns':''}</span>
+    const viagemLabel = o.viagens === 1 ? '1 viagem' : `${o.viagens} viagens`;
+    return `<div style="padding:14px 16px;margin-bottom:10px;background:rgba(0,0,0,0.025);border:1px solid var(--border-dk);border-radius:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;">
+        <span style="font-size:13px;font-weight:700;color:var(--text,#111);">${i+1}. ${o.nome}</span>
+        <span style="font-size:10.5px;font-weight:600;color:var(--text-3,#777);background:rgba(0,0,0,0.06);padding:2px 9px;border-radius:99px;">${viagemLabel}</span>
       </div>
       <div style="display:flex;gap:4px;align-items:center;">
-        <span style="font-size:10px;font-weight:700;color:${corOcup};width:52px;text-align:right;">ocup.</span>
+        <span style="font-size:10px;font-weight:700;color:${corOcup};width:64px;text-align:right;">Ocupação</span>
         <div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
           <div style="width:${pctOcup}%;height:100%;background:${corOcup};border-radius:99px;"></div>
         </div>
         <span style="font-size:10px;font-weight:700;color:${corOcup};width:38px;">${pctOcup}%</span>
       </div>
-      <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
-        <span style="font-size:10px;font-weight:700;color:#000000;width:52px;text-align:right;">volume</span>
+      <div style="display:flex;gap:4px;align-items:center;margin-top:5px;">
+        <span style="font-size:10px;font-weight:700;color:#000000;width:64px;text-align:right;">Volume</span>
         <div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
           <div style="width:${pctVol}%;height:100%;background:#f0be40;border-radius:99px;"></div>
         </div>

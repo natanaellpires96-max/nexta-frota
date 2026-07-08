@@ -8223,7 +8223,7 @@ function _montarTextoResumoDia(snaps, dataAlvoEntrega = null) {
   const aberturaFatos =
     `A operação com entrega em ${dataEntregaStr} somou ${volumeStr} m³ distribuídos entre ` +
     `${qtdClientes} cliente${qtdClientes === 1 ? '' : 's'}${origemTexto}, em ${totalViagens} ` +
-    `viagem${totalViagens === 1 ? '' : 'ns'} com ${pctFrota}% de ocupação média da frota.`;
+    `${totalViagens === 1 ? 'viagem' : 'viagens'} com ${pctFrota}% de ocupação média da frota.`;
 
   if (semProblemas) {
     L.push(
