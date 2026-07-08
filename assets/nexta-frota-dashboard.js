@@ -1402,7 +1402,7 @@ function dashOcupVolPorOperacaoChart(containerId, operacoes) {
   el.innerHTML = itens.map((o, i) => {
     const pctVol = Math.round((o.volume / maxVol) * 100);
     const pctOcup = Math.min(Math.round(o.ocup), 100);
-    const corOcup = pctOcup >= 90 ? '#4caf50' : pctOcup >= 60 ? '#f0be40' : '#f06060';
+    const corOcup = '#4caf50'; // sempre verde, a pedido — antes variava por faixa (verde/amarelo/vermelho)
     const viagemLabel = o.viagens === 1 ? '1 viagem' : `${o.viagens} viagens`;
     return `<div style="padding:14px 16px;margin-bottom:10px;background:rgba(0,0,0,0.025);border:1px solid var(--border-dk);border-radius:10px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;">
