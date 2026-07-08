@@ -74,6 +74,7 @@
     <button class="tab" onclick="showTab('dashboard_rot')">📊 Dashboard</button>
     <button class="tab" onclick="showTab('frete')">💰 Frete</button>
     <button class="tab" onclick="showTab('historico')">Histórico</button>
+    <button class="tab" onclick="showTab('aprendizado')">🧠 Aprendizado</button>
   </div>
   <!-- ── TERMINAIS ─────────────────────────────────────────────────────────── -->
   <div id="tab-terminais" class="page active">
@@ -509,6 +510,33 @@
               </div>
             </div>
           </div>
+          <!-- Filtro de Cidade da Operação -->
+          <div style="position:relative;">
+            <button id="dash-cid-btn" onclick="dashToggleFiltroCidades()"
+              style="display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;font-size:11px;color:var(--text-2);cursor:pointer;white-space:nowrap;">
+              <span>🏙️ Operação (Cidade)</span>
+              <span id="dash-cid-badge" style="display:none;background:var(--pet-green);color:#000;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
+            </button>
+            <div id="dash-cid-panel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.22);width:280px;max-height:400px;flex-direction:column;overflow:hidden;">
+              <div style="padding:12px 14px 10px;border-bottom:1px solid var(--border-dk);flex-shrink:0;">
+                <div style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.06em;margin-bottom:8px;">FILTRAR POR CIDADE DA OPERAÇÃO</div>
+                <div style="position:relative;">
+                  <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;">🔍</span>
+                  <input id="dash-cid-search" type="text" placeholder="Buscar cidade..." oninput="dashFiltrarListaCidades(this.value)"
+                    style="width:100%;box-sizing:border-box;background:rgba(0,0,0,.04);border:1px solid var(--border-dk);border-radius:8px;padding:7px 10px 7px 30px;font-size:12px;color:var(--text);outline:none;"/>
+                </div>
+              </div>
+              <div id="dash-cid-list" style="overflow-y:auto;flex:1;padding:6px 0;min-height:0;"></div>
+              <div style="padding:10px 14px;border-top:1px solid var(--border-dk);display:flex;gap:8px;flex-shrink:0;background:var(--surface);">
+                <button onclick="dashSelecionarTodosCidades(true)"
+                  style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Todas</button>
+                <button onclick="dashSelecionarTodosCidades(false)"
+                  style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Limpar</button>
+                <button onclick="dashAplicarFiltroCidades()"
+                  style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
+              </div>
+            </div>
+          </div>
           <div style="display:flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;">
             <span style="font-size:11px;color:var(--text-3);letter-spacing:0.06em;">MES</span>
             <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--pet-green);font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;">
@@ -527,6 +555,23 @@
         <div class="sum-card"><div class="sum-num" id="dk-ocup" style="color:#b07ef0">-</div><div class="sum-label">Ocup. Media</div></div>
         <div class="sum-card"><div class="sum-num" id="dk-km" style="color:#6ee04a">-</div><div class="sum-label">Km Total</div></div>
         <div class="sum-card"><div class="sum-num" id="dk-clientes" style="color:#f06060">-</div><div class="sum-label">Clientes</div></div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🏆 Ranking de Transportadoras</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Quem transporta mais volume, roda mais km e quanto foi pago (baseado nos contratos cadastrados em Frete)</div>
+          </div>
+          <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;">
+            <button class="dash-rank-tab active-rank" data-campo="volume" onclick="dashRankingSetOrdem('volume')"
+              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">Volume</button>
+            <button class="dash-rank-tab" data-campo="km" onclick="dashRankingSetOrdem('km')"
+              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Km rodado</button>
+            <button class="dash-rank-tab" data-campo="custo" onclick="dashRankingSetOrdem('custo')"
+              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Valor pago</button>
+          </div>
+        </div>
+        <div id="dash-ranking-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
@@ -678,6 +723,21 @@
     </div>
     <div id="historico-list">
       <div class="empty">Selecione uma pasta para visualizar o histórico de roteirizações.</div>
+    </div>
+  </div>
+  <div id="tab-aprendizado" class="page">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="sec-title" style="margin:0;">🧠 Aprendizado do Otimizador</div>
+      <button class="btn btn-sm" onclick="renderAprendizado()">Atualizar</button>
+    </div>
+    <div style="font-size:12px;color:var(--text-3);margin-bottom:14px;max-width:760px;">
+      Toda vez que a roteirização automática não consegue consolidar um pedido num veículo que já está em uso,
+      o motivo fica registrado aqui (compartilhado entre todas as roteirizações). Isso não é uma IA que decide
+      sozinha — é um raio-x acumulado dos motivos reais, pra você corrigir cadastro (terminal, compartimentação,
+      janela) onde o padrão se repetir, e algumas sugestões pontuais de ajuste fino que você aprova antes de aplicar.
+    </div>
+    <div id="aprendizado-conteudo">
+      <div class="empty">Carregando...</div>
     </div>
   </div>
   <div id="tab-mapa" class="page">
