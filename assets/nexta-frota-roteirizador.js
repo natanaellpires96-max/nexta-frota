@@ -5243,10 +5243,17 @@ function renderTemplateOperacao() {
     return;
   }
   el.innerHTML = blocos.map(({ v, viOriginal, paradasUsar, idx, viagensVeiculo }) => {
-    // terminalOrigem pode estar vazio em viagens criadas manualmente → fallback ao terminal do pedido
+    // O terminal do PEDIDO (dado vivo — o mesmo que aparece no cartão da
+    // Otimização Rotas) tem prioridade sobre viOriginal.terminalOrigem, que é
+    // um valor gravado uma vez só, no momento em que a viagem foi criada.
+    // Se o terminal do pedido for alterado depois (edição manual, correção
+    // de cadastro, etc.), terminalOrigem fica "congelado" no valor antigo —
+    // e esse documento (Envio Transportadora) tem que sempre refletir o que
+    // está sendo mostrado/editado agora na Otimização Rotas, não o instante
+    // da criação da viagem. Por isso a ordem foi invertida aqui.
     const _termPedido = viOriginal.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || '';
-    const base = viOriginal.terminalOrigem || _termPedido || v.terminal || cidadeBaseVeiculo(v) || '-';
-    const cia = distribuidoraDoTerminal(viOriginal.terminalOrigem || v.terminal) || '-';
+    const base = _termPedido || viOriginal.terminalOrigem || v.terminal || cidadeBaseVeiculo(v) || '-';
+    const cia = distribuidoraDoTerminal(_termPedido || viOriginal.terminalOrigem || v.terminal) || '-';
     const capLitros = Math.round((v.capacidade || 0) * 1000);
     const volViagemM3 = (paradasUsar || []).reduce((s, p) => s + (p.volumeTotal || 0), 0);
     const ocupPct = (v.capacidade || 0) > 0 ? Math.round((volViagemM3 / v.capacidade) * 100) : 0;
