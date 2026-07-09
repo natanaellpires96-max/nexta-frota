@@ -1990,16 +1990,64 @@ window.dashExportarExcel = async function dashExportarExcel() {
 
 })();
 })(); // fim IIFE dashboard
+// Chave da OpenRouteService — gerada em openrouteservice.org, tier gratuito
+// (2.000 requisições/dia). Como este é um app 100% front-end (sem backend),
+// essa chave fica visível no código-fonte pra qualquer um que inspecionar a
+// página — é o mesmo modelo de risco que qualquer chave de API usada direto
+// no navegador. O limite diário protege contra abuso descontrolado; se algum
+// dia precisar trocar (por vazamento ou esgotamento de cota), é só gerar uma
+// nova em openrouteservice.org → Dashboard → Tokens e substituir aqui.
+const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImI2OWE4MDYwYzU4YzRhZTRhMGZhOTdlZjAzMTA3ZDM5IiwiaCI6Im11cm11cjY0In0=';
 async function osrmFetchSegmento(a, b) {
-  // Tenta perfil truck primeiro, cai para driving se falhar
-  const perfis = ['truck', 'driving'];
-  for (const perfil of perfis) {
-    try {
-      const url = `https://router.project-osrm.org/route/v1/${perfil}/` +
-        `${a.lon},${a.lat};${b.lon},${b.lat}` +
-        `?overview=full&geometries=geojson&steps=false`;
-      const res = await fetch(url);
-      if (!res.ok) continue;
+  // ── OpenRouteService, perfil driving-hgv (caminhão de verdade) ───────────
+  // Substituiu o OSRM público (router.project-osrm.org), que NUNCA teve
+  // perfil de caminhão de verdade — confirmado em issue oficial do projeto
+  // OSRM: esse servidor ignora silenciosamente qualquer nome de perfil na
+  // URL e sempre devolve rota de carro comum, disfarçada de "sucesso". Isso
+  // fazia o sistema calcular caminho de carro (ex.: atravessar a Serra) onde
+  // um caminhão de carga (principalmente combustível/inflamável) na prática
+  // é proibido e vai pelo litoral — daí pedágio "sumido" mesmo com a praça
+  // certa cadastrada, porque a rota calculada nunca passava perto dela.
+  // hazmat:true pede pra ORS evitar vias com restrição a carga perigosa
+  // quando essa informação existe no mapa (OpenStreetMap) da região — não é
+  // garantia 100% (depende de quão bem aquele trecho foi mapeado), mas é
+  // reconhecimento de verdade, ausente no OSRM público.
+  try {
+    const res = await fetch('https://api.openrouteservice.org/v2/directions/driving-hgv/geojson', {
+      method: 'POST',
+      headers: { 'Authorization': ORS_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        coordinates: [[a.lon, a.lat], [b.lon, b.lat]],
+        options: {
+          vehicle_type: 'hgv',
+          profile_params: { restrictions: { hazmat: true } },
+        },
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const feat = data.features?.[0];
+      if (feat?.geometry?.coordinates?.length) {
+        return {
+          coords: feat.geometry.coordinates.map(c => [c[1], c[0]]), // ORS devolve [lon,lat] — inverte pra [lat,lon]
+          distKm: (feat.properties?.summary?.distance || 0) / 1000,
+        };
+      }
+    } else {
+      console.warn('[osrmFetchSegmento] ORS respondeu erro, caindo pro OSRM público (linha reta/carro):', res.status, await res.text().catch(()=>''));
+    }
+  } catch (e) {
+    console.warn('[osrmFetchSegmento] Falha ao chamar ORS, caindo pro OSRM público (linha reta/carro):', e);
+  }
+  // ── Fallback 1: OSRM público (car — sem perfil de caminhão de verdade) ──
+  // Só usado se a ORS falhar (rede fora, chave inválida/estourada, etc.) —
+  // melhor ter uma rota aproximada de carro do que nenhuma.
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.lon},${a.lat};${b.lon},${b.lat}` +
+      `?overview=full&geometries=geojson&steps=false`;
+    const res = await fetch(url);
+    if (res.ok) {
       const data = await res.json();
       if (data.code === 'Ok' && data.routes?.[0]) {
         return {
@@ -2007,9 +2055,9 @@ async function osrmFetchSegmento(a, b) {
           distKm:   data.routes[0].distance / 1000,
         };
       }
-    } catch(e) { /* tenta próximo perfil */ }
-  }
-  // Fallback: linha reta com distância haversine
+    }
+  } catch (e) { /* cai pro fallback final */ }
+  // ── Fallback 2: linha reta com distância haversine ───────────────────────
   const R = 6371;
   const dLat = (b.lat - a.lat) * Math.PI / 180;
   const dLon = (b.lon - a.lon) * Math.PI / 180;
