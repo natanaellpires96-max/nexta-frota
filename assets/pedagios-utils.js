@@ -40,9 +40,9 @@ const PEDAGIOS_BR = [
   // Coordenadas são ESTIMATIVAS (não achei lat/lon oficial de nenhuma das
   // duas fontes) — se o alerta não disparar direito nessa região, ajuste
   // lat/lon aqui comparando com o Mapa da Viagem.
-  { nome: 'Rio-Santos km236 LESTE (Novo Litoral)', lat: -23.9530, lon: -46.3980, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL)', regiao: 'BR', modelo: 'free_flow' },
-  { nome: 'Rio-Santos km236 OESTE (Novo Litoral)', lat: -23.9530, lon: -46.3980, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL)', regiao: 'BR', modelo: 'free_flow' },
-  { nome: 'Praça Santos (Cônego Domênico Rangoni)', lat: -23.8850, lon: -46.3600, tarifas: { 2: 38.40, 6: 115.20 }, rodovia: 'SP-055/248 (Cônego Domênico Rangoni), km 250+464 — Ecovias dos Imigrantes', regiao: 'BR' },
+  { nome: 'Rio-Santos km236 LESTE (Novo Litoral)', lat: -23.8860, lon: -46.2680, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL), próx. Caruara', regiao: 'BR', modelo: 'free_flow' },
+  { nome: 'Rio-Santos km236 OESTE (Novo Litoral)', lat: -23.8860, lon: -46.2680, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL), próx. Caruara', regiao: 'BR', modelo: 'free_flow' },
+  { nome: 'Praça Santos (Cônego Domênico Rangoni)', lat: -23.8890, lon: -46.3310, tarifas: { 2: 38.40, 6: 115.20 }, rodovia: 'SP-055/248 (Cônego Domênico Rangoni), km 250+464 — Ecovias dos Imigrantes, entre Cubatão e Caruara', regiao: 'BR' },
   // ─────────────────────────────────────────────────────────────────────────
   // BASE GERADA A PARTIR DO OPENSTREETMAP (consulta Overpass em 08/07/2026,
   // raio de 150km ao redor de: São Caetano do Sul, Paulínia, São José dos
