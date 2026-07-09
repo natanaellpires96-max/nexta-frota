@@ -1372,10 +1372,13 @@ function dashRender(snapshots) {
   set('dk-km',       Math.round(_kpiKm).toLocaleString('pt-BR') + ' km');
   set('dk-clientes', clientesFiltrados.length);
   // Gráfico de barras: volume por cliente
-  dashBarChart('dash-chart-vol', clientesFiltrados, c=>c.volume.toFixed(1),
+  _dashUltimosClientesFiltrados = clientesFiltrados;
+  const _itensVol = [...clientesFiltrados].sort((a, b) => _dashOrdemVol === 'asc' ? a.volume - b.volume : b.volume - a.volume);
+  dashBarChart('dash-chart-vol', _itensVol, c=>c.volume.toFixed(1),
     '#f0be40', 'm³', c=>c.nome);
   // Gráfico de barras: entregas por cliente
-  dashBarChart('dash-chart-ent', clientesFiltrados.slice().sort((a,b)=>b.entregas-a.entregas),
+  const _itensEnt = [...clientesFiltrados].sort((a, b) => _dashOrdemEnt === 'asc' ? a.entregas - b.entregas : b.entregas - a.entregas);
+  dashBarChart('dash-chart-ent', _itensEnt,
     c=>c.entregas, '#70a8f0', 'ent.', c=>c.nome);
   // Gráfico Km vs Volume
   dashKmVolChart('dash-chart-km', clientesFiltrados);
@@ -1410,6 +1413,31 @@ function dashRender(snapshots) {
     }).join('');
   }
 }
+let _dashOrdemVol = 'desc'; // 'desc' = maior primeiro, 'asc' = menor primeiro
+let _dashOrdemEnt = 'desc';
+let _dashUltimosClientesFiltrados = []; // guarda o último dado renderizado, pra reordenar sem precisar re-agregar tudo
+function _dashAtualizarTabsOrdenacao(classe, ordem) {
+  document.querySelectorAll('.' + classe).forEach(b => {
+    const ativo = b.dataset.ordem === ordem;
+    b.classList.toggle('active-rank', ativo);
+    b.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    b.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+}
+function dashSetOrdemVol(ordem) {
+  _dashOrdemVol = ordem;
+  _dashAtualizarTabsOrdenacao('dash-ordvol-tab', ordem);
+  const itens = [..._dashUltimosClientesFiltrados].sort((a, b) => ordem === 'asc' ? a.volume - b.volume : b.volume - a.volume);
+  dashBarChart('dash-chart-vol', itens, c => c.volume.toFixed(1), '#f0be40', 'm³', c => c.nome);
+}
+function dashSetOrdemEnt(ordem) {
+  _dashOrdemEnt = ordem;
+  _dashAtualizarTabsOrdenacao('dash-ordent-tab', ordem);
+  const itens = [..._dashUltimosClientesFiltrados].sort((a, b) => ordem === 'asc' ? a.entregas - b.entregas : b.entregas - a.entregas);
+  dashBarChart('dash-chart-ent', itens, c => c.entregas, '#70a8f0', 'ent.', c => c.nome);
+}
+window.dashSetOrdemVol = dashSetOrdemVol;
+window.dashSetOrdemEnt = dashSetOrdemEnt;
 // ── Gráfico de barras horizontal inline ───────────────────────────────────
 function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
   const el = document.getElementById(containerId);
