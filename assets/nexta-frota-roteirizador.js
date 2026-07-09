@@ -3575,6 +3575,7 @@ function uploadPedidosLiberados(input) {
       const novos = xlsxMapPedidosLiberadosRows(rows);
       if (!novos.length) { alert('Nenhum pedido reconhecido. Verifique se o arquivo segue o modelo correto.'); return; }
       pedidos = novos;
+      _sincronizarDataOperacaoComPedidos();
       renderPedidos();
       showTab('pedidos');
     } catch (err) {
@@ -4031,15 +4032,20 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   const clockV = v => jIni(v)
     + Math.min(resultado[v.id].length, doisTurnos(v) ? 2 : 1) * (v.tempoPerdidoMin || 0)
     + resultado[v.id].reduce((s, vi) => s + (vi.tempoConsumidoMin || 0), 0);
-  // Base de datas: data de carregamento informada pelo usuário no modal.
-  // Fallback: menor data de entrega do lote (comportamento legado sem modal).
+  // Base de datas: PRIORIDADE 1 = menor data de entrega dos pedidos do lote
+  // (dataEntregaLogistica) — essa é a fonte real, já que na prática o campo
+  // de data do modal/header nunca é ajustado manualmente pelo usuário (fica
+  // "congelado" em amanhã-relativo-ao-carregamento-da-página, podendo ficar
+  // desatualizado se a aba ficar aberta por vários dias). PRIORIDADE 2 =
+  // dataCarregamento do modal, só usada quando os pedidos não têm data de
+  // entrega válida cadastrada (import incompleto, cadastro manual, etc.).
   const datasEntregaValidas = pedidos
     .map(p => parseDataBr(p?.dataEntregaLogistica))
     .filter(Boolean);
   const _minDataLote = datasEntregaValidas.length
     ? new Date(Math.min(...datasEntregaValidas.map(d => d.getTime())))
     : null;
-  const baseDataEntrega = dataCarregamento || _minDataLote || new Date();
+  const baseDataEntrega = _minDataLote || dataCarregamento || new Date();
   const diaAlvoPedido = (pedido) => {
     const d = parseDataBr(pedido?.dataEntregaLogistica);
     if (!d) return null;
@@ -7835,6 +7841,27 @@ window.invalidateSizeMapasRoteirizador = function(){
 function _isoHoje(offsetDias) {
   const d = new Date(); d.setDate(d.getDate() + (offsetDias||0));
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+// Sincroniza o campo de data do topo (rot-data-operacao) com a data de
+// entrega dos pedidos recém-importados — pedido a pedido, usa a menor data
+// de entrega do lote (mesma regra já usada como fonte de verdade da
+// roteirização, ver baseDataEntrega em otimizar()). Continua 100% ajustável
+// manualmente depois: isso só define o valor inicial de cada novo lote de
+// pedidos, não trava o campo.
+function _sincronizarDataOperacaoComPedidos() {
+  const el = document.getElementById('rot-data-operacao');
+  if (!el) return;
+  const datas = pedidos.map(p => parseDataBr(p?.dataEntregaLogistica)).filter(Boolean);
+  if (!datas.length) return; // pedidos sem data de entrega reconhecida — mantém o que já estava no campo
+  const minData = new Date(Math.min(...datas.map(d => d.getTime())));
+  const iso = `${minData.getFullYear()}-${String(minData.getMonth()+1).padStart(2,'0')}-${String(minData.getDate()).padStart(2,'0')}`;
+  if (el.value === iso) return; // já estava certo, evita toast/sincronização à toa
+  el.value = iso;
+  el._inicializado = true; // evita que initDataOperacao() sobrescreva com "amanhã" depois
+  sincronizarDisponibilidadeVeiculos(iso).then(() => {
+    if (document.getElementById('tab-veiculos')?.classList.contains('active')) renderVeiculos();
+    showToast(`📅 Data da operação ajustada para ${minData.toLocaleDateString('pt-BR')} (data de entrega dos pedidos importados)`, true);
+  }).catch(() => {});
 }
 function onDataOperacaoChange(valor) {
   if (!valor) return;
