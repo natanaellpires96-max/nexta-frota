@@ -12,6 +12,37 @@
 // (pórtico eletrônico sem cabine — cobrança automática por tag/placa, sem
 // vale-pedágio físico). Se "modelo" não for informado, assume-se 'praca'.
 const PEDAGIOS_BR = [
+  // ADIÇÃO 09/07/2026 — confirmadas via comprovante real do Sem Parar (Vale-
+  // Pedágio Paulínia x Araçariguama) + tabela oficial de tarifas 2025 da
+  // Motiva/CCR AutoBAN (mesmo km exato das praças, confirmando a
+  // identificação). Tarifas de 6 eixos são as EXATAS do comprovante — mais
+  // atualizadas que a tabela pública de referência (que mostrava valor bem
+  // menor, provavelmente de uma revisão tarifária anterior).
+  // Bidirecionais — 2 entradas cada (sentido Norte/Sul), mesmo padrão já
+  // usado no resto da base pra pedágios cobrados nos dois sentidos.
+  { nome: 'Perus (Anhanguera) sentido Norte', lat: -23.3940, lon: -46.7620, tarifas: { 2: 29.00, 6: 87.00 }, rodovia: 'SP-330 (Anhanguera), km 26+495 — CCR AutoBAN', regiao: 'BR' },
+  { nome: 'Perus (Anhanguera) sentido Sul', lat: -23.3940, lon: -46.7620, tarifas: { 2: 29.00, 6: 87.00 }, rodovia: 'SP-330 (Anhanguera), km 26+495 — CCR AutoBAN', regiao: 'BR' },
+  { nome: 'Itupeva (Bandeirantes) sentido Norte', lat: -23.1460, lon: -47.0580, tarifas: { 2: 28.60, 6: 85.80 }, rodovia: 'SP-348 (Bandeirantes), km 77+430 — CCR AutoBAN', regiao: 'BR' },
+  { nome: 'Itupeva (Bandeirantes) sentido Sul', lat: -23.1460, lon: -47.0580, tarifas: { 2: 28.60, 6: 85.80 }, rodovia: 'SP-348 (Bandeirantes), km 77+430 — CCR AutoBAN', regiao: 'BR' },
+  // ─────────────────────────────────────────────────────────────────────────
+  // ADIÇÃO 09/07/2026 — confirmadas via comprovante real do Sem Parar
+  // (Vale-Pedágio Cubatão x Bertioga) + fontes oficiais (Ecovias dos
+  // Imigrantes, concessionária Novo Litoral/CNL). Faltavam na base porque são
+  // praças NOVAS (a CNL só assumiu a concessão da SP-055 em nov/2024) e uma
+  // praça física da Ecovias que o levantamento anterior (OpenStreetMap) não
+  // tinha registrado ainda.
+  // Tarifas de 6 eixos foram cadastradas EXATAS (tarifas[6]), tiradas direto
+  // do comprovante — não são derivadas proporcionalmente da tarifa de carro
+  // de passeio (que segue uma tabela de multiplicador diferente da usada
+  // pelo resto da base). tarifas[2] é so uma estimativa best-effort a partir
+  // do valor por sentido informado pela CNL (R$5,80) — não confie nela pra
+  // veículos de 2 eixos sem confirmar.
+  // Coordenadas são ESTIMATIVAS (não achei lat/lon oficial de nenhuma das
+  // duas fontes) — se o alerta não disparar direito nessa região, ajuste
+  // lat/lon aqui comparando com o Mapa da Viagem.
+  { nome: 'Rio-Santos km236 LESTE (Novo Litoral)', lat: -23.9530, lon: -46.3980, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL)', regiao: 'BR', modelo: 'free_flow' },
+  { nome: 'Rio-Santos km236 OESTE (Novo Litoral)', lat: -23.9530, lon: -46.3980, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL)', regiao: 'BR', modelo: 'free_flow' },
+  { nome: 'Praça Santos (Cônego Domênico Rangoni)', lat: -23.8850, lon: -46.3600, tarifas: { 2: 38.40, 6: 115.20 }, rodovia: 'SP-055/248 (Cônego Domênico Rangoni), km 250+464 — Ecovias dos Imigrantes', regiao: 'BR' },
   // ─────────────────────────────────────────────────────────────────────────
   // BASE GERADA A PARTIR DO OPENSTREETMAP (consulta Overpass em 08/07/2026,
   // raio de 150km ao redor de: São Caetano do Sul, Paulínia, São José dos
@@ -244,8 +275,18 @@ const PEDAGIOS_BR = [
   { nome: 'Salto', lat: -23.1347, lon: -47.3607, tarifas: { 2: 9.8 }, rodovia: 'Rodovias do Tietê', regiao: 'BR' },
   { nome: 'Santa Cruz das Palmeiras', lat: -21.808, lon: -47.1934, tarifas: { 2: 18.0 }, rodovia: 'Intervias', regiao: 'BR' },
   { nome: 'Santo Antônio do Amparo', lat: -21.0003, lon: -44.9667, tarifas: { 2: 6.4 }, rodovia: 'Autopista Fernão Dias', regiao: 'BR' },
-  { nome: 'Santos', lat: -23.8882, lon: -46.211, tarifas: { 2: 11.6 }, rodovia: 'CNL', regiao: 'BR', modelo: 'free_flow' },
-  { nome: 'Santos sentido Capital', lat: -23.8949, lon: -46.3022, tarifas: { 2: 36.6 }, rodovia: 'Ecovias', regiao: 'BR' },
+  // NOTA 09/07/2026 — removidas as entradas antigas "Santos" (CNL) e "Santos
+  // sentido Capital" (Ecovias), que causavam falso positivo em rotas locais
+  // de Cubatão (ex.: Cubatão→Bertioga, confirmado via comprovante real do
+  // Sem Parar — essas 2 nem apareciam na cobrança real da viagem). Motivo:
+  //  • "Santos sentido Capital" era uma cópia mal posicionada do pedágio da
+  //    Anchieta-Imigrantes (km 31/32, região de São Bernardo do Campo) — esse
+  //    pedágio real já está corretamente cadastrado abaixo como "Riacho
+  //    Grande" (Anchieta) e "Piratininga" (Imigrantes), ambos com coordenada
+  //    certa na Serra, longe de Santos/Cubatão.
+  //  • "Santos" (CNL, genérico) foi substituído pelas 2 entradas precisas
+  //    "Rio-Santos km236 LESTE/OESTE (Novo Litoral)" — mesma praça real, só
+  //    que agora com nome, coordenada e tarifa de caminhão corretas.
   { nome: 'Senador José Bento - P2', lat: -22.1593, lon: -46.107, tarifas: { 2: 20.2 }, rodovia: 'EPG Sul de Minas', regiao: 'BR' },
   { nome: 'Sentido Sorocaba/Interior', lat: -23.4115, lon: -47.3418, tarifas: { 2: 15.0 }, rodovia: 'CCR Sorocabana', regiao: 'BR' },
   { nome: 'Seropédica', lat: -22.7151, lon: -43.7308, tarifas: { 2: 30.4 }, rodovia: 'Ecovias Rio Minas', regiao: 'BR' },

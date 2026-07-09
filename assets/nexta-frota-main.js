@@ -365,25 +365,57 @@ async function loadConfig() {
   window.CARRIERS = CARRIERS;
 }
 // ── Monthly archive helpers ──
+// Arquivos mensais — CADA MÊS é seu PRÓPRIO documento na coleção "archives"
+// (id = a própria chave, ex.: "2026-06"), em vez de empacotar todos os meses
+// dentro de um "archives" (array) só, como era antes. O jeito antigo estourava
+// o limite de 1 MB por documento do Firestore quando vários meses de Excel em
+// base64 se acumulavam ali dentro — e o salvamento falhava CALADO (sem erro
+// visível na tela), exatamente o sintoma de "clico em Gerar arquivo e não
+// acontece nada". Com um documento por mês, cada um fica bem abaixo do limite
+// (só o Excel daquele mês), então o problema não volta a se repetir mesmo
+// com mais meses acumulados no futuro.
 async function dbGetArchives() {
   const cached = cacheGet("cfg_archives");
   if (cached !== undefined) return cached;
   try {
-    const snap = await getDoc(doc(db, "config", "monthly_archives"));
-    const value = snap.exists() ? (snap.data().archives || []) : [];
-    cacheSet("cfg_archives", value, 300_000);
-    return value;
-  } catch { return []; }
+    const q = query(collection(db, "archives"), orderBy("key", "desc"), limit(6));
+    const snap = await getDocs(q);
+    const value = [];
+    snap.forEach(d => value.push(d.data()));
+    if (value.length) { cacheSet("cfg_archives", value, 300_000); return value; }
+    // Coleção nova ainda vazia — migração de uma vez só a partir do formato
+    // antigo (config/monthly_archives, um documento só com todos os meses),
+    // pra não "perder" os arquivos que já existiam (ex.: Maio, Abril) quando
+    // essa correção entrar no ar. Só roda quando a coleção nova está vazia.
+    const oldSnap = await getDoc(doc(db, "config", "monthly_archives"));
+    const oldArchives = oldSnap.exists() ? (oldSnap.data().archives || []) : [];
+    if (oldArchives.length) {
+      await Promise.all(oldArchives.map(a => setDoc(doc(db, "archives", a.key), a).catch(() => {})));
+    }
+    cacheSet("cfg_archives", oldArchives, 300_000);
+    return oldArchives;
+  } catch (e) {
+    console.error('[dbGetArchives] erro ao ler arquivos mensais:', e);
+    return [];
+  }
 }
 async function dbSaveArchive(archive) {
   // archive = { key, label, generatedAt, data (base64 xlsx) }
-  let archives = await dbGetArchives();
-  const idx = archives.findIndex(a => a.key === archive.key);
-  if(idx >= 0) archives[idx] = archive;
-  else archives.unshift(archive);
-  if(archives.length > 6) archives = archives.slice(0, 6);
-  await setDoc(doc(db, "config", "monthly_archives"), { archives });
-  cacheSet("cfg_archives", archives, 300_000); // write-through
+  try {
+    await setDoc(doc(db, "archives", archive.key), archive);
+    cacheInvalidate("cfg_archives"); // próxima leitura busca de novo, já incluindo esse mês
+    // Mantém só os 6 mais recentes — apaga o resto pra não acumular lixo.
+    const q = query(collection(db, "archives"), orderBy("key", "desc"));
+    const snap = await getDocs(q);
+    const chaves = [];
+    snap.forEach(d => chaves.push(d.id));
+    const excedentes = chaves.slice(6);
+    await Promise.all(excedentes.map(k => deleteDoc(doc(db, "archives", k)).catch(() => {})));
+  } catch (e) {
+    console.error('[dbSaveArchive] erro ao salvar arquivo mensal:', e);
+    showToast(`Erro ao salvar o arquivo de ${archive.label}: ${e.message || e}`, false);
+    throw e; // deixa o chamador (generateMonthlyArchive) saber que falhou
+  }
 }
 // Check if a carrier/date submission is locked (all plates filled)
 async function dbGetLock(carrier, dateStr) {
@@ -3420,16 +3452,28 @@ async function delPlate(carrier,idx){
 // ═══════════════════════════════════════════════════════════
 const MONTH_NAMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 async function checkAndGenerateMonthlyArchive() {
-  // Runs on login — if today is day 1-3 of a new month, auto-generate last month's archive
+  // Roda no login. Antes, só gerava o arquivo do mês anterior se o login
+  // acontecesse nos 3 primeiros dias do mês novo — se ninguém logasse nessa
+  // janela estreita (ex.: início de julho), o arquivo de junho nunca era
+  // gerado sozinho, e ficava faltando pra sempre (só dava pra gerar na mão).
+  // Agora é autorrecuperável: verifica os últimos 3 meses fechados e gera
+  // qualquer um que ainda esteja faltando, não importa em que dia o login
+  // aconteça — resolve tanto o caso normal (login no início do mês) quanto o
+  // caso de "ninguém abriu o painel a tempo".
   const now = new Date();
-  const dayOfMonth = now.getDate();
-  if(dayOfMonth > 3) return; // Only trigger in first 3 days of month
-  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const key = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth()+1).padStart(2,'0')}`;
   const archives = await dbGetArchives();
-  if(archives.find(a => a.key === key)) return; // Already generated
-  // Generate
-  await generateMonthlyArchive(lastMonth.getFullYear(), lastMonth.getMonth(), true);
+  const chavesExistentes = new Set(archives.map(a => a.key));
+  for (let i = 1; i <= 3; i++) {
+    const mes = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${mes.getFullYear()}-${String(mes.getMonth()+1).padStart(2,'0')}`;
+    if (chavesExistentes.has(key)) continue; // já existe, não regenera à toa
+    try {
+      await generateMonthlyArchive(mes.getFullYear(), mes.getMonth(), true);
+    } catch (e) {
+      console.error(`[checkAndGenerateMonthlyArchive] falhou ao gerar ${key}:`, e);
+      // não interrompe o loop — tenta os outros meses mesmo se um falhar
+    }
+  }
 }
 async function generateMonthlyArchive(year, month, silent=false) {
   const key = `${year}-${String(month+1).padStart(2,'0')}`;
@@ -3507,13 +3551,24 @@ async function manualGenArchive() {
   const opt = sel.options[sel.selectedIndex];
   const year = parseInt(opt.dataset.year);
   const month = parseInt(opt.dataset.month);
-  await generateMonthlyArchive(year, month, false);
-  await renderTabBody();
+  try {
+    await generateMonthlyArchive(year, month, false);
+  } catch (e) {
+    // dbSaveArchive já mostrou o toast de erro específico — aqui só garante
+    // que a tela não fique travada no spinner de "Carregando..."
+  } finally {
+    await renderTabBody();
+  }
 }
 async function regenArchive(key) {
   const [year, month] = key.split('-').map(Number);
-  await generateMonthlyArchive(year, month - 1, false);
-  await renderTabBody();
+  try {
+    await generateMonthlyArchive(year, month - 1, false);
+  } catch (e) {
+    // erro já mostrado via toast em dbSaveArchive
+  } finally {
+    await renderTabBody();
+  }
 }
 function downloadArchive(key) {
   dbGetArchives().then(archives => {

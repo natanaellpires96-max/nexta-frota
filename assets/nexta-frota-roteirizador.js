@@ -2762,6 +2762,7 @@ function salvarPedido() {
   }
   editandoPedidoId = null;
   cancelarFormPedido();
+  _sincronizarDataOperacaoComPedidos();
   renderPedidos();
 }
 function removerPedido(id) { pedidos = pedidos.filter(p => p.id !== id); renderPedidos(); }
