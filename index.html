@@ -9,7 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="assets/pedagios-utils.js"></script>
-<script type="module" src="assets/nexta-frota-main.js?v=frete-placas-pai-20260702"></script>
+<script type="module" src="assets/nexta-frota-main.js?v=frete-placas-pai-20260709-basefix"></script>
 <link rel="stylesheet" href="assets/nexta-frota-main.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
 <link rel="stylesheet" href="assets/nexta-frota-roteirizador.css">
@@ -590,11 +590,27 @@
       </div>
       <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Volume por Cliente (m3)</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <div style="font-size:12px;font-weight:600;color:var(--text-2);">Volume por Cliente (m3)</div>
+            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
+              <button class="dash-ordvol-tab active-rank" data-ordem="desc" onclick="dashSetOrdemVol('desc')"
+                style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior</button>
+              <button class="dash-ordvol-tab" data-ordem="asc" onclick="dashSetOrdemVol('asc')"
+                style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Menor</button>
+            </div>
+          </div>
           <div id="dash-chart-vol" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Entregas por Cliente</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <div style="font-size:12px;font-weight:600;color:var(--text-2);">Entregas por Cliente</div>
+            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
+              <button class="dash-ordent-tab active-rank" data-ordem="desc" onclick="dashSetOrdemEnt('desc')"
+                style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior</button>
+              <button class="dash-ordent-tab" data-ordem="asc" onclick="dashSetOrdemEnt('asc')"
+                style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Menor</button>
+            </div>
+          </div>
           <div id="dash-chart-ent" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
       </div>
@@ -870,9 +886,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=frete-placas-pai-20260702"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=frete-placas-pai-20260709-basefix"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=frete-placas-pai-20260702"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=frete-placas-pai-20260709-basefix"></script>
 </body>
 </html>
