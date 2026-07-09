@@ -40,9 +40,19 @@ const PEDAGIOS_BR = [
   // Coordenadas são ESTIMATIVAS (não achei lat/lon oficial de nenhuma das
   // duas fontes) — se o alerta não disparar direito nessa região, ajuste
   // lat/lon aqui comparando com o Mapa da Viagem.
-  { nome: 'Rio-Santos km236 LESTE (Novo Litoral)', lat: -23.8860, lon: -46.2680, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL), próx. Caruara', regiao: 'BR', modelo: 'free_flow' },
-  { nome: 'Rio-Santos km236 OESTE (Novo Litoral)', lat: -23.8860, lon: -46.2680, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL), próx. Caruara', regiao: 'BR', modelo: 'free_flow' },
-  { nome: 'Praça Santos (Cônego Domênico Rangoni)', lat: -23.8890, lon: -46.3310, tarifas: { 2: 38.40, 6: 115.20 }, rodovia: 'SP-055/248 (Cônego Domênico Rangoni), km 250+464 — Ecovias dos Imigrantes, entre Cubatão e Caruara', regiao: 'BR' },
+  // ATENÇÃO: raioKm:5 nestes 3 — depois de 2 tentativas de estimar a
+  // coordenada exata (por endereço/km da rodovia, depois por proporção
+  // visual numa imagem do Sem Parar) ainda não bateu dentro do raio padrão
+  // (500m). Enquanto a coordenada exata não é confirmada, uso um raio bem
+  // mais largo (5km) SÓ nestes 3 — garante que a praça seja detectada em
+  // qualquer rota que passe pela região de Cubatão↔Caruara↔Bertioga, ao
+  // custo de menos precisão cirúrgica (risco baixo de falso positivo aqui,
+  // já que é um trecho de estrada isolado, sem outras vias por perto).
+  // Assim que alguém conseguir a coordenada exata (clique certeiro no Google
+  // Maps ou GPS de campo), volta o raioKm pro padrão e ajusta lat/lon.
+  { nome: 'Rio-Santos km236 LESTE (Novo Litoral)', lat: -23.8860, lon: -46.2680, raioKm: 5, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL), próx. Caruara', regiao: 'BR', modelo: 'free_flow' },
+  { nome: 'Rio-Santos km236 OESTE (Novo Litoral)', lat: -23.8860, lon: -46.2680, raioKm: 5, tarifas: { 2: 5.80, 6: 33.08 }, rodovia: 'SP-055 (Rio-Santos), km 236 — Novo Litoral (CNL), próx. Caruara', regiao: 'BR', modelo: 'free_flow' },
+  { nome: 'Praça Santos (Cônego Domênico Rangoni)', lat: -23.8890, lon: -46.3310, raioKm: 5, tarifas: { 2: 38.40, 6: 115.20 }, rodovia: 'SP-055/248 (Cônego Domênico Rangoni), km 250+464 — Ecovias dos Imigrantes, entre Cubatão e Caruara', regiao: 'BR' },
   // ─────────────────────────────────────────────────────────────────────────
   // BASE GERADA A PARTIR DO OPENSTREETMAP (consulta Overpass em 08/07/2026,
   // raio de 150km ao redor de: São Caetano do Sul, Paulínia, São José dos
@@ -408,7 +418,7 @@ function _distanciaPontoSegmento(lat1, lon1, lat2, lon2, latP, lonP) {
 // deslocada da posição exata da praça/pórtico (a base atual vem do
 // OpenStreetMap — ver comentário no topo do arquivo, em PEDAGIOS_BR) — ajuste
 // lat/lon da entrada em vez de aumentar esse raio de volta.
-function detectarPedagiosNaRota(paradas, eixos = 2, raioKm = 0.5) {
+function detectarPedagiosNaRota(paradas, eixos = 2, raioKm = 0.8) {
   if (!paradas || paradas.length < 2) return [];
   
   const pedagiosEncontrados = [];
@@ -451,11 +461,16 @@ function detectarPedagiosNaRota(paradas, eixos = 2, raioKm = 0.5) {
     if (!p1 || !p2 || p1.lat == null || p1.lon == null || p2.lat == null || p2.lon == null) continue;
     
     // Para cada pedágio candidato (já filtrado pela caixa delimitadora),
-    // verifica se está próximo ao TRAJETO (não só nas pontas)
+    // verifica se está próximo ao TRAJETO (não só nas pontas). Pedágios com
+    // coordenada ainda incerta podem declarar seu próprio "raioKm" (mais
+    // largo) que sobrescreve o raio padrão só pra eles — evita ficar
+    // dependendo de acertar a coordenada no metro enquanto ela não é
+    // confirmada com precisão.
     pedagiosCandidatos.forEach((ped) => {
       const distMinima = _distanciaPontoSegmento(p1.lat, p1.lon, p2.lat, p2.lon, ped.lat, ped.lon);
+      const raioEsteped = ped.raioKm != null ? ped.raioKm : RAIO_DETECCAO_KM;
       
-      if (distMinima <= RAIO_DETECCAO_KM) {
+      if (distMinima <= raioEsteped) {
         // Verifica se já não foi detectado
         const jaExiste = pedagiosEncontrados.find(
           (p) => p.nome === ped.nome && Math.abs(p.distanciaKm - distMinima) < 0.5
