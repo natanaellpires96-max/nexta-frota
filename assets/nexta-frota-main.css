@@ -89,6 +89,20 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .btn-danger:hover{color:var(--red);border-color:rgba(240,96,96,.3);background:var(--red-bg);}
 .btn-full{width:100%;justify-content:center;}
 .tabs{display:flex;gap:4px;background:var(--mid);border:1px solid var(--border);border-radius:var(--radius);padding:4px;margin-bottom:1.5rem;flex-wrap:wrap;width:fit-content;}
+/* Painel do administrador — os botões (Daily Briefing, KPIs Mensais, etc.)
+   usavam width:fit-content da regra genérica acima, então ficavam agrupados
+   à esquerda com espaço vazio sobrando à direita da caixa. Aqui eles esticam
+   pra ocupar a largura toda da barra, ficando alinhados com a borda da grade
+   do Roteirizador logo abaixo. */
+.admin-tabs{width:100%;flex-wrap:nowrap;}
+.admin-tabs .tab{flex:1;white-space:nowrap;text-align:center;}
+/* Painel do administrador — mesma barra de abas do Roteirizador (largura
+   cheia, sem caixa arredondada, abas distribuídas igualmente na fileira) em
+   vez do estilo genérico "caixinha" acima, que ficava destoando visualmente
+   do resto do app assim que o usuário entrava na aba Roteirizador. */
+.admin-tabs{flex-wrap:nowrap;width:100%;gap:0;background:transparent;border:none;border-radius:0;border-bottom:0.5px solid var(--border);padding:0;overflow-x:auto;}
+.admin-tabs .tab{flex:1;border-radius:0;padding:10px 12px;white-space:nowrap;}
+.admin-tabs .tab.active{background:none;color:var(--pet-green,#b5e51d);border-bottom:2px solid var(--pet-green,#b5e51d);}
 .tab{padding:7px 16px;font-size:13px;border:none;border-radius:7px;cursor:pointer;color:var(--muted);background:none;transition:all .15s;}
 .tab.active{background:var(--lime);color:var(--dark);font-weight:600;}
 .tab:not(.active):hover{color:var(--lime);}
