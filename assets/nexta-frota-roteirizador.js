@@ -4028,7 +4028,17 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       const viagensAnteriores = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio);
       resultado[v.id] = viagensAnteriores
         .filter(vi => vi.petId && lockedViagens.has(vi.petId))
-        .map(vi => JSON.parse(JSON.stringify(vi)));
+        .map(vi => {
+          const clone = JSON.parse(JSON.stringify(vi));
+          // compsDisp é estado só-de-tempo-de-otimização (nunca fica salvo no
+          // histórico/JSON) — sem isso, qualquer trecho do otimizador que tente
+          // checar/encaixar mais pedidos nesta viagem quebra com "undefined.map".
+          // Zeramos a disponibilidade de propósito: além de evitar o erro, isso
+          // garante que a viagem travada realmente fica fechada para novos
+          // pedidos (senão a trava individual não teria efeito real).
+          clone.compsDisp = criarCompsDisp(v).map(c => ({ ...c, disponivel: 0 }));
+          return clone;
+        });
       resultado[v.id].forEach(vi =>
         vi.paradas.forEach(pa => { if (pa.pedido?.id) pedidosLocadosIds.add(pa.pedido.id); })
       );
