@@ -3565,6 +3565,7 @@ async function carregarPedidosLiberados() {
       const novos = xlsxMapPedidosLiberadosRows(rows);
       if (!novos.length) continue;
       pedidos = novos;
+      arquivoHistoricoAberto = null;
       renderPedidos();
       return true;
     } catch (e) {
@@ -3586,6 +3587,7 @@ function uploadPedidosLiberados(input) {
       const novos = xlsxMapPedidosLiberadosRows(rows);
       if (!novos.length) { alert('Nenhum pedido reconhecido. Verifique se o arquivo segue o modelo correto.'); return; }
       pedidos = novos;
+      arquivoHistoricoAberto = null; // planilha nova = trabalho novo, não continuação do que estava aberto
       _sincronizarDataOperacaoComPedidos();
       renderPedidos();
       showTab('pedidos');
@@ -3601,6 +3603,7 @@ function limparTodosPedidos() {
   if (!pedidos.length) return;
   if (!confirm('Remover todos os ' + pedidos.length + ' pedido(s) carregados?')) return;
   pedidos = [];
+  arquivoHistoricoAberto = null; // lista zerada = trabalho novo
   renderPedidos();
 }
 function baixarModeloPedidos() {
@@ -7659,7 +7662,7 @@ async function salvarNoHistorico(silencioso = false) {
         console.warn('[historico] Não foi possível vincular revisão ao arquivo anterior:', eAnt);
       }
     }
-    arquivoHistoricoAberto = filename; // a partir de agora, esta é a versão "aberta"
+    arquivoHistoricoAberto = null; // ciclo de correção concluído — próxima ligação só via "Abrir" explícito
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
     popularSeletorResumoDia().catch(()=>{});
