@@ -256,6 +256,12 @@ var ultimoResultado = null, ultimoControleTempo = null;
 var _sugestoesSplitDedicado = []; // sugestões de quebra manual pós-otimização modo dedicado
 var _motoristasOverride = {}; // { petId: nome } — override manual por viagem, ignora regra diurno/noturno
 var lockedTerminals = new Set(); // terminais com ajustes travados (não re-otimizados)
+// Trava fina por viagem: guarda o petId (ex: "P0726201") de viagens travadas
+// individualmente. Diferente de lockedTerminals (trava TODAS as viagens de
+// TODOS os veículos daquele terminal), isso permite preservar só UMA viagem
+// específica na próxima otimização, deixando as demais (mesmo do mesmo
+// terminal/veículo) livres para serem recalculadas normalmente.
+var lockedViagens = new Set();
 // ── Contador de IDs de viagem (P + MM + YY + seq 3 dígitos) ─────────────────
 // Formato: P{MM}{YY}{NNN} ex: P0626001
 // Chave interna: MM+YY ex: "0626" — sequência global por mês/ano, sem repetição
@@ -4009,6 +4015,36 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       resultado[v.id].forEach(vi =>
         vi.paradas.forEach(pa => { if (pa.pedido?.id) pedidosLocadosIds.add(pa.pedido.id); })
       );
+    } else if (lockedViagens.size && ultimoResultado?.[v.id]?.some(vi => vi.petId && lockedViagens.has(vi.petId))
+               && (v.disponibilidade || 'Disponível') !== 'Indisponível') {
+      // Terminal DESTRAVADO, mas 1+ viagem(ns) deste veículo estão travadas
+      // individualmente (lockedViagens): preserva só essas viagens — na mesma
+      // posição em que estavam — e deixa o restante do veículo livre para o
+      // otimizador recalcular (ex.: outro turno, ou vagas ainda não preenchidas).
+      // Observação: se a viagem travada não for a primeira do dia (2º turno
+      // travado com 1º turno livre), a ordem final do array pode não refletir
+      // a ordem cronológica real — cenário incomum, mas vale conferir o
+      // resultado nesses casos antes de salvar.
+      const viagensAnteriores = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio);
+      resultado[v.id] = viagensAnteriores
+        .filter(vi => vi.petId && lockedViagens.has(vi.petId))
+        .map(vi => JSON.parse(JSON.stringify(vi)));
+      resultado[v.id].forEach(vi =>
+        vi.paradas.forEach(pa => { if (pa.pedido?.id) pedidosLocadosIds.add(pa.pedido.id); })
+      );
+      // Tempo produtivo apenas das viagens travadas (mesma fórmula usada em
+      // recalcularControleTempo), respeitando se a pausa de refeição já
+      // deveria ter sido consumida até a última viagem travada.
+      const produtivo = resultado[v.id].reduce((soma, vi) =>
+        soma + (vi.paradas || []).reduce((s, p) =>
+          s + (p.tempoCarregamentoMin || 0)
+            + (p.deslocCarregadoMin   || 0)
+            + (p.tempoDescargaMin     || 0)
+            + (p.deslocVazioMin       || 0), 0), 0);
+      const idxUltimaTravada = viagensAnteriores.reduce((max, vi, i) =>
+        (vi.petId && lockedViagens.has(vi.petId)) ? i : max, -1);
+      const pausaRefeicao = idxUltimaTravada >= (doisTurnos(v) ? 2 : 1) ? (v.tempoPerdidoMin || 0) : 0;
+      controleTempo[v.id] = { limiteMin: jornadaMin, usadoMin: produtivo + pausaRefeicao };
     } else {
       resultado[v.id]     = [];
       controleTempo[v.id] = { limiteMin: jornadaMin, usadoMin: 0 };
@@ -6008,6 +6044,18 @@ function toggleLockTerminal(terminal, btn) {
   }
   if (ultimoResultado) renderResultado(ultimoResultado, ultimoControleTempo || {});
 }
+// Trava/destrava uma única viagem pelo petId (ex: "P0726201"). Viagens sem
+// petId ainda (nunca foram salvas/otimizadas com atribuirPetIds) não podem
+// ser travadas individualmente — só a trava por terminal se aplica a elas.
+function toggleLockViagem(petId, btn) {
+  if (!petId) return;
+  if (lockedViagens.has(petId)) {
+    lockedViagens.delete(petId);
+  } else {
+    lockedViagens.add(petId);
+  }
+  if (ultimoResultado) renderResultado(ultimoResultado, ultimoControleTempo || {});
+}
 // Fecha dropdown ao clicar fora
 document.addEventListener('click', () => {
   const menu = document.getElementById('placa-dropdown-menu');
@@ -6032,6 +6080,7 @@ function resetarOtimizacao() {
     ultimoResultado = JSON.parse(JSON.stringify(base));
     historicoManual = [];
     lockedTerminals.clear();
+    lockedViagens.clear();
     atualizarBarraManual();
     renderResultado(ultimoResultado, ultimoControleTempo || {});
   } catch(e) {
@@ -7108,6 +7157,14 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           ? `<span style="font-size:11px;color:#3730A3;background:rgba(79,70,229,0.1);border:1px solid rgba(79,70,229,0.3);border-radius:4px;padding:2px 7px;" title="Rota ajustada manualmente no mapa">📏 ${viagem._kmAjustado.toFixed(1)} km (ajustada)</span>`
           : '';
         const _temViol = viagensComViolacao.has(viagem);
+        const _viagemLocked = !!(viagem.petId && lockedViagens.has(viagem.petId));
+        const _lockBtnHtml = viagem.petId
+          ? `<button draggable="false" onclick="event.stopPropagation();toggleLockViagem('${viagem.petId}',this)"
+              title="${_viagemLocked ? 'Viagem travada — clique para destravar e permitir reotimização' : 'Travar só esta viagem (próxima otimização preserva ela, mesmo com o terminal destravado)'}"
+              style="display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:20px;border:1.5px solid ${_viagemLocked ? '#2563EB' : 'var(--border-dk)'};background:${_viagemLocked ? '#EEF3FF' : 'var(--surface)'};color:${_viagemLocked ? '#1E40AF' : 'var(--text-3)'};font-size:9px;font-weight:700;cursor:pointer;font-family:var(--font-cond);letter-spacing:.05em;">
+              ${_viagemLocked ? '🔒' : '🔓'}
+            </button>`
+          : '';
         html += `<div class="viagem-header viagem-draggable"
           draggable="true"
           ondragstart="iniciarDragViagem(${v.id},${ti},this)"
@@ -7120,6 +7177,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           title="Arraste para mover esta viagem para outro veículo · Solte uma entrega aqui para adicioná-la a esta viagem">
           <span class="drag-handle">⠿</span>
           <span class="tag ${_temViol ? 'tag-red' : 'tag-blue'}">${label}</span>
+          ${_lockBtnHtml}
           <span style="font-size:12px;color:#4A6535;">${volV.toFixed(1)} / ${v.capacidade} m³</span>
           <span style="font-size:12px;color:#4A6535;">${fmtDT(inicioCicloMin+esperaTermRender)} → ${fmtDT(fimCicloMin)}</span>
           ${esperaTagHtml}
@@ -7687,6 +7745,8 @@ async function abrirEntradaHistorico(filename) {
     ultimoControleTempo = data.controleTempo || {};
     resultadoOriginal   = ultimoResultado ? JSON.parse(JSON.stringify(ultimoResultado)) : null;
     historicoManual     = [];
+    lockedTerminals.clear();
+    lockedViagens.clear();
     renderTerminais();
     renderClientes();
     renderPedidos();
@@ -7765,6 +7825,7 @@ async function onMudarRoteirizacao(val) {
   }
   if (ultimoResultado) {
     lockedTerminals.clear();
+    lockedViagens.clear();
     filtroMapaPlaca = '';
     filtroMapaTerminais.clear();
     renderResultado(ultimoResultado, ultimoControleTempo);
