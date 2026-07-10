@@ -262,6 +262,10 @@ var lockedTerminals = new Set(); // terminais com ajustes travados (não re-otim
 // específica na próxima otimização, deixando as demais (mesmo do mesmo
 // terminal/veículo) livres para serem recalculadas normalmente.
 var lockedViagens = new Set();
+// Nome do arquivo de histórico atualmente aberto (via abrirEntradaHistorico ou
+// pelo seletor de roteirização). Usado para vincular uma correção salva à
+// programação original que ela substitui — ver salvarNoHistorico().
+var arquivoHistoricoAberto = null;
 // ── Contador de IDs de viagem (P + MM + YY + seq 3 dígitos) ─────────────────
 // Formato: P{MM}{YY}{NNN} ex: P0626001
 // Chave interna: MM+YY ex: "0626" — sequência global por mês/ano, sem repetição
@@ -7604,6 +7608,12 @@ async function salvarNoHistorico(silencioso = false) {
     savedAt: new Date().toISOString(),
     salvoPor: usuarioLogado,
     datasEntrega,
+    // Se esta roteirização foi aberta a partir de uma entrada existente do
+    // histórico (abrirEntradaHistorico / seletor de roteirização) e depois
+    // salva de novo, ela é uma REVISÃO daquela entrada — não uma programação
+    // nova e independente. Isso permite esconder a versão antiga da lista
+    // principal sem apagar nada fisicamente (preserva IDs/histórico real).
+    revisaoDe: arquivoHistoricoAberto || null,
     resumo: {
       totalRotas,
       totalViagens,
@@ -7633,6 +7643,23 @@ async function salvarNoHistorico(silencioso = false) {
     await ws.close();
     _atualizarPetSeq(ultimoResultado); // persiste contador apenas ao salvar
     delete _histMetaCache[filename]; // invalida cache para releitura na próxima listagem
+    // Marca o arquivo anterior (se houver) como substituído por este, sem
+    // apagar ou alterar o resto do conteúdo dele — só adiciona o vínculo.
+    if (snapshot.revisaoDe && snapshot.revisaoDe !== filename) {
+      try {
+        const fhAnt = await dirHandleHistorico.getFileHandle(snapshot.revisaoDe);
+        const fileAnt = await fhAnt.getFile();
+        const dataAnt = JSON.parse(await fileAnt.text());
+        dataAnt.substituidoPor = filename;
+        const wsAnt = await fhAnt.createWritable();
+        await wsAnt.write(JSON.stringify(dataAnt, null, 2));
+        await wsAnt.close();
+        delete _histMetaCache[snapshot.revisaoDe];
+      } catch(eAnt) {
+        console.warn('[historico] Não foi possível vincular revisão ao arquivo anterior:', eAnt);
+      }
+    }
+    arquivoHistoricoAberto = filename; // a partir de agora, esta é a versão "aberta"
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
     popularSeletorResumoDia().catch(()=>{});
@@ -7691,6 +7718,8 @@ async function carregarListaHistorico() {
           resumo: data.resumo,
           datasEntrega: data.datasEntrega || [],
           salvoPor: data.salvoPor || '',
+          revisaoDe: data.revisaoDe || null,
+          substituidoPor: data.substituidoPor || null,
           _lastModified: file.lastModified,
           _size: file.size,
         };
@@ -7713,18 +7742,27 @@ async function carregarListaHistorico() {
     el.innerHTML = '<div class="empty">Nenhuma roteirização salva nesta pasta.</div>';
     return;
   }
-  el.innerHTML = entries.map(({ name, data }) => {
+  // ── Agrupa por cadeia de revisão ────────────────────────────────────────
+  // Uma entrada com `substituidoPor` não é mais a versão vigente daquela
+  // programação — foi corrigida e re-salva depois. Por padrão só mostramos a
+  // versão vigente de cada cadeia (a que ninguém substituiu ainda); as
+  // anteriores ficam disponíveis atrás de "Ver revisões anteriores", sem
+  // nunca serem apagadas fisicamente (preserva IDs de pedido/viagem).
+  const porNome = {};
+  entries.forEach(({ name, data }) => { porNome[name] = data; });
+  const renderEntry = ({ name, data }, opts = {}) => {
     const dt    = new Date(data.savedAt);
     const p2    = n => String(n).padStart(2, '0');
     const dtStr = `${p2(dt.getDate())}/${p2(dt.getMonth()+1)}/${dt.getFullYear()} às ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
     const { totalRotas = 0, totalViagens = 0, totalPedidos = 0, totalVolume_m3 = 0, terminaisUsados = [] } = data.resumo;
     const entrega     = data.datasEntrega?.length ? data.datasEntrega.join(', ') : '—';
-    // Nomes dos terminais/bases roteirizados nesse lote, exibidos ao lado da
-    // data/hora (ex.: "São Caetano / Paulínia / Duque de Caxias").
     const terminaisStr = terminaisUsados.length ? terminaisUsados.join(' / ') : '';
     const safeNome    = name.replace(/'/g, "\\'");
+    const substTagHtml = opts.substituida
+      ? `<span class="tag tag-gray" style="font-style:italic;">Substituída${opts.substituidaEm ? ` em ${opts.substituidaEm}` : ''}</span>`
+      : '';
     return `
-      <div class="hist-entry">
+      <div class="hist-entry"${opts.substituida ? ' style="opacity:0.72;"' : ''}>
         <div class="hist-entry-info">
           <div class="hist-entry-date">${dtStr}${terminaisStr ? ` &nbsp;·&nbsp; <span class="hist-entry-terminais">${terminaisStr}</span>` : ''}</div>
           <div class="hist-entry-meta">Entrega: <strong>${entrega}</strong>${data.salvoPor ? ` &nbsp;·&nbsp; Salvo por: <strong>${data.salvoPor === 'Desconhecido' ? ((S && S.user && window.USERS_DB && window.USERS_DB[S.user]) ? (window.USERS_DB[S.user].name || S.user) : data.salvoPor) : data.salvoPor}</strong>` : ''}</div>
@@ -7733,12 +7771,40 @@ async function carregarListaHistorico() {
             <span class="tag tag-blue">${totalViagens} ${totalViagens !== 1 ? 'viagens' : 'viagem'}</span>
             <span class="tag tag-gray">${totalPedidos} pedido${totalPedidos !== 1 ? 's' : ''}</span>
             <span class="tag tag-yellow">${String(totalVolume_m3).replace('.', ',')} m³</span>
+            ${substTagHtml}
           </div>
         </div>
         <div class="hist-entry-actions">
           <button class="btn btn-green btn-sm" onclick="abrirEntradaHistorico('${safeNome}')">Abrir</button>
           <button class="btn btn-danger btn-sm" onclick="excluirEntradaHistorico('${safeNome}', this)">Excluir</button>
         </div>
+      </div>`;
+  };
+  const vigentes = entries.filter(({ data }) => !data.substituidoPor);
+  el.innerHTML = vigentes.map((entry) => {
+    // Monta a cadeia de revisões anteriores desta entrada (mais recente → mais antiga)
+    const anteriores = [];
+    let cursor = entry.data.revisaoDe;
+    while (cursor && porNome[cursor]) {
+      anteriores.push({ name: cursor, data: porNome[cursor] });
+      cursor = porNome[cursor].revisaoDe;
+    }
+    const principalHtml = renderEntry(entry);
+    if (!anteriores.length) return principalHtml;
+    const gid = `hist-rev-${entry.name.replace(/[^a-zA-Z0-9]/g, '')}`;
+    const p2f = n => String(n).padStart(2, '0');
+    const fmtDtCurta = iso => { const d = new Date(iso); return `${p2f(d.getDate())}/${p2f(d.getMonth()+1)} ${p2f(d.getHours())}:${p2f(d.getMinutes())}`; };
+    // A data de substituição de cada revisão anterior é o savedAt de quem a sucede
+    // na cadeia (o próprio `entry` para a mais recente, ou a revisão seguinte para as demais).
+    const anterioresHtml = anteriores.map((a, i) => {
+      const sucessorSavedAt = i === 0 ? entry.data.savedAt : anteriores[i - 1].data.savedAt;
+      return renderEntry(a, { substituida: true, substituidaEm: fmtDtCurta(sucessorSavedAt) });
+    }).join('');
+    return `
+      ${principalHtml}
+      <div style="margin:-4px 0 8px 16px;">
+        <button class="btn btn-sm" style="background:none;border:none;color:#4A6535;font-size:11px;cursor:pointer;padding:2px 4px;" onclick="const b=document.getElementById('${gid}');b.style.display=b.style.display==='none'?'block':'none';this.textContent=b.style.display==='none'?'▸ Ver ${anteriores.length} revisão(ões) anterior(es)':'▾ Ocultar revisão(ões) anterior(es)';">▸ Ver ${anteriores.length} revisão(ões) anterior(es)</button>
+        <div id="${gid}" style="display:none;">${anterioresHtml}</div>
       </div>`;
   }).join('');
 }
@@ -7757,6 +7823,7 @@ async function abrirEntradaHistorico(filename) {
     historicoManual     = [];
     lockedTerminals.clear();
     lockedViagens.clear();
+    arquivoHistoricoAberto = filename;
     renderTerminais();
     renderClientes();
     renderPedidos();
@@ -7822,12 +7889,14 @@ async function onMudarRoteirizacao(val) {
   document.querySelectorAll('.sel-roteirizacao').forEach(s => s.value = val);
   if (!val) {
     if (estadoAtual) _restaurarEstado(estadoAtual);
+    arquivoHistoricoAberto = null; // "— Atual —" não é nenhuma entrada salva do histórico
   } else {
     if (!await _histGarantirPermissao()) return;
     try {
       const fh   = await dirHandleHistorico.getFileHandle(val);
       const file = await fh.getFile();
       _restaurarEstado(JSON.parse(await file.text()));
+      arquivoHistoricoAberto = val;
     } catch(e) {
       alert('Erro ao carregar roteirização: ' + e.message);
       return;
