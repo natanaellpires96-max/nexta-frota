@@ -741,3 +741,56 @@
 #roteirizador-mount { padding: 0 !important; background: transparent !important; border-radius: 0 !important; }
 /* Tabs sem radius */
 #roteirizador-shell .tabs { margin-bottom: 16px; border-radius: 0; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   CELULAR — tudo dentro deste @media, então NADA aqui afeta o desktop.
+   ══════════════════════════════════════════════════════════════════════
+   O problema real do "corte" no celular: "#roteirizador-shell > div:not
+   ([id])" (o cartão que envolve cabeçalho + abas + cada página, lá em
+   cima neste arquivo) tem "overflow: hidden". Em telas largas isso nunca
+   incomoda porque nada excede a largura. Em telas estreitas, qualquer
+   fileira que não quebra linha (fileira de filtros, botões de ação de um
+   card, KPIs lado a lado) passa da borda e, em vez de aparecer com uma
+   barra de rolagem, simplesmente SOME — sem nenhum jeito de alcançar,
+   nem arrastando. Foi exatamente isso que impediu excluir uma entrada no
+   Histórico pelo celular. A correção principal é trocar esse overflow
+   por um que deixa rolar; o resto do bloco só melhora o toque em cima
+   disso (abas legíveis, cards empilhando em vez de espremer). */
+@media (max-width: 780px) {
+  /* Rede de segurança: nada mais fica invisível — se não couber, rola. */
+  #roteirizador-shell > div:not([id]) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Abas: em vez de espremer 11 abas em fatias ilegíveis (flex:1 força
+     largura igual pra todas), cada uma volta à largura natural do texto
+     e a fileira toda vira uma faixa que desliza com o dedo. */
+  #roteirizador-shell .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  #roteirizador-shell .tab { flex: 0 0 auto; padding: 10px 14px; font-size: 12.5px; }
+
+  /* Qualquer fileira "título à esquerda / botões à direita" (cabeçalho de
+     aba, card de pedido/veículo/terminal com botões Editar/Excluir etc.)
+     empilha em vez de espremer horizontalmente. */
+  #roteirizador-shell [style*="justify-content:space-between"] {
+    flex-wrap: wrap; row-gap: 8px;
+  }
+  #roteirizador-shell .filter-bar .field { min-width: 0; flex: 1 1 140px; }
+
+  /* Cards do Histórico: título/chips em cima, botões (Abrir / Detalhar /
+     Excluir) embaixo, ocupando a largura toda — sempre visíveis e fáceis
+     de tocar, nunca espremidos atrás de uma borda cortada. */
+  #roteirizador-shell .hist-entry { flex-direction: column; align-items: stretch; }
+  #roteirizador-shell .hist-entry-actions { flex-wrap: wrap; margin-top: 10px; }
+  #roteirizador-shell .hist-entry-actions .btn { flex: 1 1 auto; min-height: 34px; }
+  #roteirizador-shell .hist-folder-bar { align-items: stretch; }
+  #roteirizador-shell .hist-folder-bar > * { flex: 1 1 auto; }
+  #roteirizador-shell #hist-filtro-totais { margin-left: 0 !important; width: 100%; }
+
+  /* Modais: cola nas bordas da tela em vez de sobrar espaço vazio, e o
+     conteúdo interno (tabelas de detalhe, por ex.) rola na horizontal
+     dentro do próprio modal, sem empurrar a tela toda pro lado. */
+  #roteirizador-shell .modal-backdrop { padding: 8px; }
+  #roteirizador-shell .modal-card { width: 100%; max-height: 96vh; }
+  #roteirizador-shell .modal-body table { display: block; overflow-x: auto; }
+
+  /* Botões de ação mais altos = alvo de toque melhor no dedo. */
+  #roteirizador-shell .btn { min-height: 34px; }
+}
