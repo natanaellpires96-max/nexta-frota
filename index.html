@@ -752,6 +752,14 @@
       <div class="hist-folder-path" id="hist-pasta-path">Nenhuma pasta selecionada</div>
       <button class="btn btn-sm" onclick="selecionarPastaHistorico()">Escolher...</button>
     </div>
+    <div class="hist-folder-bar" style="flex-wrap:wrap;row-gap:8px;">
+      <span style="font-size:10px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-2);flex-shrink:0;">Entrega</span>
+      <input type="date" id="hist-filtro-de" class="hist-folder-path" style="flex:0 0 150px;cursor:text;" onchange="aplicarFiltroHistoricoData()">
+      <span style="font-size:11px;color:var(--text-3);flex-shrink:0;">até</span>
+      <input type="date" id="hist-filtro-ate" class="hist-folder-path" style="flex:0 0 150px;cursor:text;" onchange="aplicarFiltroHistoricoData()">
+      <button class="btn btn-sm" onclick="limparFiltroHistoricoData()">Limpar filtro</button>
+      <span id="hist-filtro-contagem" style="font-size:11px;color:var(--text-3);"></span>
+    </div>
     <div id="historico-list">
       <div class="empty">Selecione uma pasta para visualizar o histórico de roteirizações.</div>
     </div>
@@ -849,6 +857,18 @@
           <button class="btn" onclick="freteFecharRestaurarBackup()">Cancelar</button>
           <button class="btn btn-green" onclick="freteConfirmarRestaurarBackup()">Restaurar</button>
         </div>
+      </div>
+    </div>
+  </div>
+  <!-- ── MODAL DETALHE DE PEDIDOS DO HISTÓRICO ────────────────────────────── -->
+  <div id="modal-hist-detalhe" class="modal-backdrop" onclick="fecharDetalheHistorico(event)">
+    <div class="modal-card" style="max-width:640px;width:96vw;" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <div id="hist-detalhe-titulo" style="font-family:var(--font-cond);font-size:16px;font-weight:700;">Detalhe da roteirização</div>
+        <button class="btn btn-sm btn-danger" onclick="fecharDetalheHistorico()">Fechar</button>
+      </div>
+      <div class="modal-body">
+        <div id="hist-detalhe-body"><div class="empty">Carregando...</div></div>
       </div>
     </div>
   </div>
