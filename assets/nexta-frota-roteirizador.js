@@ -7930,10 +7930,32 @@ function _histRenderLista(entries) {
     }
     return false;
   });
-  const cont = document.getElementById('hist-filtro-contagem');
+  const cont   = document.getElementById('hist-filtro-contagem');
+  const totais = document.getElementById('hist-filtro-totais');
   if (cont) {
     cont.textContent = (de || ate)
       ? `${vigentesFiltradas.length} de ${vigentes.length} roteirização(ões)`
+      : '';
+  }
+  // Soma só o que está sendo exibido — ou seja, só vigentes (nunca uma
+  // revisão já substituída) e só dentro do intervalo de entrega filtrado,
+  // se houver um. Sem filtro, vigentesFiltradas === vigentes, então já sai
+  // o total geral.
+  if (totais) {
+    const somados = vigentesFiltradas.reduce((s, { data }) => {
+      const r = data.resumo || {};
+      s.rotas    += r.totalRotas      || 0;
+      s.viagens  += r.totalViagens    || 0;
+      s.pedidos  += r.totalPedidos    || 0;
+      s.volume   += r.totalVolume_m3  || 0;
+      return s;
+    }, { rotas: 0, viagens: 0, pedidos: 0, volume: 0 });
+    totais.innerHTML = vigentesFiltradas.length
+      ? `
+        <span class="tag tag-green">${somados.rotas} rota${somados.rotas !== 1 ? 's' : ''}</span>
+        <span class="tag tag-blue">${somados.viagens} ${somados.viagens !== 1 ? 'viagens' : 'viagem'}</span>
+        <span class="tag tag-gray">${somados.pedidos} pedido${somados.pedidos !== 1 ? 's' : ''}</span>
+        <span class="tag tag-yellow">${String(somados.volume.toFixed(1)).replace('.', ',')} m³</span>`
       : '';
   }
   if (!vigentesFiltradas.length) {
