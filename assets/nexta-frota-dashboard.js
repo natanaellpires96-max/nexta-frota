@@ -1095,6 +1095,13 @@ function dashRenderJornadaTransportadoras(dados) {
 // Token pra descartar resultado de uma busca antiga se o filtro mudar de
 // novo antes dela terminar (mesmo padrão usado no refino de pedágio do Frete).
 let _dashOciosidadeToken = 0;
+// Cache simples por intervalo de datas — evita reconsultar o Firestore toda
+// vez que o Dashboard re-renderiza (troca de filtro de cidade/cliente, por
+// exemplo) pedindo o MESMO período de novo. TTL curto o suficiente pra não
+// mostrar dado velho por muito tempo, longo o suficiente pra absorver uma
+// sequência de cliques em filtros dentro de poucos minutos.
+const _dashOciosidadeCacheDocs = new Map(); // "dataIni_dataFim" -> { docs, expiraEm }
+const _DASH_OCIOSIDADE_CACHE_TTL_MS = 120_000; // 2 minutos
 async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComViagemPorPlaca) {
   const vazio = { totalDisponibilizados: 0, totalUsados: 0, pctOciosidade: 0, porTransportadora: [] };
   if (!window.fbDb || !window.fbCollection || !window.fbQuery || !window.fbWhere || !window.fbGetDocs || typeof window.dbGetPlates !== 'function') {
@@ -1115,19 +1122,28 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
     (placas || []).forEach(p => infoPlaca.set(normPlaca(p.placa), { ativo: p.ativo !== false, operacao: p.operacao || '' }));
   });
   // Consulta a coleção "availability" no intervalo de datas do período
-  // carregado (mês selecionado, ou min/max de "Todos os períodos").
-  let docs = [];
-  try {
-    const q = window.fbQuery(
-      window.fbCollection(window.fbDb, 'availability'),
-      window.fbWhere('dateStr', '>=', dataIni),
-      window.fbWhere('dateStr', '<=', dataFim)
-    );
-    const snap = await window.fbGetDocs(q);
-    docs = snap.docs.map(d => d.data());
-  } catch(e) {
-    console.warn('[Ociosidade] falha ao consultar disponibilidade:', e);
-    return vazio;
+  // carregado (mês selecionado, ou min/max de "Todos os períodos") — só
+  // depende do intervalo, não do filtro de cidade (esse é aplicado depois,
+  // em cima do resultado), então dá pra cachear por dataIni+dataFim.
+  const chaveCache = `${dataIni}_${dataFim}`;
+  let docs;
+  const cacheado = _dashOciosidadeCacheDocs.get(chaveCache);
+  if (cacheado && cacheado.expiraEm > Date.now()) {
+    docs = cacheado.docs;
+  } else {
+    try {
+      const q = window.fbQuery(
+        window.fbCollection(window.fbDb, 'availability'),
+        window.fbWhere('dateStr', '>=', dataIni),
+        window.fbWhere('dateStr', '<=', dataFim)
+      );
+      const snap = await window.fbGetDocs(q);
+      docs = snap.docs.map(d => d.data());
+      _dashOciosidadeCacheDocs.set(chaveCache, { docs, expiraEm: Date.now() + _DASH_OCIOSIDADE_CACHE_TTL_MS });
+    } catch(e) {
+      console.warn('[Ociosidade] falha ao consultar disponibilidade:', e);
+      return vazio;
+    }
   }
   const porTransportadora = {};
   let totalDisponibilizados = 0, totalUsados = 0;

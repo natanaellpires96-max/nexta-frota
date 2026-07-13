@@ -1091,15 +1091,7 @@ function limparFiltros(aba) {
   if (aba === 'terminais') renderTerminais();
   if (aba === 'clientes') renderClientes();
   if (aba === 'pedidos') renderPedidos();
-  if (aba === 'veiculos') {
-    // Usa data de operação do header; fallback para hoje
-    const inputData = document.getElementById('rot-data-operacao')?.value;
-    const ds = inputData || (() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-${String(h.getDate()).padStart(2,'0')}`; })();
-    // Usa data do roteirizador, não do painel de disponibilidade
-    const inputDataAba = document.getElementById('rot-data-operacao')?.value;
-    const dsAba = inputDataAba || ds;
-    sincronizarDisponibilidadeVeiculos(dsAba).then(() => renderVeiculos()).catch(() => renderVeiculos());
-  }
+  if (aba === 'veiculos') _renderVeiculosInterno();
   if (aba === 'mapa') renderMapaGeral();
 }
 function aplicarFiltrosResultado() {
