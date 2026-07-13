@@ -3751,6 +3751,7 @@ async function renderUsers(body){
       <td style="font-size:12px">${esc(u.name)}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${esc(u.carrier||'—')}</td>
+      <td style="font-size:11px;color:${u.email?'var(--dim)':'var(--muted)'}">${u.email?esc(u.email):'— sem e-mail —'}</td>
       <td style="font-size:11px;color:var(--muted)">${ops?esc(ops.join(', ')):'Todas'}</td>
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
@@ -3789,6 +3790,7 @@ async function renderUsers(body){
         <div class="form-field"><label>LOGIN (usuário)</label><input id="new-uid" type="text" placeholder="Ex: souza"></div>
         <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="new-uname" type="text" placeholder="Ex: Souza Transportes"></div>
         <div class="form-field"><label>SENHA</label><input id="new-upwd" type="text" placeholder="Mín. 6 caracteres"></div>
+        <div class="form-field"><label>E-MAIL <span style="font-weight:400;color:var(--muted)">(p/ avisos de disponibilidade)</span></label><input id="new-uemail" type="email" placeholder="Ex: contato@transportadora.com"></div>
         <div class="form-field"><label>PERFIL</label>
           <select id="new-urole" onchange="toggleCarrierField()">
             <option value="carrier">Transportador</option>
@@ -3812,8 +3814,8 @@ async function renderUsers(body){
     <!-- USERS LIST -->
     <p class="sec-title" style="margin-bottom:.75rem">Usuários cadastrados</p>
     <div class="tscroll">
-      <table class="table" style="min-width:520px">
-        <thead><tr><th style="width:12%">LOGIN</th><th style="width:22%">NOME</th><th style="width:10%">PERFIL</th><th style="width:20%">TRANSPORTADOR</th><th style="width:20%">OPERACOES</th><th style="width:16%">AÇÕES</th></tr></thead>
+      <table class="table" style="min-width:680px">
+        <thead><tr><th style="width:10%">LOGIN</th><th style="width:16%">NOME</th><th style="width:9%">PERFIL</th><th style="width:16%">TRANSPORTADOR</th><th style="width:18%">E-MAIL</th><th style="width:17%">OPERACOES</th><th style="width:14%">AÇÕES</th></tr></thead>
         <tbody>${userRows}</tbody>
       </table>
     </div>`;
@@ -3866,6 +3868,7 @@ async function addUser(){
   const uid=document.getElementById('new-uid').value.trim().toLowerCase().replace(/\s/g,'');
   const name=document.getElementById('new-uname').value.trim();
   const pwd=document.getElementById('new-upwd').value.trim();
+  const email=document.getElementById('new-uemail').value.trim();
   const role=document.getElementById('new-urole').value;
   const carrier=(role==='carrier')?document.getElementById('new-ucarrier').value:'';
   const operacoes=(role==='carrier')?getCheckedOps('new-op-checks'):[];
@@ -3893,9 +3896,9 @@ async function addUser(){
   }
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   // Salva perfil no Firestore SEM a senha
-  USERS_DB[uid]={name, role, initials, ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
+  USERS_DB[uid]={name, role, initials, ...(email?{email}:{}), ...(carrier?{carrier}:{}), ...(operacoes.length?{operacoes}:{})};
   await dbSaveUsers(USERS_DB);
-  ['new-uid','new-uname','new-upwd'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  ['new-uid','new-uname','new-upwd','new-uemail'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   msg.textContent=`Usuário ${uid} criado!`;msg.style.color='var(--green)';
   showToast(`Usuário ${uid} criado com sucesso!`);
   setTimeout(()=>{msg.textContent='';},3000);
@@ -3928,6 +3931,7 @@ function openEditUser(uid){
       <div class="form-grid">
         <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="eu-name" type="text" value="${attr(u.name)}"></div>
         <div class="form-field"><label>NOVA SENHA <span style="font-weight:400;color:var(--muted)">(opcional)</span></label><input id="eu-pwd" type="password" placeholder="Deixe em branco para manter"></div>
+        <div class="form-field"><label>E-MAIL <span style="font-weight:400;color:var(--muted)">(p/ avisos de disponibilidade)</span></label><input id="eu-email" type="email" value="${attr(u.email||'')}" placeholder="Ex: contato@transportadora.com"></div>
         ${isAdmin?'':`<div class="form-field"><label>PERFIL</label><select id="eu-role" onchange="onEditRoleChange()">${roleOpts}</select></div>`}
         <div class="form-field" id="eu-carrier-field" style="display:${u.role==='carrier'?'block':'none'}">
           <label>TRANSPORTADOR</label>
@@ -3956,6 +3960,7 @@ function onEditRoleChange(){
 }
 async function saveEditUser(uid){
   const name=document.getElementById('eu-name').value.trim();
+  const email=document.getElementById('eu-email').value.trim();
   const pwd=document.getElementById('eu-pwd').value.trim();
   const roleEl=document.getElementById('eu-role');
   const carrierEl=document.getElementById('eu-carrier');
@@ -3983,6 +3988,7 @@ async function saveEditUser(uid){
     ...USERS_DB[uid],
     name,
     initials,
+    email,
     role: newRole,
     ...(newCarrier?{carrier:newCarrier}:{carrier:''}),
     operacoes: newOps
