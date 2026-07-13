@@ -1043,10 +1043,24 @@ function dashAgregarJornada(entradasTransportadora) {
 function _dashFmtHoras(min) {
   return (min / 60).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 'h';
 }
+let _dashUltimaJornada = { porTransportadora: [] };
+let _dashJornadaDirecao = 'desc'; // 'desc' = maior primeiro, 'asc' = menor primeiro
+function dashJornadaSetDirecao(direcao) {
+  _dashJornadaDirecao = direcao;
+  document.querySelectorAll('.dash-jornadadir-tab').forEach(b => {
+    const ativo = b.dataset.dir === direcao;
+    b.classList.toggle('active-rank', ativo);
+    b.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    b.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+  dashRenderJornadaTransportadoras(_dashUltimaJornada);
+}
 function dashRenderJornadaTransportadoras(dados) {
+  _dashUltimaJornada = dados;
   const box = document.getElementById('dash-jornada-transp');
   if (!box) return;
-  const lista = dados.porTransportadora || [];
+  const lista = [...(dados.porTransportadora || [])]
+    .sort((a, b) => _dashJornadaDirecao === 'asc' ? a.pct - b.pct : b.pct - a.pct);
   if (!lista.length) {
     box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum dado de jornada para este período/filtro.</div>`;
     return;
@@ -1141,10 +1155,24 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
     porTransportadora: porTransportadoraArr,
   };
 }
+let _dashUltimaOciosidade = { porTransportadora: [] };
+let _dashOciosidadeDirecao = 'desc'; // 'desc' = maior primeiro, 'asc' = menor primeiro
+function dashOciosidadeSetDirecao(direcao) {
+  _dashOciosidadeDirecao = direcao;
+  document.querySelectorAll('.dash-ociosidadedir-tab').forEach(b => {
+    const ativo = b.dataset.dir === direcao;
+    b.classList.toggle('active-rank', ativo);
+    b.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    b.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+  dashRenderOciosidadeTransportadora(_dashUltimaOciosidade);
+}
 function dashRenderOciosidadeTransportadora(dados) {
+  _dashUltimaOciosidade = dados;
   const box = document.getElementById('dash-ociosidade-transp');
   if (!box) return;
-  const lista = dados.porTransportadora || [];
+  const lista = [...(dados.porTransportadora || [])]
+    .sort((a, b) => _dashOciosidadeDirecao === 'asc' ? a.pctOciosidade - b.pctOciosidade : b.pctOciosidade - a.pctOciosidade);
   if (!lista.length) {
     box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum dado de ociosidade para este período/filtro.</div>`;
     return;
@@ -1164,7 +1192,8 @@ function dashRenderOciosidadeTransportadora(dados) {
   }).join('');
 }
 let _dashRankingOrdem = 'volume'; // 'volume' | 'km' | 'custo'
-// ── Zoom dos gráficos por transportadora (botão maior/menor) ────────────────
+let _dashRankingDirecao = 'desc'; // 'desc' = maior primeiro, 'asc' = menor primeiro
+// ── Zoom dos gráficos por transportadora (botão maior/menor de TAMANHO) ─────
 // Usa a propriedade CSS "zoom" direto no container — escala bar, texto e
 // tudo dentro de uma vez, sem precisar tocar nas funções de render. Fica
 // guardado por box (cada gráfico lembra o zoom escolhido) e sobrevive a
@@ -1180,11 +1209,20 @@ function dashChartZoom(boxId, direcao) {
   _dashChartZoomAtual[boxId] = novo;
   box.style.zoom = _dashChartZoomNiveis[novo];
 }
-window.dashChartZoom = dashChartZoom;
 function dashRankingSetOrdem(campo) {
   _dashRankingOrdem = campo;
   document.querySelectorAll('.dash-rank-tab').forEach(b => {
     const ativo = b.dataset.campo === campo;
+    b.classList.toggle('active-rank', ativo);
+    b.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    b.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+  dashRenderRankingTransportadoras(_dashUltimoRanking || []);
+}
+function dashRankingSetDirecao(direcao) {
+  _dashRankingDirecao = direcao;
+  document.querySelectorAll('.dash-rankdir-tab').forEach(b => {
+    const ativo = b.dataset.dir === direcao;
     b.classList.toggle('active-rank', ativo);
     b.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
     b.style.color = ativo ? '#000' : 'var(--text-2)';
@@ -1201,9 +1239,10 @@ function dashRenderRankingTransportadoras(lista) {
     return;
   }
   const campo = _dashRankingOrdem;
-  const ordenado = [...lista].sort((a, b) => b[campo] - a[campo]);
+  const ordenado = [...lista].sort((a, b) => _dashRankingDirecao === 'asc' ? a[campo] - b[campo] : b[campo] - a[campo]);
   const max = Math.max(...ordenado.map(t => t[campo]), 0.001);
-  const medalhas = ['🥇', '🥈', '🥉'];
+  // Medalha só faz sentido no topo quando está ordenado do maior pro menor
+  const medalhas = _dashRankingDirecao === 'desc' ? ['🥇', '🥈', '🥉'] : [];
   const fmtValor = (t) => {
     if (campo === 'volume') return t.volume.toFixed(1) + ' m³';
     if (campo === 'km')     return Math.round(t.km).toLocaleString('pt-BR') + ' km';
@@ -1213,11 +1252,11 @@ function dashRenderRankingTransportadoras(lista) {
   box.innerHTML = ordenado.map((t, i) => {
     const val = t[campo];
     const pct = max > 0 ? Math.max(2, (val / max) * 100) : 2;
-    const rank = i < 3 ? medalhas[i] : `#${i+1}`;
+    const rank = i < medalhas.length ? medalhas[i] : `#${i+1}`;
     const semContratoTag = (campo === 'custo' && !t.temContrato) ? `<span title="Sem contrato cadastrado na aba Frete para nenhuma placa desta transportadora" style="font-size:9px;color:#F59E0B;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:4px;padding:1px 6px;margin-left:6px;">sem contrato</span>` : '';
     return `
       <div style="display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--border-dk);">
-        <div style="width:28px;flex-shrink:0;text-align:center;font-size:${i<3?'16px':'12px'};font-weight:700;color:${i<3?'inherit':'var(--text-3)'};">${rank}</div>
+        <div style="width:28px;flex-shrink:0;text-align:center;font-size:${i<medalhas.length?'16px':'12px'};font-weight:700;color:${i<medalhas.length?'inherit':'var(--text-3)'};">${rank}</div>
         <div style="width:170px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);" title="${t.transportadora}">${t.transportadora}${semContratoTag}</div>
         <div style="flex:1;background:rgba(255,255,255,.06);border-radius:6px;height:20px;position:relative;overflow:hidden;">
           <div style="height:100%;width:${pct}%;background:${cores[campo]};border-radius:6px;transition:width .3s;"></div>
