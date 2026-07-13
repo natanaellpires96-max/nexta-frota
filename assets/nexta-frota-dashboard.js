@@ -1156,7 +1156,7 @@ function dashRenderOciosidadeTransportadora(dados) {
       <div style="display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--border-dk);">
         <div style="width:170px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);" title="${t.transportadora}">${t.transportadora}</div>
         <div style="flex:1;background:rgba(255,255,255,.06);border-radius:6px;height:20px;position:relative;overflow:hidden;">
-          <div style="height:100%;width:${pct}%;background:#f06060;border-radius:6px;transition:width .3s;"></div>
+          <div style="height:100%;width:${pct}%;background:var(--pet-green,#b5e51d);border-radius:6px;transition:width .3s;"></div>
         </div>
         <div style="width:60px;flex-shrink:0;text-align:right;font-size:12.5px;font-weight:700;color:var(--text);">${t.pctOciosidade}%</div>
         <div style="width:170px;flex-shrink:0;text-align:right;font-size:10.5px;color:var(--text-3);">${t.usados} usados / ${t.disponibilizados} disponibilizados</div>
@@ -1164,6 +1164,23 @@ function dashRenderOciosidadeTransportadora(dados) {
   }).join('');
 }
 let _dashRankingOrdem = 'volume'; // 'volume' | 'km' | 'custo'
+// ── Zoom dos gráficos por transportadora (botão maior/menor) ────────────────
+// Usa a propriedade CSS "zoom" direto no container — escala bar, texto e
+// tudo dentro de uma vez, sem precisar tocar nas funções de render. Fica
+// guardado por box (cada gráfico lembra o zoom escolhido) e sobrevive a
+// re-renderizações porque o zoom fica no próprio elemento container (que
+// nunca é substituído, só o innerHTML dele).
+const _dashChartZoomNiveis = [0.75, 0.85, 1, 1.15, 1.3, 1.5];
+const _dashChartZoomAtual = {}; // boxId -> índice em _dashChartZoomNiveis
+function dashChartZoom(boxId, direcao) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  const atual = _dashChartZoomAtual[boxId] ?? _dashChartZoomNiveis.indexOf(1);
+  const novo = Math.min(_dashChartZoomNiveis.length - 1, Math.max(0, atual + direcao));
+  _dashChartZoomAtual[boxId] = novo;
+  box.style.zoom = _dashChartZoomNiveis[novo];
+}
+window.dashChartZoom = dashChartZoom;
 function dashRankingSetOrdem(campo) {
   _dashRankingOrdem = campo;
   document.querySelectorAll('.dash-rank-tab').forEach(b => {
