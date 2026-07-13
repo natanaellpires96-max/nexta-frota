@@ -700,13 +700,12 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
   // Entradas cruas por viagem, usadas pelo Ranking de Transportadoras
   // (dashAgregarTransportadoras) — evita rodar esse loop duas vezes.
   const entradasTransportadora = [];
-  // Presença de cada veículo DISPONÍVEL no dia (teve viagem ou não) — só
-  // usada pelo indicador de Ociosidade (dashAgregarOciosidade), separada de
-  // entradasTransportadora de propósito: a Jornada mede aproveitamento de
-  // tempo só de quem trabalhou; a Ociosidade mede quantos veículos
-  // disponibilizados acabaram sem uso, contando veículo por veículo — são
-  // duas perguntas diferentes e não devem se misturar na mesma lista.
-  const veiculosProgramadosPorDia = [];
+  // "placa normalizada + dia" de todo veículo que teve viagem de verdade
+  // naquele dia (respeitando o filtro de cidade) — usado pelo indicador de
+  // Ociosidade pra saber se um veículo marcado "Disponível" no Painel de
+  // Disponibilidade (fonte de verdade de quem foi ESCALADO no dia — ver
+  // dashCarregarOciosidade) foi realmente utilizado ou ficou parado.
+  const diasComViagemPorPlaca = new Set();
   snapshots.forEach((snap, snapIdx) => {
     const res = snap.resultado || {};
     const vecs = snap.veiculos || [];
@@ -715,20 +714,6 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     const dataSnap = (snap.savedAt || '').slice(0,10);
     vecs.forEach(v => {
       const viagensTodas = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
-      // Registro de presença pro indicador de Ociosidade — só conta quem
-      // estava realmente disponível naquele dia (não em manutenção/
-      // indisponível), tenha tido viagem ou não.
-      if ((v.disponibilidade || 'Disponível') !== 'Indisponível') {
-        const cidadeVeic = dashCidadeOperacaoViagem({}, v, terms);
-        if (!cidadesFiltro || cidadesFiltro.has(cidadeVeic)) {
-          veiculosProgramadosPorDia.push({
-            transportadora: v.transportadora || '(sem transportadora)',
-            placa: v.placa,
-            data: dataSnap,
-            usado: viagensTodas.length > 0,
-          });
-        }
-      }
       // Jornada (Consumo de Jornada) mede só quem teve viagem de verdade —
       // veículo sem nenhuma viagem no dia simplesmente não entra nessa conta.
       if (!viagensTodas.length) return;
@@ -739,6 +724,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
         ? viagensTodas.filter(vi => cidadesFiltro.has(dashCidadeOperacaoViagem(vi, v, terms)))
         : viagensTodas;
       if (!viagens.length) return;
+      diasComViagemPorPlaca.add((v.placa || '').trim().toUpperCase() + '__' + dataSnap);
       // capV é acumulado por VIAGEM realizada (dentro do loop de viagens abaixo)
       // Terminal lat/lon
       const term = terms.find(t => t.nome === v.terminal);
@@ -878,7 +864,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     totalClientes: Object.keys(clientes).length,
     rotasMap,
     entradasTransportadora,
-    veiculosProgramadosPorDia,
+    diasComViagemPorPlaca,
   };
 }
 // ── Ranking de Transportadoras ───────────────────────────────────────────────
@@ -1083,20 +1069,67 @@ function dashRenderJornadaTransportadoras(dados) {
   }).join('');
 }
 // ── Ociosidade da Frota ──────────────────────────────────────────────────────
-// Diferente da Jornada (que mede aproveitamento de TEMPO de quem trabalhou),
-// Ociosidade mede quantos VEÍCULOS disponibilizados no dia acabaram sem
-// nenhuma viagem — conta veículo por veículo/dia, não hora por hora.
-// Ex.: 20 carros disponibilizados no dia, 10 usados → 50% de ociosidade.
-function dashAgregarOciosidade(veiculosProgramadosPorDia) {
+// Diferente da Jornada (que mede aproveitamento de TEMPO de quem trabalhou,
+// vindo das roteirizações), Ociosidade mede quantos VEÍCULOS foram
+// DISPONIBILIZADOS pelo transportador no dia — e essa é uma pergunta do
+// Painel de Disponibilidade (coleção "availability" do Firestore, um
+// registro por placa/dia), não da roteirização. Usar a roteirização pra
+// "disponibilizados" inflava o número: quando há mais de uma roteirização
+// salva no mesmo dia (turnos/terminais diferentes, não uma correção da
+// outra), o mesmo veículo aparecia contado 2x, 3x... — o Painel tem UM
+// registro por veículo/dia, então não tem esse risco de duplicar.
+// Token pra descartar resultado de uma busca antiga se o filtro mudar de
+// novo antes dela terminar (mesmo padrão usado no refino de pedágio do Frete).
+let _dashOciosidadeToken = 0;
+async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComViagemPorPlaca) {
+  const vazio = { totalDisponibilizados: 0, totalUsados: 0, pctOciosidade: 0, porTransportadora: [] };
+  if (!window.fbDb || !window.fbCollection || !window.fbQuery || !window.fbWhere || !window.fbGetDocs || typeof window.dbGetPlates !== 'function') {
+    console.warn('[Ociosidade] Firestore/dbGetPlates não disponível ainda.');
+    return vazio;
+  }
+  const datas = (snapshotsAtivos || []).map(s => (s.savedAt || '').slice(0,10)).filter(Boolean).sort();
+  if (!datas.length) return vazio;
+  const dataIni = datas[0], dataFim = datas[datas.length - 1];
+  const normPlaca = p => (p || '').toString().trim().toUpperCase();
+  // Placas ativas cadastradas por transportadora, com a operação (cidade) de
+  // cada uma — pra aplicar o mesmo filtro de "Operação (Cidade)" do resto
+  // do Dashboard e ignorar placas já desativadas/removidas do cadastro.
+  let todasPlacas = {};
+  try { todasPlacas = await window.dbGetPlates(); } catch(e) { console.warn('[Ociosidade] falha ao ler placas:', e); }
+  const infoPlaca = new Map(); // placaNorm -> { ativo, operacao }
+  Object.values(todasPlacas || {}).forEach(placas => {
+    (placas || []).forEach(p => infoPlaca.set(normPlaca(p.placa), { ativo: p.ativo !== false, operacao: p.operacao || '' }));
+  });
+  // Consulta a coleção "availability" no intervalo de datas do período
+  // carregado (mês selecionado, ou min/max de "Todos os períodos").
+  let docs = [];
+  try {
+    const q = window.fbQuery(
+      window.fbCollection(window.fbDb, 'availability'),
+      window.fbWhere('dateStr', '>=', dataIni),
+      window.fbWhere('dateStr', '<=', dataFim)
+    );
+    const snap = await window.fbGetDocs(q);
+    docs = snap.docs.map(d => d.data());
+  } catch(e) {
+    console.warn('[Ociosidade] falha ao consultar disponibilidade:', e);
+    return vazio;
+  }
   const porTransportadora = {};
   let totalDisponibilizados = 0, totalUsados = 0;
-  (veiculosProgramadosPorDia || []).forEach(r => {
+  docs.forEach(rec => {
+    if (rec.status !== 'disponivel') return; // só conta quem foi marcado Disponível naquele dia no Painel
+    const pNorm = normPlaca(rec.plate);
+    const info = infoPlaca.get(pNorm);
+    if (!info || !info.ativo) return; // placa desconhecida/desativada no cadastro atual — fora da conta
+    if (cidadesFiltro && !cidadesFiltro.has(info.operacao)) return;
+    const usado = diasComViagemPorPlaca.has(pNorm + '__' + rec.dateStr);
     totalDisponibilizados++;
-    if (r.usado) totalUsados++;
-    const key = r.transportadora;
+    if (usado) totalUsados++;
+    const key = rec.carrier || '(sem transportadora)';
     if (!porTransportadora[key]) porTransportadora[key] = { transportadora: key, disponibilizados: 0, usados: 0 };
     porTransportadora[key].disponibilizados++;
-    if (r.usado) porTransportadora[key].usados++;
+    if (usado) porTransportadora[key].usados++;
   });
   const porTransportadoraArr = Object.values(porTransportadora)
     .map(t => ({ ...t, pctOciosidade: t.disponibilizados > 0 ? Math.round((1 - t.usados / t.disponibilizados) * 100) : 0 }))
@@ -1518,14 +1551,31 @@ function dashRender(snapshots) {
   const _elJornadaHoras = document.getElementById('dk-jornada-horas');
   if (_elJornadaHoras) _elJornadaHoras.textContent = `${_dashFmtHoras(_dashJornada.totalUsadoMin)} / ${_dashFmtHoras(_dashJornada.totalDispMin)}`;
   dashRenderJornadaTransportadoras(_dashJornada);
-  // Ociosidade — usa d.veiculosProgramadosPorDia (já filtrado por
-  // cidade/operação na fonte, igual à Jornada acima), mas é uma pergunta
-  // diferente: quantos veículos disponibilizados ficaram sem viagem.
-  const _dashOciosidade = dashAgregarOciosidade(d.veiculosProgramadosPorDia);
-  set('dk-ociosidade', _dashOciosidade.pctOciosidade + '%');
-  const _elOciosidadeQtd = document.getElementById('dk-ociosidade-qtd');
-  if (_elOciosidadeQtd) _elOciosidadeQtd.textContent = `${_dashOciosidade.totalUsados} usados / ${_dashOciosidade.totalDisponibilizados} disponibilizados`;
-  dashRenderOciosidadeTransportadora(_dashOciosidade);
+  // Ociosidade — busca no Painel de Disponibilidade (Firestore), cruzando
+  // com d.diasComViagemPorPlaca (já filtrado por cidade/operação na fonte,
+  // igual à Jornada acima) pra saber quem foi disponibilizado e ficou parado.
+  // É assíncrono (consulta ao Firestore), então atualiza o card e o gráfico
+  // quando a resposta chegar — mostra "Carregando..." enquanto isso.
+  set('dk-ociosidade', '…');
+  const _elOciosidadeQtdIni = document.getElementById('dk-ociosidade-qtd');
+  if (_elOciosidadeQtdIni) _elOciosidadeQtdIni.textContent = '';
+  const _dashOciosidadeElBox = document.getElementById('dash-ociosidade-transp');
+  if (_dashOciosidadeElBox) _dashOciosidadeElBox.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando do Painel de Disponibilidade...</div>';
+  const _meuTokenOciosidade = ++_dashOciosidadeToken;
+  dashCarregarOciosidade(_dashSnapshotsAtivos, _dashCidadesSelecionadas, d.diasComViagemPorPlaca)
+    .then(_dashOciosidade => {
+      if (_meuTokenOciosidade !== _dashOciosidadeToken) return; // filtro mudou de novo antes de terminar — descarta
+      set('dk-ociosidade', _dashOciosidade.pctOciosidade + '%');
+      const _elOciosidadeQtd = document.getElementById('dk-ociosidade-qtd');
+      if (_elOciosidadeQtd) _elOciosidadeQtd.textContent = `${_dashOciosidade.totalUsados} usados / ${_dashOciosidade.totalDisponibilizados} disponibilizados`;
+      dashRenderOciosidadeTransportadora(_dashOciosidade);
+    })
+    .catch(e => {
+      if (_meuTokenOciosidade !== _dashOciosidadeToken) return;
+      console.warn('[Ociosidade] erro:', e);
+      set('dk-ociosidade', '-');
+      if (_dashOciosidadeElBox) _dashOciosidadeElBox.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Não foi possível carregar dados do Painel de Disponibilidade.</div>';
+    });
   // Gráfico de barras: volume por cliente
   _dashUltimosClientesFiltrados = clientesFiltrados;
   const _itensVol = [...clientesFiltrados].sort((a, b) => _dashOrdemVol === 'asc' ? a.volume - b.volume : b.volume - a.volume);
