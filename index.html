@@ -9,10 +9,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="assets/pedagios-utils.js"></script>
-<script type="module" src="assets/nexta-frota-main.js?v=ociosidade-painel-disp-20260713"></script>
-<link rel="stylesheet" href="assets/nexta-frota-main.css?v=ociosidade-painel-disp-20260713">
+<script type="module" src="assets/nexta-frota-main.js?v=zoom-cores-tooltips-20260713"></script>
+<link rel="stylesheet" href="assets/nexta-frota-main.css?v=zoom-cores-tooltips-20260713">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=ociosidade-painel-disp-20260713">
+<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=zoom-cores-tooltips-20260713">
 </head>
 <body>
 <div class="app" id="app"><div class="loading" style="min-height:100vh"><span class="spin"></span>Iniciando o sistema...</div></div>
@@ -549,14 +549,14 @@
         </div>
       </div>
       <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px;">
-        <div class="sum-card"><div class="sum-num" id="dk-viagens" style="color:#FFFFFF">-</div><div class="sum-label">Viagens</div></div>
-        <div class="sum-card"><div class="sum-num" id="dk-entregas" style="color:#70a8f0">-</div><div class="sum-label">Entregas</div></div>
-        <div class="sum-card"><div class="sum-num" id="dk-volume" style="color:#f0be40">-</div><div class="sum-label">Volume m3</div></div>
-        <div class="sum-card"><div class="sum-num" id="dk-ocup" style="color:#b07ef0">-</div><div class="sum-label">Ocup. Media</div></div>
-        <div class="sum-card"><div class="sum-num" id="dk-km" style="color:#6ee04a">-</div><div class="sum-label">Km Total</div></div>
-        <div class="sum-card"><div class="sum-num" id="dk-clientes" style="color:#f06060">-</div><div class="sum-label">Clientes</div></div>
-        <div class="sum-card"><div class="sum-num" id="dk-jornada" style="color:#00d9c0">-</div><div class="sum-label">Consumo Jornada</div><div id="dk-jornada-horas" style="font-size:10px;color:var(--text-3);margin-top:2px;"></div></div>
-        <div class="sum-card"><div class="sum-num" id="dk-ociosidade" style="color:#f06060">-</div><div class="sum-label">Ociosidade da Frota</div><div id="dk-ociosidade-qtd" style="font-size:10px;color:var(--text-3);margin-top:2px;"></div></div>
+        <div class="sum-card" title="Total de viagens realizadas nas roteirizações salvas dentro do período/filtro selecionado — cada trecho de carro carregado (terminal → paradas) conta como 1 viagem." style="cursor:help;"><div class="sum-num" id="dk-viagens" style="color:#FFFFFF">-</div><div class="sum-label">Viagens</div></div>
+        <div class="sum-card" title="Total de paradas de entrega realizadas — cada cliente visitado numa viagem conta como 1 entrega. Pode ser diferente do nº de pedidos se um pedido foi dividido em mais de uma carga." style="cursor:help;"><div class="sum-num" id="dk-entregas" style="color:#70a8f0">-</div><div class="sum-label">Entregas</div></div>
+        <div class="sum-card" title="Soma do volume (m³) de todas as entregas realizadas no período/filtro selecionado." style="cursor:help;"><div class="sum-num" id="dk-volume" style="color:#f0be40">-</div><div class="sum-label">Volume m3</div></div>
+        <div class="sum-card" title="Ocupação média da frota: volume total transportado ÷ capacidade total dos veículos escalados nas viagens do período. Mostra o quanto da capacidade dos caminhões foi de fato aproveitada." style="cursor:help;"><div class="sum-num" id="dk-ocup" style="color:#b07ef0">-</div><div class="sum-label">Ocup. Media</div></div>
+        <div class="sum-card" title="Soma da distância (km) de todas as viagens do período/filtro selecionado." style="cursor:help;"><div class="sum-num" id="dk-km" style="color:#6ee04a">-</div><div class="sum-label">Km Total</div></div>
+        <div class="sum-card" title="Nº de clientes distintos atendidos no período/filtro selecionado." style="cursor:help;"><div class="sum-num" id="dk-clientes" style="color:#f06060">-</div><div class="sum-label">Clientes</div></div>
+        <div class="sum-card" title="Horas de jornada USADAS ÷ horas de jornada DISPONÍVEIS, considerando só os veículos que tiveram viagem no dia. Cada veículo entra com sua jornada diária (ex.: 12h) contada uma única vez por dia, mesmo com várias viagens." style="cursor:help;"><div class="sum-num" id="dk-jornada" style="color:#00d9c0">-</div><div class="sum-label">Consumo Jornada</div><div id="dk-jornada-horas" style="font-size:10px;color:var(--text-3);margin-top:2px;"></div></div>
+        <div class="sum-card" title="1 − (veículos usados ÷ veículos disponibilizados), usando os registros do Painel de Disponibilidade (quem foi marcado Disponível naquele dia) cruzados com quem realmente teve viagem. Conta por veículo/dia, não por hora. Ex.: 20 disponibilizados, 10 usados = 50% de ociosidade." style="cursor:help;"><div class="sum-num" id="dk-ociosidade" style="color:var(--pet-green,#b5e51d)">-</div><div class="sum-label">Ociosidade da Frota</div><div id="dk-ociosidade-qtd" style="font-size:10px;color:var(--text-3);margin-top:2px;"></div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
@@ -564,25 +564,47 @@
             <div style="font-size:14px;font-weight:700;color:var(--text);">🏆 Ranking de Transportadoras</div>
             <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Quem transporta mais volume, roda mais km e quanto foi pago (baseado nos contratos cadastrados em Frete)</div>
           </div>
-          <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;">
-            <button class="dash-rank-tab active-rank" data-campo="volume" onclick="dashRankingSetOrdem('volume')"
-              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">Volume</button>
-            <button class="dash-rank-tab" data-campo="km" onclick="dashRankingSetOrdem('km')"
-              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Km rodado</button>
-            <button class="dash-rank-tab" data-campo="custo" onclick="dashRankingSetOrdem('custo')"
-              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Valor pago</button>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;">
+              <button class="dash-rank-tab active-rank" data-campo="volume" onclick="dashRankingSetOrdem('volume')"
+                style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">Volume</button>
+              <button class="dash-rank-tab" data-campo="km" onclick="dashRankingSetOrdem('km')"
+                style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Km rodado</button>
+              <button class="dash-rank-tab" data-campo="custo" onclick="dashRankingSetOrdem('custo')"
+                style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Valor pago</button>
+            </div>
+            <div style="display:flex;gap:4px;" title="Aumentar/diminuir o tamanho do gráfico">
+              <button class="btn btn-sm" onclick="dashChartZoom('dash-ranking-transp',-1)" style="padding:5px 10px;font-size:12px;font-weight:700;">−</button>
+              <button class="btn btn-sm" onclick="dashChartZoom('dash-ranking-transp',1)" style="padding:5px 10px;font-size:12px;font-weight:700;">+</button>
+            </div>
           </div>
         </div>
         <div id="dash-ranking-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="font-size:14px;font-weight:700;color:var(--text);">⏱️ Consumo de Jornada por Transportadora</div>
-        <div style="font-size:11px;color:var(--text-3);margin-top:2px;margin-bottom:14px;">Horas de jornada disponível (nº de veículos × jornada diária) vs. horas efetivamente usadas nas viagens, por veículo/dia — acompanha os mesmos filtros de mês/período e operação (cidade) acima</div>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">⏱️ Consumo de Jornada por Transportadora</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:2px;margin-bottom:14px;">Horas de jornada disponível (nº de veículos × jornada diária) vs. horas efetivamente usadas nas viagens, por veículo/dia — acompanha os mesmos filtros de mês/período e operação (cidade) acima</div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;" title="Aumentar/diminuir o tamanho do gráfico">
+            <button class="btn btn-sm" onclick="dashChartZoom('dash-jornada-transp',-1)" style="padding:5px 10px;font-size:12px;font-weight:700;">−</button>
+            <button class="btn btn-sm" onclick="dashChartZoom('dash-jornada-transp',1)" style="padding:5px 10px;font-size:12px;font-weight:700;">+</button>
+          </div>
+        </div>
         <div id="dash-jornada-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="font-size:14px;font-weight:700;color:var(--text);">🅿️ Ociosidade da Frota por Transportadora</div>
-        <div style="font-size:11px;color:var(--text-3);margin-top:2px;margin-bottom:14px;">Veículos disponibilizados no dia que ficaram sem nenhuma viagem — conta por veículo, não por hora. Ex.: 20 disponibilizados, 10 usados = 50% de ociosidade. Acompanha os mesmos filtros de mês/período e operação (cidade) acima</div>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🅿️ Ociosidade da Frota por Transportadora</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:2px;margin-bottom:14px;">Veículos disponibilizados no dia que ficaram sem nenhuma viagem — conta por veículo, não por hora. Ex.: 20 disponibilizados, 10 usados = 50% de ociosidade. Acompanha os mesmos filtros de mês/período e operação (cidade) acima</div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;" title="Aumentar/diminuir o tamanho do gráfico">
+            <button class="btn btn-sm" onclick="dashChartZoom('dash-ociosidade-transp',-1)" style="padding:5px 10px;font-size:12px;font-weight:700;">−</button>
+            <button class="btn btn-sm" onclick="dashChartZoom('dash-ociosidade-transp',1)" style="padding:5px 10px;font-size:12px;font-weight:700;">+</button>
+          </div>
+        </div>
         <div id="dash-ociosidade-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:20px;overflow:hidden;">
@@ -919,9 +941,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=ociosidade-painel-disp-20260713"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=zoom-cores-tooltips-20260713"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=ociosidade-painel-disp-20260713"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=zoom-cores-tooltips-20260713"></script>
 </body>
 </html>
