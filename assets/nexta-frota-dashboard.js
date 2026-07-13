@@ -700,6 +700,13 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
   // Entradas cruas por viagem, usadas pelo Ranking de Transportadoras
   // (dashAgregarTransportadoras) — evita rodar esse loop duas vezes.
   const entradasTransportadora = [];
+  // Presença de cada veículo DISPONÍVEL no dia (teve viagem ou não) — só
+  // usada pelo indicador de Ociosidade (dashAgregarOciosidade), separada de
+  // entradasTransportadora de propósito: a Jornada mede aproveitamento de
+  // tempo só de quem trabalhou; a Ociosidade mede quantos veículos
+  // disponibilizados acabaram sem uso, contando veículo por veículo — são
+  // duas perguntas diferentes e não devem se misturar na mesma lista.
+  const veiculosProgramadosPorDia = [];
   snapshots.forEach((snap, snapIdx) => {
     const res = snap.resultado || {};
     const vecs = snap.veiculos || [];
@@ -708,33 +715,23 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     const dataSnap = (snap.savedAt || '').slice(0,10);
     vecs.forEach(v => {
       const viagensTodas = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
-      if (!viagensTodas.length) {
-        // Veículo entrou na roteirização do dia (estava no array de
-        // veículos daquele snapshot) mas terminou sem nenhuma viagem —
-        // conta jornada DISPONÍVEL com 0 USADA (0% de aproveitamento
-        // naquele dia), em vez de simplesmente sumir da conta. Só vale
-        // pra quem realmente estava disponível: um veículo marcado
-        // "Indisponível" não é "disponível e ocioso", é indisponível
-        // mesmo, e não deveria contar jornada nenhuma naquele dia.
-        if ((v.disponibilidade || 'Disponível') === 'Indisponível') return;
+      // Registro de presença pro indicador de Ociosidade — só conta quem
+      // estava realmente disponível naquele dia (não em manutenção/
+      // indisponível), tenha tido viagem ou não.
+      if ((v.disponibilidade || 'Disponível') !== 'Indisponível') {
         const cidadeVeic = dashCidadeOperacaoViagem({}, v, terms);
-        if (cidadesFiltro && !cidadesFiltro.has(cidadeVeic)) return;
-        entradasTransportadora.push({
-          transportadora: v.transportadora || '(sem transportadora)',
-          placa: v.placa,
-          data: dataSnap,
-          mesKey: mesKeySnap,
-          termOrigem: v.terminal || '',
-          destinos: '(disponível, sem viagem no dia)',
-          kmIda: 0,
-          volume: 0,
-          jornadaDispMin: Number(v.jornadaMin) || (typeof duracaoJornadaMin === 'function' ? duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') : 720) || 720,
-          jornadaUsadaMin: 0,
-          _semViagem: true, // não é uma viagem de verdade — não deve contar no total de "viagens" do Ranking
-          _disponivelOcioso: true, // distingue do "dia parado" sintético do Frete (_dashCompletarDiasParados): este veículo REALMENTE estava na programação do dia, só não recebeu carga — por isso conta jornada disponível
-        });
-        return;
+        if (!cidadesFiltro || cidadesFiltro.has(cidadeVeic)) {
+          veiculosProgramadosPorDia.push({
+            transportadora: v.transportadora || '(sem transportadora)',
+            placa: v.placa,
+            data: dataSnap,
+            usado: viagensTodas.length > 0,
+          });
+        }
       }
+      // Jornada (Consumo de Jornada) mede só quem teve viagem de verdade —
+      // veículo sem nenhuma viagem no dia simplesmente não entra nessa conta.
+      if (!viagensTodas.length) return;
       // Filtro de cidade da operação: aplica ANTES de qualquer acumulação, pra
       // que viagens, entregas, ocupação, km — tudo — reflita só a(s) cidade(s)
       // selecionada(s). null = sem filtro (todas as cidades).
@@ -881,6 +878,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     totalClientes: Object.keys(clientes).length,
     rotasMap,
     entradasTransportadora,
+    veiculosProgramadosPorDia,
   };
 }
 // ── Ranking de Transportadoras ───────────────────────────────────────────────
@@ -1028,12 +1026,7 @@ function dashAgregarTransportadoras(entradasTransportadora) {
 function dashAgregarJornada(entradasTransportadora) {
   const porVeiculoDia = new Map(); // chave: placa+data
   (entradasTransportadora || []).forEach(e => {
-    // Pula só o "dia parado" sintético do Frete (_dashCompletarDiasParados —
-    // cobrança de diária num dia em que nem sequer houve roteirização pra
-    // aquele veículo). Entradas de veículo ocioso-mas-programado
-    // (_disponivelOcioso) SEGUEM contando — é exatamente o que representam:
-    // jornada disponível que não foi usada naquele dia.
-    if (e._semViagem && !e._disponivelOcioso) return;
+    if (e._semViagem) return; // dia parado sintético (só diária, do Frete) — sem jornada real pra contar
     const key = e.placa + '__' + e.data;
     if (!porVeiculoDia.has(key)) {
       porVeiculoDia.set(key, { transportadora: e.transportadora, dispMin: e.jornadaDispMin || 0, usadoMin: 0 });
@@ -1086,6 +1079,54 @@ function dashRenderJornadaTransportadoras(dados) {
         </div>
         <div style="width:60px;flex-shrink:0;text-align:right;font-size:12.5px;font-weight:700;color:var(--text);">${t.pct}%</div>
         <div style="width:170px;flex-shrink:0;text-align:right;font-size:10.5px;color:var(--text-3);">${_dashFmtHoras(t.usadoMin)} / ${_dashFmtHoras(t.dispMin)} · ${t.veiculosDia} veíc./dia</div>
+      </div>`;
+  }).join('');
+}
+// ── Ociosidade da Frota ──────────────────────────────────────────────────────
+// Diferente da Jornada (que mede aproveitamento de TEMPO de quem trabalhou),
+// Ociosidade mede quantos VEÍCULOS disponibilizados no dia acabaram sem
+// nenhuma viagem — conta veículo por veículo/dia, não hora por hora.
+// Ex.: 20 carros disponibilizados no dia, 10 usados → 50% de ociosidade.
+function dashAgregarOciosidade(veiculosProgramadosPorDia) {
+  const porTransportadora = {};
+  let totalDisponibilizados = 0, totalUsados = 0;
+  (veiculosProgramadosPorDia || []).forEach(r => {
+    totalDisponibilizados++;
+    if (r.usado) totalUsados++;
+    const key = r.transportadora;
+    if (!porTransportadora[key]) porTransportadora[key] = { transportadora: key, disponibilizados: 0, usados: 0 };
+    porTransportadora[key].disponibilizados++;
+    if (r.usado) porTransportadora[key].usados++;
+  });
+  const porTransportadoraArr = Object.values(porTransportadora)
+    .map(t => ({ ...t, pctOciosidade: t.disponibilizados > 0 ? Math.round((1 - t.usados / t.disponibilizados) * 100) : 0 }))
+    .sort((a, b) => b.pctOciosidade - a.pctOciosidade);
+  return {
+    totalDisponibilizados,
+    totalUsados,
+    pctOciosidade: totalDisponibilizados > 0 ? Math.round((1 - totalUsados / totalDisponibilizados) * 100) : 0,
+    porTransportadora: porTransportadoraArr,
+  };
+}
+function dashRenderOciosidadeTransportadora(dados) {
+  const box = document.getElementById('dash-ociosidade-transp');
+  if (!box) return;
+  const lista = dados.porTransportadora || [];
+  if (!lista.length) {
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum dado de ociosidade para este período/filtro.</div>`;
+    return;
+  }
+  const max = Math.max(...lista.map(t => t.pctOciosidade), 1);
+  box.innerHTML = lista.map((t) => {
+    const pct = Math.max(2, (t.pctOciosidade / max) * 100);
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--border-dk);">
+        <div style="width:170px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);" title="${t.transportadora}">${t.transportadora}</div>
+        <div style="flex:1;background:rgba(255,255,255,.06);border-radius:6px;height:20px;position:relative;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:#f06060;border-radius:6px;transition:width .3s;"></div>
+        </div>
+        <div style="width:60px;flex-shrink:0;text-align:right;font-size:12.5px;font-weight:700;color:var(--text);">${t.pctOciosidade}%</div>
+        <div style="width:170px;flex-shrink:0;text-align:right;font-size:10.5px;color:var(--text-3);">${t.usados} usados / ${t.disponibilizados} disponibilizados</div>
       </div>`;
   }).join('');
 }
@@ -1348,9 +1389,10 @@ window.dashAplicarFiltroCidades   = dashAplicarFiltroCidades;
 function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
   if (!snapshots || !snapshots.length) {
-    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada')
+    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada,#dk-ociosidade')
       .forEach(el => { if(el) el.textContent = '-'; });
     const _elJH = document.getElementById('dk-jornada-horas'); if (_elJH) _elJH.textContent = '';
+    const _elOQ = document.getElementById('dk-ociosidade-qtd'); if (_elOQ) _elOQ.textContent = '';
     document.getElementById('dash-tabela-cli-body').innerHTML =
       '<tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:32px;">Nenhum dado para este período</td></tr>';
     return;
@@ -1476,6 +1518,14 @@ function dashRender(snapshots) {
   const _elJornadaHoras = document.getElementById('dk-jornada-horas');
   if (_elJornadaHoras) _elJornadaHoras.textContent = `${_dashFmtHoras(_dashJornada.totalUsadoMin)} / ${_dashFmtHoras(_dashJornada.totalDispMin)}`;
   dashRenderJornadaTransportadoras(_dashJornada);
+  // Ociosidade — usa d.veiculosProgramadosPorDia (já filtrado por
+  // cidade/operação na fonte, igual à Jornada acima), mas é uma pergunta
+  // diferente: quantos veículos disponibilizados ficaram sem viagem.
+  const _dashOciosidade = dashAgregarOciosidade(d.veiculosProgramadosPorDia);
+  set('dk-ociosidade', _dashOciosidade.pctOciosidade + '%');
+  const _elOciosidadeQtd = document.getElementById('dk-ociosidade-qtd');
+  if (_elOciosidadeQtd) _elOciosidadeQtd.textContent = `${_dashOciosidade.totalUsados} usados / ${_dashOciosidade.totalDisponibilizados} disponibilizados`;
+  dashRenderOciosidadeTransportadora(_dashOciosidade);
   // Gráfico de barras: volume por cliente
   _dashUltimosClientesFiltrados = clientesFiltrados;
   const _itensVol = [...clientesFiltrados].sort((a, b) => _dashOrdemVol === 'asc' ? a.volume - b.volume : b.volume - a.volume);
