@@ -1267,6 +1267,10 @@ function dashRenderRankingTransportadoras(lista) {
   }).join('');
 }
 window.dashRankingSetOrdem = dashRankingSetOrdem;
+window.dashRankingSetDirecao = dashRankingSetDirecao;
+window.dashJornadaSetDirecao = dashJornadaSetDirecao;
+window.dashOciosidadeSetDirecao = dashOciosidadeSetDirecao;
+window.dashChartZoom = dashChartZoom;
 // ── Renderizar Dashboard ───────────────────────────────────────────────────
 // ── Filtro de clientes ────────────────────────────────────────────────────
 let _dashClientesSelecionados = null; // null = todos; Set = filtro ativo
