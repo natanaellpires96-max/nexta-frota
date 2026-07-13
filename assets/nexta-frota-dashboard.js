@@ -708,7 +708,33 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     const dataSnap = (snap.savedAt || '').slice(0,10);
     vecs.forEach(v => {
       const viagensTodas = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
-      if (!viagensTodas.length) return;
+      if (!viagensTodas.length) {
+        // Veículo entrou na roteirização do dia (estava no array de
+        // veículos daquele snapshot) mas terminou sem nenhuma viagem —
+        // conta jornada DISPONÍVEL com 0 USADA (0% de aproveitamento
+        // naquele dia), em vez de simplesmente sumir da conta. Só vale
+        // pra quem realmente estava disponível: um veículo marcado
+        // "Indisponível" não é "disponível e ocioso", é indisponível
+        // mesmo, e não deveria contar jornada nenhuma naquele dia.
+        if ((v.disponibilidade || 'Disponível') === 'Indisponível') return;
+        const cidadeVeic = dashCidadeOperacaoViagem({}, v, terms);
+        if (cidadesFiltro && !cidadesFiltro.has(cidadeVeic)) return;
+        entradasTransportadora.push({
+          transportadora: v.transportadora || '(sem transportadora)',
+          placa: v.placa,
+          data: dataSnap,
+          mesKey: mesKeySnap,
+          termOrigem: v.terminal || '',
+          destinos: '(disponível, sem viagem no dia)',
+          kmIda: 0,
+          volume: 0,
+          jornadaDispMin: Number(v.jornadaMin) || (typeof duracaoJornadaMin === 'function' ? duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') : 720) || 720,
+          jornadaUsadaMin: 0,
+          _semViagem: true, // não é uma viagem de verdade — não deve contar no total de "viagens" do Ranking
+          _disponivelOcioso: true, // distingue do "dia parado" sintético do Frete (_dashCompletarDiasParados): este veículo REALMENTE estava na programação do dia, só não recebeu carga — por isso conta jornada disponível
+        });
+        return;
+      }
       // Filtro de cidade da operação: aplica ANTES de qualquer acumulação, pra
       // que viagens, entregas, ocupação, km — tudo — reflita só a(s) cidade(s)
       // selecionada(s). null = sem filtro (todas as cidades).
@@ -991,6 +1017,78 @@ function dashAgregarTransportadoras(entradasTransportadora) {
     .map(t => ({ ...t, nPlacas: t.placas.size, placas: undefined }))
     .sort((a, b) => b.volume - a.volume);
 }
+// ── Consumo de Jornada por Transportadora ────────────────────────────────────
+// Jornada DISPONÍVEL de um veículo é uma capacidade DIÁRIA (ex.: 12h/dia) —
+// não pode ser somada uma vez por VIAGEM, senão um veículo que fez 3 viagens
+// no mesmo dia contaria 3x a jornada disponível dele naquele dia. Por isso
+// agrupa primeiro por veículo+dia (chave placa+data), pega a jornada
+// disponível UMA VEZ por essa chave, e soma a jornada USADA de todas as
+// viagens daquele veículo naquele dia (essa sim soma normalmente, porque
+// cada viagem realmente consome tempo adicional da jornada do dia).
+function dashAgregarJornada(entradasTransportadora) {
+  const porVeiculoDia = new Map(); // chave: placa+data
+  (entradasTransportadora || []).forEach(e => {
+    // Pula só o "dia parado" sintético do Frete (_dashCompletarDiasParados —
+    // cobrança de diária num dia em que nem sequer houve roteirização pra
+    // aquele veículo). Entradas de veículo ocioso-mas-programado
+    // (_disponivelOcioso) SEGUEM contando — é exatamente o que representam:
+    // jornada disponível que não foi usada naquele dia.
+    if (e._semViagem && !e._disponivelOcioso) return;
+    const key = e.placa + '__' + e.data;
+    if (!porVeiculoDia.has(key)) {
+      porVeiculoDia.set(key, { transportadora: e.transportadora, dispMin: e.jornadaDispMin || 0, usadoMin: 0 });
+    }
+    porVeiculoDia.get(key).usadoMin += e.jornadaUsadaMin || 0;
+  });
+  const porTransportadora = {};
+  let totalDispMin = 0, totalUsadoMin = 0;
+  porVeiculoDia.forEach(reg => {
+    totalDispMin  += reg.dispMin;
+    totalUsadoMin += reg.usadoMin;
+    const key = reg.transportadora;
+    if (!porTransportadora[key]) porTransportadora[key] = { transportadora: key, dispMin: 0, usadoMin: 0, veiculosDia: 0 };
+    porTransportadora[key].dispMin  += reg.dispMin;
+    porTransportadora[key].usadoMin += reg.usadoMin;
+    porTransportadora[key].veiculosDia += 1;
+  });
+  const porTransportadoraArr = Object.values(porTransportadora)
+    .map(t => ({ ...t, pct: t.dispMin > 0 ? Math.round((t.usadoMin / t.dispMin) * 100) : 0 }))
+    .sort((a, b) => b.usadoMin - a.usadoMin);
+  return {
+    totalDispMin,
+    totalUsadoMin,
+    totalPct: totalDispMin > 0 ? Math.round((totalUsadoMin / totalDispMin) * 100) : 0,
+    porTransportadora: porTransportadoraArr,
+  };
+}
+function _dashFmtHoras(min) {
+  return (min / 60).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 'h';
+}
+function dashRenderJornadaTransportadoras(dados) {
+  const box = document.getElementById('dash-jornada-transp');
+  if (!box) return;
+  const lista = dados.porTransportadora || [];
+  if (!lista.length) {
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum dado de jornada para este período/filtro.</div>`;
+    return;
+  }
+  const max = Math.max(...lista.map(t => t.pct), 1);
+  box.innerHTML = lista.map((t) => {
+    const pct = Math.max(2, (t.pct / max) * 100);
+    // Acima de 100% (veículo trabalhando além da jornada nominal) pinta em
+    // âmbar como aviso; do contrário, segue a cor padrão do indicador.
+    const cor = t.pct > 100 ? '#f0be40' : '#00d9c0';
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--border-dk);">
+        <div style="width:170px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);" title="${t.transportadora}">${t.transportadora}</div>
+        <div style="flex:1;background:rgba(255,255,255,.06);border-radius:6px;height:20px;position:relative;overflow:hidden;">
+          <div style="height:100%;width:${Math.min(pct,100)}%;background:${cor};border-radius:6px;transition:width .3s;"></div>
+        </div>
+        <div style="width:60px;flex-shrink:0;text-align:right;font-size:12.5px;font-weight:700;color:var(--text);">${t.pct}%</div>
+        <div style="width:170px;flex-shrink:0;text-align:right;font-size:10.5px;color:var(--text-3);">${_dashFmtHoras(t.usadoMin)} / ${_dashFmtHoras(t.dispMin)} · ${t.veiculosDia} veíc./dia</div>
+      </div>`;
+  }).join('');
+}
 let _dashRankingOrdem = 'volume'; // 'volume' | 'km' | 'custo'
 function dashRankingSetOrdem(campo) {
   _dashRankingOrdem = campo;
@@ -1250,8 +1348,9 @@ window.dashAplicarFiltroCidades   = dashAplicarFiltroCidades;
 function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
   if (!snapshots || !snapshots.length) {
-    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes')
+    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada')
       .forEach(el => { if(el) el.textContent = '-'; });
+    const _elJH = document.getElementById('dk-jornada-horas'); if (_elJH) _elJH.textContent = '';
     document.getElementById('dash-tabela-cli-body').innerHTML =
       '<tr><td colspan="6" style="color:var(--text-3);text-align:center;padding:32px;">Nenhum dado para este período</td></tr>';
     return;
@@ -1367,6 +1466,16 @@ function dashRender(snapshots) {
   set('dk-ocup',     _kpiOcup + '%');
   set('dk-km',       Math.round(_kpiKm).toLocaleString('pt-BR') + ' km');
   set('dk-clientes', clientesFiltrados.length);
+  // Consumo de Jornada — usa d.entradasTransportadora (já filtrado por
+  // cidade/operação na fonte, dentro de dashAgregar, igual ao Ranking de
+  // Transportadoras logo abaixo). Não é afetado pelo filtro de CLIENTE de
+  // propósito: jornada é sobre o veículo/motorista, não sobre quem ele
+  // atendeu naquele dia.
+  const _dashJornada = dashAgregarJornada(d.entradasTransportadora);
+  set('dk-jornada', _dashJornada.totalPct + '%');
+  const _elJornadaHoras = document.getElementById('dk-jornada-horas');
+  if (_elJornadaHoras) _elJornadaHoras.textContent = `${_dashFmtHoras(_dashJornada.totalUsadoMin)} / ${_dashFmtHoras(_dashJornada.totalDispMin)}`;
+  dashRenderJornadaTransportadoras(_dashJornada);
   // Gráfico de barras: volume por cliente
   _dashUltimosClientesFiltrados = clientesFiltrados;
   const _itensVol = [...clientesFiltrados].sort((a, b) => _dashOrdemVol === 'asc' ? a.volume - b.volume : b.volume - a.volume);
