@@ -415,7 +415,7 @@ async function loadConfig() {
     withTimeout(dbGetMetaDisp(), 10000, "Timeout dbGetMetaDisp").catch(e=>{console.error(e); return null}),
   ];
   const [fbUsers, fbCarriers, fbOps, fbCutoff, fbMeta] = await Promise.all(loaders);
-  if(fbUsers) USERS_DB = fbUsers;
+  if(fbUsers) _atualizarUsersDb(fbUsers);
   if(fbCarriers) CARRIERS = fbCarriers;
   if(fbOps) OPERACOES = fbOps;
   if(Number.isFinite(fbCutoff)) ALERT_CUTOFF_HOUR = fbCutoff;
@@ -720,6 +720,18 @@ let USERS_DB = {
   simeira:   { name:"Simeira Transportes",     role:"carrier",     initials:"ST", carrier:"Simeira Transportes" },
   garbuio:   { name:"Garbuio Transportes",     role:"carrier",     initials:"GT", carrier:"Garbuio Transportes" },
 };
+// Atualiza USERS_DB SEM trocar o objeto por outro — apaga as chaves antigas
+// e copia as novas por cima do mesmo objeto. Isso importa porque
+// "window.USERS_DB" (exposto lá embaixo para o Roteirizador) é atribuído
+// UMA VEZ só, no boot: se USERS_DB fosse reatribuído a um objeto novo
+// (USERS_DB = outraCoisa), window.USERS_DB continuaria apontando pro objeto
+// velho pra sempre, mesmo depois de recarregar dados do Firestore. Mutar o
+// mesmo objeto mantém os dois sempre em sincronia, sem precisar lembrar de
+// resincronizar manualmente em cada lugar que atualiza a lista.
+function _atualizarUsersDb(novo){
+  for(const k in USERS_DB) delete USERS_DB[k];
+  Object.assign(USERS_DB, novo);
+}
 let CARRIERS = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transportes","Simeira Transportes","Garbuio Transportes"];
 window.CARRIERS = CARRIERS; // disponível desde já para outros módulos (ex: Roteirizador)
 let OPERACOES = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de Caxias","Brasília","Cubatão","Uberaba"];
@@ -1378,9 +1390,26 @@ async function doLogin(){
   const btn=document.querySelector(".btn-lime.btn-full");
   if(!uid){err.textContent="Informe o usuário.";return;}
   if(!pwd){err.textContent="Informe a senha.";return;}
-  // Verifica se o uid existe no perfil local (carregado do Firestore)
-  if(!USERS_DB[uid]){err.textContent="Usuário não encontrado.";return;}
-  if(btn){btn.disabled=true;btn.textContent="Entrando...";}
+  err.textContent="";
+  if(btn){btn.disabled=true;btn.textContent="Verificando...";}
+  // Busca a lista de usuários direto do Firestore ignorando qualquer cache
+  // local antes de decidir "não encontrado" — a aba pode estar aberta há
+  // muito tempo (ou ter carregado antes de outra pessoa cadastrar/editar um
+  // usuário), e sem isso o login ficava decidindo com uma foto velha da
+  // lista, travando gente que já estava cadastrada certinho no Firestore.
+  cacheInvalidate('cfg_users');
+  try {
+    const freshUsers = await withTimeout(dbGetUsers(), 8000, "Timeout dbGetUsers");
+    if(freshUsers) _atualizarUsersDb(freshUsers);
+  } catch(e) {
+    console.warn('[doLogin] falha ao atualizar lista de usuários, seguindo com a última cópia conhecida:', e);
+  }
+  if(!USERS_DB[uid]){
+    err.textContent="Usuário não encontrado.";
+    if(btn){btn.disabled=false;btn.textContent="Entrar";}
+    return;
+  }
+  if(btn){btn.textContent="Entrando...";}
   try {
     await signInWithEmailAndPassword(auth, uidToEmail(uid), pwd);
     // onAuthStateChanged cuida do resto
@@ -3700,6 +3729,20 @@ async function adminUnlockPlate(carrier, plate, ds){
 // ═══════════════════════════════════════════════════════════
 async function renderUsers(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
+  // Busca fresca antes de desenhar a tabela — esta tela é onde o admin
+  // decide excluir/criar usuário, então não pode confiar numa cópia da
+  // aba que já pode estar aberta há tempo. Sem isso, dava pra "confirmar"
+  // visualmente que um usuário sumiu quando na verdade só a aba é que
+  // estava desatualizada.
+  try {
+    cacheInvalidate('cfg_users', 'cfg_carriers');
+    const [freshUsers, freshCarriers] = await Promise.all([
+      withTimeout(dbGetUsers(), 8000, "Timeout dbGetUsers").catch(e=>{console.warn(e); return null;}),
+      withTimeout(dbGetCarriers(), 8000, "Timeout dbGetCarriers").catch(e=>{console.warn(e); return null;}),
+    ]);
+    if(freshUsers) _atualizarUsersDb(freshUsers);
+    if(freshCarriers){ CARRIERS.length=0; CARRIERS.push(...freshCarriers); window.CARRIERS=CARRIERS; }
+  } catch(e) { console.warn('[renderUsers] falha ao atualizar antes de renderizar:', e); }
   // Carriers section
   const carrierRows = CARRIERS.map((c,i)=>`
     <tr>
@@ -3846,7 +3889,8 @@ async function addUser(){
   } catch(e) {
     const code=e.code||"";
     if(code==='auth/email-already-in-use'){
-      msg.textContent='Login já existe no sistema de autenticação.';
+      msg.textContent=`⚠️ Já existe uma conta de login "${uid}" no Firebase Authentication (provavelmente de uma exclusão anterior que não apagou a conta). O perfil NÃO foi criado. Apague a conta em Authentication no Firebase Console antes de tentar de novo.`;
+      showToast(`Não foi possível criar "${uid}": já existe conta de login com esse nome no Firebase Auth.`, false);
     } else if(code==='auth/weak-password'){
       msg.textContent='Senha muito fraca. Use pelo menos 6 caracteres.';
     } else {
@@ -3865,10 +3909,10 @@ async function addUser(){
   await renderTabBody();
 }
 async function deleteUser(uid){
-  if(!confirm(`Remover o usuário "${uid}"?`)) return;
+  if(!confirm(`Remover o usuário "${uid}"?\n\nIsso remove o acesso ao sistema, mas NÃO apaga a conta de login (${uidToEmail(uid)}) do Firebase Authentication — ela continua existindo. Se for recriar esse mesmo login depois, é preciso apagar a conta pelo Firebase Console primeiro (Authentication > buscar o e-mail > excluir), senão a recriação falha silenciosamente.`)) return;
   delete USERS_DB[uid];
   await dbSaveUsers(USERS_DB);
-  showToast(`Usuário ${uid} removido.`);
+  showToast(`Usuário ${uid} removido. Lembrete: a conta de login continua no Firebase Auth.`);
   await renderTabBody();
 }
 function openEditUser(uid){
