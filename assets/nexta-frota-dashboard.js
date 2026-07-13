@@ -612,34 +612,18 @@ async function dashLerHistoricoDisco() {
   console.log('[DASH] chaves geradas:', Object.keys(store));
   return store;
 }
-// ── Mescla localStorage + disco, deduplicando por savedAt ────────────────
+// ── Fonte dos dados do Dashboard ──────────────────────────────────────────
+// Antes mesclava a pasta compartilhada em disco com um "estoque" à parte em
+// localStorage (alimentado por dashSalvarAtual, uma função que ficou órfã —
+// não está mais ligada a nenhum botão da tela). Isso fazia o Dashboard somar
+// roteirizações que só existiam no navegador de quem um dia usou aquele
+// botão, e que nunca apareceram na pasta compartilhada — daí os totais do
+// Dashboard ficarem sistematicamente maiores que os da aba Histórico, que
+// sempre leu só a pasta. Agora as duas telas leem exatamente a mesma fonte
+// (a pasta em disco, com o mesmo filtro de "só vigente, nunca substituída"),
+// então os números batem.
 async function dashGetStoreMerged() {
-  const local = dashGetStore();
-  const disco  = await dashLerHistoricoDisco();
-  const merged = {};
-  // Indexa todos os savedAt já vindos do localStorage para deduplicar
-  const vistosLocal = new Set();
-  for (const snaps of Object.values(local)) {
-    for (const s of snaps) if (s.savedAt) vistosLocal.add(s.savedAt);
-  }
-  // Copia localStorage
-  for (const [k, snaps] of Object.entries(local)) {
-    merged[k] = [...snaps];
-  }
-  // Adiciona do disco apenas se não já existe no localStorage (mesmo savedAt)
-  for (const [k, snaps] of Object.entries(disco)) {
-    if (!merged[k]) merged[k] = [];
-    for (const s of snaps) {
-      if (!s.savedAt || !vistosLocal.has(s.savedAt)) {
-        merged[k].push(s);
-      }
-    }
-  }
-  // Ordena cada chave por data decrescente
-  for (const k of Object.keys(merged)) {
-    merged[k].sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
-  }
-  return merged;
+  return await dashLerHistoricoDisco();
 }
 // ── Salvar roteirização atual no Dashboard ─────────────────────────────────
 window.dashSalvarAtual = function() {
