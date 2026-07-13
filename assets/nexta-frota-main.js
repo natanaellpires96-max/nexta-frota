@@ -1391,28 +1391,21 @@ async function doLogin(){
   if(!uid){err.textContent="Informe o usuário.";return;}
   if(!pwd){err.textContent="Informe a senha.";return;}
   err.textContent="";
-  if(btn){btn.disabled=true;btn.textContent="Verificando...";}
-  // Busca a lista de usuários direto do Firestore ignorando qualquer cache
-  // local antes de decidir "não encontrado" — a aba pode estar aberta há
-  // muito tempo (ou ter carregado antes de outra pessoa cadastrar/editar um
-  // usuário), e sem isso o login ficava decidindo com uma foto velha da
-  // lista, travando gente que já estava cadastrada certinho no Firestore.
-  cacheInvalidate('cfg_users');
-  try {
-    const freshUsers = await withTimeout(dbGetUsers(), 8000, "Timeout dbGetUsers");
-    if(freshUsers) _atualizarUsersDb(freshUsers);
-  } catch(e) {
-    console.warn('[doLogin] falha ao atualizar lista de usuários, seguindo com a última cópia conhecida:', e);
-  }
-  if(!USERS_DB[uid]){
-    err.textContent="Usuário não encontrado.";
-    if(btn){btn.disabled=false;btn.textContent="Entrar";}
-    return;
-  }
-  if(btn){btn.textContent="Entrando...";}
+  if(btn){btn.disabled=true;btn.textContent="Entrando...";}
+  // IMPORTANTE: não pré-checa mais "USERS_DB[uid] existe?" contra o
+  // Firestore antes de autenticar. Pra alguém que nunca logou naquele
+  // navegador, a regra de segurança do Firestore normalmente recusa ler
+  // "config/users" sem estar autenticado — então esse pré-check nunca
+  // conseguia confirmar usuários de verdade e sempre caía na lista padrão
+  // "de fábrica" (só 6 nomes fixos no código), acusando "não encontrado"
+  // pra qualquer usuário real que não fosse um desses 6, mesmo com
+  // cadastro e senha 100% corretos. A autenticação do Firebase já é,
+  // sozinha, a fonte de verdade sobre se o login/senha existem — não
+  // precisa (e não pode, de forma confiável) confirmar isso antes via
+  // Firestore. Ver onAuthStateChanged para a busca do perfil pós-login.
   try {
     await signInWithEmailAndPassword(auth, uidToEmail(uid), pwd);
-    // onAuthStateChanged cuida do resto
+    // onAuthStateChanged cuida do resto (inclusive de buscar o perfil)
   } catch(e) {
     const code = e.code||"";
     if(code==="auth/wrong-password"||code==="auth/invalid-credential"){
@@ -1420,7 +1413,7 @@ async function doLogin(){
     } else if(code==="auth/too-many-requests"){
       err.textContent="Muitas tentativas. Aguarde alguns minutos.";
     } else if(code==="auth/user-not-found"){
-      err.textContent="Usuário não encontrado no sistema de autenticação.";
+      err.textContent="Usuário não encontrado.";
     } else {
       err.textContent="Erro ao entrar: "+code;
     }
@@ -4826,6 +4819,20 @@ loadConfig().catch(e=>{ console.error(e); }).then(()=>{
     if(firebaseUser){
       // Extrai o uid da convenção email: uid@nexta-frota.app
       const uid = firebaseUser.email.replace(/@nexta-frota\.app$/, "");
+      // Agora que a autenticação foi confirmada de verdade pelo Firebase, a
+      // leitura de "config/users" no Firestore deve ser permitida (regras
+      // que antes bloqueavam leitura sem login não se aplicam mais aqui).
+      // Busca fresco antes de decidir se existe perfil — sem isso, alguém
+      // recém-cadastrado podia autenticar certinho e ainda assim ser
+      // deslogado na hora, com a lista local desatualizada dizendo
+      // erroneamente que o perfil "não existe".
+      try {
+        cacheInvalidate('cfg_users');
+        const freshUsers = await withTimeout(dbGetUsers(), 8000, "Timeout dbGetUsers");
+        if(freshUsers) _atualizarUsersDb(freshUsers);
+      } catch(e) {
+        console.warn('[onAuthStateChanged] falha ao atualizar usuários, seguindo com a última cópia conhecida:', e);
+      }
       if(USERS_DB[uid]){
         S.user = uid;
         saveSession(uid);
