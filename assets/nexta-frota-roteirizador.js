@@ -369,6 +369,10 @@ var dirHandleHistorico = null; // precisa ficar em window para ser
 // Cache de metadados do histórico: { [filename]: { savedAt, resumo, datasEntrega, salvoPor, versao } }
 // Evita reler arquivos completos a cada "Atualizar lista" — só relê arquivos novos/modificados.
 var _histMetaCache = {};
+// Última lista de entradas (metadados) lida do disco pela aba Histórico —
+// permite que o filtro de data de entrega reaplique instantaneamente, sem
+// precisar reler a pasta inteira a cada mudança de intervalo.
+var _histEntriesUltimas = [];
                                 // acessível pelo módulo do Dashboard, em outro <script>.
 var estadoAtual = null;
 var ultimoItensOtimizacao = [];
@@ -7741,10 +7745,55 @@ async function carregarListaHistorico() {
   entries.sort((a, b) => b.data.savedAt.localeCompare(a.data.savedAt));
   // Reconstrói o contador de IDs a partir do histórico real (evita sequências infladas)
   _reconstruirPetSeqDoHistorico();
+  _histEntriesUltimas = entries; // cache p/ o filtro de data reaplicar sem reler o disco
+  _histRenderLista(entries);
+}
+// ── Filtro por intervalo de data de entrega ─────────────────────────────────
+// Converte "DD/MM/YYYY" (formato usado em datasEntrega) para Date à meia-noite.
+function _histParseDataBR(str) {
+  const pts = (str || '').split('/');
+  if (pts.length !== 3) return null;
+  const d = new Date(parseInt(pts[2]), parseInt(pts[1]) - 1, parseInt(pts[0]));
+  return isNaN(d.getTime()) ? null : d;
+}
+// true se QUALQUER data de entrega do snapshot cair dentro de [de, ate]
+// (limites inclusivos; de/ate === null significa sem limite naquele lado).
+function _histDataEntregaNoIntervalo(datasEntrega, de, ate) {
+  if (!de && !ate) return true;
+  const datas = (datasEntrega || []).map(_histParseDataBR).filter(Boolean);
+  if (!datas.length) return false; // snapshot sem data de entrega não passa em filtro ativo
+  return datas.some(d => (!de || d >= de) && (!ate || d <= ate));
+}
+function aplicarFiltroHistoricoData() {
+  _histRenderLista(_histEntriesUltimas);
+}
+function limparFiltroHistoricoData() {
+  const inDe  = document.getElementById('hist-filtro-de');
+  const inAte = document.getElementById('hist-filtro-ate');
+  if (inDe)  inDe.value  = '';
+  if (inAte) inAte.value = '';
+  _histRenderLista(_histEntriesUltimas);
+}
+// ── Renderiza a lista (aplica filtro de data + agrupamento por revisão) ────
+function _histRenderLista(entries) {
+  const el = document.getElementById('historico-list');
+  if (!el) return;
   if (!entries.length) {
     el.innerHTML = '<div class="empty">Nenhuma roteirização salva nesta pasta.</div>';
+    const cont = document.getElementById('hist-filtro-contagem');
+    if (cont) cont.textContent = '';
     return;
   }
+  const inDe  = document.getElementById('hist-filtro-de');
+  const inAte = document.getElementById('hist-filtro-ate');
+  // <input type="date"> entrega YYYY-MM-DD — convertido pra Date local.
+  const parseInputDate = (v) => {
+    if (!v) return null;
+    const [y, m, d] = v.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  };
+  const de  = inDe  ? parseInputDate(inDe.value)  : null;
+  const ate = inAte ? parseInputDate(inAte.value) : null;
   // ── Agrupa por cadeia de revisão ────────────────────────────────────────
   // Uma entrada com `substituidoPor` não é mais a versão vigente daquela
   // programação — foi corrigida e re-salva depois. Por padrão só mostramos a
@@ -7779,12 +7828,38 @@ async function carregarListaHistorico() {
         </div>
         <div class="hist-entry-actions">
           <button class="btn btn-green btn-sm" onclick="abrirEntradaHistorico('${safeNome}')">Abrir</button>
+          <button class="btn btn-sm" onclick="abrirDetalheHistorico('${safeNome}')" title="Ver ID e m³ de cada pedido desta roteirização">⋯ Detalhar</button>
           <button class="btn btn-danger btn-sm" onclick="excluirEntradaHistorico('${safeNome}', this)">Excluir</button>
         </div>
       </div>`;
   };
+  // Filtro de data de entrega aplica-se à cadeia inteira: se a versão vigente
+  // (ou qualquer revisão anterior dela) tiver entrega no intervalo, a cadeia
+  // aparece — assim uma correção feita fora do período não esconde a entrega
+  // que originalmente estava dentro dele.
   const vigentes = entries.filter(({ data }) => !data.substituidoPor);
-  el.innerHTML = vigentes.map((entry) => {
+  const vigentesFiltradas = vigentes.filter((entry) => {
+    if (!de && !ate) return true;
+    let cursor = entry;
+    while (cursor) {
+      if (_histDataEntregaNoIntervalo(cursor.data.datasEntrega, de, ate)) return true;
+      cursor = cursor.data.revisaoDe && porNome[cursor.data.revisaoDe]
+        ? { name: cursor.data.revisaoDe, data: porNome[cursor.data.revisaoDe] }
+        : null;
+    }
+    return false;
+  });
+  const cont = document.getElementById('hist-filtro-contagem');
+  if (cont) {
+    cont.textContent = (de || ate)
+      ? `${vigentesFiltradas.length} de ${vigentes.length} roteirização(ões)`
+      : '';
+  }
+  if (!vigentesFiltradas.length) {
+    el.innerHTML = '<div class="empty">Nenhuma roteirização com entrega nesse intervalo.</div>';
+    return;
+  }
+  el.innerHTML = vigentesFiltradas.map((entry) => {
     // Monta a cadeia de revisões anteriores desta entrada (mais recente → mais antiga)
     const anteriores = [];
     let cursor = entry.data.revisaoDe;
@@ -7810,6 +7885,70 @@ async function carregarListaHistorico() {
         <div id="${gid}" style="display:none;">${anterioresHtml}</div>
       </div>`;
   }).join('');
+}
+// ── Modal de detalhe: ID + m³ de cada pedido de um snapshot do histórico ───
+// Metadados em cache (_histMetaCache) não guardam `pedidos` (só resumo), por
+// isso relê o arquivo completo aqui, sob demanda, só quando o usuário pede.
+async function abrirDetalheHistorico(filename) {
+  const modal   = document.getElementById('modal-hist-detalhe');
+  const body    = document.getElementById('hist-detalhe-body');
+  const titulo  = document.getElementById('hist-detalhe-titulo');
+  if (!modal || !body || !titulo) return;
+  titulo.textContent = 'Detalhe da roteirização';
+  body.innerHTML = '<div class="empty">Carregando pedidos...</div>';
+  modal.classList.add('show');
+  if (!await _histGarantirPermissao()) {
+    body.innerHTML = '<div class="empty">Permissão negada. Selecione a pasta novamente.</div>';
+    return;
+  }
+  try {
+    const fh   = await dirHandleHistorico.getFileHandle(filename);
+    const file = await fh.getFile();
+    const data = JSON.parse(await file.text());
+    const dt   = new Date(data.savedAt);
+    const p2   = n => String(n).padStart(2, '0');
+    titulo.textContent = `Pedidos — ${p2(dt.getDate())}/${p2(dt.getMonth()+1)}/${dt.getFullYear()} às ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
+    const listaPedidos = data.pedidos || [];
+    if (!listaPedidos.length) {
+      body.innerHTML = '<div class="empty">Este snapshot não tem pedidos registrados.</div>';
+      return;
+    }
+    let totalM3 = 0;
+    const linhas = listaPedidos.map(p => {
+      const vol = (p.produtos || []).reduce((s, pr) => s + (pr.volume || 0), 0);
+      totalM3 += vol;
+      return `<tr>
+        <td style="padding:5px 8px;font-weight:600;white-space:nowrap;">${p.id ?? '—'}</td>
+        <td style="padding:5px 8px;">${p.cliente || '—'}</td>
+        <td style="padding:5px 8px;white-space:nowrap;">${p.dataEntregaLogistica || '—'}</td>
+        <td style="padding:5px 8px;text-align:right;font-weight:600;white-space:nowrap;">${vol.toFixed(1)} m³</td>
+      </tr>`;
+    }).join('');
+    body.innerHTML = `
+      <div style="font-size:12px;color:var(--text-2);margin-bottom:10px;">
+        ${listaPedidos.length} pedido${listaPedidos.length !== 1 ? 's' : ''} &nbsp;·&nbsp; <strong>${totalM3.toFixed(1)} m³</strong> no total
+      </div>
+      <div style="max-height:60vh;overflow:auto;border:0.5px solid var(--border);border-radius:8px;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead style="position:sticky;top:0;background:var(--bg);">
+            <tr>
+              <th style="text-align:left;padding:6px 8px;">ID</th>
+              <th style="text-align:left;padding:6px 8px;">Cliente</th>
+              <th style="text-align:left;padding:6px 8px;">Entrega</th>
+              <th style="text-align:right;padding:6px 8px;">Volume</th>
+            </tr>
+          </thead>
+          <tbody>${linhas}</tbody>
+        </table>
+      </div>`;
+  } catch(e) {
+    body.innerHTML = `<div class="empty" style="color:#ef4444;">Erro ao ler arquivo: ${e.message}</div>`;
+  }
+}
+function fecharDetalheHistorico(ev = null) {
+  if (ev && ev.target && ev.target.id !== 'modal-hist-detalhe') return;
+  const modal = document.getElementById('modal-hist-detalhe');
+  if (modal) modal.classList.remove('show');
 }
 async function abrirEntradaHistorico(filename) {
   if (!await _histGarantirPermissao()) return;
