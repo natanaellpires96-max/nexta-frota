@@ -3968,18 +3968,25 @@ async function saveEditUser(uid){
   const newCarrier=(newRole==='carrier'&&carrierEl)?carrierEl.value:'';
   if(!name){showToast('Informe o nome.',false);return;}
   if(pwd&&pwd.length<6){showToast('Senha deve ter mín. 6 caracteres.',false);return;}
-  // Se senha foi informada e o usuário editado é o próprio logado, atualiza no Firebase Auth
-  if(pwd && auth.currentUser && auth.currentUser.email===uidToEmail(uid)){
-    try {
-      await updatePassword(auth.currentUser, pwd);
-    } catch(e) {
-      showToast('Erro ao atualizar senha: '+( e.code||e.message),false);
-      return;
+  // Nome, e-mail, perfil, transportador e operações SEMPRE salvam, independente
+  // do campo de senha — antes, digitar algo em "Nova senha" ao editar OUTRO
+  // usuário cancelava o salvamento inteiro (inclusive o e-mail), porque o
+  // aviso de "só é possível alterar a própria senha" media com um "return"
+  // que interrompia tudo. Agora a senha é tratada à parte, só avisa/erra
+  // sobre ela mesma, sem travar o resto.
+  let avisoSenha = null;
+  if(pwd){
+    if(auth.currentUser && auth.currentUser.email===uidToEmail(uid)){
+      try {
+        await updatePassword(auth.currentUser, pwd);
+      } catch(e) {
+        avisoSenha = 'Erro ao atualizar senha: '+(e.code||e.message);
+      }
+    } else {
+      // Senha de outro usuário — não é possível alterar via client SDK sem
+      // re-autenticar como ele. Isso NÃO impede salvar o resto do formulário.
+      avisoSenha = 'Nome/e-mail/perfil salvos. A senha não foi alterada: só é possível trocar a própria senha por aqui — para redefinir a de outro usuário, use "🔑 Resetar senha" na listagem ou o Console do Firebase.';
     }
-  } else if(pwd) {
-    // Senha de outro usuário — não é possível alterar via client SDK sem re-autenticar como ele
-    showToast('Só é possível alterar a própria senha. Para redefinir a de outro usuário, use o Console do Firebase.',false);
-    return;
   }
   const initials=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   const newOps=newRole==='carrier'?getCheckedOps('eu-op-checks'):[];
@@ -3997,7 +4004,11 @@ async function saveEditUser(uid){
   delete USERS_DB[uid].password; // garante remoção caso ainda exista localmente
   await dbSaveUsers(USERS_DB);
   document.getElementById('edit-user-modal').remove();
-  showToast(`Usuário ${uid} atualizado!`);
+  if(avisoSenha){
+    showToast(avisoSenha, false);
+  } else {
+    showToast(`Usuário ${uid} atualizado!`);
+  }
   await renderTabBody();
 }
 // ═══════════════════════════════════════════════════════════
