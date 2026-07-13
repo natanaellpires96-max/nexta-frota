@@ -588,15 +588,15 @@ async function carregarDoExcel(arquivo = 'dados.xlsx') {
     const rowsT = sheet('Terminais');
     const rowsC = sheet('Clientes');
     const rowsP = sheet('Placas');
-    if (rowsT?.length) {
+    if (rowsT?.length && !terminaisCad.length) {
       terminaisCad = rowsT.map(xlsxMapTerminal);
       renderTerminais(); atualizarDropdownsTerminais();
     }
-    if (rowsC?.length) {
+    if (rowsC?.length && !clientes.length) {
       clientes = rowsC.map(xlsxMapCliente);
       renderClientes(); atualizarDropdownsClientes();
     }
-    if (rowsP?.length) {
+    if (rowsP?.length && !veiculos.length) {
       veiculos = rowsP.map(xlsxMapPlaca);
       renderVeiculos();
     }
@@ -619,15 +619,15 @@ async function carregarDosJsons() {
   const [listaT, listaC, listaP] = await Promise.all([
     lerJson('terminais.json'), lerJson('clientes.json'), lerJson('placas.json'),
   ]);
-  if (listaT?.length) {
+  if (listaT?.length && !terminaisCad.length) {
     terminaisCad = listaT.map((t, i) => ({ ...t, id: t.id ?? i + 1 }));
     renderTerminais(); atualizarDropdownsTerminais();
   }
-  if (listaC?.length) {
+  if (listaC?.length && !clientes.length) {
     clientes = listaC.map((c, i) => ({ ...c, id: c.id ?? 100 + i }));
     renderClientes(); atualizarDropdownsClientes();
   }
-  if (listaP?.length) {
+  if (listaP?.length && !veiculos.length) {
     veiculos = listaP.map((v, i) => ({
       ...v, id: v.id ?? 200 + i,
       capacidade: v.compartimentos.reduce((s, c) => s + c.cap, 0),
@@ -638,8 +638,46 @@ async function carregarDosJsons() {
 }
 // ── Ponto de entrada ──────────────────────────────────────────────────────────
 async function carregarDadosFixos() {
-  const ok = await carregarDoExcel('dados.xlsx');
-  if (!ok) await carregarDosJsons();
+  // 1) Firestore primeiro — é a fonte viva, alimentada pela importação (só
+  //    adiciona) e pelo cadastro manual (Terminais/Clientes/Veículos na tela).
+  //    Se ele já tiver algo pra um tipo, usa e NÃO deixa o fallback abaixo
+  //    sobrescrever.
+  try {
+    if (typeof window.dbGetCadastro === 'function') {
+      const [fsTerm, fsCli, fsVei] = await Promise.all([
+        window.dbGetCadastro('terminais'),
+        window.dbGetCadastro('clientes'),
+        window.dbGetCadastro('veiculos'),
+      ]);
+      if (fsTerm && Object.keys(fsTerm).length) {
+        let id = 1;
+        terminaisCad = Object.values(fsTerm).map(t => ({ ...t, id: t.id ?? id++ }));
+        renderTerminais(); atualizarDropdownsTerminais();
+      }
+      if (fsCli && Object.keys(fsCli).length) {
+        let id = 100;
+        clientes = Object.values(fsCli).map(c => ({ ...c, id: c.id ?? id++ }));
+        renderClientes(); atualizarDropdownsClientes();
+      }
+      if (fsVei && Object.keys(fsVei).length) {
+        let id = 200;
+        veiculos = Object.values(fsVei).map(v => ({ ...v, id: v.id ?? id++ }));
+        renderVeiculos();
+      }
+      if (terminaisCad.length || clientes.length || veiculos.length) {
+        spSetStatus('ok', '✓ Cadastros carregados da nuvem');
+      }
+    }
+  } catch(e) {
+    console.warn('[Firestore cadastros]', e.message);
+  }
+  // 2) Fallback: dados.xlsx / jsons estáticos — só preenche o que o Firestore
+  //    não trouxe (arrays que continuam vazios), pra não sobrescrever o que
+  //    já veio da nuvem.
+  if (!terminaisCad.length || !clientes.length || !veiculos.length) {
+    const ok = await carregarDoExcel('dados.xlsx');
+    if (!ok) await carregarDosJsons();
+  }
 }
 // ── Gera e baixa o modelo Excel vazio com cabeçalhos ─────────────────────────
 function baixarModeloExcel() {
@@ -2421,6 +2459,31 @@ function lerHorarios(diasAtivos) {
   });
   return h;
 }
+// ── Persistência dos cadastros manuais (Terminais/Clientes/Veículos) no
+// Firestore — usa as funções expostas por window.* no main.js (mesmo padrão
+// de config/plates). Fire-and-forget: não trava a UI esperando a gravação,
+// só avisa no console se falhar (ex.: sem internet no momento do clique).
+function _persistirCadastroManual(tipo, item, itemAntigo) {
+  if (typeof window.dbSalvarCadastroItem !== 'function' || typeof window.chaveCadastro !== 'function') return;
+  const chave = window.chaveCadastro(tipo, item);
+  // Se a edição mudou o campo-chave (ex.: renomear terminal, trocar SAP do
+  // cliente, trocar placa do veículo), remove o registro antigo pra não
+  // deixar um "fantasma" duplicado no Firestore.
+  if (itemAntigo) {
+    const chaveAntiga = window.chaveCadastro(tipo, itemAntigo);
+    if (chaveAntiga && chaveAntiga !== chave && typeof window.dbRemoverCadastroItem === 'function') {
+      window.dbRemoverCadastroItem(tipo, chaveAntiga).catch(e => console.warn(`[Firestore ${tipo}]`, e));
+    }
+  }
+  if (!chave) return;
+  window.dbSalvarCadastroItem(tipo, chave, item).catch(e => console.warn(`[Firestore ${tipo}]`, e));
+}
+function _removerCadastroManual(tipo, item) {
+  if (typeof window.dbRemoverCadastroItem !== 'function' || typeof window.chaveCadastro !== 'function') return;
+  const chave = window.chaveCadastro(tipo, item);
+  if (!chave) return;
+  window.dbRemoverCadastroItem(tipo, chave).catch(e => console.warn(`[Firestore ${tipo}]`, e));
+}
 function salvarTerminal() {
   const nome  = document.getElementById('t-nome').value.trim();
   const cidade= document.getElementById('t-cidade').value.trim();
@@ -2440,10 +2503,14 @@ function salvarTerminal() {
   const horarios = lerHorarios(diasAtivos);
   if (editandoTerminalId !== null) {
     const idx = terminaisCad.findIndex(t => t.id === editandoTerminalId);
+    const antigo = idx !== -1 ? {...terminaisCad[idx]} : null;
     if (idx !== -1) terminaisCad[idx] = {...terminaisCad[idx], nome, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios};
+    _persistirCadastroManual('terminais', terminaisCad[idx], antigo);
   } else {
     if (terminaisCad.find(t => t.nome.toLowerCase() === nome.toLowerCase())) { alert('Já existe um terminal com esse nome.'); return; }
-    terminaisCad.push({id:Date.now(), nome, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios});
+    const novo = {id:Date.now(), nome, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios};
+    terminaisCad.push(novo);
+    _persistirCadastroManual('terminais', novo);
   }
   editandoTerminalId = null;
   cancelarFormTerminal();
@@ -2452,7 +2519,9 @@ function salvarTerminal() {
 }
 function removerTerminal(id) {
   if (!confirm('Remover este terminal? Pedidos e veículos vinculados perderão a referência.')) return;
+  const alvo = terminaisCad.find(t => t.id === id);
   terminaisCad = terminaisCad.filter(t => t.id !== id);
+  if (alvo) _removerCadastroManual('terminais', alvo);
   renderTerminais();
   atualizarDropdownsTerminais();
 }
@@ -2568,9 +2637,13 @@ function salvarCliente() {
   };
   if (editandoClienteId !== null) {
     const idx = clientes.findIndex(c => c.id === editandoClienteId);
+    const antigo = idx !== -1 ? {...clientes[idx]} : null;
     if (idx !== -1) clientes[idx] = {...clientes[idx], ...dados};
+    _persistirCadastroManual('clientes', clientes[idx], antigo);
   } else {
-    clientes.push({id: Date.now(), ...dados});
+    const novo = {id: Date.now(), ...dados};
+    clientes.push(novo);
+    _persistirCadastroManual('clientes', novo);
   }
   editandoClienteId = null;
   cancelarFormCliente();
@@ -2579,7 +2652,9 @@ function salvarCliente() {
 }
 function removerCliente(id) {
   if (!confirm('Remover este cliente?')) return;
+  const alvo = clientes.find(c => c.id === id);
   clientes = clientes.filter(c => c.id !== id);
+  if (alvo) _removerCadastroManual('clientes', alvo);
   renderClientes();
   atualizarDropdownsClientes();
 }
@@ -3825,15 +3900,21 @@ function salvarVeiculo() {
   };
   if (editandoVeiculoId !== null) {
     const idx = veiculos.findIndex(v => v.id === editandoVeiculoId);
+    const antigo = idx !== -1 ? {...veiculos[idx]} : null;
     if (idx !== -1) veiculos[idx] = {...veiculos[idx], ...dados};
+    _persistirCadastroManual('veiculos', veiculos[idx], antigo);
   } else {
-    veiculos.push({id: Date.now(), ...dados});
+    const novo = {id: Date.now(), ...dados};
+    veiculos.push(novo);
+    _persistirCadastroManual('veiculos', novo);
   }
   renderVeiculos();
   cancelarFormVeiculo();
 }
 function removerVeiculo(id) {
+  const alvo = veiculos.find(v => v.id === id);
   veiculos = veiculos.filter(v => v.id !== id);
+  if (alvo) _removerCadastroManual('veiculos', alvo);
   renderVeiculos();
 }
 function renderVeiculos() {

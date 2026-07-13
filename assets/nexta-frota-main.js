@@ -108,6 +108,66 @@ async function dbSavePlates(plates) {
   await setDoc(doc(db, "config", "plates"), { data: plates });
   cacheSet("plates", plates); // atualiza cache imediatamente após salvar
 }
+// ═══════════════════════════════════════════════════════════
+// CADASTROS DO ROTEIRIZADOR (Terminais / Clientes / Veículos) — Firestore
+// ═══════════════════════════════════════════════════════════
+// Mesmo padrão de "config/plates" acima: cada tipo é UM documento em
+// "config", guardando um mapa { chave: registro }. A chave natural de cada
+// tipo evita duplicidade e permite checar "já existe?" sem varrer nada:
+//   Terminal → nome (normalizado)  |  Cliente → Código SAP  |  Veículo → placa
+// Compartilhado entre todos os usuários (mesma coleção "config" já usada
+// pra placas/motoristas), respeitando as mesmas regras de acesso do Firestore.
+const CADASTRO_DOC_ID = { terminais: 'roteirizador_terminais', clientes: 'roteirizador_clientes', veiculos: 'roteirizador_veiculos' };
+function chaveCadastro(tipo, item) {
+  if (tipo === 'terminais') return (item.nome      || '').trim().toLowerCase();
+  if (tipo === 'clientes')  return (item.codigoSAP || item.nome || '').trim().toUpperCase();
+  if (tipo === 'veiculos')  return (item.placa     || '').trim().toUpperCase();
+  return '';
+}
+async function dbGetCadastro(tipo) {
+  try {
+    const snap = await getDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]));
+    return snap.exists() ? (snap.data().data || {}) : {};
+  } catch(e) { console.error(`[dbGetCadastro:${tipo}]`, e); return {}; }
+}
+// Grava só os itens passados — e NUNCA sobrescreve uma chave que já exista no
+// Firestore, mesmo que o chamador já tenha filtrado "os novos": relê o
+// documento atual e ignora de novo qualquer chave já presente, pra cobrir
+// o caso de duas pessoas importando ao mesmo tempo. Usada pela importação
+// de planilha (comportamento "só adiciona o que falta").
+async function dbAdicionarCadastroItens(tipo, itensPorChave) {
+  const chaves = Object.keys(itensPorChave || {});
+  if (!chaves.length) return { adicionados: 0 };
+  const atual = await dbGetCadastro(tipo);
+  const mesclado = { ...atual };
+  let adicionados = 0;
+  chaves.forEach(k => {
+    if (!(k in atual)) { mesclado[k] = itensPorChave[k]; adicionados++; }
+  });
+  if (adicionados > 0) await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: mesclado });
+  return { adicionados };
+}
+// Grava/atualiza UM registro específico — usada pelo cadastro manual
+// (Terminais/Clientes/Veículos na tela). Aqui SIM sobrescreve a chave, porque
+// é uma edição explícita e intencional de uma pessoa, diferente da
+// importação em lote (que nunca deve sobrescrever sem querer).
+async function dbSalvarCadastroItem(tipo, chave, item) {
+  if (!chave) return;
+  const atual = await dbGetCadastro(tipo);
+  atual[chave] = item;
+  await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
+}
+async function dbRemoverCadastroItem(tipo, chave) {
+  if (!chave) return;
+  const atual = await dbGetCadastro(tipo);
+  delete atual[chave];
+  await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
+}
+window.chaveCadastro            = chaveCadastro;
+window.dbGetCadastro            = dbGetCadastro;
+window.dbAdicionarCadastroItens = dbAdicionarCadastroItens;
+window.dbSalvarCadastroItem     = dbSalvarCadastroItem;
+window.dbRemoverCadastroItem    = dbRemoverCadastroItem;
 async function withTimeout(promise, ms, message){
   return Promise.race([
     promise,
@@ -4546,35 +4606,86 @@ async function importarDadosCadastrais(input) {
     const rowsP = sheet('Placas');
     let msgs = [];
     let erros = [];
+    let novosTerminais = 0, novosClientes = 0, novosVeiculos = 0;
+    // Próximo id livre de cada array — segue o mesmo esquema de faixas que os
+    // mapeadores já usavam (terminal ~1+, cliente 100+, veículo 200+), só que
+    // agora continuando a partir do maior id já carregado, pra não colidir
+    // com o que veio do Firestore.
+    const proxId = (arr, base) => Math.max(base, ...arr.map(x => (x.id || 0) + 1));
     // ── Terminais ──────────────────────────────────────────
     if (rowsT && rowsT.length) {
       try {
-        terminaisCad = rowsT.map(xlsxMapTerminal);
+        const mapeados = rowsT.map(xlsxMapTerminal);
+        const chavesAtuais = new Set(terminaisCad.map(t => chaveCadastro('terminais', t)));
+        const novos = [];
+        const vistosNaPlanilha = new Set(); // evita duplicar se a própria planilha repetir a linha
+        mapeados.forEach(t => {
+          const k = chaveCadastro('terminais', t);
+          if (k && !chavesAtuais.has(k) && !vistosNaPlanilha.has(k)) { novos.push(t); vistosNaPlanilha.add(k); }
+        });
+        let id = proxId(terminaisCad, 1);
+        novos.forEach(t => { t.id = id++; terminaisCad.push(t); });
+        if (novos.length) {
+          const mapa = {}; novos.forEach(t => { mapa[chaveCadastro('terminais', t)] = t; });
+          try { await dbAdicionarCadastroItens('terminais', mapa); } catch(e) { console.warn('[Firestore terminais]', e); }
+        }
         if (typeof renderTerminais === 'function')        renderTerminais();
         if (typeof atualizarDropdownsTerminais === 'function') atualizarDropdownsTerminais();
-        msgs.push(`${terminaisCad.length} terminal(is)`);
+        const ignorados = mapeados.length - novos.length;
+        novosTerminais = novos.length;
+        msgs.push(`${novos.length} terminal(is) novo(s)${ignorados ? ` (${ignorados} já cadastrado(s))` : ''}`);
       } catch(e) { erros.push('Terminais: ' + e.message); }
     }
     // ── Clientes ───────────────────────────────────────────
     if (rowsC && rowsC.length) {
       try {
-        clientes = rowsC.map(xlsxMapCliente);
+        const mapeados = rowsC.map(xlsxMapCliente);
+        const chavesAtuais = new Set(clientes.map(c => chaveCadastro('clientes', c)));
+        const novos = [];
+        const vistosNaPlanilha = new Set();
+        mapeados.forEach(c => {
+          const k = chaveCadastro('clientes', c);
+          if (k && !chavesAtuais.has(k) && !vistosNaPlanilha.has(k)) { novos.push(c); vistosNaPlanilha.add(k); }
+        });
+        let id = proxId(clientes, 100);
+        novos.forEach(c => { c.id = id++; clientes.push(c); });
+        if (novos.length) {
+          const mapa = {}; novos.forEach(c => { mapa[chaveCadastro('clientes', c)] = c; });
+          try { await dbAdicionarCadastroItens('clientes', mapa); } catch(e) { console.warn('[Firestore clientes]', e); }
+        }
         if (typeof renderClientes === 'function')         renderClientes();
         if (typeof atualizarDropdownsClientes === 'function') atualizarDropdownsClientes();
-        msgs.push(`${clientes.length} cliente(s)`);
+        const ignorados = mapeados.length - novos.length;
+        novosClientes = novos.length;
+        msgs.push(`${novos.length} cliente(s) novo(s)${ignorados ? ` (${ignorados} já cadastrado(s))` : ''}`);
       } catch(e) { erros.push('Clientes: ' + e.message); }
     }
     // ── Veículos / Placas ──────────────────────────────────
     if (rowsP && rowsP.length) {
       try {
-        veiculos = rowsP.map(xlsxMapPlaca);
+        const mapeados = rowsP.map(xlsxMapPlaca);
+        const chavesAtuais = new Set(veiculos.map(v => chaveCadastro('veiculos', v)));
+        const novos = [];
+        const vistosNaPlanilha = new Set();
+        mapeados.forEach(v => {
+          const k = chaveCadastro('veiculos', v);
+          if (k && !chavesAtuais.has(k) && !vistosNaPlanilha.has(k)) { novos.push(v); vistosNaPlanilha.add(k); }
+        });
+        let id = proxId(veiculos, 200);
+        novos.forEach(v => { v.id = id++; veiculos.push(v); });
+        if (novos.length) {
+          const mapa = {}; novos.forEach(v => { mapa[chaveCadastro('veiculos', v)] = v; });
+          try { await dbAdicionarCadastroItens('veiculos', mapa); } catch(e) { console.warn('[Firestore veiculos]', e); }
+        }
         // Consulta imediata ao painel e cadastro Firestore para definir status real
         if (btnImport) btnImport.textContent = '⏳ Consultando painel...';
         const hoje = new Date();
         const ds = `${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-${String(hoje.getDate()).padStart(2,'0')}`;
         await sincronizarDisponibilidadeVeiculos(ds);
         if (typeof renderVeiculos === 'function') renderVeiculos();
-        msgs.push(`${veiculos.length} veículo(s)`);
+        const ignorados = mapeados.length - novos.length;
+        novosVeiculos = novos.length;
+        msgs.push(`${novos.length} veículo(s) novo(s)${ignorados ? ` (${ignorados} já cadastrado(s))` : ''}`);
       } catch(e) { erros.push('Veículos: ' + e.message); }
     }
     if (!msgs.length && !erros.length) {
@@ -4591,8 +4702,9 @@ async function importarDadosCadastrais(input) {
     const resumo = msgs.join(', ');
     const avisoErros = erros.length ? ` | ⚠ Erros: ${erros.join('; ')}` : '';
     showToast(`✓ Importado: ${resumo}${avisoErros}`, erros.length === 0);
-    // Modal de resumo detalhado
-    _mostrarResumoImportacao({ terminais: rowsT?.length||0, clientes: rowsC?.length||0, veiculos: rowsP?.length||0, erros, arquivo: file.name });
+    // Modal de resumo detalhado — mostra quantos são NOVOS (o que de fato foi
+    // salvo no Firestore), não o total de linhas da planilha.
+    _mostrarResumoImportacao({ terminais: novosTerminais, clientes: novosClientes, veiculos: novosVeiculos, erros, arquivo: file.name });
   } catch(e) {
     console.error('[importarDadosCadastrais]', e);
     showToast(`Erro ao ler "${file.name}": ${e.message}`, false);
@@ -4618,17 +4730,18 @@ function _mostrarResumoImportacao({ terminais, clientes, veiculos, erros, arquiv
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:${erros.length?'0':'20px'};">
         <div style="background:rgba(124,184,43,0.12);border:1px solid rgba(124,184,43,0.25);border-radius:10px;padding:14px;text-align:center;">
           <div style="font-size:26px;font-weight:700;color:#EEFE7A;font-family:var(--font-cond,'Arial');">${terminais}</div>
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:0.1em;margin-top:4px;">Terminais</div>
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:0.1em;margin-top:4px;">Terminais novos</div>
         </div>
         <div style="background:rgba(124,184,43,0.12);border:1px solid rgba(124,184,43,0.25);border-radius:10px;padding:14px;text-align:center;">
           <div style="font-size:26px;font-weight:700;color:#EEFE7A;font-family:var(--font-cond,'Arial');">${clientes}</div>
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:0.1em;margin-top:4px;">Clientes</div>
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:0.1em;margin-top:4px;">Clientes novos</div>
         </div>
         <div style="background:rgba(124,184,43,0.12);border:1px solid rgba(124,184,43,0.25);border-radius:10px;padding:14px;text-align:center;">
           <div style="font-size:26px;font-weight:700;color:#EEFE7A;font-family:var(--font-cond,'Arial');">${veiculos}</div>
-          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:0.1em;margin-top:4px;">Veículos</div>
+          <div style="font-size:10px;color:#6B7280;text-transform:uppercase;letter-spacing:0.1em;margin-top:4px;">Veículos novos</div>
         </div>
       </div>
+      <div style="font-size:11px;color:#9CA3AF;margin-top:${erros.length?'0':'-8px'};margin-bottom:${erros.length?'0':'20px'};">Só o que ainda não existia foi salvo — nada é sobrescrito.</div>
       ${linhasErro}
       <div style="margin-top:20px;display:flex;justify-content:flex-end;">
         <button onclick="document.getElementById('modal-import-resumo').remove()" style="background:#4F46E5;color:#fff;border:none;border-radius:8px;padding:9px 28px;font-size:13px;font-weight:600;cursor:pointer;letter-spacing:0;">OK</button>
