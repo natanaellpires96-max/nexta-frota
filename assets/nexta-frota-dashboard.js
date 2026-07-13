@@ -544,6 +544,18 @@ async function dashLerHistoricoDisco() {
       const text = await file.text();
       const data = JSON.parse(text);
       console.log(`[DASH] arquivo: ${name} | versao=${data.versao} | savedAt=${data.savedAt} | temResultado=${!!data.resultado} | datasEntrega=`, data.datasEntrega);
+      // Arquivo já substituído por uma revisão posterior (correção salva por
+      // cima) não é mais a versão vigente daquela programação — a versão
+      // nova (que aponta pra este via revisaoDe) já está em outro arquivo e
+      // será contada normalmente. Contar os dois ao mesmo tempo inflava
+      // viagens/km/volume/entregas do Dashboard a cada correção, igual à
+      // regra que a aba Histórico já aplica (linha ~7786: vigentes = entries
+      // sem substituidoPor).
+      if (data.substituidoPor) {
+        console.warn(`[DASH] rejeitado (substituído por revisão posterior: ${data.substituidoPor}): ${name}`);
+        rejeitados++;
+        continue;
+      }
       // Antes, arquivo sem "versao" OU sem "savedAt" era descartado inteiro —
       // igual ao Frete, agora só exige QUE HAJA DADOS DE ROTEIRIZAÇÃO
       // (resultado ou pedidos), e preenche savedAt que falte com a data de

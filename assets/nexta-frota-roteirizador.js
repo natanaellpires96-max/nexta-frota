@@ -9251,6 +9251,14 @@ async function freteCalcular() {
         var file = await handle.getFile();
         var data = JSON.parse(await file.text());
         if (!(data.resultado || data.pedidos || data.versao)) continue;
+        // Arquivo já substituído por uma revisão posterior (correção salva
+        // por cima) não é mais a versão vigente daquela programação — a
+        // revisão nova (que aponta pra este via revisaoDe) já está em outro
+        // arquivo e será somada normalmente. Contar os dois inflava
+        // viagens/km/pedágio/frete a cada correção — mesma regra que a aba
+        // Histórico já aplica (linha ~7786: vigentes = entries sem
+        // substituidoPor).
+        if (data.substituidoPor) continue;
         if (!data.savedAt) data.savedAt = new Date(file.lastModified).toISOString();
         snaps.push(data);
       } catch(e) {}
