@@ -7933,8 +7933,11 @@ async function abrirDetalheHistorico(filename) {
           const cliente  = pa.pedido?.cliente || '—';
           const entrega  = pa.pedido?.dataEntregaLogistica || '—';
           const pedIdTxt = pa.pedido?.id != null ? ` <span style="color:var(--text-3);">(pedido ${pa.pedido.id})</span>` : '';
+          // Borda clara só no TOPO da primeira linha de cada viagem — separa
+          // um ID do outro sem escurecer as linhas internas do mesmo grupo.
+          const bordaGrupo = i === 0 ? 'border-top:2px solid var(--border);' : '';
           const idCellHtml = i === 0
-            ? `<td rowspan="${paradas.length}" style="padding:6px 8px;font-weight:700;font-family:var(--font-cond);letter-spacing:.04em;vertical-align:top;white-space:nowrap;border-right:0.5px solid var(--border);background:var(--bg);">
+            ? `<td rowspan="${paradas.length}" style="padding:8px;font-weight:700;font-family:var(--font-cond);letter-spacing:.04em;vertical-align:top;white-space:nowrap;border-right:0.5px solid var(--border);background:var(--bg);${bordaGrupo}">
                  ${petId}<br>
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span><br>
                  <span style="font-weight:700;font-family:var(--font);font-size:11px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
@@ -7942,9 +7945,9 @@ async function abrirDetalheHistorico(filename) {
             : '';
           linhasHtml.push(`<tr>
             ${idCellHtml}
-            <td style="padding:4px 8px;">${cliente}${pedIdTxt}</td>
-            <td style="padding:4px 8px;white-space:nowrap;">${entrega}</td>
-            <td style="padding:4px 8px;text-align:right;white-space:nowrap;">${volumes[i].toFixed(1)} m³</td>
+            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}</td>
+            <td style="padding:6px 8px;white-space:nowrap;${bordaGrupo}">${entrega}</td>
+            <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">${volumes[i].toFixed(1)} m³</td>
           </tr>`);
         });
       });
@@ -7955,7 +7958,7 @@ async function abrirDetalheHistorico(filename) {
     }
     body.innerHTML = `
       <div style="font-size:12px;color:var(--text-2);margin-bottom:10px;">
-        ${totalViagens} viagem${totalViagens !== 1 ? 'ns' : ''} &nbsp;·&nbsp; <strong>${totalM3.toFixed(1)} m³</strong> no total
+        ${totalViagens} ${totalViagens === 1 ? 'viagem' : 'viagens'} &nbsp;·&nbsp; <strong>${totalM3.toFixed(1)} m³</strong> no total
       </div>
       <div style="max-height:60vh;overflow:auto;border:0.5px solid var(--border);border-radius:8px;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
