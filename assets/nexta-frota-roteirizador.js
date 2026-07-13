@@ -7895,7 +7895,7 @@ async function abrirDetalheHistorico(filename) {
   const titulo  = document.getElementById('hist-detalhe-titulo');
   if (!modal || !body || !titulo) return;
   titulo.textContent = 'Detalhe da roteirização';
-  body.innerHTML = '<div class="empty">Carregando pedidos...</div>';
+  body.innerHTML = '<div class="empty">Carregando viagens...</div>';
   modal.classList.add('show');
   if (!await _histGarantirPermissao()) {
     body.innerHTML = '<div class="empty">Permissão negada. Selecione a pasta novamente.</div>';
@@ -7907,38 +7907,67 @@ async function abrirDetalheHistorico(filename) {
     const data = JSON.parse(await file.text());
     const dt   = new Date(data.savedAt);
     const p2   = n => String(n).padStart(2, '0');
-    titulo.textContent = `Pedidos — ${p2(dt.getDate())}/${p2(dt.getMonth()+1)}/${dt.getFullYear()} às ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
-    const listaPedidos = data.pedidos || [];
-    if (!listaPedidos.length) {
-      body.innerHTML = '<div class="empty">Este snapshot não tem pedidos registrados.</div>';
+    titulo.textContent = `Viagens — ${p2(dt.getDate())}/${p2(dt.getMonth()+1)}/${dt.getFullYear()} às ${p2(dt.getHours())}:${p2(dt.getMinutes())}`;
+    const veics     = data.veiculos  || [];
+    const resultado = data.resultado || {};
+    // Uma linha por PARADA (cliente), mas a célula do ID da viagem (petId,
+    // ex.: "P0726201") usa rowspan e só aparece uma vez, mesclada, para todas
+    // as paradas daquela viagem — assim, quando uma viagem atende dois
+    // clientes diferentes, eles ficam visualmente juntos sob o mesmo ID em
+    // vez de repetir o ID linha a linha.
+    let totalM3 = 0, totalViagens = 0;
+    const linhasHtml = [];
+    veics.forEach(v => {
+      const viagens = (resultado[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+      viagens.forEach((vi, idx) => {
+        totalViagens++;
+        const petId   = vi.petId || `VIA${v.placa || v.id}${idx+1}`;
+        const paradas = vi.paradas || [];
+        let volViagem = 0;
+        const volumes = paradas.map(pa => pa.volumeTotal != null
+          ? pa.volumeTotal
+          : (pa.itens || []).reduce((s, it) => s + (it.volume || 0), 0));
+        volViagem = volumes.reduce((s, v2) => s + v2, 0);
+        totalM3 += volViagem;
+        paradas.forEach((pa, i) => {
+          const cliente  = pa.pedido?.cliente || '—';
+          const entrega  = pa.pedido?.dataEntregaLogistica || '—';
+          const pedIdTxt = pa.pedido?.id != null ? ` <span style="color:var(--text-3);">(pedido ${pa.pedido.id})</span>` : '';
+          const idCellHtml = i === 0
+            ? `<td rowspan="${paradas.length}" style="padding:6px 8px;font-weight:700;font-family:var(--font-cond);letter-spacing:.04em;vertical-align:top;white-space:nowrap;border-right:0.5px solid var(--border);background:var(--bg);">
+                 ${petId}<br>
+                 <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span><br>
+                 <span style="font-weight:700;font-family:var(--font);font-size:11px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
+               </td>`
+            : '';
+          linhasHtml.push(`<tr>
+            ${idCellHtml}
+            <td style="padding:4px 8px;">${cliente}${pedIdTxt}</td>
+            <td style="padding:4px 8px;white-space:nowrap;">${entrega}</td>
+            <td style="padding:4px 8px;text-align:right;white-space:nowrap;">${volumes[i].toFixed(1)} m³</td>
+          </tr>`);
+        });
+      });
+    });
+    if (!linhasHtml.length) {
+      body.innerHTML = '<div class="empty">Este snapshot não tem viagens registradas.</div>';
       return;
     }
-    let totalM3 = 0;
-    const linhas = listaPedidos.map(p => {
-      const vol = (p.produtos || []).reduce((s, pr) => s + (pr.volume || 0), 0);
-      totalM3 += vol;
-      return `<tr>
-        <td style="padding:5px 8px;font-weight:600;white-space:nowrap;">${p.id ?? '—'}</td>
-        <td style="padding:5px 8px;">${p.cliente || '—'}</td>
-        <td style="padding:5px 8px;white-space:nowrap;">${p.dataEntregaLogistica || '—'}</td>
-        <td style="padding:5px 8px;text-align:right;font-weight:600;white-space:nowrap;">${vol.toFixed(1)} m³</td>
-      </tr>`;
-    }).join('');
     body.innerHTML = `
       <div style="font-size:12px;color:var(--text-2);margin-bottom:10px;">
-        ${listaPedidos.length} pedido${listaPedidos.length !== 1 ? 's' : ''} &nbsp;·&nbsp; <strong>${totalM3.toFixed(1)} m³</strong> no total
+        ${totalViagens} viagem${totalViagens !== 1 ? 'ns' : ''} &nbsp;·&nbsp; <strong>${totalM3.toFixed(1)} m³</strong> no total
       </div>
       <div style="max-height:60vh;overflow:auto;border:0.5px solid var(--border);border-radius:8px;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
-          <thead style="position:sticky;top:0;background:var(--bg);">
+          <thead style="position:sticky;top:0;background:var(--surface);">
             <tr>
-              <th style="text-align:left;padding:6px 8px;">ID</th>
+              <th style="text-align:left;padding:6px 8px;">ID viagem</th>
               <th style="text-align:left;padding:6px 8px;">Cliente</th>
               <th style="text-align:left;padding:6px 8px;">Entrega</th>
               <th style="text-align:right;padding:6px 8px;">Volume</th>
             </tr>
           </thead>
-          <tbody>${linhas}</tbody>
+          <tbody>${linhasHtml.join('')}</tbody>
         </table>
       </div>`;
   } catch(e) {
