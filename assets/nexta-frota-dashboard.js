@@ -1207,6 +1207,177 @@ function dashRenderOciosidadeTransportadora(dados) {
       </div>`;
   }).join('');
 }
+// ── Histórico por Veículo ────────────────────────────────────────────────────
+// Tabela dia a dia de UM veículo: dia da semana, data, status marcado no
+// Painel de Disponibilidade (Firestore) e km planejado nas roteirizações
+// (reaproveita _dashUltimoAgregado, o mesmo cálculo já usado pela Jornada).
+// Mesmo mapeamento de STATUS_OPTS do main.js — mantido aqui em separado
+// porque não é exposto em window; se os status do cadastro mudarem lá,
+// replicar aqui também.
+const _DASH_HISTVEIC_STATUS = {
+  disponivel:   { label: 'Disponível',          cor: '#6ee04a' },
+  indisponivel: { label: 'Indisponível',        cor: '#f06060' },
+  manutencao:   { label: 'Manutenção',          cor: '#f0be40' },
+  folga:        { label: 'Folga',               cor: '#70a8f0' },
+  programado:   { label: 'Programado/Em viagem',cor: '#b07ef0' },
+};
+const _DASH_HISTVEIC_DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+async function dashPopularSeletorHistVeiculo() {
+  const sel = document.getElementById('dash-histveic-placa');
+  if (!sel || typeof window.dbGetPlates !== 'function') return;
+  try {
+    const todasPlacas = await window.dbGetPlates();
+    const opcoes = [];
+    Object.entries(todasPlacas || {}).forEach(([transportadora, placas]) => {
+      (placas || []).forEach(p => {
+        const placa = (p && p.placa || '').trim().toUpperCase();
+        if (placa) opcoes.push({ placa, transportadora });
+      });
+    });
+    opcoes.sort((a, b) => a.placa.localeCompare(b.placa));
+    const atual = sel.value;
+    sel.innerHTML = '<option value="">Selecione um veículo...</option>' +
+      opcoes.map(o => `<option value="${o.placa}">${o.placa} — ${o.transportadora}</option>`).join('');
+    if (atual && opcoes.some(o => o.placa === atual)) sel.value = atual;
+  } catch(e) { console.warn('[HistVeiculo] falha ao popular placas', e); }
+}
+// Lista de todos os dias (YYYY-MM-DD) entre o menor e o maior savedAt dos
+// snapshots carregados — inclui dias sem roteirização nenhuma, igual à
+// planilha de referência (mostra a semana inteira, mesmo dias "vazios").
+function _dashHistVeiculoListaDias() {
+  const datas = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean);
+  if (!datas.length) return [];
+  const min = datas.reduce((a, b) => (a < b ? a : b));
+  const max = datas.reduce((a, b) => (a > b ? a : b));
+  const dias = [];
+  const cursor = new Date(min + 'T00:00:00');
+  const fim = new Date(max + 'T00:00:00');
+  while (cursor <= fim) {
+    dias.push(cursor.toISOString().slice(0, 10));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dias;
+}
+// Km planejado por dia pra uma placa — soma o km de ida e volta de todas as
+// viagens daquela placa naquele dia (kmIda × 2), a partir do que a Jornada
+// já calcula.
+function _dashHistVeiculoKmPorDia(placaNorm) {
+  const mapa = {};
+  (_dashUltimoAgregado?.entradasTransportadora || []).forEach(e => {
+    if (e._semViagem) return; // não é uma viagem de verdade
+    if ((e.placa || '').trim().toUpperCase() !== placaNorm) return;
+    mapa[e.data] = (mapa[e.data] || 0) + (e.kmIda || 0) * 2; // ida + volta
+  });
+  return mapa;
+}
+async function dashCarregarHistoricoVeiculo(placaEscolhida) {
+  const box = document.getElementById('dash-histveic-tabela');
+  if (!box) return;
+  _dashHistVeiculoPlacaAtual = placaEscolhida || '';
+  if (!placaEscolhida) {
+    box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Selecione um veículo acima.</div>';
+    _dashHistVeiculoDados = [];
+    return;
+  }
+  box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div>';
+  const pNorm = placaEscolhida.trim().toUpperCase();
+  const dias = _dashHistVeiculoListaDias();
+  if (!dias.length) {
+    box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum período carregado.</div>';
+    _dashHistVeiculoDados = [];
+    return;
+  }
+  const dataIni = dias[0], dataFim = dias[dias.length - 1];
+  let statusPorDia = {};
+  if (window.fbDb && window.fbCollection && window.fbQuery && window.fbWhere && window.fbGetDocs) {
+    try {
+      const q = window.fbQuery(
+        window.fbCollection(window.fbDb, 'availability'),
+        window.fbWhere('plate', '==', pNorm),
+        window.fbWhere('dateStr', '>=', dataIni),
+        window.fbWhere('dateStr', '<=', dataFim)
+      );
+      const snap = await window.fbGetDocs(q);
+      snap.forEach(docSnap => {
+        const dd = docSnap.data();
+        statusPorDia[dd.dateStr] = dd.status;
+      });
+    } catch(e) {
+      console.warn('[HistVeiculo] falha ao buscar status de disponibilidade', e);
+    }
+  }
+  // Se o usuário trocou de placa/filtro enquanto essa busca rodava, descarta
+  // — evita "piscar" dado de uma placa antiga por cima da nova selecionada.
+  if (_dashHistVeiculoPlacaAtual !== placaEscolhida) return;
+  const kmPorDia = _dashHistVeiculoKmPorDia(pNorm);
+  const linhas = dias.map(dstr => {
+    const dt = new Date(dstr + 'T00:00:00');
+    return {
+      data: dstr,
+      diaSemana: _DASH_HISTVEIC_DIAS_SEMANA[dt.getDay()],
+      status: statusPorDia[dstr] || null,
+      km: kmPorDia[dstr] || 0,
+    };
+  });
+  _dashHistVeiculoDados = linhas;
+  dashRenderHistoricoVeiculo(linhas, pNorm);
+}
+function dashRenderHistoricoVeiculo(linhas, placa) {
+  const box = document.getElementById('dash-histveic-tabela');
+  if (!box) return;
+  if (!linhas.length) {
+    box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Sem dados para este veículo no período.</div>';
+    return;
+  }
+  const fmtDataCurta = dstr => { const [y,m,d] = dstr.split('-'); return `${d}/${m}`; };
+  const linhasHtml = linhas.map(l => {
+    const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status, cor: 'var(--text-3)' }) : null;
+    return `
+      <td style="padding:6px 4px;text-align:center;font-size:11px;color:var(--text-3);">${l.diaSemana}</td>
+      <td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);">${fmtDataCurta(l.data)}</td>
+      <td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:700;color:${st ? st.cor : 'var(--text-3)'};">${st ? st.label : '— sem registro —'}</td>
+      <td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);">${l.km ? Math.round(l.km).toLocaleString('pt-BR') : '—'}</td>`;
+  });
+  // Layout em "faixa horizontal" (uma coluna por dia), igual à planilha de
+  // referência, dentro de um contêiner com rolagem horizontal pra caber
+  // períodos longos sem espremer o texto.
+  const colunas = linhas.length;
+  box.innerHTML = `
+    <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">Veículo <strong style="color:var(--text);">${placa}</strong> · ${linhas.length} dia(s) no período</div>
+    <div style="overflow-x:auto;border:0.5px solid var(--border-dk);border-radius:8px;">
+      <table style="border-collapse:collapse;width:100%;min-width:${colunas * 56}px;">
+        <tbody>
+          <tr style="border-bottom:1px solid var(--border-dk);"><td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;">Dia semana</td>${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;color:var(--text-3);${i>0?'border-left:1px solid var(--border-dk);':''}">${l.diaSemana}</td>`).join('')}</tr>
+          <tr style="border-bottom:1px solid var(--border-dk);"><td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;">Data</td>${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);${i>0?'border-left:1px solid var(--border-dk);':''}">${fmtDataCurta(l.data)}</td>`).join('')}</tr>
+          <tr style="border-bottom:1px solid var(--border-dk);"><td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;">Status</td>${linhas.map((l,i)=>{const st=l.status?(_DASH_HISTVEIC_STATUS[l.status]||{label:l.status,cor:'var(--text-3)'}):null;return `<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:700;color:${st?st.cor:'var(--text-3)'};${i>0?'border-left:1px solid var(--border-dk);':''}">${st?st.label:'—'}</td>`;}).join('')}</tr>
+          <tr><td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;">Km do dia</td>${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);${i>0?'border-left:1px solid var(--border-dk);':''}">${l.km?Math.round(l.km).toLocaleString('pt-BR'):'—'}</td>`).join('')}</tr>
+        </tbody>
+      </table>
+    </div>`;
+}
+function dashExportarHistoricoVeiculoCSV() {
+  if (!_dashHistVeiculoDados.length || !_dashHistVeiculoPlacaAtual) {
+    showToast('Selecione um veículo com dados carregados antes de exportar.', false);
+    return;
+  }
+  const linhasCsv = [
+    ['Placa', 'Data', 'Dia da Semana', 'Status', 'Km do Dia (ida+volta)'].join(';'),
+    ..._dashHistVeiculoDados.map(l => {
+      const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status }) : { label: '' };
+      return [_dashHistVeiculoPlacaAtual, l.data, l.diaSemana, st.label, l.km ? Math.round(l.km) : ''].join(';');
+    }),
+  ];
+  const csv = '\uFEFF' + linhasCsv.join('\r\n'); // BOM pro Excel abrir acentos certinho
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `historico_${_dashHistVeiculoPlacaAtual}_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 let _dashRankingOrdem = 'volume'; // 'volume' | 'km' | 'custo'
 let _dashRankingDirecao = 'desc'; // 'desc' = maior primeiro, 'asc' = menor primeiro
 // ── Zoom dos gráficos por transportadora (botão maior/menor de TAMANHO) ─────
@@ -1287,12 +1458,17 @@ window.dashRankingSetDirecao = dashRankingSetDirecao;
 window.dashJornadaSetDirecao = dashJornadaSetDirecao;
 window.dashOciosidadeSetDirecao = dashOciosidadeSetDirecao;
 window.dashChartZoom = dashChartZoom;
+window.dashCarregarHistoricoVeiculo = dashCarregarHistoricoVeiculo;
+window.dashExportarHistoricoVeiculoCSV = dashExportarHistoricoVeiculoCSV;
 // ── Renderizar Dashboard ───────────────────────────────────────────────────
 // ── Filtro de clientes ────────────────────────────────────────────────────
 let _dashClientesSelecionados = null; // null = todos; Set = filtro ativo
 let _dashCidadesSelecionadas  = null; // null = todas as cidades de operação; Set = filtro ativo
 let _dashTodasCidades         = [];   // lista completa de cidades de operação do período
 let _dashSnapshotsAtivos = [];        // snapshots atualmente carregados
+let _dashUltimoAgregado = null;       // último retorno de dashAgregar() — reaproveitado pelo Histórico por Veículo
+let _dashHistVeiculoDados = [];       // última tabela renderizada do Histórico por Veículo — usada pelo botão de exportar CSV
+let _dashHistVeiculoPlacaAtual = '';  // placa selecionada no momento (pra re-renderizar quando o filtro do Dashboard mudar)
 let _dashTodosClientes   = [];        // lista completa de clientes do período
 
 function dashToggleFiltroClientes() {
@@ -1527,6 +1703,7 @@ function dashRender(snapshots) {
   // por isso todo o resto do dashboard (KPIs, gráficos, mapa, ranking) já sai
   // filtrado corretamente, sem precisar re-filtrar depois.
   const d = dashAgregar(snapshots, _dashCidadesSelecionadas);
+  _dashUltimoAgregado = d; // reaproveitado pelo Histórico por Veículo (km por dia), sem recalcular
   // Atualiza lista global de clientes para o filtro
   // Só reinicia a lista visual se não houver filtro ativo (evita resetar seleção do usuário)
   const _novaListaClientes = d.clientes.map(c => c.nome).sort();
@@ -1652,6 +1829,12 @@ function dashRender(snapshots) {
       set('dk-ociosidade', '-');
       if (_dashOciosidadeElBox) _dashOciosidadeElBox.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Não foi possível carregar dados do Painel de Disponibilidade.</div>';
     });
+  // Histórico por Veículo — popula o seletor de placas na primeira vez, e
+  // re-renderiza a tabela se já houver um veículo selecionado (o período/
+  // filtro do Dashboard mudou, então o km e os dias mudam também).
+  const _selHistVeic = document.getElementById('dash-histveic-placa');
+  if (_selHistVeic && _selHistVeic.options.length <= 1) dashPopularSeletorHistVeiculo();
+  if (_dashHistVeiculoPlacaAtual) dashCarregarHistoricoVeiculo(_dashHistVeiculoPlacaAtual);
   // Gráfico de barras: volume por cliente
   _dashUltimosClientesFiltrados = clientesFiltrados;
   const _itensVol = [...clientesFiltrados].sort((a, b) => _dashOrdemVol === 'asc' ? a.volume - b.volume : b.volume - a.volume);
