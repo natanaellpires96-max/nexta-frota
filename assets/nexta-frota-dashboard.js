@@ -1613,7 +1613,7 @@ function dashRender(snapshots) {
   }
   set('dk-viagens',  _kpiViagens);
   set('dk-entregas', _kpiEntregas);
-  set('dk-volume',   parseFloat(_kpiVol.toFixed(1)) + ' m³');
+  set('dk-volume',   parseFloat(_kpiVol.toFixed(1)).toLocaleString('pt-BR', {minimumFractionDigits:0, maximumFractionDigits:1}) + ' m³');
   set('dk-ocup',     _kpiOcup + '%');
   set('dk-km',       Math.round(_kpiKm).toLocaleString('pt-BR') + ' km');
   set('dk-clientes', clientesFiltrados.length);
