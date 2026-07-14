@@ -125,9 +125,14 @@ function chaveCadastro(tipo, item) {
   return '';
 }
 async function dbGetCadastro(tipo) {
+  const cKey = `cadastro||${tipo}`;
+  const cached = cacheGet(cKey);
+  if (cached !== undefined) return cached;
   try {
     const snap = await getDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]));
-    return snap.exists() ? (snap.data().data || {}) : {};
+    const value = snap.exists() ? (snap.data().data || {}) : {};
+    cacheSet(cKey, value);
+    return value;
   } catch(e) { console.error(`[dbGetCadastro:${tipo}]`, e); return {}; }
 }
 // Grava só os itens passados — e NUNCA sobrescreve uma chave que já exista no
@@ -144,7 +149,10 @@ async function dbAdicionarCadastroItens(tipo, itensPorChave) {
   chaves.forEach(k => {
     if (!(k in atual)) { mesclado[k] = itensPorChave[k]; adicionados++; }
   });
-  if (adicionados > 0) await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: mesclado });
+  if (adicionados > 0) {
+    await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: mesclado });
+    cacheInvalidate(`cadastro||${tipo}`);
+  }
   return { adicionados };
 }
 // Grava/atualiza UM registro específico — usada pelo cadastro manual
@@ -156,12 +164,14 @@ async function dbSalvarCadastroItem(tipo, chave, item) {
   const atual = await dbGetCadastro(tipo);
   atual[chave] = item;
   await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
+  cacheInvalidate(`cadastro||${tipo}`);
 }
 async function dbRemoverCadastroItem(tipo, chave) {
   if (!chave) return;
   const atual = await dbGetCadastro(tipo);
   delete atual[chave];
   await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
+  cacheInvalidate(`cadastro||${tipo}`);
 }
 window.chaveCadastro            = chaveCadastro;
 window.dbGetCadastro            = dbGetCadastro;
@@ -203,6 +213,11 @@ async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiur
   cacheSet(cKey, { status, time: time||"", motoristaDiurno: motoristaDiurno||"", motoristaNoturno: motoristaNoturno||"", hodometro: hodometro!==undefined?hodometro:null });
 }
 async function dbGetPreviousHodometro(plate, currentDateStr) {
+  // Cache curto (mesma janela do resto do app) — evita reconsultar o Firestore
+  // toda vez que o mesmo campo de hodômetro é focado/preenchido na mesma sessão.
+  const cKey = `prevHodometro||${plate}||${currentDateStr}`;
+  const cached = cacheGet(cKey);
+  if (cached !== undefined) return cached;
   try {
     // Query all availability records for this plate that have a hodômetro value
     // and a dateStr strictly before currentDateStr, ordered descending to get the most recent.
@@ -218,27 +233,40 @@ async function dbGetPreviousHodometro(plate, currentDateStr) {
       const d = docSnap.data();
       if (d.hodometro === undefined || d.hodometro === null || d.hodometro === "") continue;
       const val = Number(d.hodometro);
-      if (Number.isFinite(val)) return val;
+      if (Number.isFinite(val)) { cacheSet(cKey, val); return val; }
     }
   } catch (e) {
-    // Fallback: if the composite index doesn't exist yet, scan all records for this plate
-    console.warn("dbGetPreviousHodometro: falling back to full scan", e.message);
+    // Fallback: se o índice composto ainda não existir, NÃO varre a coleção
+    // inteira daquela placa — limita a busca a uma janela de dias anteriores
+    // (evita ler o histórico completo, que pode ser centenas/milhares de
+    // documentos por placa depois de alguns meses de uso).
+    console.warn("dbGetPreviousHodometro: índice ausente, usando busca por janela de dias", e.message);
+    const DIAS_JANELA = 90;
     try {
-      const qFallback = query(collection(db, "availability"), where("plate", "==", plate));
+      const dataCorte = new Date(currentDateStr + "T00:00:00");
+      dataCorte.setDate(dataCorte.getDate() - DIAS_JANELA);
+      const dataCorteStr = dataCorte.toISOString().slice(0, 10);
+      const qFallback = query(
+        collection(db, "availability"),
+        where("plate", "==", plate),
+        where("dateStr", ">=", dataCorteStr),
+        where("dateStr", "<", currentDateStr)
+      );
       const snap = await getDocs(qFallback);
       const rows = snap.docs
         .map(docSnap => docSnap.data())
-        .filter(d => d && d.dateStr && d.dateStr < currentDateStr &&
+        .filter(d => d && d.dateStr &&
                      d.hodometro !== undefined && d.hodometro !== null && d.hodometro !== "")
         .sort((a, b) => String(b.dateStr).localeCompare(String(a.dateStr)));
       for (const row of rows) {
         const val = Number(row.hodometro);
-        if (Number.isFinite(val)) return val;
+        if (Number.isFinite(val)) { cacheSet(cKey, val); return val; }
       }
     } catch (e2) {
       console.error("dbGetPreviousHodometro fallback failed", e2);
     }
   }
+  cacheSet(cKey, null, 15_000); // cacheia "não achou" por menos tempo, pra não travar um valor futuro
   return null;
 }
 async function dbGetNotifs() {
