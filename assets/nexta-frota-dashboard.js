@@ -1475,7 +1475,7 @@ function dashRenderHistoricoVeiculo(linhas, placa, erro) {
           </tr>
           <tr style="border-bottom:1px solid var(--border-dk);">
             <td style="${colRotulo}">Data</td>
-            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);${bordaCol(i)}${fundoDia(l.data)}">${fmtDataCurta(l.data)}</td>`).join('')}
+            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:700;color:var(--text);${bordaCol(i)}${fundoDia(l.data)}">${fmtDataCurta(l.data)}</td>`).join('')}
           </tr>
           <tr style="border-bottom:1px solid var(--border-dk);">
             <td style="${colRotulo}">Status</td>
