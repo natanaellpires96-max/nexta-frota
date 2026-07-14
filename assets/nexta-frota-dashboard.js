@@ -1383,22 +1383,36 @@ async function dashCarregarHistoricoVeiculo(placaEscolhida) {
   }
   const dataIni = dias[0], dataFim = dias[dias.length - 1];
   let statusPorDia = {};
+  let erroBusca = null;
   if (window.fbDb && window.fbCollection && window.fbQuery && window.fbWhere && window.fbGetDocs) {
     try {
+      // Só filtra por placa no Firestore (filtro de igualdade simples, não
+      // precisa de índice composto) — o intervalo de datas é aplicado aqui
+      // em JS depois. Combinar "placa == X" com "data entre A e B" na
+      // mesma consulta do Firestore exige um índice composto específico
+      // que normalmente não existe por padrão; sem ele, a consulta falhava
+      // silenciosamente (só no console) e a tela mostrava "sem registro"
+      // pra tudo, mesmo tendo dado de verdade salvo.
       const q = window.fbQuery(
         window.fbCollection(window.fbDb, 'availability'),
-        window.fbWhere('plate', '==', pNorm),
-        window.fbWhere('dateStr', '>=', dataIni),
-        window.fbWhere('dateStr', '<=', dataFim)
+        window.fbWhere('plate', '==', pNorm)
       );
       const snap = await window.fbGetDocs(q);
       snap.forEach(docSnap => {
         const dd = docSnap.data();
-        statusPorDia[dd.dateStr] = dd.status;
+        // Normaliza a placa do próprio registro na comparação, por segurança
+        // contra qualquer inconsistência de maiúscula/minúscula salva antes.
+        if ((dd.plate || '').trim().toUpperCase() !== pNorm) return;
+        if (dd.dateStr && dd.dateStr >= dataIni && dd.dateStr <= dataFim) {
+          statusPorDia[dd.dateStr] = dd.status;
+        }
       });
     } catch(e) {
       console.warn('[HistVeiculo] falha ao buscar status de disponibilidade', e);
+      erroBusca = e.message || String(e);
     }
+  } else {
+    erroBusca = 'Firestore ainda não está pronto.';
   }
   // Se o usuário trocou de placa/filtro enquanto essa busca rodava, descarta
   // — evita "piscar" dado de uma placa antiga por cima da nova selecionada.
@@ -1414,15 +1428,18 @@ async function dashCarregarHistoricoVeiculo(placaEscolhida) {
     };
   });
   _dashHistVeiculoDados = linhas;
-  dashRenderHistoricoVeiculo(linhas, pNorm);
+  dashRenderHistoricoVeiculo(linhas, pNorm, erroBusca);
 }
-function dashRenderHistoricoVeiculo(linhas, placa) {
+function dashRenderHistoricoVeiculo(linhas, placa, erro) {
   const box = document.getElementById('dash-histveic-tabela');
   if (!box) return;
   if (!linhas.length) {
     box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Sem dados para este veículo no período.</div>';
     return;
   }
+  const avisoErro = erro
+    ? `<div style="background:rgba(240,96,96,.12);border:1px solid rgba(226,60,60,.35);border-radius:8px;padding:8px 12px;font-size:11px;color:#e23c3c;margin-bottom:10px;">⚠️ Não foi possível buscar o status de disponibilidade (${erro}). O km planejado abaixo continua correto, só o status ficou de fora.</div>`
+    : '';
   const fmtDataCurta = dstr => { const [y,m,d] = dstr.split('-'); return `${d}/${m}`; };
   const chipStatus = (l) => {
     const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status, cor: 'var(--text-2)', bg: 'rgba(255,255,255,.06)', borda: 'var(--border-dk)' }) : null;
@@ -1436,8 +1453,13 @@ function dashRenderHistoricoVeiculo(linhas, placa) {
     return (dow === 0 || dow === 6) ? 'background:rgba(255,255,255,.035);' : '';
   };
   const bordaCol = i => (i > 0 ? 'border-left:1px solid var(--border-dk);' : '');
+  // Primeira coluna (rótulo da linha) fixa ao rolar na horizontal — sticky
+  // exige fundo opaco (senão o conteúdo por baixo aparece por trás dela) e
+  // um z-index maior que as demais células pra ficar sempre por cima.
+  const colRotulo = 'position:sticky;left:0;z-index:2;padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--surface);box-shadow:2px 0 4px -2px rgba(0,0,0,.15);';
   const colunas = linhas.length;
   box.innerHTML = `
+    ${avisoErro}
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
       <div style="font-size:11px;color:var(--text-3);">Veículo <strong style="color:var(--text);">${placa}</strong> · ${linhas.length} dia(s) no período</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
@@ -1448,19 +1470,19 @@ function dashRenderHistoricoVeiculo(linhas, placa) {
       <table style="border-collapse:collapse;width:100%;min-width:${colunas * 62}px;">
         <tbody>
           <tr style="border-bottom:1px solid var(--border-dk);">
-            <td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--bg);">Dia semana</td>
+            <td style="${colRotulo}">Dia semana</td>
             ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;color:var(--text-3);${bordaCol(i)}${fundoDia(l.data)}">${l.diaSemana}</td>`).join('')}
           </tr>
           <tr style="border-bottom:1px solid var(--border-dk);">
-            <td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--bg);">Data</td>
+            <td style="${colRotulo}">Data</td>
             ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);${bordaCol(i)}${fundoDia(l.data)}">${fmtDataCurta(l.data)}</td>`).join('')}
           </tr>
           <tr style="border-bottom:1px solid var(--border-dk);">
-            <td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--bg);">Status</td>
+            <td style="${colRotulo}">Status</td>
             ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;${bordaCol(i)}${fundoDia(l.data)}">${chipStatus(l)}</td>`).join('')}
           </tr>
           <tr>
-            <td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--bg);">Km do dia</td>
+            <td style="${colRotulo}">Km do dia</td>
             ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11.5px;font-weight:700;color:${l.km ? 'var(--pet-green,#b5e51d)' : 'var(--text-3)'};${bordaCol(i)}${fundoDia(l.data)}">${l.km?Math.round(l.km).toLocaleString('pt-BR'):'—'}</td>`).join('')}
           </tr>
         </tbody>
