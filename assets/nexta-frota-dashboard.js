@@ -1301,22 +1301,9 @@ function dashFiltrarPlacasHistVeiculo() {
 function _dashHistVeiculoListaDias() {
   const elDe  = document.getElementById('dash-histveic-de');
   const elAte = document.getElementById('dash-histveic-ate');
-  const deManual  = elDe  && elDe.value  ? elDe.value  : null;
-  const ateManual = elAte && elAte.value ? elAte.value : null;
-  let min, max;
-  if (deManual || ateManual) {
-    const datasPadrao = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean);
-    const minPadrao = datasPadrao.length ? datasPadrao.reduce((a, b) => (a < b ? a : b)) : deManual;
-    const maxPadrao = datasPadrao.length ? datasPadrao.reduce((a, b) => (a > b ? a : b)) : ateManual;
-    min = deManual  || minPadrao;
-    max = ateManual || maxPadrao;
-  } else {
-    const datas = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean);
-    if (!datas.length) return [];
-    min = datas.reduce((a, b) => (a < b ? a : b));
-    max = datas.reduce((a, b) => (a > b ? a : b));
-  }
-  if (!min || !max) return [];
+  let min = elDe  && elDe.value  ? elDe.value  : null;
+  let max = elAte && elAte.value ? elAte.value : null;
+  if (!min || !max) return []; // sem os dois extremos definidos, não há o que listar
   if (min > max) { const tmp = min; min = max; max = tmp; } // datas trocadas, inverte
   const dias = [];
   const cursor = new Date(min + 'T00:00:00');
@@ -1329,27 +1316,43 @@ function _dashHistVeiculoListaDias() {
   }
   return dias;
 }
-// Preenche o calendário com o período atual, só se ainda estiver vazio —
-// dá um ponto de partida visível pro usuário estreitar a partir dali.
-function _dashHistVeiculoPreencherCalendarioPadrao() {
-  const elDe  = document.getElementById('dash-histveic-de');
-  const elAte = document.getElementById('dash-histveic-ate');
-  if (!elDe || !elAte || elDe.value || elAte.value) return;
-  const datas = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean);
-  if (!datas.length) return;
-  elDe.value  = datas.reduce((a, b) => (a < b ? a : b));
-  elAte.value = datas.reduce((a, b) => (a > b ? a : b));
-}
-function dashAplicarFiltroDataHistVeiculo() {
-  if (_dashHistVeiculoPlacaAtual) dashCarregarHistoricoVeiculo(_dashHistVeiculoPlacaAtual);
+// Chamada ao trocar de veículo no seletor — NÃO busca nada sozinha. A
+// consulta ao Firestore só roda quando o usuário define o período (De/Até)
+// e aperta "Buscar", de propósito: evita gerar leitura toda vez que algum
+// filtro do Dashboard mudar (cidade, cliente, mês) com um veículo já
+// selecionado, que era o padrão antigo — cada troca de filtro relia a
+// consulta sozinha, mesmo sem o usuário pedir.
+function dashSelecionarVeiculoHistVeiculo(placaEscolhida) {
+  _dashHistVeiculoPlacaAtual = placaEscolhida || '';
+  _dashHistVeiculoDados = [];
+  const box = document.getElementById('dash-histveic-tabela');
+  if (!box) return;
+  if (!placaEscolhida) {
+    box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Selecione um veículo acima.</div>';
+    return;
+  }
+  box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Escolha o período (De/Até) e clique em "Buscar".</div>';
 }
 function dashLimparFiltroDataHistVeiculo() {
   const elDe  = document.getElementById('dash-histveic-de');
   const elAte = document.getElementById('dash-histveic-ate');
   if (elDe)  elDe.value  = '';
   if (elAte) elAte.value = '';
-  _dashHistVeiculoPreencherCalendarioPadrao();
-  dashAplicarFiltroDataHistVeiculo();
+  const box = document.getElementById('dash-histveic-tabela');
+  if (box) box.innerHTML = _dashHistVeiculoPlacaAtual
+    ? '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Escolha o período (De/Até) e clique em "Buscar".</div>'
+    : '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Selecione um veículo acima.</div>';
+  _dashHistVeiculoDados = [];
+}
+// Disparo explícito, único ponto que efetivamente consulta o Firestore.
+function dashBuscarHistoricoVeiculo() {
+  const selPlaca = document.getElementById('dash-histveic-placa');
+  const placa = selPlaca ? selPlaca.value : _dashHistVeiculoPlacaAtual;
+  if (!placa) { showToast('Selecione um veículo antes de buscar.', false); return; }
+  const elDe  = document.getElementById('dash-histveic-de');
+  const elAte = document.getElementById('dash-histveic-ate');
+  if (!elDe?.value || !elAte?.value) { showToast('Defina o período (De e Até) antes de buscar.', false); return; }
+  dashCarregarHistoricoVeiculo(placa);
 }
 // Km planejado por dia pra uma placa — soma o km de ida e volta de todas as
 // viagens daquela placa naquele dia (kmIda × 2), a partir do que a Jornada
@@ -1363,6 +1366,13 @@ function _dashHistVeiculoKmPorDia(placaNorm) {
   });
   return mapa;
 }
+// Cache por placa — evita reconsultar TODO o histórico daquela placa toda vez
+// que um filtro do Dashboard muda (cidade, cliente, mês...), já que
+// dashRender() re-chama esta função sempre que há um veículo selecionado.
+// TTL curto o bastante pra não esconder uma atualização de status por muito
+// tempo, longo o bastante pra absorver uma sequência de cliques em filtros.
+const _dashHistVeiculoCacheDocs = new Map(); // placa -> { docs, expiraEm }
+const _DASH_HISTVEIC_CACHE_TTL_MS = 120_000; // 2 minutos
 async function dashCarregarHistoricoVeiculo(placaEscolhida) {
   const box = document.getElementById('dash-histveic-tabela');
   if (!box) return;
@@ -1374,10 +1384,9 @@ async function dashCarregarHistoricoVeiculo(placaEscolhida) {
   }
   box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div>';
   const pNorm = placaEscolhida.trim().toUpperCase();
-  _dashHistVeiculoPreencherCalendarioPadrao();
   const dias = _dashHistVeiculoListaDias();
   if (!dias.length) {
-    box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum período carregado.</div>';
+    box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Escolha o período (De/Até) e clique em "Buscar".</div>';
     _dashHistVeiculoDados = [];
     return;
   }
@@ -1386,20 +1395,27 @@ async function dashCarregarHistoricoVeiculo(placaEscolhida) {
   let erroBusca = null;
   if (window.fbDb && window.fbCollection && window.fbQuery && window.fbWhere && window.fbGetDocs) {
     try {
-      // Só filtra por placa no Firestore (filtro de igualdade simples, não
-      // precisa de índice composto) — o intervalo de datas é aplicado aqui
-      // em JS depois. Combinar "placa == X" com "data entre A e B" na
-      // mesma consulta do Firestore exige um índice composto específico
-      // que normalmente não existe por padrão; sem ele, a consulta falhava
-      // silenciosamente (só no console) e a tela mostrava "sem registro"
-      // pra tudo, mesmo tendo dado de verdade salvo.
-      const q = window.fbQuery(
-        window.fbCollection(window.fbDb, 'availability'),
-        window.fbWhere('plate', '==', pNorm)
-      );
-      const snap = await window.fbGetDocs(q);
-      snap.forEach(docSnap => {
-        const dd = docSnap.data();
+      let docs;
+      const cacheado = _dashHistVeiculoCacheDocs.get(pNorm);
+      if (cacheado && cacheado.expiraEm > Date.now()) {
+        docs = cacheado.docs;
+      } else {
+        // Só filtra por placa no Firestore (filtro de igualdade simples, não
+        // precisa de índice composto) — o intervalo de datas é aplicado aqui
+        // em JS depois. Combinar "placa == X" com "data entre A e B" na
+        // mesma consulta do Firestore exige um índice composto específico
+        // que normalmente não existe por padrão; sem ele, a consulta falhava
+        // silenciosamente (só no console) e a tela mostrava "sem registro"
+        // pra tudo, mesmo tendo dado de verdade salvo.
+        const q = window.fbQuery(
+          window.fbCollection(window.fbDb, 'availability'),
+          window.fbWhere('plate', '==', pNorm)
+        );
+        const snap = await window.fbGetDocs(q);
+        docs = snap.docs.map(d => d.data());
+        _dashHistVeiculoCacheDocs.set(pNorm, { docs, expiraEm: Date.now() + _DASH_HISTVEIC_CACHE_TTL_MS });
+      }
+      docs.forEach(dd => {
         // Normaliza a placa do próprio registro na comparação, por segurança
         // contra qualquer inconsistência de maiúscula/minúscula salva antes.
         if ((dd.plate || '').trim().toUpperCase() !== pNorm) return;
@@ -1617,9 +1633,9 @@ window.dashRankingSetDirecao = dashRankingSetDirecao;
 window.dashJornadaSetDirecao = dashJornadaSetDirecao;
 window.dashOciosidadeSetDirecao = dashOciosidadeSetDirecao;
 window.dashChartZoom = dashChartZoom;
-window.dashCarregarHistoricoVeiculo = dashCarregarHistoricoVeiculo;
+window.dashSelecionarVeiculoHistVeiculo = dashSelecionarVeiculoHistVeiculo;
 window.dashFiltrarPlacasHistVeiculo = dashFiltrarPlacasHistVeiculo;
-window.dashAplicarFiltroDataHistVeiculo = dashAplicarFiltroDataHistVeiculo;
+window.dashBuscarHistoricoVeiculo = dashBuscarHistoricoVeiculo;
 window.dashLimparFiltroDataHistVeiculo = dashLimparFiltroDataHistVeiculo;
 window.dashExportarHistoricoVeiculoCSV = dashExportarHistoricoVeiculoCSV;
 window.dashExportarHistoricoVeiculoXLSX = dashExportarHistoricoVeiculoXLSX;
@@ -1992,12 +2008,13 @@ function dashRender(snapshots) {
       set('dk-ociosidade', '-');
       if (_dashOciosidadeElBox) _dashOciosidadeElBox.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Não foi possível carregar dados do Painel de Disponibilidade.</div>';
     });
-  // Histórico por Veículo — popula o seletor de placas na primeira vez, e
-  // re-renderiza a tabela se já houver um veículo selecionado (o período/
-  // filtro do Dashboard mudou, então o km e os dias mudam também).
+  // Histórico por Veículo — só popula o seletor de placas na primeira vez.
+  // NÃO busca nada automaticamente aqui: a consulta só roda quando o
+  // usuário aperta "Buscar" (dashBuscarHistoricoVeiculo), de propósito —
+  // trocar cidade/cliente/mês no resto do Dashboard não deve mais gerar
+  // leitura no Firestore sozinho.
   const _selHistVeic = document.getElementById('dash-histveic-placa');
   if (_selHistVeic && _selHistVeic.options.length <= 1) dashPopularSeletorHistVeiculo();
-  if (_dashHistVeiculoPlacaAtual) dashCarregarHistoricoVeiculo(_dashHistVeiculoPlacaAtual);
   // Gráfico de barras: volume por cliente
   _dashUltimosClientesFiltrados = clientesFiltrados;
   const _itensVol = [...clientesFiltrados].sort((a, b) => _dashOrdemVol === 'asc' ? a.volume - b.volume : b.volume - a.volume);
