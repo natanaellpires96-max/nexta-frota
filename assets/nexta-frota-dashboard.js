@@ -1222,9 +1222,34 @@ const _DASH_HISTVEIC_STATUS = {
   programado:   { label: 'Programado/Em viagem',cor: '#b07ef0' },
 };
 const _DASH_HISTVEIC_DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+let _dashHistVeiculoOpcoesPlacas = []; // lista bruta {placa, transportadora} — cacheada pra alimentar o filtro de transportadora sem reconsultar
+let _dashHistVeiculoAguardandoPlates = false;
 async function dashPopularSeletorHistVeiculo() {
   const sel = document.getElementById('dash-histveic-placa');
-  if (!sel || typeof window.dbGetPlates !== 'function') return;
+  if (!sel) return;
+  // main.js carrega como módulo ES, em paralelo ao dashboard.js — pode não
+  // ter terminado de expor window.dbGetPlates ainda quando o Dashboard
+  // renderiza pela primeira vez. Sem essa espera, o seletor ficava preso
+  // pra sempre em "Carregando placas...", porque a função só era chamada
+  // de novo se algum filtro do Dashboard mudasse depois.
+  if (typeof window.dbGetPlates !== 'function') {
+    if (_dashHistVeiculoAguardandoPlates) return;
+    _dashHistVeiculoAguardandoPlates = true;
+    let tentativas = 0;
+    const timer = setInterval(() => {
+      tentativas++;
+      if (typeof window.dbGetPlates === 'function') {
+        clearInterval(timer);
+        _dashHistVeiculoAguardandoPlates = false;
+        dashPopularSeletorHistVeiculo();
+      } else if (tentativas >= 50) { // ~10s
+        clearInterval(timer);
+        _dashHistVeiculoAguardandoPlates = false;
+        sel.innerHTML = '<option value="">Não foi possível carregar as placas</option>';
+      }
+    }, 200);
+    return;
+  }
   try {
     const todasPlacas = await window.dbGetPlates();
     const opcoes = [];
@@ -1235,11 +1260,39 @@ async function dashPopularSeletorHistVeiculo() {
       });
     });
     opcoes.sort((a, b) => a.placa.localeCompare(b.placa));
-    const atual = sel.value;
-    sel.innerHTML = '<option value="">Selecione um veículo...</option>' +
-      opcoes.map(o => `<option value="${o.placa}">${o.placa} — ${o.transportadora}</option>`).join('');
-    if (atual && opcoes.some(o => o.placa === atual)) sel.value = atual;
-  } catch(e) { console.warn('[HistVeiculo] falha ao popular placas', e); }
+    _dashHistVeiculoOpcoesPlacas = opcoes;
+    dashPopularSeletorTranspHistVeiculo();
+    dashFiltrarPlacasHistVeiculo();
+  } catch(e) {
+    console.warn('[HistVeiculo] falha ao popular placas', e);
+    sel.innerHTML = '<option value="">Erro ao carregar placas</option>';
+  }
+}
+// Seletor de transportadora — só filtra a lista de placas já carregada, não
+// reconsulta o Firestore (é o mesmo documento único, com todas as
+// transportadoras dentro; separar por transportadora aqui é só organização
+// visual pra achar a placa mais rápido, não economiza leitura).
+function dashPopularSeletorTranspHistVeiculo() {
+  const selT = document.getElementById('dash-histveic-transp');
+  if (!selT) return;
+  const transportadoras = Array.from(new Set(_dashHistVeiculoOpcoesPlacas.map(o => o.transportadora))).sort((a,b) => a.localeCompare(b, 'pt-BR'));
+  const atual = selT.value;
+  selT.innerHTML = '<option value="">Todas as transportadoras</option>' +
+    transportadoras.map(t => `<option value="${t}">${t}</option>`).join('');
+  if (atual && transportadoras.includes(atual)) selT.value = atual;
+}
+function dashFiltrarPlacasHistVeiculo() {
+  const sel = document.getElementById('dash-histveic-placa');
+  const selT = document.getElementById('dash-histveic-transp');
+  if (!sel) return;
+  const transpFiltro = selT ? selT.value : '';
+  const filtradas = transpFiltro
+    ? _dashHistVeiculoOpcoesPlacas.filter(o => o.transportadora === transpFiltro)
+    : _dashHistVeiculoOpcoesPlacas;
+  const atual = sel.value;
+  sel.innerHTML = '<option value="">Selecione um veículo...</option>' +
+    filtradas.map(o => `<option value="${o.placa}">${o.placa} — ${o.transportadora}</option>`).join('');
+  if (atual && filtradas.some(o => o.placa === atual)) sel.value = atual;
 }
 // Lista de todos os dias (YYYY-MM-DD) entre o menor e o maior savedAt dos
 // snapshots carregados — inclui dias sem roteirização nenhuma, igual à
@@ -1459,6 +1512,7 @@ window.dashJornadaSetDirecao = dashJornadaSetDirecao;
 window.dashOciosidadeSetDirecao = dashOciosidadeSetDirecao;
 window.dashChartZoom = dashChartZoom;
 window.dashCarregarHistoricoVeiculo = dashCarregarHistoricoVeiculo;
+window.dashFiltrarPlacasHistVeiculo = dashFiltrarPlacasHistVeiculo;
 window.dashExportarHistoricoVeiculoCSV = dashExportarHistoricoVeiculoCSV;
 // ── Renderizar Dashboard ───────────────────────────────────────────────────
 // ── Filtro de clientes ────────────────────────────────────────────────────
