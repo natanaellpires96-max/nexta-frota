@@ -9,10 +9,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="assets/pedagios-utils.js"></script>
-<script type="module" src="assets/nexta-frota-main.js?v=multi-email-transportadora-20260714"></script>
-<link rel="stylesheet" href="assets/nexta-frota-main.css?v=multi-email-transportadora-20260714">
+<script type="module" src="assets/nexta-frota-main.js?v=historico-veiculo-idavolta-20260714"></script>
+<link rel="stylesheet" href="assets/nexta-frota-main.css?v=historico-veiculo-idavolta-20260714">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=multi-email-transportadora-20260714">
+<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=historico-veiculo-idavolta-20260714">
 </head>
 <body>
 <div class="app" id="app"><div class="loading" style="min-height:100vh"><span class="spin"></span>Iniciando o sistema...</div></div>
@@ -629,6 +629,22 @@
         </div>
         <div id="dash-ociosidade-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
       </div>
+      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">📅 Histórico por Veículo</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Dia a dia do período carregado: status marcado no Painel de Disponibilidade e km planejado (ida + volta) nas roteirizações — mesmo período/filtro do Dashboard acima</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="dash-histveic-placa" onchange="dashCarregarHistoricoVeiculo(this.value)"
+              style="background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:7px 12px;font-size:12px;color:var(--text-2);min-width:220px;">
+              <option value="">Carregando placas...</option>
+            </select>
+            <button class="btn btn-sm" onclick="dashExportarHistoricoVeiculoCSV()" title="Baixar esta tabela em CSV">⬇ Baixar CSV</button>
+          </div>
+        </div>
+        <div id="dash-histveic-tabela"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Selecione um veículo acima.</div></div>
+      </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:20px;overflow:hidden;">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
           <div>
@@ -963,9 +979,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=multi-email-transportadora-20260714"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=historico-veiculo-idavolta-20260714"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=multi-email-transportadora-20260714"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=historico-veiculo-idavolta-20260714"></script>
 </body>
 </html>
