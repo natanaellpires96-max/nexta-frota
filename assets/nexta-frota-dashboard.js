@@ -1215,11 +1215,11 @@ function dashRenderOciosidadeTransportadora(dados) {
 // porque não é exposto em window; se os status do cadastro mudarem lá,
 // replicar aqui também.
 const _DASH_HISTVEIC_STATUS = {
-  disponivel:   { label: 'Disponível',          cor: '#6ee04a' },
-  indisponivel: { label: 'Indisponível',        cor: '#f06060' },
-  manutencao:   { label: 'Manutenção',          cor: '#f0be40' },
-  folga:        { label: 'Folga',               cor: '#70a8f0' },
-  programado:   { label: 'Programado/Em viagem',cor: '#b07ef0' },
+  disponivel:   { label: 'Disponível',           cor: '#4caf1f', bg: 'rgba(110,224,74,.16)',  borda: 'rgba(76,175,31,.35)' },
+  indisponivel: { label: 'Indisponível',         cor: '#e23c3c', bg: 'rgba(240,96,96,.14)',   borda: 'rgba(226,60,60,.35)' },
+  manutencao:   { label: 'Manutenção',           cor: '#c98a00', bg: 'rgba(240,190,64,.18)',  borda: 'rgba(201,138,0,.35)' },
+  folga:        { label: 'Folga',                cor: '#3b7fd6', bg: 'rgba(112,168,240,.16)', borda: 'rgba(59,127,214,.35)' },
+  programado:   { label: 'Programado/Em viagem', cor: '#8a4fd6', bg: 'rgba(176,126,240,.16)', borda: 'rgba(138,79,214,.35)' },
 };
 const _DASH_HISTVEIC_DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 let _dashHistVeiculoOpcoesPlacas = []; // lista bruta {placa, transportadora} — cacheada pra alimentar o filtro de transportadora sem reconsultar
@@ -1294,22 +1294,62 @@ function dashFiltrarPlacasHistVeiculo() {
     filtradas.map(o => `<option value="${o.placa}">${o.placa} — ${o.transportadora}</option>`).join('');
   if (atual && filtradas.some(o => o.placa === atual)) sel.value = atual;
 }
-// Lista de todos os dias (YYYY-MM-DD) entre o menor e o maior savedAt dos
-// snapshots carregados — inclui dias sem roteirização nenhuma, igual à
-// planilha de referência (mostra a semana inteira, mesmo dias "vazios").
+// Lista de todos os dias (YYYY-MM-DD) — por padrão, entre o menor e o maior
+// savedAt dos snapshots carregados (mesmo período do Dashboard), mas pode
+// ser sobreposta pelo calendário "De/Até" da própria seção, pra ver um
+// intervalo diferente sem precisar mudar o filtro geral do Dashboard.
 function _dashHistVeiculoListaDias() {
-  const datas = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean);
-  if (!datas.length) return [];
-  const min = datas.reduce((a, b) => (a < b ? a : b));
-  const max = datas.reduce((a, b) => (a > b ? a : b));
+  const elDe  = document.getElementById('dash-histveic-de');
+  const elAte = document.getElementById('dash-histveic-ate');
+  const deManual  = elDe  && elDe.value  ? elDe.value  : null;
+  const ateManual = elAte && elAte.value ? elAte.value : null;
+  let min, max;
+  if (deManual || ateManual) {
+    const datasPadrao = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean);
+    const minPadrao = datasPadrao.length ? datasPadrao.reduce((a, b) => (a < b ? a : b)) : deManual;
+    const maxPadrao = datasPadrao.length ? datasPadrao.reduce((a, b) => (a > b ? a : b)) : ateManual;
+    min = deManual  || minPadrao;
+    max = ateManual || maxPadrao;
+  } else {
+    const datas = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean);
+    if (!datas.length) return [];
+    min = datas.reduce((a, b) => (a < b ? a : b));
+    max = datas.reduce((a, b) => (a > b ? a : b));
+  }
+  if (!min || !max) return [];
+  if (min > max) { const tmp = min; min = max; max = tmp; } // datas trocadas, inverte
   const dias = [];
   const cursor = new Date(min + 'T00:00:00');
   const fim = new Date(max + 'T00:00:00');
-  while (cursor <= fim) {
+  let seguranca = 0; // trava contra intervalo absurdamente longo por engano
+  while (cursor <= fim && seguranca < 366) {
     dias.push(cursor.toISOString().slice(0, 10));
     cursor.setDate(cursor.getDate() + 1);
+    seguranca++;
   }
   return dias;
+}
+// Preenche o calendário com o período atual, só se ainda estiver vazio —
+// dá um ponto de partida visível pro usuário estreitar a partir dali.
+function _dashHistVeiculoPreencherCalendarioPadrao() {
+  const elDe  = document.getElementById('dash-histveic-de');
+  const elAte = document.getElementById('dash-histveic-ate');
+  if (!elDe || !elAte || elDe.value || elAte.value) return;
+  const datas = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean);
+  if (!datas.length) return;
+  elDe.value  = datas.reduce((a, b) => (a < b ? a : b));
+  elAte.value = datas.reduce((a, b) => (a > b ? a : b));
+}
+function dashAplicarFiltroDataHistVeiculo() {
+  if (_dashHistVeiculoPlacaAtual) dashCarregarHistoricoVeiculo(_dashHistVeiculoPlacaAtual);
+}
+function dashLimparFiltroDataHistVeiculo() {
+  const elDe  = document.getElementById('dash-histveic-de');
+  const elAte = document.getElementById('dash-histveic-ate');
+  if (elDe)  elDe.value  = '';
+  if (elAte) elAte.value = '';
+  _dashHistVeiculoPreencherCalendarioPadrao();
+  dashAplicarFiltroDataHistVeiculo();
 }
 // Km planejado por dia pra uma placa — soma o km de ida e volta de todas as
 // viagens daquela placa naquele dia (kmIda × 2), a partir do que a Jornada
@@ -1334,6 +1374,7 @@ async function dashCarregarHistoricoVeiculo(placaEscolhida) {
   }
   box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div>';
   const pNorm = placaEscolhida.trim().toUpperCase();
+  _dashHistVeiculoPreencherCalendarioPadrao();
   const dias = _dashHistVeiculoListaDias();
   if (!dias.length) {
     box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum período carregado.</div>';
@@ -1383,27 +1424,45 @@ function dashRenderHistoricoVeiculo(linhas, placa) {
     return;
   }
   const fmtDataCurta = dstr => { const [y,m,d] = dstr.split('-'); return `${d}/${m}`; };
-  const linhasHtml = linhas.map(l => {
-    const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status, cor: 'var(--text-3)' }) : null;
-    return `
-      <td style="padding:6px 4px;text-align:center;font-size:11px;color:var(--text-3);">${l.diaSemana}</td>
-      <td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);">${fmtDataCurta(l.data)}</td>
-      <td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:700;color:${st ? st.cor : 'var(--text-3)'};">${st ? st.label : '— sem registro —'}</td>
-      <td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);">${l.km ? Math.round(l.km).toLocaleString('pt-BR') : '—'}</td>`;
-  });
-  // Layout em "faixa horizontal" (uma coluna por dia), igual à planilha de
-  // referência, dentro de um contêiner com rolagem horizontal pra caber
-  // períodos longos sem espremer o texto.
+  const chipStatus = (l) => {
+    const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status, cor: 'var(--text-2)', bg: 'rgba(255,255,255,.06)', borda: 'var(--border-dk)' }) : null;
+    if (!st) return `<span style="display:inline-block;padding:3px 9px;border-radius:20px;font-size:10px;color:var(--text-3);border:1px dashed var(--border-dk);white-space:nowrap;">sem registro</span>`;
+    return `<span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:700;color:${st.cor};background:${st.bg};border:1px solid ${st.borda};white-space:nowrap;">${st.label}</span>`;
+  };
+  // Fim de semana com fundo levemente destacado, pra achar sábado/domingo
+  // de relance numa tabela longa — mesmo truque visual da planilha original.
+  const fundoDia = dstr => {
+    const dow = new Date(dstr + 'T00:00:00').getDay();
+    return (dow === 0 || dow === 6) ? 'background:rgba(255,255,255,.035);' : '';
+  };
+  const bordaCol = i => (i > 0 ? 'border-left:1px solid var(--border-dk);' : '');
   const colunas = linhas.length;
   box.innerHTML = `
-    <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">Veículo <strong style="color:var(--text);">${placa}</strong> · ${linhas.length} dia(s) no período</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+      <div style="font-size:11px;color:var(--text-3);">Veículo <strong style="color:var(--text);">${placa}</strong> · ${linhas.length} dia(s) no período</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        ${Object.values(_DASH_HISTVEIC_STATUS).map(st => `<span style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-3);"><span style="width:8px;height:8px;border-radius:50%;background:${st.cor};display:inline-block;"></span>${st.label}</span>`).join('')}
+      </div>
+    </div>
     <div style="overflow-x:auto;border:0.5px solid var(--border-dk);border-radius:8px;">
-      <table style="border-collapse:collapse;width:100%;min-width:${colunas * 56}px;">
+      <table style="border-collapse:collapse;width:100%;min-width:${colunas * 62}px;">
         <tbody>
-          <tr style="border-bottom:1px solid var(--border-dk);"><td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;">Dia semana</td>${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;color:var(--text-3);${i>0?'border-left:1px solid var(--border-dk);':''}">${l.diaSemana}</td>`).join('')}</tr>
-          <tr style="border-bottom:1px solid var(--border-dk);"><td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;">Data</td>${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);${i>0?'border-left:1px solid var(--border-dk);':''}">${fmtDataCurta(l.data)}</td>`).join('')}</tr>
-          <tr style="border-bottom:1px solid var(--border-dk);"><td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;">Status</td>${linhas.map((l,i)=>{const st=l.status?(_DASH_HISTVEIC_STATUS[l.status]||{label:l.status,cor:'var(--text-3)'}):null;return `<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:700;color:${st?st.cor:'var(--text-3)'};${i>0?'border-left:1px solid var(--border-dk);':''}">${st?st.label:'—'}</td>`;}).join('')}</tr>
-          <tr><td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;">Km do dia</td>${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);${i>0?'border-left:1px solid var(--border-dk);':''}">${l.km?Math.round(l.km).toLocaleString('pt-BR'):'—'}</td>`).join('')}</tr>
+          <tr style="border-bottom:1px solid var(--border-dk);">
+            <td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--bg);">Dia semana</td>
+            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;color:var(--text-3);${bordaCol(i)}${fundoDia(l.data)}">${l.diaSemana}</td>`).join('')}
+          </tr>
+          <tr style="border-bottom:1px solid var(--border-dk);">
+            <td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--bg);">Data</td>
+            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--text);${bordaCol(i)}${fundoDia(l.data)}">${fmtDataCurta(l.data)}</td>`).join('')}
+          </tr>
+          <tr style="border-bottom:1px solid var(--border-dk);">
+            <td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--bg);">Status</td>
+            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;${bordaCol(i)}${fundoDia(l.data)}">${chipStatus(l)}</td>`).join('')}
+          </tr>
+          <tr>
+            <td style="padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--bg);">Km do dia</td>
+            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11.5px;font-weight:700;color:${l.km ? 'var(--pet-green,#b5e51d)' : 'var(--text-3)'};${bordaCol(i)}${fundoDia(l.data)}">${l.km?Math.round(l.km).toLocaleString('pt-BR'):'—'}</td>`).join('')}
+          </tr>
         </tbody>
       </table>
     </div>`;
@@ -1430,6 +1489,31 @@ function dashExportarHistoricoVeiculoCSV() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+function dashExportarHistoricoVeiculoXLSX() {
+  if (!_dashHistVeiculoDados.length || !_dashHistVeiculoPlacaAtual) {
+    showToast('Selecione um veículo com dados carregados antes de exportar.', false);
+    return;
+  }
+  if (typeof XLSX === 'undefined') {
+    showToast('Biblioteca de Excel não carregada — tente recarregar a página.', false);
+    return;
+  }
+  const linhas = _dashHistVeiculoDados.map(l => {
+    const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status }) : { label: '' };
+    return {
+      'Placa': _dashHistVeiculoPlacaAtual,
+      'Data': l.data,
+      'Dia da Semana': l.diaSemana,
+      'Status': st.label,
+      'Km do Dia (ida+volta)': l.km ? Math.round(l.km) : '',
+    };
+  });
+  const ws = XLSX.utils.json_to_sheet(linhas);
+  ws['!cols'] = [{ wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 20 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Histórico');
+  XLSX.writeFile(wb, `historico_${_dashHistVeiculoPlacaAtual}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 let _dashRankingOrdem = 'volume'; // 'volume' | 'km' | 'custo'
 let _dashRankingDirecao = 'desc'; // 'desc' = maior primeiro, 'asc' = menor primeiro
@@ -1513,7 +1597,10 @@ window.dashOciosidadeSetDirecao = dashOciosidadeSetDirecao;
 window.dashChartZoom = dashChartZoom;
 window.dashCarregarHistoricoVeiculo = dashCarregarHistoricoVeiculo;
 window.dashFiltrarPlacasHistVeiculo = dashFiltrarPlacasHistVeiculo;
+window.dashAplicarFiltroDataHistVeiculo = dashAplicarFiltroDataHistVeiculo;
+window.dashLimparFiltroDataHistVeiculo = dashLimparFiltroDataHistVeiculo;
 window.dashExportarHistoricoVeiculoCSV = dashExportarHistoricoVeiculoCSV;
+window.dashExportarHistoricoVeiculoXLSX = dashExportarHistoricoVeiculoXLSX;
 // ── Renderizar Dashboard ───────────────────────────────────────────────────
 // ── Filtro de clientes ────────────────────────────────────────────────────
 let _dashClientesSelecionados = null; // null = todos; Set = filtro ativo
