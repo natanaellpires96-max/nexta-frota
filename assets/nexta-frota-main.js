@@ -3818,7 +3818,7 @@ async function renderUsers(body){
         <div class="form-field"><label>LOGIN (usuário)</label><input id="new-uid" type="text" placeholder="Ex: souza"></div>
         <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="new-uname" type="text" placeholder="Ex: Souza Transportes"></div>
         <div class="form-field"><label>SENHA</label><input id="new-upwd" type="text" placeholder="Mín. 6 caracteres"></div>
-        <div class="form-field"><label>E-MAIL <span style="font-weight:400;color:var(--muted)">(p/ avisos de disponibilidade)</span></label><input id="new-uemail" type="email" placeholder="Ex: contato@transportadora.com"></div>
+        <div class="form-field"><label>E-MAIL <span style="font-weight:400;color:var(--muted)">(p/ avisos de disponibilidade — separe vários por vírgula)</span></label><input id="new-uemail" type="email" multiple placeholder="Ex: contato@transportadora.com, financeiro@transportadora.com"></div>
         <div class="form-field"><label>PERFIL</label>
           <select id="new-urole" onchange="toggleCarrierField()">
             <option value="carrier">Transportador</option>
@@ -3959,7 +3959,7 @@ function openEditUser(uid){
       <div class="form-grid">
         <div class="form-field"><label>NOME DE EXIBIÇÃO</label><input id="eu-name" type="text" value="${attr(u.name)}"></div>
         <div class="form-field"><label>NOVA SENHA <span style="font-weight:400;color:var(--muted)">(opcional)</span></label><input id="eu-pwd" type="password" placeholder="Deixe em branco para manter"></div>
-        <div class="form-field"><label>E-MAIL <span style="font-weight:400;color:var(--muted)">(p/ avisos de disponibilidade)</span></label><input id="eu-email" type="email" value="${attr(u.email||'')}" placeholder="Ex: contato@transportadora.com"></div>
+        <div class="form-field"><label>E-MAIL <span style="font-weight:400;color:var(--muted)">(p/ avisos de disponibilidade — separe vários por vírgula)</span></label><input id="eu-email" type="email" multiple value="${attr(u.email||'')}" placeholder="Ex: contato@transportadora.com, financeiro@transportadora.com"></div>
         ${isAdmin?'':`<div class="form-field"><label>PERFIL</label><select id="eu-role" onchange="onEditRoleChange()">${roleOpts}</select></div>`}
         <div class="form-field" id="eu-carrier-field" style="display:${u.role==='carrier'?'block':'none'}">
           <label>TRANSPORTADOR</label>
