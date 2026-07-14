@@ -3779,7 +3779,7 @@ async function renderUsers(body){
       <td style="font-size:12px">${esc(u.name)}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${esc(u.carrier||'—')}</td>
-      <td style="font-size:11px;color:${u.email?'var(--dim)':'var(--muted)'}">${u.email?esc(u.email):'— sem e-mail —'}</td>
+      <td style="font-size:11px;color:${u.email?'var(--dim)':'var(--muted)'};line-height:1.6;">${u.email ? u.email.split(',').map(e => esc(e.trim())).filter(Boolean).join('<br>') : '— sem e-mail —'}</td>
       <td style="font-size:11px;color:var(--muted)">${ops?esc(ops.join(', ')):'Todas'}</td>
       <td style="white-space:nowrap;vertical-align:middle">
         <div style="display:inline-flex;gap:5px;align-items:center">
