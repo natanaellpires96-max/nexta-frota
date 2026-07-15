@@ -7678,6 +7678,33 @@ async function salvarNoHistorico(silencioso = false) {
     });
   });
   const datasEntrega = [...new Set(pedidos.map(p => p.dataEntregaLogistica).filter(Boolean))];
+  // Trava de segurança: "arquivoHistoricoAberto" só é esquecido quando o
+  // usuário importa uma planilha nova ou limpa todos os pedidos — mas nada
+  // impede alguém de abrir uma roteirização antiga, trocar a Data de
+  // Operação ou o terminal pra outro dia/cidade totalmente diferente, e
+  // salvar. Sem essa checagem, isso vinculava a nova roteirização como
+  // "revisão" da antiga por engano — escondendo uma programação legítima e
+  // sem relação nenhuma como se fosse uma correção. Só considera revisão de
+  // verdade se pelo menos uma data de entrega bater entre as duas.
+  let revisaoDeValida = arquivoHistoricoAberto || null;
+  if (revisaoDeValida) {
+    try {
+      const fhAberto = await dirHandleHistorico.getFileHandle(revisaoDeValida);
+      const fileAberto = await fhAberto.getFile();
+      const dataAberto = JSON.parse(await fileAberto.text());
+      const datasAntigas = new Set(dataAberto.datasEntrega || []);
+      const temDataEmComum = datasEntrega.some(d => datasAntigas.has(d));
+      if (!temDataEmComum) {
+        console.warn(`[historico] "${revisaoDeValida}" foi aberto, mas a nova roteirização tem data(s) de entrega diferente(s) (${datasEntrega.join(', ')} vs ${[...datasAntigas].join(', ')}) — salvando como programação independente, não como revisão.`);
+        revisaoDeValida = null;
+      }
+    } catch(eCheck) {
+      // Arquivo original sumiu ou não pôde ser lido — não arrisca vincular
+      // uma revisão a algo que não dá pra confirmar.
+      console.warn('[historico] não foi possível validar o vínculo de revisão:', eCheck);
+      revisaoDeValida = null;
+    }
+  }
   // Usuário logado vem sempre do app principal (Firebase Auth) — é a única
   // forma de acessar o Roteirizador (ver setTab() / controle de acesso).
   const usuarioLogado = (S && S.user && window.USERS_DB && window.USERS_DB[S.user])
@@ -7693,7 +7720,7 @@ async function salvarNoHistorico(silencioso = false) {
     // salva de novo, ela é uma REVISÃO daquela entrada — não uma programação
     // nova e independente. Isso permite esconder a versão antiga da lista
     // principal sem apagar nada fisicamente (preserva IDs/histórico real).
-    revisaoDe: arquivoHistoricoAberto || null,
+    revisaoDe: revisaoDeValida,
     resumo: {
       totalRotas,
       totalViagens,
