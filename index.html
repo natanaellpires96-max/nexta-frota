@@ -9,10 +9,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="assets/pedagios-utils.js"></script>
-<script type="module" src="assets/nexta-frota-main.js?v=fix-ociosidade-filtro-cidade-20260715"></script>
-<link rel="stylesheet" href="assets/nexta-frota-main.css?v=fix-ociosidade-filtro-cidade-20260715">
+<script type="module" src="assets/nexta-frota-main.js?v=resumo-multi-data-20260715"></script>
+<link rel="stylesheet" href="assets/nexta-frota-main.css?v=resumo-multi-data-20260715">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=fix-ociosidade-filtro-cidade-20260715">
+<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=resumo-multi-data-20260715">
 </head>
 <body>
 <div class="app" id="app"><div class="loading" style="min-height:100vh"><span class="spin"></span>Iniciando o sistema...</div></div>
@@ -441,11 +441,24 @@
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:8px;">
       <div class="sec-title" style="margin-bottom:0;">Envio Transportadora</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <select id="resumo-dia-sel"
-          style="font-size:12px;padding:5px 10px;border:1px solid var(--border-dk);border-radius:8px;background:var(--surface);color:var(--text);max-width:220px;"
-          title="Selecione a data de entrega para gerar o resumo consolidado apenas dela">
-          <option value="">— Selecionar data de entrega —</option>
-        </select>
+        <div style="position:relative;">
+          <button id="resumo-dia-btn" class="btn btn-sm" onclick="resumoDiaAbrirFechar()"
+            style="font-size:12px;padding:5px 10px;border:1px solid var(--border-dk);border-radius:8px;background:var(--surface);color:var(--text);max-width:240px;white-space:nowrap;text-align:left;"
+            title="Selecione uma ou mais datas de entrega pra gerar o resumo consolidado delas">
+            📅 Selecionar data(s) de entrega ▾
+          </button>
+          <div id="resumo-dia-painel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:50;background:var(--surface);border:1px solid var(--border-dk);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);width:280px;">
+            <div style="padding:8px;border-bottom:1px solid var(--border-dk);">
+              <input id="resumo-dia-busca" type="text" placeholder="Buscar data (ex: 17/07)..." oninput="resumoDiaRenderLista(this.value)"
+                style="width:100%;font-size:12px;padding:6px 8px;border:1px solid var(--border-dk);border-radius:6px;background:var(--bg);color:var(--text);">
+            </div>
+            <div id="resumo-dia-lista" style="max-height:280px;overflow-y:auto;padding:4px;"></div>
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:8px;border-top:1px solid var(--border-dk);">
+              <button class="btn btn-sm" onclick="resumoDiaLimpar()" style="font-size:11px;">Limpar</button>
+              <button class="btn btn-green btn-sm" onclick="resumoDiaAbrirFechar()" style="font-size:11px;">Aplicar</button>
+            </div>
+          </div>
+        </div>
         <button class="btn btn-sm" onclick="gerarResumoDia()"
           style="background:rgba(200,240,50,0.12);color:var(--pet-green);border:1px solid rgba(200,240,50,0.3);font-size:12px;padding:5px 14px;white-space:nowrap;"
           title="Gera o resumo do dia e copia para a área de transferência">
@@ -995,9 +1008,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=fix-ociosidade-filtro-cidade-20260715"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=resumo-multi-data-20260715"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=fix-ociosidade-filtro-cidade-20260715"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=resumo-multi-data-20260715"></script>
 </body>
 </html>
