@@ -8421,9 +8421,8 @@ window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() 
 // cada opção é UMA data de entrega específica; gerarResumoDia() varre todo o
 // histórico e usa só os pedidos daquela data (ver _coletarPedidosPorEntrega).
 async function popularSeletorResumoDia() {
-  const sel = document.getElementById('resumo-dia-sel');
-  if (!sel) return;
-  sel.innerHTML = '<option value="">— Selecionar data de entrega —</option>';
+  const btn = document.getElementById('resumo-dia-btn');
+  if (!btn) return;
   if (!dirHandleHistorico) return;
   let permOk = false;
   try { permOk = (await dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
@@ -8434,7 +8433,7 @@ async function popularSeletorResumoDia() {
   // diferentes (ex.: roteirização feita hoje já programando entregas de
   // amanhã) — por isso a busca é sobre TODOS os arquivos, sem filtrar por
   // prefixo de nome/dia.
-  const entregaMap = new Map(); // "DD/MM/YYYY" → { arquivos: Set(nome), pedidos: 0 }
+  const entregaMap = new Map(); // "DD/MM/YYYY" → { arquivos: Set(nome), diasRoteirizados: Set("DD/MM") }
   for await (const [name, handle] of dirHandleHistorico.entries()) {
     if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
     try {
@@ -8444,9 +8443,12 @@ async function popularSeletorResumoDia() {
       const datas = data.datasEntrega && data.datasEntrega.length
         ? data.datasEntrega
         : (data.pedidos || []).map(p => p.dataEntregaLogistica).filter(Boolean);
+      const dtSalvo = new Date(data.savedAt);
+      const diaRoteirizado = `${String(dtSalvo.getDate()).padStart(2,'0')}/${String(dtSalvo.getMonth()+1).padStart(2,'0')}`;
       new Set(datas).forEach(de => {
-        if (!entregaMap.has(de)) entregaMap.set(de, { arquivos: new Set() });
+        if (!entregaMap.has(de)) entregaMap.set(de, { arquivos: new Set(), diasRoteirizados: new Set() });
         entregaMap.get(de).arquivos.add(name);
+        entregaMap.get(de).diasRoteirizados.add(diaRoteirizado);
       });
     } catch(e) {}
   }
@@ -8458,42 +8460,118 @@ async function popularSeletorResumoDia() {
     return m ? `${m[3]}${m[2]}${m[1]}` : (de || '');
   };
   const entregas = [...entregaMap.entries()].sort((a, b) => paraOrdenar(b[0]).localeCompare(paraOrdenar(a[0])));
-  entregas.forEach(([de, info]) => {
-    const opt = document.createElement('option');
-    opt.value = de;
-    const qtdArq = info.arquivos.size;
-    opt.textContent = `${de} (${qtdArq} roteirização${qtdArq === 1 ? '' : 'ões'})`;
-    sel.appendChild(opt);
+  _resumoDiaOpcoes = entregas.map(([de, info]) => ({
+    de,
+    qtdArq: info.arquivos.size,
+    diasRoteirizados: [...info.diasRoteirizados].sort(),
+  }));
+  // Mantém só as datas que ainda existem na seleção atual (histórico pode
+  // ter mudado desde a última vez que a lista foi montada).
+  const validos = new Set(_resumoDiaOpcoes.map(o => o.de));
+  _resumoDiaSelecionadas = new Set([..._resumoDiaSelecionadas].filter(d => validos.has(d)));
+  resumoDiaRenderLista();
+  resumoDiaAtualizarBotao();
+}
+// Guarda as opções carregadas do disco (evita reler tudo só pra
+// filtrar/re-renderizar a lista de datas) e quais estão marcadas.
+let _resumoDiaOpcoes = [];
+let _resumoDiaSelecionadas = new Set();
+function resumoDiaRenderLista(filtroTexto = '') {
+  const box = document.getElementById('resumo-dia-lista');
+  if (!box) return;
+  const termo = filtroTexto.trim().toLowerCase();
+  const opcoes = termo ? _resumoDiaOpcoes.filter(o => o.de.toLowerCase().includes(termo)) : _resumoDiaOpcoes;
+  if (!opcoes.length) {
+    box.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--text-3);text-align:center;">Nenhuma data encontrada.</div>';
+    return;
+  }
+  box.innerHTML = opcoes.map(o => {
+    const marcado = _resumoDiaSelecionadas.has(o.de);
+    const diasStr = o.diasRoteirizados.join(', ');
+    return `
+      <label style="display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;font-size:12.5px;border-radius:6px;" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background='transparent'">
+        <input type="checkbox" ${marcado ? 'checked' : ''} onchange="resumoDiaToggleData('${o.de}', this.checked)" style="cursor:pointer;">
+        <span style="flex:1;">
+          <strong>${o.de}</strong>
+          <span style="color:var(--text-3);"> (${o.qtdArq} roteirização${o.qtdArq === 1 ? '' : 'ões'})</span>
+          <br><span style="font-size:10.5px;color:var(--text-3);">roteirizado em: ${diasStr}</span>
+        </span>
+      </label>`;
+  }).join('');
+}
+function resumoDiaToggleData(de, marcado) {
+  if (marcado) _resumoDiaSelecionadas.add(de); else _resumoDiaSelecionadas.delete(de);
+  resumoDiaAtualizarBotao();
+}
+function resumoDiaAtualizarBotao() {
+  const btn = document.getElementById('resumo-dia-btn');
+  if (!btn) return;
+  const n = _resumoDiaSelecionadas.size;
+  if (n === 0) {
+    btn.textContent = '📅 Selecionar data(s) de entrega ▾';
+  } else if (n === 1) {
+    btn.textContent = `📅 ${[..._resumoDiaSelecionadas][0]} ▾`;
+  } else {
+    btn.textContent = `📅 ${n} datas selecionadas ▾`;
+  }
+}
+function resumoDiaAbrirFechar() {
+  const painel = document.getElementById('resumo-dia-painel');
+  if (!painel) return;
+  const abrindo = painel.style.display === 'none' || !painel.style.display;
+  painel.style.display = abrindo ? 'block' : 'none';
+  if (abrindo) {
+    const busca = document.getElementById('resumo-dia-busca');
+    if (busca) { busca.value = ''; busca.focus(); }
+    resumoDiaRenderLista();
+  }
+}
+function resumoDiaLimpar() {
+  _resumoDiaSelecionadas = new Set();
+  resumoDiaRenderLista(document.getElementById('resumo-dia-busca')?.value || '');
+  resumoDiaAtualizarBotao();
+}
+// Fecha o painel se o clique foi fora dele (mesma ideia do filtro de
+// cidades do Dashboard) — registrado uma única vez.
+if (!window._resumoDiaClickForaRegistrado) {
+  window._resumoDiaClickForaRegistrado = true;
+  document.addEventListener('click', (ev) => {
+    const painel = document.getElementById('resumo-dia-painel');
+    const btn = document.getElementById('resumo-dia-btn');
+    if (!painel || painel.style.display === 'none' || !painel.style.display) return;
+    if (painel.contains(ev.target) || (btn && btn.contains(ev.target))) return;
+    painel.style.display = 'none';
   });
 }
 
 async function gerarResumoDia() {
-  const sel         = document.getElementById('resumo-dia-sel');
-  const dataEntrega = sel?.value; // "DD/MM/YYYY" ou ""
+  const datasEntregaSelecionadas = [..._resumoDiaSelecionadas]; // ["DD/MM/YYYY", ...] ou []
 
   let snaps = [];
 
-  if (dataEntrega) {
+  if (datasEntregaSelecionadas.length) {
     // Varre TODO o histórico (não só um dia) procurando snapshots que tenham
-    // pedidos com essa data de entrega — uma roteirização feita num dia
-    // qualquer pode conter entregas programadas pra outro dia.
+    // pedidos com QUALQUER uma das datas de entrega marcadas — uma
+    // roteirização feita num dia qualquer pode conter entregas programadas
+    // pra outro dia.
     if (!await _histGarantirPermissao()) {
       showToast('Permissão negada. Selecione a pasta do histórico novamente.', false);
       return;
     }
+    const setAlvo = new Set(datasEntregaSelecionadas);
     for await (const [name, handle] of dirHandleHistorico.entries()) {
       if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
       try {
         const file = await handle.getFile();
         const data = JSON.parse(await file.text());
         if (!data.versao || !data.savedAt || !data.resumo) continue;
-        const temEssaData = (data.datasEntrega || []).includes(dataEntrega)
-          || (data.pedidos || []).some(p => p.dataEntregaLogistica === dataEntrega);
-        if (temEssaData) snaps.push(data);
+        const temAlgumaDessasDatas = (data.datasEntrega || []).some(d => setAlvo.has(d))
+          || (data.pedidos || []).some(p => setAlvo.has(p.dataEntregaLogistica));
+        if (temAlgumaDessasDatas) snaps.push(data);
       } catch(e) {}
     }
     if (!snaps.length) {
-      showToast('Nenhuma roteirização encontrada para essa data de entrega.', false);
+      showToast('Nenhuma roteirização encontrada para essa(s) data(s) de entrega.', false);
       return;
     }
     snaps.sort((a, b) => a.savedAt.localeCompare(b.savedAt));
@@ -8509,14 +8587,14 @@ async function gerarResumoDia() {
       pedidos,
     }];
   } else {
-    showToast('Selecione uma data de entrega ou execute a otimização primeiro.', false);
+    showToast('Selecione uma ou mais datas de entrega, ou execute a otimização primeiro.', false);
     return;
   }
 
   // Quando uma data de entrega específica foi escolhida, o texto é filtrado
   // pedido a pedido pra essa data (ver _montarTextoResumoDia). Quando não há
   // seleção (roteirização atual em memória), usa tudo que estiver carregado.
-  const texto = _montarTextoResumoDia(snaps, dataEntrega || null);
+  const texto = _montarTextoResumoDia(snaps, datasEntregaSelecionadas.length ? datasEntregaSelecionadas : null);
   try {
     await navigator.clipboard.writeText(texto);
   } catch(e) {
@@ -8537,16 +8615,17 @@ function _entregaParaOrdenar(de) {
   return m ? `${m[3]}${m[2]}${m[1]}` : (de || '');
 }
 
-// Dado um resultado de roteirização (res[v.id]) e uma data de entrega alvo,
-// devolve só as viagens/paradas que pertencem àquela data — descartando
-// paradas de outras datas e viagens que não sobrarem com nenhuma parada.
-// Se dataAlvo for null (ex.: resumo da roteirização atual em memória, sem
-// filtro explícito), devolve tudo, sem filtrar.
-function _viagensFiltradasPorEntrega(res, vId, dataAlvo) {
+// Dado um resultado de roteirização (res[v.id]) e uma (ou mais) data(s) de
+// entrega alvo, devolve só as viagens/paradas que pertencem a alguma delas —
+// descartando paradas de outras datas e viagens que não sobrarem com nenhuma
+// parada. datasAlvo aceita: null (sem filtro, devolve tudo), uma string
+// "DD/MM/YYYY", ou um array/Set de strings (múltiplas datas selecionadas).
+function _viagensFiltradasPorEntrega(res, vId, datasAlvo) {
   const viagens = (res[vId] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
-  if (!dataAlvo) return viagens;
+  if (!datasAlvo || (Array.isArray(datasAlvo) && !datasAlvo.length) || (datasAlvo instanceof Set && !datasAlvo.size)) return viagens;
+  const setAlvo = datasAlvo instanceof Set ? datasAlvo : new Set(Array.isArray(datasAlvo) ? datasAlvo : [datasAlvo]);
   return viagens
-    .map(vi => ({ ...vi, paradas: vi.paradas.filter(p => (p.pedido?.dataEntregaLogistica || '') === dataAlvo) }))
+    .map(vi => ({ ...vi, paradas: vi.paradas.filter(p => setAlvo.has(p.pedido?.dataEntregaLogistica || '')) }))
     .filter(vi => vi.paradas.length > 0);
 }
 
@@ -8559,9 +8638,15 @@ function _viagensFiltradasPorEntrega(res, vId, dataAlvo) {
 function _montarTextoResumoDia(snaps, dataAlvoEntrega = null) {
   const p2 = n => String(n).padStart(2, '0');
 
+  // dataAlvoEntrega aceita: null, uma string, ou um array de strings
+  // (múltiplas datas de entrega selecionadas no seletor).
+  const datasAlvoArr = !dataAlvoEntrega ? []
+    : Array.isArray(dataAlvoEntrega) ? dataAlvoEntrega
+    : [dataAlvoEntrega];
+
   let dataEntregaStr;
-  if (dataAlvoEntrega) {
-    dataEntregaStr = dataAlvoEntrega;
+  if (datasAlvoArr.length) {
+    dataEntregaStr = [...datasAlvoArr].sort((a, b) => _entregaParaOrdenar(a).localeCompare(_entregaParaOrdenar(b))).join(', ');
   } else {
     const datasSet = new Set();
     snaps.forEach(s => {
@@ -8610,7 +8695,7 @@ function _montarTextoResumoDia(snaps, dataAlvoEntrega = null) {
         });
       }
 
-      const viagens = _viagensFiltradasPorEntrega(res, v.id, dataAlvoEntrega);
+      const viagens = _viagensFiltradasPorEntrega(res, v.id, datasAlvoArr);
       const ctV = ct[String(v.id)] || {};
 
       viagens.forEach(vi => {
@@ -8661,7 +8746,7 @@ function _montarTextoResumoDia(snaps, dataAlvoEntrega = null) {
     const res  = snap.resultado || {};
     const veics = snap.veiculos || [];
     veics.forEach(v => {
-      const viagens = _viagensFiltradasPorEntrega(res, v.id, dataAlvoEntrega);
+      const viagens = _viagensFiltradasPorEntrega(res, v.id, datasAlvoArr);
       if (!viagens.length) return;
       const volVeiculo = viagens.reduce((s, vi) => s + vi.paradas.reduce((ss, p) => ss + (p.volumeTotal || 0), 0), 0);
       const cap = v.capacidade || 0;
