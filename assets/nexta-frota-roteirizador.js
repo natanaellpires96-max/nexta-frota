@@ -7937,6 +7937,7 @@ function _histRenderLista(entries) {
         <div class="hist-entry-actions">
           <button class="btn btn-green btn-sm" onclick="abrirEntradaHistorico('${safeNome}')">Abrir</button>
           <button class="btn btn-sm" onclick="abrirDetalheHistorico('${safeNome}')" title="Ver ID e m³ de cada pedido desta roteirização">⋯ Detalhar</button>
+          ${opts.substituida ? `<button class="btn btn-sm" onclick="desvincularEntradaHistorico('${safeNome}', this)" title="Desfazer o vínculo de revisão — esta entrada volta a aparecer sozinha, como programação independente">↩ Desvincular</button>` : ''}
           <button class="btn btn-danger btn-sm" onclick="excluirEntradaHistorico('${safeNome}', this)">Excluir</button>
         </div>
       </div>`;
@@ -8214,6 +8215,47 @@ async function onMudarRoteirizacao(val) {
     renderResultado(ultimoResultado, ultimoControleTempo);
     renderMapaGeral();
     renderTemplateOperacao();
+  }
+}
+// Desfaz um vínculo de revisão feito por engano (ex.: uma roteirização de
+// escopo menor foi salva depois de abrir uma maior, e a data de entrega
+// coincidiu — mesmo sem cobrir as mesmas cidades/terminais — vinculando
+// erroneamente uma como "correção" da outra e escondendo a maior). Remove
+// `substituidoPor` do arquivo antigo e, se achar, o `revisaoDe` correspondente
+// no arquivo que a substituiu — as duas voltam a aparecer como programações
+// independentes na lista principal, sem apagar nada.
+async function desvincularEntradaHistorico(filename, btn) {
+  if (!confirm(`Desfazer o vínculo de revisão de "${filename}"?\n\nEla volta a aparecer sozinha, como uma programação independente na lista principal (nada é apagado).`)) return;
+  if (!await _histGarantirPermissao()) return;
+  try {
+    const fh = await dirHandleHistorico.getFileHandle(filename);
+    const file = await fh.getFile();
+    const data = JSON.parse(await file.text());
+    const sucessor = data.substituidoPor || null;
+    delete data.substituidoPor;
+    const ws = await fh.createWritable();
+    await ws.write(JSON.stringify(data, null, 2));
+    await ws.close();
+    delete _histMetaCache[filename];
+    if (sucessor) {
+      try {
+        const fhSuc = await dirHandleHistorico.getFileHandle(sucessor);
+        const fileSuc = await fhSuc.getFile();
+        const dataSuc = JSON.parse(await fileSuc.text());
+        if (dataSuc.revisaoDe === filename) {
+          delete dataSuc.revisaoDe;
+          const wsSuc = await fhSuc.createWritable();
+          await wsSuc.write(JSON.stringify(dataSuc, null, 2));
+          await wsSuc.close();
+        }
+        delete _histMetaCache[sucessor];
+      } catch(eSuc) {
+        console.warn('[historico] não foi possível remover o vínculo reverso no arquivo sucessor:', eSuc);
+      }
+    }
+    await carregarListaHistorico();
+  } catch(e) {
+    alert('Erro ao desvincular: ' + e.message);
   }
 }
 async function excluirEntradaHistorico(filename, btn) {
