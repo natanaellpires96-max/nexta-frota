@@ -5728,6 +5728,9 @@ function dragEnterCard(event, veiculoId) {
   } else if (dragInfo.tipo === 'parada' && dragInfo.veiculoId !== veiculoId) {
     event.preventDefault();
     event.currentTarget.classList.add('drop-alvo');
+  } else if (dragInfo.tipo === 'pedido-pendente') {
+    event.preventDefault();
+    event.currentTarget.classList.add('drop-alvo');
   }
 }
 function dragLeaveCard(event) {
@@ -5740,6 +5743,9 @@ function dragOverCard(event, veiculoId) {
     event.preventDefault();
     event.dataTransfer.dropEffect = dragInfo.veiculoId === veiculoId ? 'none' : 'move';
   } else if (dragInfo.tipo === 'parada' && dragInfo.veiculoId !== veiculoId) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  } else if (dragInfo.tipo === 'pedido-pendente') {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
   }
