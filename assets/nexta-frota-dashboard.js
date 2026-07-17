@@ -1870,7 +1870,7 @@ window.dashAplicarFiltroCidades   = dashAplicarFiltroCidades;
 function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
   if (!snapshots || !snapshots.length) {
-    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada,#dk-ociosidade')
+    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada,#dk-ociosidade,#dk-drop-entregas,#dk-drop-volume')
       .forEach(el => { if(el) el.textContent = '-'; });
     const _elJH = document.getElementById('dk-jornada-horas'); if (_elJH) _elJH.textContent = '';
     const _elOQ = document.getElementById('dk-ociosidade-qtd'); if (_elOQ) _elOQ.textContent = '';
@@ -1990,6 +1990,12 @@ function dashRender(snapshots) {
   set('dk-ocup',     _kpiOcup + '%');
   set('dk-km',       Math.round(_kpiKm).toLocaleString('pt-BR') + ' km');
   set('dk-clientes', clientesFiltrados.length);
+  // Drop médio = entregas/volume totais (já filtrados por cliente/cidade/período
+  // acima) divididos pelo total de viagens (idem, respeita os mesmos filtros).
+  const _kpiDropEntregas = _kpiViagens > 0 ? _kpiEntregas / _kpiViagens : 0;
+  const _kpiDropVolume   = _kpiViagens > 0 ? _kpiVol / _kpiViagens : 0;
+  set('dk-drop-entregas', _kpiViagens > 0 ? _kpiDropEntregas.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) : '-');
+  set('dk-drop-volume',   _kpiViagens > 0 ? (_kpiDropVolume.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) + ' m³') : '-');
   // Consumo de Jornada — usa d.entradasTransportadora (já filtrado por
   // cidade/operação na fonte, dentro de dashAgregar, igual ao Ranking de
   // Transportadoras logo abaixo). Não é afetado pelo filtro de CLIENTE de
