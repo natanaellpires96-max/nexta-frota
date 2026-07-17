@@ -171,10 +171,10 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield;}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.5rem;}
 .summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:1.5rem;}
 .sum-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 12px;text-align:center;}
-#dash-kpis .sum-card{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 12px;min-height:62px;}
-#dash-kpis .sum-num{font-size:19px;}
-#dash-kpis .sum-label{margin-top:2px;font-size:10px;}
-#dash-kpis .sum-card [id$="-horas"],#dash-kpis .sum-card [id$="-qtd"]{font-size:9px !important;margin-top:1px !important;}
+#dash-kpis .sum-card{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 8px;min-height:62px;}
+#dash-kpis .sum-num{font-size:16px;white-space:nowrap;}
+#dash-kpis .sum-label{margin-top:2px;font-size:9px;}
+#dash-kpis .sum-card [id$="-horas"],#dash-kpis .sum-card [id$="-qtd"]{font-size:8px !important;margin-top:1px !important;}
 .sum-num{font-size:28px;font-weight:600;line-height:1;}
 .sum-label{font-size:11px;color:var(--muted);margin-top:5px;}
 .sla-panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem 1.5rem;margin-bottom:1.5rem;}

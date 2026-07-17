@@ -714,7 +714,13 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
   // com nenhuma cidade do filtro e sempre voltar 0/0 quando filtrado —
   // usando essa mesma fonte, ela fica automaticamente consistente com
   // Jornada/Ranking/Viagens/etc.
-  const placaCidade = new Map();
+  // Guardado POR DIA (placa+data), não só por placa: um mesmo veículo pode
+  // operar de terminais/cidades diferentes em dias diferentes (troca de
+  // operação), e usar só a "primeira cidade vista" pra placa inteira fazia a
+  // Ociosidade comparar com a cidade errada nesses casos — sempre dando 0/0
+  // ao filtrar uma operação que na verdade tinha viagens daquela placa.
+  const placaCidadePorDia = new Map();
+  const placaCidade = new Map(); // fallback: última cidade vista pra placa, sem dia (cobre disponibilidade sem viagem correspondente naquele dia)
   snapshots.forEach((snap, snapIdx) => {
     const res = snap.resultado || {};
     const vecs = snap.veiculos || [];
@@ -723,8 +729,10 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     const dataSnap = (snap.savedAt || '').slice(0,10);
     vecs.forEach(v => {
       const pNormMap = (v.placa || '').trim().toUpperCase();
-      if (pNormMap && !placaCidade.has(pNormMap)) {
-        placaCidade.set(pNormMap, dashCidadeOperacaoViagem({}, v, terms));
+      if (pNormMap) {
+        const cidadeMap = dashCidadeOperacaoViagem({}, v, terms);
+        if (dataSnap) placaCidadePorDia.set(pNormMap + '__' + dataSnap, cidadeMap);
+        placaCidade.set(pNormMap, cidadeMap);
       }
       const viagensTodas = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
       // Jornada (Consumo de Jornada) mede só quem teve viagem de verdade —
@@ -879,6 +887,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     entradasTransportadora,
     diasComViagemPorPlaca,
     placaCidade,
+    placaCidadePorDia,
   };
 }
 // ── Ranking de Transportadoras ───────────────────────────────────────────────
@@ -1116,7 +1125,7 @@ let _dashOciosidadeToken = 0;
 // sequência de cliques em filtros dentro de poucos minutos.
 const _dashOciosidadeCacheDocs = new Map(); // "dataIni_dataFim" -> { docs, expiraEm }
 const _DASH_OCIOSIDADE_CACHE_TTL_MS = 120_000; // 2 minutos
-async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComViagemPorPlaca, placaCidade) {
+async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComViagemPorPlaca, placaCidade, placaCidadePorDia) {
   const vazio = { totalDisponibilizados: 0, totalUsados: 0, pctOciosidade: 0, porTransportadora: [] };
   if (!window.fbDb || !window.fbCollection || !window.fbQuery || !window.fbWhere || !window.fbGetDocs || typeof window.dbGetPlates !== 'function') {
     console.warn('[Ociosidade] Firestore/dbGetPlates não disponível ainda.');
@@ -1126,15 +1135,24 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
   if (!datas.length) return vazio;
   const dataIni = datas[0], dataFim = datas[datas.length - 1];
   const normPlaca = p => (p || '').toString().trim().toUpperCase();
-  // Placas ativas cadastradas por transportadora — ainda usa config/plates
-  // pra saber quem está ativo (placa desativada não conta), mas a CIDADE
-  // vem de placaCidade (mesma fonte do resto do Dashboard), não mais do
-  // campo "operacao" cadastrado separadamente na tela de Placas.
+  // Placas ativas cadastradas por transportadora — usa config/plates (mesma
+  // consulta) pra saber quem está ativo (placa desativada não conta) E qual
+  // a OPERAÇÃO cadastrada em cada placa (campo "operacao" do cadastro no
+  // sistema pai) — essa é a fonte PRIMÁRIA de cidade/operação pra Ociosidade,
+  // por ser o dado cadastrado manualmente e não uma inferência. Como fallback
+  // (placa sem operação cadastrada), cai pra cidade inferida do terminal
+  // usado na roteirização (placaCidadePorDia/placaCidade, vindos do resto do
+  // Dashboard) — mesma lógica usada em Jornada/Ranking/Viagens/etc.
   let todasPlacas = {};
   try { todasPlacas = await window.dbGetPlates(); } catch(e) { console.warn('[Ociosidade] falha ao ler placas:', e); }
   const placaAtiva = new Map(); // placaNorm -> ativo
+  const placaOperacao = new Map(); // placaNorm -> operação cadastrada na placa
   Object.values(todasPlacas || {}).forEach(placas => {
-    (placas || []).forEach(p => placaAtiva.set(normPlaca(p.placa), p.ativo !== false));
+    (placas || []).forEach(p => {
+      const pNormCad = normPlaca(p.placa);
+      placaAtiva.set(pNormCad, p.ativo !== false);
+      if (p.operacao) placaOperacao.set(pNormCad, p.operacao);
+    });
   });
   // Consulta a coleção "availability" no intervalo de datas do período
   // carregado (mês selecionado, ou min/max de "Todos os períodos") — só
@@ -1167,8 +1185,15 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
     const pNorm = normPlaca(rec.plate);
     if (!placaAtiva.has(pNorm) || placaAtiva.get(pNorm) === false) return; // placa desconhecida/desativada no cadastro atual — fora da conta
     if (cidadesFiltro) {
-      const cidadePlaca = placaCidade.get(pNorm);
-      if (!cidadePlaca || !cidadesFiltro.has(cidadePlaca)) return; // sem cidade conhecida, ou fora do filtro selecionado
+      // Fonte primária: operação cadastrada na placa (cadastro/sistema pai).
+      // Fallback: cidade inferida do terminal usado na roteirização, NAQUELE
+      // DIA específico (placaCidadePorDia) ou, na falta disso, a última
+      // cidade conhecida da placa (placaCidade) — cobre disponibilidade
+      // marcada num dia sem roteirização salva pra essa placa.
+      const cidadePlaca = placaOperacao.get(pNorm)
+        || placaCidadePorDia.get(pNorm + '__' + rec.dateStr)
+        || placaCidade.get(pNorm);
+      if (!cidadePlaca || !cidadesFiltro.has(cidadePlaca)) return; // sem cidade/operação conhecida, ou fora do filtro selecionado
     }
     const usado = diasComViagemPorPlaca.has(pNorm + '__' + rec.dateStr);
     totalDisponibilizados++;
@@ -2017,7 +2042,7 @@ function dashRender(snapshots) {
   const _dashOciosidadeElBox = document.getElementById('dash-ociosidade-transp');
   if (_dashOciosidadeElBox) _dashOciosidadeElBox.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando do Painel de Disponibilidade...</div>';
   const _meuTokenOciosidade = ++_dashOciosidadeToken;
-  dashCarregarOciosidade(_dashSnapshotsAtivos, _dashCidadesSelecionadas, d.diasComViagemPorPlaca, d.placaCidade)
+  dashCarregarOciosidade(_dashSnapshotsAtivos, _dashCidadesSelecionadas, d.diasComViagemPorPlaca, d.placaCidade, d.placaCidadePorDia)
     .then(_dashOciosidade => {
       if (_meuTokenOciosidade !== _dashOciosidadeToken) return; // filtro mudou de novo antes de terminar — descarta
       set('dk-ociosidade', _dashOciosidade.pctOciosidade + '%');
