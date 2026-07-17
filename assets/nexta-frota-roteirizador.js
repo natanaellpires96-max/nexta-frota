@@ -266,6 +266,16 @@ var lockedViagens = new Set();
 // pelo seletor de roteirização). Usado para vincular uma correção salva à
 // programação original que ela substitui — ver salvarNoHistorico().
 var arquivoHistoricoAberto = null;
+// Último arquivo salvo NESTA sessão de trabalho, mesmo sem ter sido aberto
+// explicitamente do histórico (ex.: otimizar → exportar Herrlog → ajustar
+// algo → exportar de novo, tudo na mesma sessão). Sem isso, duas exportações
+// seguidas do mesmo trabalho viravam entradas independentes no histórico em
+// vez de uma "corrigir" a outra — mesmo sendo, na prática, a mesma
+// programação sendo refinada. Resetado nos mesmos pontos que
+// arquivoHistoricoAberto (planilha nova / lista de pedidos zerada), e
+// validado pelas mesmas travas de data+cidade em salvarNoHistorico() — não
+// vincula automaticamente se o trabalho mudou de escopo no meio da sessão.
+var ultimoArquivoSalvoSessao = null;
 // ── Contador de IDs de viagem (P + MM + YY + seq 3 dígitos) ─────────────────
 // Formato: P{MM}{YY}{NNN} ex: P0626001
 // Chave interna: MM+YY ex: "0626" — sequência global por mês/ano, sem repetição
@@ -3637,6 +3647,7 @@ async function carregarPedidosLiberados() {
       if (!novos.length) continue;
       pedidos = novos;
       arquivoHistoricoAberto = null;
+      ultimoArquivoSalvoSessao = null;
       renderPedidos();
       return true;
     } catch (e) {
@@ -3659,6 +3670,7 @@ function uploadPedidosLiberados(input) {
       if (!novos.length) { alert('Nenhum pedido reconhecido. Verifique se o arquivo segue o modelo correto.'); return; }
       pedidos = novos;
       arquivoHistoricoAberto = null; // planilha nova = trabalho novo, não continuação do que estava aberto
+      ultimoArquivoSalvoSessao = null;
       _sincronizarDataOperacaoComPedidos();
       renderPedidos();
       showTab('pedidos');
@@ -3675,6 +3687,7 @@ function limparTodosPedidos() {
   if (!confirm('Remover todos os ' + pedidos.length + ' pedido(s) carregados?')) return;
   pedidos = [];
   arquivoHistoricoAberto = null; // lista zerada = trabalho novo
+  ultimoArquivoSalvoSessao = null;
   renderPedidos();
 }
 function baixarModeloPedidos() {
@@ -7689,7 +7702,7 @@ async function salvarNoHistorico(silencioso = false) {
   // entre as duas, pelo menos uma cidade/terminal usado também bater — uma
   // roteirização de 1 cidade não pode "substituir" (e esconder) uma de 4
   // cidades só porque a data de entrega coincide.
-  let revisaoDeValida = arquivoHistoricoAberto || null;
+  let revisaoDeValida = arquivoHistoricoAberto || ultimoArquivoSalvoSessao || null;
   if (revisaoDeValida) {
     try {
       const fhAberto = await dirHandleHistorico.getFileHandle(revisaoDeValida);
@@ -7775,6 +7788,7 @@ async function salvarNoHistorico(silencioso = false) {
       }
     }
     arquivoHistoricoAberto = null; // ciclo de correção concluído — próxima ligação só via "Abrir" explícito
+    ultimoArquivoSalvoSessao = filename; // próximo salvamento desta sessão pode vincular a este, se data+cidade baterem
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
     popularSeletorResumoDia().catch(()=>{});
