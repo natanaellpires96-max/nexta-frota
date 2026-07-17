@@ -2057,10 +2057,10 @@ function dashRender(snapshots) {
   set('dk-clientes', clientesFiltrados.length);
   // Drop médio = entregas/volume totais (já filtrados por cliente/cidade/período
   // acima) divididos pelo total de viagens (idem, respeita os mesmos filtros).
-  const _kpiDropEntregas = _kpiViagens > 0 ? _kpiEntregas / _kpiViagens : 0;
-  const _kpiDropVolume   = _kpiViagens > 0 ? _kpiVol / _kpiViagens : 0;
-  set('dk-drop-entregas', _kpiViagens > 0 ? _kpiDropEntregas.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) : '-');
-  set('dk-drop-volume',   _kpiViagens > 0 ? (_kpiDropVolume.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) + ' m³') : '-');
+  const _kpiDropEntregas = _kpiViagens  > 0 ? _kpiEntregas / _kpiViagens  : 0;
+  const _kpiDropVolume   = _kpiEntregas > 0 ? _kpiVol      / _kpiEntregas : 0;
+  set('dk-drop-entregas', _kpiViagens  > 0 ? _kpiDropEntregas.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) : '-');
+  set('dk-drop-volume',   _kpiEntregas > 0 ? (_kpiDropVolume.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) + ' m³') : '-');
   // Consumo de Jornada — usa d.entradasTransportadora (já filtrado por
   // cidade/operação na fonte, dentro de dashAgregar, igual ao Ranking de
   // Transportadoras logo abaixo). Não é afetado pelo filtro de CLIENTE de
