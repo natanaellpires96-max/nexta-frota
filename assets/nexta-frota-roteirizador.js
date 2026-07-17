@@ -7680,12 +7680,15 @@ async function salvarNoHistorico(silencioso = false) {
   const datasEntrega = [...new Set(pedidos.map(p => p.dataEntregaLogistica).filter(Boolean))];
   // Trava de segurança: "arquivoHistoricoAberto" só é esquecido quando o
   // usuário importa uma planilha nova ou limpa todos os pedidos — mas nada
-  // impede alguém de abrir uma roteirização antiga, trocar a Data de
-  // Operação ou o terminal pra outro dia/cidade totalmente diferente, e
-  // salvar. Sem essa checagem, isso vinculava a nova roteirização como
-  // "revisão" da antiga por engano — escondendo uma programação legítima e
-  // sem relação nenhuma como se fosse uma correção. Só considera revisão de
-  // verdade se pelo menos uma data de entrega bater entre as duas.
+  // impede alguém de abrir uma roteirização antiga, remover boa parte dos
+  // pedidos (deixando só uma cidade/terminal, por exemplo) e salvar. Sem
+  // essa checagem, isso vinculava a nova roteirização como "revisão" da
+  // antiga por engano — escondendo uma programação legítima de outras
+  // cidades/terminais como se fosse uma simples correção. Só considera
+  // revisão de verdade se, ALÉM de pelo menos uma data de entrega bater
+  // entre as duas, pelo menos uma cidade/terminal usado também bater — uma
+  // roteirização de 1 cidade não pode "substituir" (e esconder) uma de 4
+  // cidades só porque a data de entrega coincide.
   let revisaoDeValida = arquivoHistoricoAberto || null;
   if (revisaoDeValida) {
     try {
@@ -7694,8 +7697,13 @@ async function salvarNoHistorico(silencioso = false) {
       const dataAberto = JSON.parse(await fileAberto.text());
       const datasAntigas = new Set(dataAberto.datasEntrega || []);
       const temDataEmComum = datasEntrega.some(d => datasAntigas.has(d));
+      const terminaisAntigos = new Set(dataAberto.resumo?.terminaisUsados || []);
+      const temTerminalEmComum = [...terminaisUsados].some(t => terminaisAntigos.has(t));
       if (!temDataEmComum) {
         console.warn(`[historico] "${revisaoDeValida}" foi aberto, mas a nova roteirização tem data(s) de entrega diferente(s) (${datasEntrega.join(', ')} vs ${[...datasAntigas].join(', ')}) — salvando como programação independente, não como revisão.`);
+        revisaoDeValida = null;
+      } else if (!temTerminalEmComum) {
+        console.warn(`[historico] "${revisaoDeValida}" foi aberto, mas a nova roteirização não usa nenhuma cidade/terminal em comum (${[...terminaisUsados].join(', ')} vs ${[...terminaisAntigos].join(', ')}) — salvando como programação independente, não como revisão.`);
         revisaoDeValida = null;
       }
     } catch(eCheck) {
