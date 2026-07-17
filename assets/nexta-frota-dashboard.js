@@ -729,12 +729,27 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     const dataSnap = (snap.savedAt || '').slice(0,10);
     vecs.forEach(v => {
       const pNormMap = (v.placa || '').trim().toUpperCase();
-      if (pNormMap) {
-        const cidadeMap = dashCidadeOperacaoViagem({}, v, terms);
-        if (dataSnap) placaCidadePorDia.set(pNormMap + '__' + dataSnap, cidadeMap);
-        placaCidade.set(pNormMap, cidadeMap);
-      }
       const viagensTodas = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
+      if (pNormMap) {
+        // Cidade de CADA viagem de fato realizada (vi.terminalOrigem||v.terminal,
+        // o mesmo critério usado pra filtrar Viagens/Entregas/etc.) — guardada
+        // como conjunto, pois um veículo pode ter rodado de terminais/cidades
+        // diferentes no MESMO dia. Usar só o terminal padrão do veículo (v.terminal)
+        // aqui, ignorando o terminal real de cada viagem, fazia esse mapa
+        // divergir da cidade que realmente contou pro filtro em cada viagem.
+        const cidadesDoDia = viagensTodas.length
+          ? viagensTodas.map(vi => dashCidadeOperacaoViagem(vi, v, terms))
+          : [dashCidadeOperacaoViagem({}, v, terms)]; // sem viagem no dia: usa terminal padrão do veículo como melhor palpite
+        cidadesDoDia.forEach(c => {
+          if (dataSnap) {
+            const chaveDia = pNormMap + '__' + dataSnap;
+            if (!placaCidadePorDia.has(chaveDia)) placaCidadePorDia.set(chaveDia, new Set());
+            placaCidadePorDia.get(chaveDia).add(c);
+          }
+          if (!placaCidade.has(pNormMap)) placaCidade.set(pNormMap, new Set());
+          placaCidade.get(pNormMap).add(c);
+        });
+      }
       // Jornada (Consumo de Jornada) mede só quem teve viagem de verdade —
       // veículo sem nenhuma viagem no dia simplesmente não entra nessa conta.
       if (!viagensTodas.length) return;
@@ -1135,6 +1150,8 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
   if (!datas.length) return vazio;
   const dataIni = datas[0], dataFim = datas[datas.length - 1];
   const normPlaca = p => (p || '').toString().trim().toUpperCase();
+  const normCidade = s => (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase();
+  const cidadesFiltroNorm = cidadesFiltro ? new Set([...cidadesFiltro].map(normCidade)) : null;
   // Placas ativas cadastradas por transportadora — usa config/plates (mesma
   // consulta) pra saber quem está ativo (placa desativada não conta) E qual
   // a OPERAÇÃO cadastrada em cada placa (campo "operacao" do cadastro no
@@ -1184,16 +1201,22 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
     if (rec.status !== 'disponivel') return; // só conta quem foi marcado Disponível naquele dia no Painel
     const pNorm = normPlaca(rec.plate);
     if (!placaAtiva.has(pNorm) || placaAtiva.get(pNorm) === false) return; // placa desconhecida/desativada no cadastro atual — fora da conta
-    if (cidadesFiltro) {
-      // Fonte primária: operação cadastrada na placa (cadastro/sistema pai).
-      // Fallback: cidade inferida do terminal usado na roteirização, NAQUELE
-      // DIA específico (placaCidadePorDia) ou, na falta disso, a última
-      // cidade conhecida da placa (placaCidade) — cobre disponibilidade
-      // marcada num dia sem roteirização salva pra essa placa.
-      const cidadePlaca = placaOperacao.get(pNorm)
-        || placaCidadePorDia.get(pNorm + '__' + rec.dateStr)
-        || placaCidade.get(pNorm);
-      if (!cidadePlaca || !cidadesFiltro.has(cidadePlaca)) return; // sem cidade/operação conhecida, ou fora do filtro selecionado
+    if (cidadesFiltroNorm) {
+      // Reúne todos os "candidatos" de cidade/operação pra essa placa nesse
+      // registro: (1) operação cadastrada na placa — fonte primária; (2)
+      // cidades das viagens de fato realizadas por ela NAQUELE DIA; (3) cidades
+      // já vistas pra essa placa em qualquer dia (fallback final, cobre
+      // disponibilidade marcada num dia sem roteirização salva). Comparação
+      // ignora acento/maiúscula pra não quebrar por diferença de digitação
+      // entre o cadastro da placa e o cadastro do terminal (ex.: "Paulinia" x
+      // "Paulínia").
+      const candidatos = [
+        placaOperacao.get(pNorm),
+        ...(placaCidadePorDia.get(pNorm + '__' + rec.dateStr) || []),
+        ...(placaCidade.get(pNorm) || []),
+      ].filter(Boolean);
+      const bate = candidatos.some(c => cidadesFiltroNorm.has(normCidade(c)));
+      if (!bate) return; // nenhuma cidade/operação conhecida bate com o filtro selecionado
     }
     const usado = diasComViagemPorPlaca.has(pNorm + '__' + rec.dateStr);
     totalDisponibilizados++;
@@ -1203,6 +1226,23 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
     porTransportadora[key].disponibilizados++;
     if (usado) porTransportadora[key].usados++;
   });
+  // Diagnóstico: se um filtro de cidade está ativo e ZERO placas bateram,
+  // loga uma amostra pra investigar direto do console do navegador (nomes
+  // reais de operação/cidade cadastrados x nomes selecionados no filtro) —
+  // sem isso, um "0/0" não diz se é falta de dado ou divergência de nome.
+  if (cidadesFiltroNorm && totalDisponibilizados === 0 && docs.length) {
+    const amostra = docs.filter(r => r.status === 'disponivel').slice(0, 5).map(r => {
+      const pN = normPlaca(r.plate);
+      return {
+        placa: r.plate,
+        data: r.dateStr,
+        operacaoCadastrada: placaOperacao.get(pN) || null,
+        cidadesDoDia: [...(placaCidadePorDia.get(pN + '__' + r.dateStr) || [])],
+        cidadesConhecidas: [...(placaCidade.get(pN) || [])],
+      };
+    });
+    console.warn('[Ociosidade] 0 placas bateram com o filtro de cidade selecionado. Filtro:', [...cidadesFiltro], 'Amostra de disponibilidade não-batida:', amostra);
+  }
   const porTransportadoraArr = Object.values(porTransportadora)
     .map(t => ({ ...t, pctOciosidade: t.disponibilizados > 0 ? Math.round((1 - t.usados / t.disponibilizados) * 100) : 0 }))
     .sort((a, b) => b.pctOciosidade - a.pctOciosidade);
