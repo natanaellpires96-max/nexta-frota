@@ -3145,6 +3145,68 @@ async function dashAutoRodarKmRealSeNecessario() {
 // (não tem como distinguir os dois casos com certeza nos arquivos antigos).
 // Isso é avisado no confirm() abaixo — se precisar, o ajuste manual é rápido
 // de refazer reabrindo a viagem no mapa.
+// ─── Diagnóstico: quais viagens estão puxando o Km Total pra cima ──────────
+// Não faz NENHUMA requisição de rede nova — só lê o que já está gravado
+// (_kmAjustado) e compara com a estimativa antiga (soma de par.distanciaKm,
+// a mesma conta que o Dashboard usava antes de existir "km real"), pra achar
+// as viagens com a MAIOR razão real/estimativa antiga. Mostra um resumo em
+// alert() (fácil de printar) em vez de depender de copiar log do console.
+window.dashDiagnosticarKmReal = async function() {
+  if (!window.dirHandleHistorico) { alert('Selecione a pasta do histórico primeiro (aba Histórico).'); return; }
+  let permOk = false;
+  try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted'; } catch(e) {}
+  if (!permOk) { try { permOk = (await window.dirHandleHistorico.requestPermission({ mode: 'read' })) === 'granted'; } catch(e) {} }
+  if (!permOk) { alert('Permissão de leitura negada.'); return; }
+
+  const arquivos = [];
+  for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+    if (handle.kind === 'file' && name.endsWith('.json')) arquivos.push({ name, handle });
+  }
+
+  const linhas = []; // { placa, terminal, arquivo, kmReal, kmEstAntiga, razao }
+  let totalKmReal = 0, totalKmEstAntiga = 0, viagensComKmReal = 0;
+  for (const { name, handle } of arquivos) {
+    let data;
+    try { data = JSON.parse(await (await handle.getFile()).text()); } catch(e) { continue; }
+    if (data.substituidoPor) continue;
+    if (!data.resultado || !data.veiculos) continue;
+    data.veiculos.forEach(v => {
+      const viagensDoVeic = data.resultado[v.id];
+      if (!Array.isArray(viagensDoVeic)) return;
+      viagensDoVeic.forEach(vi => {
+        if (!vi || !vi.paradas || !vi.paradas.length) return;
+        const kmEstAntiga = vi.paradas.reduce((s, p) => s + (p.distanciaKm || 0), 0);
+        totalKmEstAntiga += kmEstAntiga;
+        if (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0) {
+          totalKmReal += vi._kmAjustado;
+          viagensComKmReal++;
+          linhas.push({
+            placa: v.placa,
+            terminal: vi.terminalOrigem || v.terminal || '?',
+            arquivo: name,
+            kmReal: vi._kmAjustado,
+            kmEstAntiga,
+            razao: kmEstAntiga > 0 ? vi._kmAjustado / kmEstAntiga : Infinity,
+          });
+        }
+      });
+    });
+  }
+  linhas.sort((a, b) => b.kmReal - a.kmReal);
+  console.log('[dashDiagnosticarKmReal] TOP 15 viagens por km real (maior pra menor):');
+  console.table(linhas.slice(0, 15));
+  const top10Texto = linhas.slice(0, 10)
+    .map((l, i) => `${i+1}. ${l.placa} (${l.terminal}) — real=${l.kmReal.toFixed(0)}km, estimativa antiga=${l.kmEstAntiga.toFixed(0)}km, razão=${l.razao === Infinity ? '∞' : l.razao.toFixed(1)}x [${l.arquivo}]`)
+    .join('\n');
+  alert(
+    `DIAGNÓSTICO KM REAL\n\n` +
+    `Viagens com km real calculado: ${viagensComKmReal}\n` +
+    `Soma km real: ${totalKmReal.toFixed(0)} km\n` +
+    `Soma estimativa antiga (linha reta): ${totalKmEstAntiga.toFixed(0)} km\n` +
+    `Razão geral: ${totalKmEstAntiga > 0 ? (totalKmReal/totalKmEstAntiga).toFixed(1) : '?'}x\n\n` +
+    `TOP 10 maiores viagens (também no console, F12, com mais detalhe):\n${top10Texto}`
+  );
+};
 window.dashDesfazerKmRealAuto = async function() {
   if (!window.dirHandleHistorico) { alert('Selecione a pasta do histórico primeiro (aba Histórico).'); return; }
   if (!confirm(
