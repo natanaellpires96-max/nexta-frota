@@ -1,0 +1,14 @@
+{
+  "name": "nexta-frota",
+  "private": true,
+  "version": "1.0.0",
+  "description": "NEXTA — Gestão de Frota e Roteirização",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "version:build": "node scripts/build-version.js"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
+  }
+}
