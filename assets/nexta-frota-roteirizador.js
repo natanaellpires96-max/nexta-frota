@@ -9804,24 +9804,20 @@ async function freteCalcular() {
       if (!mesMapa[placa]) mesMapa[placa] = {};
       if (!mesMapa[placa][mesKey]) mesMapa[placa][mesKey] = { viagens: [] };
       viagens.forEach(function(vi) {
-        // Usa o km REAL (vi._kmAjustado — calculado via rota real, seja por
-        // ajuste manual no mapa ou pelo recálculo automático do Dashboard)
-        // quando disponível, em vez da soma de distanciaKm em linha reta.
-        // Sem isso, o relatório de Frete (e o custo por km calculado a partir
-        // dele) ficava desatualizado mesmo depois do Dashboard já mostrar o
-        // km real corrigido — as duas telas liam a mesma viagem de formas
-        // diferentes.
-        // IMPORTANTE: vi._kmAjustado já é o CAMINHO COMPLETO da viagem
-        // (terminal → paradas → retorno, quando há retorno) — bem diferente
-        // do distanciaKm antigo, que era só a distância de IDA (terminal →
-        // cada cliente, em linha reta, somada). Por isso kmJaCompleto marca
-        // quando o valor já é o total de verdade, pra kmEfetivo() (mais
-        // abaixo) não dobrar de novo pro modo "ida e volta" — dobrar um
-        // valor que já é o percurso inteiro conta a viagem 2x.
-        var kmJaCompleto = typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0;
-        var kmIda = kmJaCompleto
-          ? vi._kmAjustado
-          : vi.paradas.reduce(function(s,p) { return s + (p.distanciaKm||0); }, 0);
+        // Km da viagem — fonte ÚNICA: NextaKm.obterKmViagem() (ver
+        // assets/km-utils.js, mesmo módulo usado pelo Dashboard). Sem isso,
+        // o relatório de Frete ficava desatualizado mesmo depois do
+        // Dashboard já mostrar o km real corrigido — as duas telas liam a
+        // mesma viagem de formas diferentes.
+        // IMPORTANTE: quando "real" é true, o valor já é o CAMINHO COMPLETO
+        // da viagem (terminal → paradas → retorno, quando há retorno) — bem
+        // diferente do distanciaKm antigo (só a distância de IDA, em linha
+        // reta). kmJaCompleto marca isso pra kmEfetivo() (mais abaixo) não
+        // dobrar de novo pro modo "ida e volta" — dobrar um valor que já é
+        // o percurso inteiro conta a viagem 2x.
+        var _kmInfo = NextaKm.obterKmViagem(vi);
+        var kmJaCompleto = _kmInfo.real;
+        var kmIda = _kmInfo.km;
         var m3Total = vi.paradas.reduce(function(s,p) { return s + (p.volumeTotal||0); }, 0);
         var termOrigem = vi.terminalOrigem || '';
         var destinos = Array.from(new Set(vi.paradas.map(function(p) { return p.pedido ? (p.pedido.cidade||p.pedido.cliente||'') : ''; }))).join(', ');
@@ -9950,14 +9946,11 @@ async function freteCalcular() {
   })();
 
   function kmEfetivo(entry, contrato) {
-    // Se kmIda já veio do trajeto real completo (vi._kmAjustado — ver onde
-    // "entry" é montado, mais acima), NÃO dobra: dobrar um valor que já é o
-    // percurso inteiro (ida + volta, quando há retorno) contaria a viagem
-    // 2x. O modo "ida"/"ida e volta" do contrato só se aplica de verdade
-    // quando kmIda ainda é a estimativa antiga (distanciaKm, só de ida).
-    if (entry.kmJaCompleto) return entry.kmIda;
-    var modo = (contrato && contrato.kmModo) || 'ida_volta';
-    return modo === 'ida' ? entry.kmIda : entry.kmIda * 2;
+    // Delegado ao NextaKm.kmEfetivo() — fonte única compartilhada com o
+    // Dashboard (ver assets/km-utils.js). Não dobra quando o km já veio do
+    // trajeto real completo (entry.kmJaCompleto) — só dobra a estimativa
+    // antiga (linha reta, só ida) no modo "ida e volta" do contrato.
+    return NextaKm.kmEfetivo({ km: entry.kmIda, real: entry.kmJaCompleto }, contrato && contrato.kmModo);
   }
 
   function custoViagem(entry, contrato) {

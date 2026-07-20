@@ -788,16 +788,17 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           : [];
         let volViagem = 0;
         let kmIdaViagem = 0; // soma do km "base" (sem duplicar ida+volta) — usado no Ranking de Transportadoras
-        // Km real da viagem: se o usuário ajustou a rota manualmente no mapa
-        // (aba Otimização Rotas), vi._kmAjustado guarda a distância real
-
-        // recalculada via OSRM — essa é a fonte mais fiel disponível.
-        // Quando não há ajuste manual, mantém o cálculo padrão (Haversine
-        // sequencial entre paradas, sem nenhum fator de inflação aplicado).
-        const _kmAjustadoViagem = (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0) ? vi._kmAjustado : null;
+        // Km real da viagem — fonte única: NextaKm.obterKmViagem() (ver
+        // assets/km-utils.js). Se o usuário ajustou a rota manualmente no
+        // mapa, ou se o Dashboard já rodou o recálculo em lote,
+        // vi._kmAjustado guarda a distância real via rota — essa é a fonte
+        // mais fiel disponível. Quando não há isso ainda, mantém o cálculo
+        // padrão (Haversine sequencial entre paradas, sem fator de inflação).
+        const _kmInfoViagem = NextaKm.obterKmViagem(vi);
+        const _kmAjustadoViagem = _kmInfoViagem.real ? _kmInfoViagem.km : null;
         let _somaKmOriginalViagem = null;
         if (_kmAjustadoViagem != null) {
-          _somaKmOriginalViagem = vi.paradas.reduce((s, p) => s + (p.distanciaKm || 0), 0);
+          _somaKmOriginalViagem = NextaKm.estimativaLinhaReta(vi);
         }
         vi.paradas.forEach(par => {
           const ped = par.pedido || {};
@@ -838,12 +839,9 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           totalKm += km;
           kmIdaViagem += km;
           rotaPontos.paradas.push({ lat, lon, nome, vol });
-          // Mesma trava do bug do km real: (0,0) não é NaN, então precisa
-          // checar explicitamente — senão um pedido sem coordenada de
-          // verdade entra na detecção de pedágio como se estivesse no meio
-          // do Atlântico.
-          if (lat != null && lon != null && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lon)) &&
-              (Math.abs(parseFloat(lat)) > 0.001 || Math.abs(parseFloat(lon)) > 0.001)) {
+          // Mesma trava de coordenada usada no km real — centralizada em
+          // NextaKm.coordenadaValida (ver assets/km-utils.js).
+          if (NextaKm.coordenadaValida(lat, lon)) {
             pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
           }
         });
@@ -2091,15 +2089,13 @@ function dashRender(snapshots) {
             // o filtro de cliente muda quais viagens contam, e esse filtro é
             // aplicado depois do dashAgregar já ter rodado.
             const pontosPedagio = [];
-            if (tLat != null && tLon != null && !isNaN(parseFloat(tLat)) && !isNaN(parseFloat(tLon)) &&
-                (Math.abs(parseFloat(tLat)) > 0.001 || Math.abs(parseFloat(tLon)) > 0.001)) {
+            if (NextaKm.coordenadaValida(tLat, tLon)) {
               pontosPedagio.push({ lat: parseFloat(tLat), lon: parseFloat(tLon) });
             }
             vi.paradas.forEach(par => {
               const coords = latLonEfetivo ? latLonEfetivo(par.pedido) : { lat: par.lat, lon: par.lon };
               const lat = coords?.lat ?? par.lat, lon = coords?.lon ?? par.lon;
-              if (lat != null && lon != null && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lon)) &&
-                  (Math.abs(parseFloat(lat)) > 0.001 || Math.abs(parseFloat(lon)) > 0.001)) {
+              if (NextaKm.coordenadaValida(lat, lon)) {
                 pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
               }
             });
@@ -2815,16 +2811,15 @@ window.dashExportarExcel = async function dashExportarExcel() {
 
 })();
 })(); // fim IIFE dashboard
-// Chave da OpenRouteService — gerada em openrouteservice.org, tier gratuito
-// (2.000 requisições/dia). Como este é um app 100% front-end (sem backend),
-// essa chave fica visível no código-fonte pra qualquer um que inspecionar a
-// página — é o mesmo modelo de risco que qualquer chave de API usada direto
-// no navegador. O limite diário protege contra abuso descontrolado; se algum
-// dia precisar trocar (por vazamento ou esgotamento de cota), é só gerar uma
-// nova em openrouteservice.org → Dashboard → Tokens e substituir aqui.
-const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImI2OWE4MDYwYzU4YzRhZTRhMGZhOTdlZjAzMTA3ZDM5IiwiaCI6Im11cm11cjY0In0=';
+// A chave da OpenRouteService NÃO fica mais aqui — antes ficava exposta
+// literalmente no código-fonte (qualquer um com DevTools conseguia copiar
+// e gastar a cota diária de 2.000 requisições da empresa). Agora a
+// requisição passa por /api/ors-proxy (Vercel Serverless Function — ver
+// api/ors-proxy.js), que segura a chave só no servidor, via variável de
+// ambiente ORS_API_KEY configurada no painel da Vercel.
+const ORS_PROXY_URL = '/api/ors-proxy';
 async function osrmFetchSegmento(a, b) {
-  // ── OpenRouteService, perfil driving-hgv (caminhão de verdade) ───────────
+  // ── OpenRouteService (via proxy), perfil driving-hgv (caminhão de verdade) ──
   // Substituiu o OSRM público (router.project-osrm.org), que NUNCA teve
   // perfil de caminhão de verdade — confirmado em issue oficial do projeto
   // OSRM: esse servidor ignora silenciosamente qualquer nome de perfil na
@@ -2838,9 +2833,9 @@ async function osrmFetchSegmento(a, b) {
   // garantia 100% (depende de quão bem aquele trecho foi mapeado), mas é
   // reconhecimento de verdade, ausente no OSRM público.
   try {
-    const res = await fetch('https://api.openrouteservice.org/v2/directions/driving-hgv/geojson', {
+    const res = await fetch(ORS_PROXY_URL, {
       method: 'POST',
-      headers: { 'Authorization': ORS_API_KEY, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         coordinates: [[a.lon, a.lat], [b.lon, b.lat]],
         options: {
@@ -2859,10 +2854,10 @@ async function osrmFetchSegmento(a, b) {
         };
       }
     } else {
-      console.warn('[osrmFetchSegmento] ORS respondeu erro, caindo pro OSRM público (linha reta/carro):', res.status, await res.text().catch(()=>''));
+      console.warn('[osrmFetchSegmento] proxy/ORS respondeu erro, caindo pro OSRM público (linha reta/carro):', res.status, await res.text().catch(()=>''));
     }
   } catch (e) {
-    console.warn('[osrmFetchSegmento] Falha ao chamar ORS, caindo pro OSRM público (linha reta/carro):', e);
+    console.warn('[osrmFetchSegmento] Falha ao chamar o proxy/ORS, caindo pro OSRM público (linha reta/carro):', e);
   }
   // ── Fallback 1: OSRM público (car — sem perfil de caminhão de verdade) ──
   // Só usado se a ORS falhar (rede fora, chave inválida/estourada, etc.) —
@@ -2936,35 +2931,22 @@ async function osrmRoute(pontos, layer, cor, peso, opacidade) {
 // histórico (fluxo de recálculo em lote), sem depender de estado vivo.
 async function dashCalcularKmRealViagem(v, vi, terms) {
   if (!v || !vi || !vi.paradas || !vi.paradas.length) return null;
+  // Monta os pontos (terminal → paradas → retorno) e valida coordenada via
+  // NextaKm (assets/km-utils.js) — fonte ÚNICA dessa lógica agora, usada
+  // também pelo relatório de Frete. Ver comentário no próprio módulo sobre
+  // o bug de coordenada (0,0) que essa validação evita.
+  const pontos = NextaKm.montarPontosViagem(v, vi, terms).map(p => ({ ...p, _tag: p.tag }));
   const terminalNome = vi.terminalOrigem || v.terminal || vi.paradas[0]?.pedido?.terminal || '';
-  const terminal = (terms || []).find(t => t.nome === terminalNome);
-  if (!terminal) {
+  if (!(terms || []).find(t => t.nome === terminalNome)) {
     console.warn(`[dashCalcularKmRealViagem] terminal "${terminalNome}" não encontrado na lista de terminais deste arquivo (placa ${v.placa}) — viagem calculada SEM o ponto de origem/retorno, só entre paradas.`);
-  }
-  // Coordenada "válida" precisa ser não-NaN E longe o suficiente de (0,0) —
-  // mesma trava que latLonEfetivo() já usa no resto do sistema. Sem isso,
-  // pedido com lat/lon zerado (comum em cadastro incompleto) passava como
-  // "válido" (0 não é NaN) e a rota real ia calcular até o meio do Oceano
-  // Atlântico (a famosa "Null Island", perto da África) — foi exatamente
-  // isso que gerou o km real inflado em ~14x no histórico: várias viagens
-  // sem coordenada de verdade convergindo pra ~11.400km (ida e volta até
-  // 0,0), independente de placa/terminal/data.
-  const coordValida = (lat, lon) => !isNaN(lat) && !isNaN(lon) && (Math.abs(lat) > 0.001 || Math.abs(lon) > 0.001);
-  const pontos = [];
-  const tLatN = parseFloat(terminal?.lat), tLonN = parseFloat(terminal?.lon);
-  if (terminal && coordValida(tLatN, tLonN)) {
-    pontos.push({ lat: tLatN, lon: tLonN, _tag: `origem:${terminal.nome}` });
   }
   vi.paradas.forEach((p, i) => {
     const lat = parseFloat(p.pedido?.lat ?? p.lat);
     const lon = parseFloat(p.pedido?.lon ?? p.lon);
-    if (coordValida(lat, lon)) pontos.push({ lat, lon, _tag: `parada${i+1}:${p.pedido?.cliente || '?'}` });
-    else console.warn(`[dashCalcularKmRealViagem] parada ${i+1} (${p.pedido?.cliente || '?'}) sem coordenada válida (lat=${p.pedido?.lat ?? p.lat}, lon=${p.pedido?.lon ?? p.lon}) — excluída do cálculo, placa ${v.placa}.`);
+    if (!NextaKm.coordenadaValida(lat, lon)) {
+      console.warn(`[dashCalcularKmRealViagem] parada ${i+1} (${p.pedido?.cliente || '?'}) sem coordenada válida (lat=${p.pedido?.lat ?? p.lat}, lon=${p.pedido?.lon ?? p.lon}) — excluída do cálculo, placa ${v.placa}.`);
+    }
   });
-  const ultimaParada = vi.paradas[vi.paradas.length - 1];
-  if (terminal && (ultimaParada?.deslocVazioMin || 0) > 0 && coordValida(tLatN, tLonN)) {
-    pontos.push({ lat: tLatN, lon: tLonN, _tag: `retorno:${terminal.nome}` }); // retorno ao terminal
-  }
   if (pontos.length < 2) return null;
   // Trava de sanidade: compara cada trecho REAL contra a distância em linha
   // reta (Haversine) do MESMO par de pontos. Estrada real pode ser mais longa
@@ -2984,9 +2966,7 @@ async function dashCalcularKmRealViagem(v, vi, terms) {
     try {
       const seg = await osrmFetchSegmento(pontos[i], pontos[i + 1]);
       const segKm = seg?.distKm || 0;
-      const retaKm = (typeof haversine === 'function')
-        ? haversine(pontos[i].lat, pontos[i].lon, pontos[i+1].lat, pontos[i+1].lon)
-        : null;
+      const retaKm = NextaKm.haversineKm(pontos[i].lat, pontos[i].lon, pontos[i+1].lat, pontos[i+1].lon);
       if (retaKm != null) totalRetaKm += retaKm;
       if (retaKm != null && segKm > retaKm * FATOR_MAX + FOLGA_KM) {
         console.warn(`[dashCalcularKmRealViagem] REJEITADO trecho implausível: ${pontos[i]._tag} → ${pontos[i+1]._tag} | real=${segKm.toFixed(1)}km vs reta=${retaKm.toFixed(1)}km | placa ${v.placa}, terminal "${terminalNome}". Mantendo estimativa por linha reta pra esta viagem inteira.`);
@@ -3009,7 +2989,7 @@ async function dashCalcularKmRealViagem(v, vi, terms) {
 // novo em cima do mesmo resultado sem refazer trabalho). Roda com
 // concorrência limitada (não sobrecarrega o servidor de rota) e respeita um
 // teto de chamadas (a ORS tem cota gratuita de 2.000 requisições/dia — ver
-// comentário na declaração de ORS_API_KEY) — se bater o teto, para e devolve
+// comentário em api/ors-proxy.js) — se bater o teto, para e devolve
 // quantas viagens ainda ficaram pendentes, pra tentar de novo depois (no dia
 // seguinte a cota renova).
 async function dashPreencherKmRealResultado(veiculosArr, resultado, terms, opts = {}) {
@@ -3023,7 +3003,7 @@ async function dashPreencherKmRealResultado(veiculosArr, resultado, terms, opts 
     if (!Array.isArray(viagensDoVeic)) return; // arquivo de formato antigo/diferente — pula esse veículo, não quebra o resto
     viagensDoVeic.forEach(vi => {
       if (!vi || !vi.paradas || !vi.paradas.length) return;
-      if (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0) return; // já tem km real
+      if (NextaKm.obterKmViagem(vi).real) return; // já tem km real
       pendentes.push({ v, vi });
     });
   });
@@ -3215,18 +3195,19 @@ window.dashDiagnosticarKmReal = async function() {
       if (!Array.isArray(viagensDoVeic)) return;
       viagensDoVeic.forEach(vi => {
         if (!vi || !vi.paradas || !vi.paradas.length) return;
-        const kmEstAntiga = vi.paradas.reduce((s, p) => s + (p.distanciaKm || 0), 0);
+        const kmEstAntiga = NextaKm.estimativaLinhaReta(vi);
         totalKmEstAntiga += kmEstAntiga;
-        if (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0) {
-          totalKmReal += vi._kmAjustado;
+        const kmInfo = NextaKm.obterKmViagem(vi);
+        if (kmInfo.real) {
+          totalKmReal += kmInfo.km;
           viagensComKmReal++;
           linhas.push({
             placa: v.placa,
             terminal: vi.terminalOrigem || v.terminal || '?',
             arquivo: name,
-            kmReal: vi._kmAjustado,
+            kmReal: kmInfo.km,
             kmEstAntiga,
-            razao: kmEstAntiga > 0 ? vi._kmAjustado / kmEstAntiga : Infinity,
+            razao: kmEstAntiga > 0 ? kmInfo.km / kmEstAntiga : Infinity,
           });
         }
       });
