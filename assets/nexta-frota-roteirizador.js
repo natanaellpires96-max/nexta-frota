@@ -9804,7 +9804,16 @@ async function freteCalcular() {
       if (!mesMapa[placa]) mesMapa[placa] = {};
       if (!mesMapa[placa][mesKey]) mesMapa[placa][mesKey] = { viagens: [] };
       viagens.forEach(function(vi) {
-        var kmIda = vi.paradas.reduce(function(s,p) { return s + (p.distanciaKm||0); }, 0);
+        // Usa o km REAL (vi._kmAjustado — calculado via rota real, seja por
+        // ajuste manual no mapa ou pelo recálculo automático do Dashboard)
+        // quando disponível, em vez da soma de distanciaKm em linha reta.
+        // Sem isso, o relatório de Frete (e o custo por km calculado a partir
+        // dele) ficava desatualizado mesmo depois do Dashboard já mostrar o
+        // km real corrigido — as duas telas liam a mesma viagem de formas
+        // diferentes.
+        var kmIda = (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0)
+          ? vi._kmAjustado
+          : vi.paradas.reduce(function(s,p) { return s + (p.distanciaKm||0); }, 0);
         var m3Total = vi.paradas.reduce(function(s,p) { return s + (p.volumeTotal||0); }, 0);
         var termOrigem = vi.terminalOrigem || '';
         var destinos = Array.from(new Set(vi.paradas.map(function(p) { return p.pedido ? (p.pedido.cidade||p.pedido.cliente||'') : ''; }))).join(', ');
