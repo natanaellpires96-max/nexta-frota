@@ -2528,6 +2528,7 @@ window.showTab = function(tab) {
   if (_origShowTab) _origShowTab(tab);
   if (tab === 'dashboard_rot') {
     dashPopularMeses();
+    dashAutoRodarKmRealSeNecessario(); // idempotente (só roda 1x/dia) — reforça caso a checagem do carregamento inicial não tenha rodado ainda
     // Invalidar mapa se já existir
     setTimeout(() => { if (_dashMap) _dashMap.invalidateSize(); }, 300);
   }
@@ -2555,6 +2556,7 @@ window.excluirEntradaHistorico = async function(filename, btn) {
     }
   } catch (e) { /* segue mesmo se a restauração falhar */ }
   dashPopularMeses();
+  dashAutoRodarKmRealSeNecessario(); // dispara sozinho em segundo plano, no máx 1x/dia — ver comentário na função
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXPORTAÇÃO EXCEL — Dashboard
@@ -2898,3 +2900,202 @@ async function osrmRoute(pontos, layer, cor, peso, opacidade) {
   layer._nexta_distAcum = distAcum;
   return distAcum;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KM REAL DA VIAGEM (trajeto de verdade, via OSRM/ORS) — não mais linha reta
+// ═══════════════════════════════════════════════════════════════════════════
+// Monta os pontos (terminal → paradas → retorno, se houver) e soma o km REAL
+// de cada trecho via osrmFetchSegmento — mesma fonte usada no "Mapa da
+// Viagem" e na detecção de pedágio com trajeto real. Resultado vai direto em
+// vi._kmAjustado, o MESMO campo que já existia pra ajuste manual no mapa —
+// então o Dashboard e o cálculo de frete já usam esse número automaticamente,
+// sem precisar mudar mais nada em quem LÊ o km.
+// NÃO usa latLonEfetivo (que depende de cadastro de cliente/cidade ao vivo) —
+// lê direto p.pedido.lat/lon, pra funcionar igual tanto numa roteirização
+// recém-otimizada (fluxo normal) quanto processando um arquivo antigo do
+// histórico (fluxo de recálculo em lote), sem depender de estado vivo.
+async function dashCalcularKmRealViagem(v, vi, terms) {
+  if (!v || !vi || !vi.paradas || !vi.paradas.length) return null;
+  const terminalNome = vi.terminalOrigem || v.terminal || vi.paradas[0]?.pedido?.terminal || '';
+  const terminal = (terms || []).find(t => t.nome === terminalNome);
+  const pontos = [];
+  if (terminal && !isNaN(parseFloat(terminal.lat)) && !isNaN(parseFloat(terminal.lon))) {
+    pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon) });
+  }
+  vi.paradas.forEach(p => {
+    const lat = parseFloat(p.pedido?.lat ?? p.lat);
+    const lon = parseFloat(p.pedido?.lon ?? p.lon);
+    if (!isNaN(lat) && !isNaN(lon)) pontos.push({ lat, lon });
+  });
+  const ultimaParada = vi.paradas[vi.paradas.length - 1];
+  if (terminal && (ultimaParada?.deslocVazioMin || 0) > 0 &&
+      !isNaN(parseFloat(terminal.lat)) && !isNaN(parseFloat(terminal.lon))) {
+    pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon) }); // retorno ao terminal
+  }
+  if (pontos.length < 2) return null;
+  let totalKm = 0;
+  for (let i = 0; i < pontos.length - 1; i++) {
+    try {
+      const seg = await osrmFetchSegmento(pontos[i], pontos[i + 1]);
+      totalKm += seg?.distKm || 0;
+    } catch (e) {
+      return null; // falha de rede num trecho — não salva km parcial/errado
+    }
+  }
+  return totalKm > 0 ? totalKm : null;
+}
+// Preenche vi._kmAjustado com o km real de TODAS as viagens de `resultado`
+// que ainda não têm (pula as que já foram ajustadas manualmente no mapa, ou
+// já processadas numa rodada anterior — torna a função segura de rodar de
+// novo em cima do mesmo resultado sem refazer trabalho). Roda com
+// concorrência limitada (não sobrecarrega o servidor de rota) e respeita um
+// teto de chamadas (a ORS tem cota gratuita de 2.000 requisições/dia — ver
+// comentário na declaração de ORS_API_KEY) — se bater o teto, para e devolve
+// quantas viagens ainda ficaram pendentes, pra tentar de novo depois (no dia
+// seguinte a cota renova).
+async function dashPreencherKmRealResultado(veiculosArr, resultado, terms, opts = {}) {
+  const CONCORRENCIA = opts.concorrencia || 3;
+  const tetoRequisicoes = opts.tetoRequisicoes ?? 1800; // margem de segurança sobre os 2000/dia da ORS
+  const onProgresso = opts.onProgresso || (() => {});
+  let requisicoesFeitas = 0;
+  const pendentes = [];
+  (veiculosArr || []).forEach(v => {
+    (resultado[v.id] || []).forEach(vi => {
+      if (!vi || !vi.paradas || !vi.paradas.length) return;
+      if (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0) return; // já tem km real
+      pendentes.push({ v, vi });
+    });
+  });
+  let processadas = 0, falhas = 0;
+  let pararPorCota = false;
+  for (let start = 0; start < pendentes.length; start += CONCORRENCIA) {
+    if (pararPorCota) break;
+    const lote = pendentes.slice(start, start + CONCORRENCIA);
+    await Promise.all(lote.map(async ({ v, vi }) => {
+      if (pararPorCota) return;
+      const nSegmentos = 1 + vi.paradas.length; // estimativa de chamadas que este item vai consumir
+      if (requisicoesFeitas + nSegmentos > tetoRequisicoes) { pararPorCota = true; return; }
+      requisicoesFeitas += nSegmentos;
+      const km = await dashCalcularKmRealViagem(v, vi, terms);
+      if (km != null) { vi._kmAjustado = km; processadas++; } else { falhas++; }
+    }));
+    onProgresso({ processadas, falhas, total: pendentes.length, requisicoesFeitas });
+  }
+  return { processadas, falhas, pendentesRestantes: pendentes.length - processadas - falhas, pararPorCota, requisicoesFeitas };
+}
+// ─── Recalcular km real de TODO o histórico salvo (retroativo) ─────────────
+// Percorre os arquivos do histórico (mesma pasta usada pelo Dashboard/aba
+// Histórico), pula os já substituídos por revisão (não contam pro Dashboard
+// mesmo), preenche vi._kmAjustado das viagens que ainda não têm, e regrava
+// o arquivo. Seguro de interromper e rodar de novo depois (retoma de onde
+// parou, viagem que já tem _kmAjustado nunca é reprocessada) — necessário
+// porque a cota gratuita da ORS (2000 req/dia) normalmente não cobre o
+// histórico inteiro numa passada só se ele for grande.
+// `silencioso`: true = modo automático (chamado sozinho na abertura do app,
+// ver hook mais abaixo) — sem confirm()/alert(), sem forçar pedido de
+// permissão (só usa se a pasta já estiver com permissão de escrita concedida
+// de antes; navegador bloqueia pedido de permissão sem clique do usuário
+// mesmo assim), e avisa o progresso por toast em vez de travar a tela.
+// Botão manual "🛣️ Recalcular Km Real (Histórico)" continua disponível pra
+// forçar uma rodada na hora (silencioso=false), inclusive pra CONCEDER a
+// permissão de escrita da primeira vez (isso sim precisa de clique).
+window.dashRecalcularKmHistorico = async function(silencioso = false) {
+  if (!window.dirHandleHistorico) {
+    if (!silencioso) alert('Selecione a pasta do histórico primeiro (aba Histórico).');
+    return;
+  }
+  if (!silencioso && !confirm(
+    'Isso vai buscar o trajeto REAL (via rota, não linha reta) de cada viagem salva no histórico que ainda não tem, e regravar os arquivos.\n\n' +
+    'Pode levar vários minutos e usa a cota diária de requisições de rota (limitada) — se o histórico for grande, pode não terminar tudo hoje; ' +
+    'rodar de novo depois (nos dias seguintes) continua de onde parou, sem refazer o que já foi calculado.\n\n' +
+    'A partir de agora isso também roda sozinho, automaticamente, 1x por dia — este botão serve pra forçar uma rodada na hora.\n\n' +
+    'Deseja continuar?'
+  )) return;
+  let permOk = false;
+  try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
+  if (!permOk && !silencioso) {
+    try { permOk = (await window.dirHandleHistorico.requestPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
+  }
+  if (!permOk) {
+    // No modo automático isso é esperado até o usuário clicar o botão manual
+    // pelo menos 1x (navegador exige gesto do usuário pra conceder escrita) —
+    // não interrompe nada, só não roda essa rodada.
+    if (!silencioso) alert('Permissão de escrita negada.');
+    else console.log('[dashRecalcularKmHistorico] rodada automática pulada — sem permissão de escrita concedida ainda (clique o botão manual 1x pra conceder).');
+    return;
+  }
+
+  const arquivos = [];
+  for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+    if (handle.kind === 'file' && name.endsWith('.json')) arquivos.push({ name, handle });
+  }
+
+  const btn = document.getElementById('btn-dash-recalcular-km');
+  const setStatus = (txt) => { if (btn && !silencioso) btn.textContent = txt; };
+  setStatus('⏳ Preparando...');
+
+  let totalProcessadas = 0, totalFalhas = 0, arquivosAtualizados = 0, pararPorCota = false;
+  let requisicoesUsadasRodada = 0; // teto é em REQUISIÇÕES (1 por trecho), não em viagens — cada viagem consome vários trechos
+  const TETO_REQUISICOES_RODADA = 1800; // margem de segurança sobre os 2000/dia da ORS
+  for (let i = 0; i < arquivos.length && !pararPorCota; i++) {
+    const { name, handle } = arquivos[i];
+    setStatus(`⏳ Km real: arquivo ${i + 1}/${arquivos.length}...`);
+    let data;
+    try {
+      const file = await handle.getFile();
+      data = JSON.parse(await file.text());
+    } catch (e) { continue; }
+    if (data.substituidoPor) continue; // não conta pro Dashboard — pula, economiza cota
+    if (!data.resultado || !data.veiculos) continue;
+
+    const r = await dashPreencherKmRealResultado(data.veiculos, data.resultado, data.terminais || [], {
+      tetoRequisicoes: TETO_REQUISICOES_RODADA - requisicoesUsadasRodada, // teto GLOBAL da rodada, não por arquivo
+      onProgresso: ({ processadas, total }) => setStatus(`⏳ Km real: arquivo ${i + 1}/${arquivos.length} (${processadas}/${total} viagens)...`),
+    });
+    totalProcessadas += r.processadas;
+    totalFalhas += r.falhas;
+    requisicoesUsadasRodada += r.requisicoesFeitas;
+    if (r.processadas > 0) {
+      try {
+        const ws = await handle.createWritable();
+        await ws.write(JSON.stringify(data, null, 2));
+        await ws.close();
+        arquivosAtualizados++;
+      } catch (e) { console.warn(`[dashRecalcularKmHistorico] falha ao regravar ${name}:`, e); }
+    }
+    if (r.pararPorCota) pararPorCota = true;
+  }
+
+  setStatus('🛣️ Recalcular Km Real (Histórico)');
+  if (totalProcessadas === 0 && !pararPorCota) {
+    // Nada pra fazer (histórico já 100% em dia) — no automático nem vale
+    // incomodar com toast; no manual, um aviso rápido já basta.
+    if (!silencioso) showToast('Histórico já está com o km real em dia — nada pra recalcular.', true);
+    return;
+  }
+  const msg = pararPorCota
+    ? `Km real: cota diária atingida. ${totalProcessadas} viagem(ns) atualizada(s) em ${arquivosAtualizados} arquivo(s) até agora — continua sozinho amanhã.`
+    : `Km real: ${totalProcessadas} viagem(ns) atualizada(s) em ${arquivosAtualizados} arquivo(s)${totalFalhas ? ` (${totalFalhas} falha(s) de rede)` : ''}.`;
+  if (silencioso) { if (typeof showToast === 'function') showToast(msg, !pararPorCota); }
+  else alert(msg);
+  if (typeof window.dashSincronizar === 'function') window.dashSincronizar();
+};
+// ── Roda automaticamente 1x por dia, sozinho, sem precisar clicar no botão ──
+// Hook fica junto da inicialização do Dashboard (dashPopularMeses, mais
+// abaixo) — dispara em segundo plano, sem travar nada, e só se a pasta do
+// histórico já tiver permissão de escrita concedida de uma vez manual
+// anterior (ver dashRecalcularKmHistorico, modo silencioso).
+async function dashAutoRodarKmRealSeNecessario() {
+  try {
+    const hojeStr = new Date().toISOString().slice(0, 10);
+    const chaveLS = 'dashKmRealAutoUltimoRun';
+    if (localStorage.getItem(chaveLS) === hojeStr) return; // já rodou hoje
+    localStorage.setItem(chaveLS, hojeStr); // marca ANTES de rodar — evita disparo duplo se a página recarregar no meio
+    if (!window.dirHandleHistorico) return;
+    await window.dashRecalcularKmHistorico(true);
+  } catch (e) {
+    console.warn('[dashAutoRodarKmRealSeNecessario] falhou:', e);
+  }
+}
+
+

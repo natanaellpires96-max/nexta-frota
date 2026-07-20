@@ -7677,6 +7677,21 @@ async function salvarNoHistorico(silencioso = false) {
     if (!dirHandleHistorico) return;
   }
   if (!await _histGarantirPermissao()) { if (!silencioso) alert('Permissão de escrita negada.'); return; }
+  // Busca o KM REAL (trajeto de verdade via rota, não linha reta) de cada
+  // viagem ANTES de salvar — grava em vi._kmAjustado, o mesmo campo já usado
+  // quando alguém ajusta a rota manualmente no mapa (ver mvRecalcularDistancia
+  // em nexta-frota-dashboard.js). Assim o Dashboard e o cálculo de frete já
+  // usam o km real automaticamente, sem precisar abrir o mapa de cada viagem
+  // uma por uma. Pula viagens que já têm _kmAjustado (ajuste manual anterior,
+  // ou já preenchido numa tentativa anterior desta mesma função).
+  if (typeof window.dashPreencherKmRealResultado === 'function' && terminaisCad?.length) {
+    if (!silencioso) showToast('Calculando km real das viagens (trajeto de rota)...', true);
+    try {
+      await window.dashPreencherKmRealResultado(veiculos, ultimoResultado, terminaisCad);
+    } catch (e) {
+      console.warn('[salvarNoHistorico] falha ao calcular km real — salvando com o km estimado (linha reta):', e);
+    }
+  }
   let totalViagens = 0, totalVolume = 0, totalPedidos = 0, totalRotas = 0;
   const terminaisUsados = new Set();
   veiculos.forEach(v => {
