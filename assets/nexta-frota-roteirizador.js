@@ -9811,7 +9811,15 @@ async function freteCalcular() {
         // dele) ficava desatualizado mesmo depois do Dashboard já mostrar o
         // km real corrigido — as duas telas liam a mesma viagem de formas
         // diferentes.
-        var kmIda = (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0)
+        // IMPORTANTE: vi._kmAjustado já é o CAMINHO COMPLETO da viagem
+        // (terminal → paradas → retorno, quando há retorno) — bem diferente
+        // do distanciaKm antigo, que era só a distância de IDA (terminal →
+        // cada cliente, em linha reta, somada). Por isso kmJaCompleto marca
+        // quando o valor já é o total de verdade, pra kmEfetivo() (mais
+        // abaixo) não dobrar de novo pro modo "ida e volta" — dobrar um
+        // valor que já é o percurso inteiro conta a viagem 2x.
+        var kmJaCompleto = typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0;
+        var kmIda = kmJaCompleto
           ? vi._kmAjustado
           : vi.paradas.reduce(function(s,p) { return s + (p.distanciaKm||0); }, 0);
         var m3Total = vi.paradas.reduce(function(s,p) { return s + (p.volumeTotal||0); }, 0);
@@ -9830,7 +9838,7 @@ async function freteCalcular() {
 
         var eixosVeic = v.eixos || 2;
         var pontosRetos = _freteObterPontosRota(v, vi, snap.terminais);
-        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa, jornadaDispMin: jornadaDispMin, jornadaUsadaMin: jornadaUsadaMin, fatorJornada: fatorJornada, custoPedagios: 0, pedagiosPreciso: false };
+        var entry = { data: dataSnap, diaKey: diaKey2, mesKey: mesKey, kmIda: kmIda, kmJaCompleto: kmJaCompleto, m3Total: m3Total, termOrigem: termOrigem, destinos: destinos, placa: placa, jornadaDispMin: jornadaDispMin, jornadaUsadaMin: jornadaUsadaMin, fatorJornada: fatorJornada, custoPedagios: 0, pedagiosPreciso: false };
         viagensMap[placa].push(entry);
         mesMapa[placa][mesKey].viagens.push(entry);
 
@@ -9942,6 +9950,12 @@ async function freteCalcular() {
   })();
 
   function kmEfetivo(entry, contrato) {
+    // Se kmIda já veio do trajeto real completo (vi._kmAjustado — ver onde
+    // "entry" é montado, mais acima), NÃO dobra: dobrar um valor que já é o
+    // percurso inteiro (ida + volta, quando há retorno) contaria a viagem
+    // 2x. O modo "ida"/"ida e volta" do contrato só se aplica de verdade
+    // quando kmIda ainda é a estimativa antiga (distanciaKm, só de ida).
+    if (entry.kmJaCompleto) return entry.kmIda;
     var modo = (contrato && contrato.kmModo) || 'ida_volta';
     return modo === 'ida' ? entry.kmIda : entry.kmIda * 2;
   }
