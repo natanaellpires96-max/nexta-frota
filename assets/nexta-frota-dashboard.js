@@ -2818,6 +2818,30 @@ window.dashExportarExcel = async function dashExportarExcel() {
 // api/ors-proxy.js), que segura a chave só no servidor, via variável de
 // ambiente ORS_API_KEY configurada no painel da Vercel.
 const ORS_PROXY_URL = '/api/ors-proxy';
+// ── Limitador de ritmo (rate limiter) pro proxy da ORS ──────────────────────
+// A ORS free tier tem DOIS limites separados: 2.000 requisições/DIA (já
+// controlado pelo teto em dashPreencherKmRealResultado) e um limite de
+// RAJADA por minuto (bem mais baixo, ~40/min) — esse segundo limite nunca
+// tinha sido tratado, e disparar vários lotes em sequência rápida (mesmo
+// com só 3 de concorrência por vez) estourava ele quase imediatamente,
+// gerando uma sequência de erros 429 (visível no painel de uso da ORS: só
+// ~30 de ~730 chamadas tiveram sucesso numa rodada). A cada chamada, esse
+// limitador espera até haver uma "vaga" dentro da janela de 60s.
+const ORS_MAX_REQ_POR_MINUTO = 30; // margem de segurança sobre o limite real da ORS (~40/min)
+const _orsHistoricoChamadas = [];
+async function _orsAguardarVaga() {
+  const agora = Date.now();
+  // Descarta do histórico qualquer chamada com mais de 60s (já saiu da janela)
+  while (_orsHistoricoChamadas.length && agora - _orsHistoricoChamadas[0] > 60000) {
+    _orsHistoricoChamadas.shift();
+  }
+  if (_orsHistoricoChamadas.length >= ORS_MAX_REQ_POR_MINUTO) {
+    const esperaMs = 60000 - (agora - _orsHistoricoChamadas[0]) + 200; // +200ms de folga
+    await new Promise(r => setTimeout(r, Math.max(esperaMs, 0)));
+    return _orsAguardarVaga(); // reavalia depois de esperar (pode ter mais de uma vaga liberada)
+  }
+  _orsHistoricoChamadas.push(Date.now());
+}
 async function osrmFetchSegmento(a, b) {
   // ── OpenRouteService (via proxy), perfil driving-hgv (caminhão de verdade) ──
   // Substituiu o OSRM público (router.project-osrm.org), que NUNCA teve
@@ -2832,32 +2856,45 @@ async function osrmFetchSegmento(a, b) {
   // quando essa informação existe no mapa (OpenStreetMap) da região — não é
   // garantia 100% (depende de quão bem aquele trecho foi mapeado), mas é
   // reconhecimento de verdade, ausente no OSRM público.
-  try {
-    const res = await fetch(ORS_PROXY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        coordinates: [[a.lon, a.lat], [b.lon, b.lat]],
-        options: {
-          vehicle_type: 'hgv',
-          profile_params: { restrictions: { hazmat: true } },
-        },
-      }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const feat = data.features?.[0];
-      if (feat?.geometry?.coordinates?.length) {
-        return {
-          coords: feat.geometry.coordinates.map(c => [c[1], c[0]]), // ORS devolve [lon,lat] — inverte pra [lat,lon]
-          distKm: (feat.properties?.summary?.distance || 0) / 1000,
-        };
+  for (let tentativa = 0; tentativa < 2; tentativa++) {
+    try {
+      await _orsAguardarVaga();
+      const res = await fetch(ORS_PROXY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          coordinates: [[a.lon, a.lat], [b.lon, b.lat]],
+          options: {
+            vehicle_type: 'hgv',
+            profile_params: { restrictions: { hazmat: true } },
+          },
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const feat = data.features?.[0];
+        if (feat?.geometry?.coordinates?.length) {
+          return {
+            coords: feat.geometry.coordinates.map(c => [c[1], c[0]]), // ORS devolve [lon,lat] — inverte pra [lat,lon]
+            distKm: (feat.properties?.summary?.distance || 0) / 1000,
+          };
+        }
+        break; // resposta ok mas sem rota utilizável — não adianta repetir, cai pro fallback
       }
-    } else {
+      if (res.status === 429 && tentativa === 0) {
+        // Rajada estourada mesmo com o limitador (ex.: outra aba/usuário
+        // consumindo ao mesmo tempo) — espera um pouco mais e tenta 1 vez
+        // antes de desistir e cair pro fallback de carro/linha reta.
+        console.warn('[osrmFetchSegmento] 429 (rajada) mesmo com o limitador — aguardando 3s e tentando 1 vez mais.');
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
       console.warn('[osrmFetchSegmento] proxy/ORS respondeu erro, caindo pro OSRM público (linha reta/carro):', res.status, await res.text().catch(()=>''));
+      break;
+    } catch (e) {
+      console.warn('[osrmFetchSegmento] Falha ao chamar o proxy/ORS, caindo pro OSRM público (linha reta/carro):', e);
+      break;
     }
-  } catch (e) {
-    console.warn('[osrmFetchSegmento] Falha ao chamar o proxy/ORS, caindo pro OSRM público (linha reta/carro):', e);
   }
   // ── Fallback 1: OSRM público (car — sem perfil de caminhão de verdade) ──
   // Só usado se a ORS falhar (rede fora, chave inválida/estourada, etc.) —
