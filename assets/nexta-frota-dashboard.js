@@ -2933,11 +2933,31 @@ async function dashCalcularKmRealViagem(v, vi, terms) {
     pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon) }); // retorno ao terminal
   }
   if (pontos.length < 2) return null;
+  // Trava de sanidade: compara cada trecho REAL contra a distância em linha
+  // reta (Haversine) do MESMO par de pontos. Estrada real pode ser mais longa
+  // que a reta (curvas, contorno de serra/rio), mas não numa proporção
+  // absurda — se algum trecho vier MUITO maior que a reta (coordenada errada,
+  // geocodificação ruim, ou a rota calculada foi parar em outro estado/país),
+  // rejeita a viagem inteira em vez de gravar um km calculado errado: melhor
+  // manter a estimativa por linha reta (que pelo menos é consistente) do que
+  // "corrigir" pra um número pior. +15 de folga absoluta cobre trechos curtos
+  // onde a razão de multiplicação sozinha seria injusta (ex.: 1km reto virando
+  // 3km real por causa de uma via sem saída direta).
+  const FATOR_MAX = 3;
+  const FOLGA_KM = 15;
   let totalKm = 0;
   for (let i = 0; i < pontos.length - 1; i++) {
     try {
       const seg = await osrmFetchSegmento(pontos[i], pontos[i + 1]);
-      totalKm += seg?.distKm || 0;
+      const segKm = seg?.distKm || 0;
+      const retaKm = (typeof haversine === 'function')
+        ? haversine(pontos[i].lat, pontos[i].lon, pontos[i+1].lat, pontos[i+1].lon)
+        : null;
+      if (retaKm != null && segKm > retaKm * FATOR_MAX + FOLGA_KM) {
+        console.warn(`[dashCalcularKmRealViagem] trecho implausível rejeitado (real ${segKm.toFixed(1)}km vs reta ${retaKm.toFixed(1)}km) — placa ${v.placa}, viagem terminal "${terminalNome}". Mantendo estimativa por linha reta pra esta viagem.`);
+        return null;
+      }
+      totalKm += segKm;
     } catch (e) {
       return null; // falha de rede num trecho — não salva km parcial/errado
     }
@@ -2977,7 +2997,7 @@ async function dashPreencherKmRealResultado(veiculosArr, resultado, terms, opts 
       if (requisicoesFeitas + nSegmentos > tetoRequisicoes) { pararPorCota = true; return; }
       requisicoesFeitas += nSegmentos;
       const km = await dashCalcularKmRealViagem(v, vi, terms);
-      if (km != null) { vi._kmAjustado = km; processadas++; } else { falhas++; }
+      if (km != null) { vi._kmAjustado = km; vi._kmAjustadoAuto = true; processadas++; } else { falhas++; }
     }));
     onProgresso({ processadas, falhas, total: pendentes.length, requisicoesFeitas });
   }
@@ -3097,5 +3117,62 @@ async function dashAutoRodarKmRealSeNecessario() {
     console.warn('[dashAutoRodarKmRealSeNecessario] falhou:', e);
   }
 }
+// ─── Desfazer km real calculado automaticamente (rollback) ─────────────────
+// Remove SÓ os valores marcados com _kmAjustadoAuto=true (calculados pela
+// rotina automática/botão de recálculo) — preserva de propósito qualquer
+// _kmAjustado que tenha vindo de um ajuste manual de verdade no mapa (esse
+// nunca leva a marca _kmAjustadoAuto). Existe pra reverter rapidamente se o
+// recálculo em massa gravar algo errado (coordenada ruim, serviço de rota
+// com problema, etc.) sem precisar restaurar backup do zero.
+window.dashDesfazerKmRealAuto = async function() {
+  if (!window.dirHandleHistorico) { alert('Selecione a pasta do histórico primeiro (aba Histórico).'); return; }
+  if (!confirm(
+    'Isso vai REMOVER o km real calculado automaticamente (pelo botão/rotina "Recalcular Km Real") de todas as viagens do histórico, ' +
+    'voltando o Km Total pra estimativa por linha reta de antes.\n\n' +
+    'Ajustes MANUAIS feitos no mapa (aba Mapa da Viagem) não são afetados.\n\n' +
+    'Confirma?'
+  )) return;
+  let permOk = false;
+  try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
+  if (!permOk) { try { permOk = (await window.dirHandleHistorico.requestPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {} }
+  if (!permOk) { alert('Permissão de escrita negada.'); return; }
+
+  let arquivosAlterados = 0, viagensRevertidas = 0;
+  for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+    if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+    let data;
+    try {
+      const file = await handle.getFile();
+      data = JSON.parse(await file.text());
+    } catch (e) { continue; }
+    if (!data.resultado) continue;
+    let mudou = false;
+    Object.values(data.resultado).forEach(viagensDoVeic => {
+      (viagensDoVeic || []).forEach(vi => {
+        if (vi && vi._kmAjustadoAuto === true) {
+          delete vi._kmAjustado;
+          delete vi._kmAjustadoAuto;
+          mudou = true;
+          viagensRevertidas++;
+        }
+      });
+    });
+    if (mudou) {
+      try {
+        const ws = await handle.createWritable();
+        await ws.write(JSON.stringify(data, null, 2));
+        await ws.close();
+        arquivosAlterados++;
+      } catch (e) { console.warn(`[dashDesfazerKmRealAuto] falha ao regravar ${name}:`, e); }
+    }
+  }
+  // Também zera a marca de "já rodou hoje" pra permitir recalcular de novo
+  // imediatamente (com a trava de sanidade agora em vigor), sem esperar o
+  // próximo dia.
+  try { localStorage.removeItem('dashKmRealAutoUltimoRun'); } catch(e) {}
+  alert(`Desfeito: ${viagensRevertidas} viagem(ns) revertida(s) em ${arquivosAlterados} arquivo(s). Km Total volta pra estimativa por linha reta.`);
+  if (typeof window.dashSincronizar === 'function') window.dashSincronizar();
+};
+
 
 
