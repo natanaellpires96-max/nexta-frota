@@ -2538,7 +2538,7 @@ function dashAtualizarVisibilidadeFerramentasKm() {
   const el = document.getElementById('dash-km-admin-tools');
   if (!el) return;
   const role = window.USERS_DB && window.S && window.USERS_DB[window.S.user]?.role;
-  el.style.display = (role === 'admin') ? '' : 'none';
+  el.style.display = (role === 'admin') ? 'inline-flex' : 'none';
 }
 // ── Hook: popular meses quando abre a aba ─────────────────────────────────
 const _origShowTab = window.showTab;
