@@ -838,7 +838,12 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           totalKm += km;
           kmIdaViagem += km;
           rotaPontos.paradas.push({ lat, lon, nome, vol });
-          if (lat != null && lon != null && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lon))) {
+          // Mesma trava do bug do km real: (0,0) não é NaN, então precisa
+          // checar explicitamente — senão um pedido sem coordenada de
+          // verdade entra na detecção de pedágio como se estivesse no meio
+          // do Atlântico.
+          if (lat != null && lon != null && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lon)) &&
+              (Math.abs(parseFloat(lat)) > 0.001 || Math.abs(parseFloat(lon)) > 0.001)) {
             pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
           }
         });
@@ -2086,13 +2091,15 @@ function dashRender(snapshots) {
             // o filtro de cliente muda quais viagens contam, e esse filtro é
             // aplicado depois do dashAgregar já ter rodado.
             const pontosPedagio = [];
-            if (tLat != null && tLon != null && !isNaN(parseFloat(tLat)) && !isNaN(parseFloat(tLon))) {
+            if (tLat != null && tLon != null && !isNaN(parseFloat(tLat)) && !isNaN(parseFloat(tLon)) &&
+                (Math.abs(parseFloat(tLat)) > 0.001 || Math.abs(parseFloat(tLon)) > 0.001)) {
               pontosPedagio.push({ lat: parseFloat(tLat), lon: parseFloat(tLon) });
             }
             vi.paradas.forEach(par => {
               const coords = latLonEfetivo ? latLonEfetivo(par.pedido) : { lat: par.lat, lon: par.lon };
               const lat = coords?.lat ?? par.lat, lon = coords?.lon ?? par.lon;
-              if (lat != null && lon != null && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lon))) {
+              if (lat != null && lon != null && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lon)) &&
+                  (Math.abs(parseFloat(lat)) > 0.001 || Math.abs(parseFloat(lon)) > 0.001)) {
                 pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
               }
             });
@@ -2921,19 +2928,29 @@ async function dashCalcularKmRealViagem(v, vi, terms) {
   if (!terminal) {
     console.warn(`[dashCalcularKmRealViagem] terminal "${terminalNome}" não encontrado na lista de terminais deste arquivo (placa ${v.placa}) — viagem calculada SEM o ponto de origem/retorno, só entre paradas.`);
   }
+  // Coordenada "válida" precisa ser não-NaN E longe o suficiente de (0,0) —
+  // mesma trava que latLonEfetivo() já usa no resto do sistema. Sem isso,
+  // pedido com lat/lon zerado (comum em cadastro incompleto) passava como
+  // "válido" (0 não é NaN) e a rota real ia calcular até o meio do Oceano
+  // Atlântico (a famosa "Null Island", perto da África) — foi exatamente
+  // isso que gerou o km real inflado em ~14x no histórico: várias viagens
+  // sem coordenada de verdade convergindo pra ~11.400km (ida e volta até
+  // 0,0), independente de placa/terminal/data.
+  const coordValida = (lat, lon) => !isNaN(lat) && !isNaN(lon) && (Math.abs(lat) > 0.001 || Math.abs(lon) > 0.001);
   const pontos = [];
-  if (terminal && !isNaN(parseFloat(terminal.lat)) && !isNaN(parseFloat(terminal.lon))) {
-    pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon), _tag: `origem:${terminal.nome}` });
+  const tLatN = parseFloat(terminal?.lat), tLonN = parseFloat(terminal?.lon);
+  if (terminal && coordValida(tLatN, tLonN)) {
+    pontos.push({ lat: tLatN, lon: tLonN, _tag: `origem:${terminal.nome}` });
   }
   vi.paradas.forEach((p, i) => {
     const lat = parseFloat(p.pedido?.lat ?? p.lat);
     const lon = parseFloat(p.pedido?.lon ?? p.lon);
-    if (!isNaN(lat) && !isNaN(lon)) pontos.push({ lat, lon, _tag: `parada${i+1}:${p.pedido?.cliente || '?'}` });
+    if (coordValida(lat, lon)) pontos.push({ lat, lon, _tag: `parada${i+1}:${p.pedido?.cliente || '?'}` });
+    else console.warn(`[dashCalcularKmRealViagem] parada ${i+1} (${p.pedido?.cliente || '?'}) sem coordenada válida (lat=${p.pedido?.lat ?? p.lat}, lon=${p.pedido?.lon ?? p.lon}) — excluída do cálculo, placa ${v.placa}.`);
   });
   const ultimaParada = vi.paradas[vi.paradas.length - 1];
-  if (terminal && (ultimaParada?.deslocVazioMin || 0) > 0 &&
-      !isNaN(parseFloat(terminal.lat)) && !isNaN(parseFloat(terminal.lon))) {
-    pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon), _tag: `retorno:${terminal.nome}` }); // retorno ao terminal
+  if (terminal && (ultimaParada?.deslocVazioMin || 0) > 0 && coordValida(tLatN, tLonN)) {
+    pontos.push({ lat: tLatN, lon: tLonN, _tag: `retorno:${terminal.nome}` }); // retorno ao terminal
   }
   if (pontos.length < 2) return null;
   // Trava de sanidade: compara cada trecho REAL contra a distância em linha
