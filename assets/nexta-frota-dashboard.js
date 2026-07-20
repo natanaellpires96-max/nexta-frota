@@ -3154,15 +3154,26 @@ window.dashRecalcularKmHistorico = async function(silencioso = false) {
   }
 
   setStatus('🛣️ Recalcular Km Real (Histórico)');
-  if (totalProcessadas === 0 && !pararPorCota) {
-    // Nada pra fazer (histórico já 100% em dia) — no automático nem vale
-    // incomodar com toast; no manual, um aviso rápido já basta.
+  if (totalProcessadas === 0 && totalFalhas === 0 && !pararPorCota) {
+    // De verdade não tinha NADA pendente (nem sucesso, nem falha) — histórico
+    // já 100% em dia. Único caso em que faz sentido dizer "nada a fazer".
     if (!silencioso) showToast('Histórico já está com o km real em dia — nada pra recalcular.', true);
+    return;
+  }
+  if (totalProcessadas === 0 && totalFalhas > 0 && !pararPorCota) {
+    // Tinha viagem pendente, mas TODAS falharam — geralmente porque o(s)
+    // cliente(s) da viagem não têm coordenada cadastrada (ver aviso
+    // "excluída do cálculo" no console) ou o cadastro do terminal está
+    // incompleto. Isso é diferente de "nada a fazer": tem trabalho pendente
+    // que só vai ser resolvido corrigindo o cadastro, não rodando de novo.
+    const msgFalha = `Km real: ${totalFalhas} viagem(ns) pendente(s) tentada(s), mas nenhuma pôde ser calculada (coordenada de cliente/terminal ausente ou inválida — ver Console, F12, pra detalhes). Corrija o cadastro dessas paradas e rode de novo.`;
+    if (silencioso) { if (typeof showToast === 'function') showToast(msgFalha, false); }
+    else alert(msgFalha);
     return;
   }
   const msg = pararPorCota
     ? `Km real: cota diária atingida. ${totalProcessadas} viagem(ns) atualizada(s) em ${arquivosAtualizados} arquivo(s) até agora — continua sozinho amanhã.`
-    : `Km real: ${totalProcessadas} viagem(ns) atualizada(s) em ${arquivosAtualizados} arquivo(s)${totalFalhas ? ` (${totalFalhas} falha(s) de rede)` : ''}.`;
+    : `Km real: ${totalProcessadas} viagem(ns) atualizada(s) em ${arquivosAtualizados} arquivo(s)${totalFalhas ? ` (${totalFalhas} falha(s) — coordenada ausente ou rede)` : ''}.`;
   if (silencioso) { if (typeof showToast === 'function') showToast(msg, !pararPorCota); }
   else alert(msg);
   if (typeof window.dashSincronizar === 'function') window.dashSincronizar();
