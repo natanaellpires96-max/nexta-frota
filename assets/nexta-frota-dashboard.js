@@ -694,6 +694,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
   const operacoes = {};  // key=cidade da operação: {cidade, volume, capTotal, viagens} — pro gráfico Ocupação vs Volume por Operação
   const viagens_ocup = []; // {label, ocup}
   let totalViagens = 0, totalKm = 0, totalVol = 0, totalCap = 0;
+  let totalViagensComPedagio = 0; // pra "% de Rotas Pedagiadas" e "Tempo Gasto com Lançamento de Pedágios"
   // veiculos_escalados: lista de {id, snapIdx, capV, viagensIds} para cálculo de ocupação filtrada
   const veiculos_escalados = [];
   const rotasMap = [];   // para o mapa: [{termLat,termLon,paradas:[{lat,lon,nome}]}]
@@ -769,6 +770,22 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
       viagens.forEach((vi, iV) => {
         totalViagens++;
         const rotaPontos = { termLat: tLat, termLon: tLon, placa: v.placa, paradas: [] };
+        // Pontos pra detecção de pedágio (% de Rotas Pedagiadas / Tempo Gasto
+        // com Lançamento de Pedágios): terminal de origem + cada parada na
+        // ordem da viagem — mesmo formato que detectarPedagiosNaRota espera.
+        // Usa a LINHA RETA entre os pontos (não o trajeto real via OSRM, que
+        // exigiria uma chamada de rede por viagem — inviável para centenas
+        // de viagens históricas de uma vez), com raioKm=3 igual ao fallback
+        // já usado pelo relatório de Frete pro mesmo cenário (ver comentário
+        // em detectarPedagiosNaRota, em pedagios-utils.js). Isso é uma
+        // ESTIMATIVA: pode errar pra mais (raio largo pega pedágio perto mas
+        // fora do trajeto real) ou pra menos (trajeto real com curva que a
+        // reta não capta) — serve como indicador de tendência, não como
+        // conferência financeira exata (essa já existe no Roteirizador/Frete,
+        // com o trajeto real).
+        const pontosPedagio = (tLat != null && tLon != null && !isNaN(parseFloat(tLat)) && !isNaN(parseFloat(tLon)))
+          ? [{ lat: parseFloat(tLat), lon: parseFloat(tLon) }]
+          : [];
         let volViagem = 0;
         let kmIdaViagem = 0; // soma do km "base" (sem duplicar ida+volta) — usado no Ranking de Transportadoras
         // Km real da viagem: se o usuário ajustou a rota manualmente no mapa
@@ -821,8 +838,21 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           totalKm += km;
           kmIdaViagem += km;
           rotaPontos.paradas.push({ lat, lon, nome, vol });
+          if (lat != null && lon != null && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lon))) {
+            pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
+          }
         });
         rotasMap.push(rotaPontos);
+        // Detecção de pedágio desta viagem (ver comentário acima de
+        // pontosPedagio) — conta 1 viagem "pedagiada" se pelo menos 1 praça
+        // for detectada no trajeto, independente de quantas praças tenha.
+        if (pontosPedagio.length >= 2) {
+          const _eixosV = v.eixos || 2;
+          const _pedagiosDetectados = (typeof detectarPedagiosNaRota === 'function')
+            ? detectarPedagiosNaRota(pontosPedagio, _eixosV, 3)
+            : [];
+          if (_pedagiosDetectados.length > 0) totalViagensComPedagio++;
+        }
         // Entrada crua desta viagem para o Ranking de Transportadoras — cálculo
         // de custo (contrato) é feito depois, em dashAgregarTransportadoras,
         // porque precisa do total de viagens do mês (rateio do valor fixo).
@@ -893,6 +923,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     operacoes_ocup,
     veiculos_escalados, // [{snapIdx, vid, capV}] para cálculo de ocupação filtrada
     totalViagens,
+    totalViagensComPedagio,
     totalEntregas,
     totalVol: parseFloat(totalVol.toFixed(1)),
     totalKm: Math.round(totalKm),
@@ -1935,7 +1966,7 @@ window.dashAplicarFiltroCidades   = dashAplicarFiltroCidades;
 function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
   if (!snapshots || !snapshots.length) {
-    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada,#dk-ociosidade,#dk-drop-entregas,#dk-drop-volume')
+    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada,#dk-ociosidade,#dk-drop-entregas,#dk-drop-volume,#dk-perc-pedagiadas,#dk-tempo-pedagio')
       .forEach(el => { if(el) el.textContent = '-'; });
     const _elJH = document.getElementById('dk-jornada-horas'); if (_elJH) _elJH.textContent = '';
     const _elOQ = document.getElementById('dk-ociosidade-qtd'); if (_elOQ) _elOQ.textContent = '';
@@ -2031,20 +2062,46 @@ function dashRender(snapshots) {
   // Viagens: conta apenas viagens que atendem ao menos um cliente filtrado
   const _nomesFilter = _dashClientesSelecionados;
   let _kpiViagens = d.totalViagens;
+  let _kpiViagensComPedagio = d.totalViagensComPedagio;
   if (_nomesFilter) {
     _kpiViagens = 0;
+    _kpiViagensComPedagio = 0;
     _dashSnapshotsAtivos.forEach(snap => {
       const res  = snap.resultado || {};
       const vecs = snap.veiculos  || [];
       const terms = snap.terminais || [];
       vecs.forEach(v => {
+        const term = terms.find(t => t.nome === v.terminal);
+        const tLat = term?.lat, tLon = term?.lon;
         (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length).forEach(vi => {
           if (_dashCidadesSelecionadas && !_dashCidadesSelecionadas.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
           const temCliente = vi.paradas.some(par => {
             const nome = (par.pedido||{}).cliente || (par.pedido||{}).nomeCliente || par.nome || '';
             return _nomesFilter.has(nome);
           });
-          if (temCliente) _kpiViagens++;
+          if (temCliente) {
+            _kpiViagens++;
+            // Mesma detecção (linha reta, raioKm=3) usada em dashAgregar — ver
+            // comentário lá pra detalhes/limitações. Só recalcula aqui porque
+            // o filtro de cliente muda quais viagens contam, e esse filtro é
+            // aplicado depois do dashAgregar já ter rodado.
+            const pontosPedagio = [];
+            if (tLat != null && tLon != null && !isNaN(parseFloat(tLat)) && !isNaN(parseFloat(tLon))) {
+              pontosPedagio.push({ lat: parseFloat(tLat), lon: parseFloat(tLon) });
+            }
+            vi.paradas.forEach(par => {
+              const coords = latLonEfetivo ? latLonEfetivo(par.pedido) : { lat: par.lat, lon: par.lon };
+              const lat = coords?.lat ?? par.lat, lon = coords?.lon ?? par.lon;
+              if (lat != null && lon != null && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lon))) {
+                pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
+              }
+            });
+            if (pontosPedagio.length >= 2) {
+              const _eixosV = v.eixos || 2;
+              const _pd = (typeof detectarPedagiosNaRota === 'function') ? detectarPedagiosNaRota(pontosPedagio, _eixosV, 3) : [];
+              if (_pd.length > 0) _kpiViagensComPedagio++;
+            }
+          }
         });
       });
     });
@@ -2061,6 +2118,20 @@ function dashRender(snapshots) {
   const _kpiDropVolume   = _kpiEntregas > 0 ? _kpiVol      / _kpiEntregas : 0;
   set('dk-drop-entregas', _kpiViagens  > 0 ? _kpiDropEntregas.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) : '-');
   set('dk-drop-volume',   _kpiEntregas > 0 ? (_kpiDropVolume.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) + ' m³') : '-');
+  // % de Rotas Pedagiadas: viagens onde a detecção (linha reta terminal→
+  // paradas, ver dashAgregar) achou pelo menos 1 pedágio, ÷ total de viagens
+  // — mesmos filtros de cliente/cidade/período dos demais KPIs. É uma
+  // ESTIMATIVA (linha reta, não o trajeto real via OSRM) — serve pra
+  // enxergar tendência/volume de trabalho, não como conferência financeira.
+  const _kpiPercPedagiadas = _kpiViagens > 0 ? (_kpiViagensComPedagio / _kpiViagens) * 100 : 0;
+  set('dk-perc-pedagiadas', _kpiViagens > 0 ? Math.round(_kpiPercPedagiadas) + '%' : '-');
+  // Tempo Gasto com Lançamento de Pedágios: 3 min de lançamento no Sem Parar
+  // por viagem pedagiada (média fixa, conforme definido pela operação),
+  // acumulado. Mostra em horas (com o total de minutos como referência).
+  const _kpiTempoPedagioMin = _kpiViagensComPedagio * 3;
+  set('dk-tempo-pedagio', _kpiTempoPedagioMin > 0 ? _dashFmtHoras(_kpiTempoPedagioMin) : '0h');
+  const _elTempoPedagioMin = document.getElementById('dk-tempo-pedagio-min');
+  if (_elTempoPedagioMin) _elTempoPedagioMin.textContent = _kpiViagensComPedagio > 0 ? `${_kpiTempoPedagioMin.toLocaleString('pt-BR')} min · ${_kpiViagensComPedagio} viagem(ns)` : '';
   // Consumo de Jornada — usa d.entradasTransportadora (já filtrado por
   // cidade/operação na fonte, dentro de dashAgregar, igual ao Ranking de
   // Transportadoras logo abaixo). Não é afetado pelo filtro de CLIENTE de
