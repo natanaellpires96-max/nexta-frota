@@ -2980,7 +2980,9 @@ async function dashPreencherKmRealResultado(veiculosArr, resultado, terms, opts 
   let requisicoesFeitas = 0;
   const pendentes = [];
   (veiculosArr || []).forEach(v => {
-    (resultado[v.id] || []).forEach(vi => {
+    const viagensDoVeic = resultado[v.id];
+    if (!Array.isArray(viagensDoVeic)) return; // arquivo de formato antigo/diferente — pula esse veículo, não quebra o resto
+    viagensDoVeic.forEach(vi => {
       if (!vi || !vi.paradas || !vi.paradas.length) return;
       if (typeof vi._kmAjustado === 'number' && vi._kmAjustado > 0) return; // já tem km real
       pendentes.push({ v, vi });
@@ -3166,10 +3168,11 @@ window.dashDesfazerKmRealAuto = async function() {
         const file = await handle.getFile();
         data = JSON.parse(await file.text());
       } catch (e) { console.warn(`[dashDesfazerKmRealAuto] falha ao ler/parsear ${name}, pulando:`, e); continue; }
-      if (!data.resultado) continue;
+      if (!data.resultado || typeof data.resultado !== 'object') continue;
       let mudou = false;
       Object.values(data.resultado).forEach(viagensDoVeic => {
-        (viagensDoVeic || []).forEach(vi => {
+        if (!Array.isArray(viagensDoVeic)) return; // arquivo de formato antigo/diferente — pula esse veículo, não quebra o resto
+        viagensDoVeic.forEach(vi => {
           if (vi && typeof vi._kmAjustado === 'number') {
             delete vi._kmAjustado;
             delete vi._kmAjustadoAuto;
