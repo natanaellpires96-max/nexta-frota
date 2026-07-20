@@ -3138,44 +3138,74 @@ window.dashDesfazerKmRealAuto = async function() {
     'manualmente depois).\n\n' +
     'Confirma?'
   )) return;
+  console.log('[dashDesfazerKmRealAuto] iniciando...');
   let permOk = false;
-  try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {}
-  if (!permOk) { try { permOk = (await window.dirHandleHistorico.requestPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) {} }
+  try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) { console.warn('[dashDesfazerKmRealAuto] queryPermission falhou:', e); }
+  if (!permOk) { try { permOk = (await window.dirHandleHistorico.requestPermission({ mode: 'readwrite' })) === 'granted'; } catch(e) { console.warn('[dashDesfazerKmRealAuto] requestPermission falhou:', e); } }
   if (!permOk) { alert('Permissão de escrita negada.'); return; }
+  console.log('[dashDesfazerKmRealAuto] permissão OK, listando arquivos...');
 
-  let arquivosAlterados = 0, viagensRevertidas = 0;
-  for await (const [name, handle] of window.dirHandleHistorico.entries()) {
-    if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
-    let data;
-    try {
-      const file = await handle.getFile();
-      data = JSON.parse(await file.text());
-    } catch (e) { continue; }
-    if (!data.resultado) continue;
-    let mudou = false;
-    Object.values(data.resultado).forEach(viagensDoVeic => {
-      (viagensDoVeic || []).forEach(vi => {
-        if (vi && typeof vi._kmAjustado === 'number') {
-          delete vi._kmAjustado;
-          delete vi._kmAjustadoAuto;
-          mudou = true;
-          viagensRevertidas++;
-        }
-      });
-    });
-    if (mudou) {
-      try {
-        const ws = await handle.createWritable();
-        await ws.write(JSON.stringify(data, null, 2));
-        await ws.close();
-        arquivosAlterados++;
-      } catch (e) { console.warn(`[dashDesfazerKmRealAuto] falha ao regravar ${name}:`, e); }
+  // Todo o processamento fica dentro de um try/catch amplo: um erro não
+  // capturado em QUALQUER ponto do loop (ex.: falha ao listar diretório,
+  // arquivo bloqueado por outro processo) interrompia a função inteira sem
+  // nunca chegar no alert() final — parecia "não fez nada" mesmo tendo
+  // revertido parte dos arquivos. Agora qualquer falha aparece explicitamente
+  // (console + alert), em vez de morrer em silêncio no meio do processamento.
+  let arquivosAlterados = 0, viagensRevertidas = 0, arquivosLidos = 0, arquivosComKm = 0;
+  try {
+    const arquivos = [];
+    for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+      if (handle.kind === 'file' && name.endsWith('.json')) arquivos.push({ name, handle });
     }
+    console.log(`[dashDesfazerKmRealAuto] ${arquivos.length} arquivo(s) .json encontrado(s) na pasta.`);
+
+    for (const { name, handle } of arquivos) {
+      arquivosLidos++;
+      let data;
+      try {
+        const file = await handle.getFile();
+        data = JSON.parse(await file.text());
+      } catch (e) { console.warn(`[dashDesfazerKmRealAuto] falha ao ler/parsear ${name}, pulando:`, e); continue; }
+      if (!data.resultado) continue;
+      let mudou = false;
+      Object.values(data.resultado).forEach(viagensDoVeic => {
+        (viagensDoVeic || []).forEach(vi => {
+          if (vi && typeof vi._kmAjustado === 'number') {
+            delete vi._kmAjustado;
+            delete vi._kmAjustadoAuto;
+            mudou = true;
+            viagensRevertidas++;
+          }
+        });
+      });
+      if (mudou) {
+        arquivosComKm++;
+        try {
+          const ws = await handle.createWritable();
+          await ws.write(JSON.stringify(data, null, 2));
+          await ws.close();
+          arquivosAlterados++;
+        } catch (e) { console.warn(`[dashDesfazerKmRealAuto] falha ao REGRAVAR ${name} (viagens deste arquivo NÃO foram revertidas de verdade):`, e); }
+      }
+    }
+    console.log(`[dashDesfazerKmRealAuto] concluído: ${arquivosLidos} arquivo(s) lido(s), ${arquivosComKm} tinham km calculado, ${arquivosAlterados} regravado(s) com sucesso, ${viagensRevertidas} viagem(ns) revertida(s).`);
+  } catch (e) {
+    console.error('[dashDesfazerKmRealAuto] ERRO interrompeu o processamento no meio do caminho:', e);
+    alert(`Erro durante o desfazer (parou no meio): ${e.message}\n\nAté aqui: ${viagensRevertidas} viagem(ns) revertida(s) em ${arquivosAlterados} arquivo(s). Abra o Console (F12) e me mande o erro completo — dá pra rodar de novo depois de corrigir, sem perder o que já foi revertido.`);
+    if (typeof window.dashSincronizar === 'function') window.dashSincronizar();
+    return;
   }
   // Também zera a marca de "já rodou hoje" pra permitir recalcular de novo
   // imediatamente (com a trava de sanidade agora em vigor), sem esperar o
   // próximo dia.
-  try { localStorage.removeItem('dashKmRealAutoUltimoRun'); } catch(e) {}
+  // IMPORTANTE: marca hoje como "já rodou" (em vez de limpar a marca) — se
+  // limpasse, o gatilho automático (dashAutoRodarKmRealSeNecessario) podia
+  // disparar de novo sozinho no próximo reload/troca de aba e recolocar
+  // _kmAjustado nas viagens antes mesmo de você conferir o resultado do
+  // Desfazer — cada clique reduzia só uma fatia porque o automático tava
+  // remendando por trás. Pra recalcular de novo de propósito, use o botão
+  // "🛣️ Recalcular Km Real" manualmente (ele roda na hora, ignorando a marca).
+  try { localStorage.setItem('dashKmRealAutoUltimoRun', new Date().toISOString().slice(0, 10)); } catch(e) {}
   alert(`Desfeito: ${viagensRevertidas} viagem(ns) revertida(s) em ${arquivosAlterados} arquivo(s). Km Total volta pra estimativa por linha reta.`);
   if (typeof window.dashSincronizar === 'function') window.dashSincronizar();
 };
