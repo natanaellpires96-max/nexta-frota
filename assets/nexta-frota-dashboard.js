@@ -2918,19 +2918,22 @@ async function dashCalcularKmRealViagem(v, vi, terms) {
   if (!v || !vi || !vi.paradas || !vi.paradas.length) return null;
   const terminalNome = vi.terminalOrigem || v.terminal || vi.paradas[0]?.pedido?.terminal || '';
   const terminal = (terms || []).find(t => t.nome === terminalNome);
+  if (!terminal) {
+    console.warn(`[dashCalcularKmRealViagem] terminal "${terminalNome}" não encontrado na lista de terminais deste arquivo (placa ${v.placa}) — viagem calculada SEM o ponto de origem/retorno, só entre paradas.`);
+  }
   const pontos = [];
   if (terminal && !isNaN(parseFloat(terminal.lat)) && !isNaN(parseFloat(terminal.lon))) {
-    pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon) });
+    pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon), _tag: `origem:${terminal.nome}` });
   }
-  vi.paradas.forEach(p => {
+  vi.paradas.forEach((p, i) => {
     const lat = parseFloat(p.pedido?.lat ?? p.lat);
     const lon = parseFloat(p.pedido?.lon ?? p.lon);
-    if (!isNaN(lat) && !isNaN(lon)) pontos.push({ lat, lon });
+    if (!isNaN(lat) && !isNaN(lon)) pontos.push({ lat, lon, _tag: `parada${i+1}:${p.pedido?.cliente || '?'}` });
   });
   const ultimaParada = vi.paradas[vi.paradas.length - 1];
   if (terminal && (ultimaParada?.deslocVazioMin || 0) > 0 &&
       !isNaN(parseFloat(terminal.lat)) && !isNaN(parseFloat(terminal.lon))) {
-    pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon) }); // retorno ao terminal
+    pontos.push({ lat: parseFloat(terminal.lat), lon: parseFloat(terminal.lon), _tag: `retorno:${terminal.nome}` }); // retorno ao terminal
   }
   if (pontos.length < 2) return null;
   // Trava de sanidade: compara cada trecho REAL contra a distância em linha
@@ -2946,6 +2949,7 @@ async function dashCalcularKmRealViagem(v, vi, terms) {
   const FATOR_MAX = 3;
   const FOLGA_KM = 15;
   let totalKm = 0;
+  let totalRetaKm = 0;
   for (let i = 0; i < pontos.length - 1; i++) {
     try {
       const seg = await osrmFetchSegmento(pontos[i], pontos[i + 1]);
@@ -2953,8 +2957,9 @@ async function dashCalcularKmRealViagem(v, vi, terms) {
       const retaKm = (typeof haversine === 'function')
         ? haversine(pontos[i].lat, pontos[i].lon, pontos[i+1].lat, pontos[i+1].lon)
         : null;
+      if (retaKm != null) totalRetaKm += retaKm;
       if (retaKm != null && segKm > retaKm * FATOR_MAX + FOLGA_KM) {
-        console.warn(`[dashCalcularKmRealViagem] trecho implausível rejeitado (real ${segKm.toFixed(1)}km vs reta ${retaKm.toFixed(1)}km) — placa ${v.placa}, viagem terminal "${terminalNome}". Mantendo estimativa por linha reta pra esta viagem.`);
+        console.warn(`[dashCalcularKmRealViagem] REJEITADO trecho implausível: ${pontos[i]._tag} → ${pontos[i+1]._tag} | real=${segKm.toFixed(1)}km vs reta=${retaKm.toFixed(1)}km | placa ${v.placa}, terminal "${terminalNome}". Mantendo estimativa por linha reta pra esta viagem inteira.`);
         return null;
       }
       totalKm += segKm;
@@ -2962,6 +2967,10 @@ async function dashCalcularKmRealViagem(v, vi, terms) {
       return null; // falha de rede num trecho — não salva km parcial/errado
     }
   }
+  // Log de auditoria: sempre grava o resultado (mesmo aceito), pra dar pra
+  // conferir depois no console se algum valor grande é legítimo (viagem
+  // interestadual de verdade) ou ainda suspeito mesmo tendo passado na trava.
+  console.log(`[dashCalcularKmRealViagem] placa ${v.placa} | terminal "${terminalNome}" | ${pontos.length} pontos | real=${totalKm.toFixed(1)}km | reta=${totalRetaKm.toFixed(1)}km | razão=${totalRetaKm > 0 ? (totalKm/totalRetaKm).toFixed(2) : '?'}x`);
   return totalKm > 0 ? totalKm : null;
 }
 // Preenche vi._kmAjustado com o km real de TODAS as viagens de `resultado`
@@ -3030,7 +3039,7 @@ window.dashRecalcularKmHistorico = async function(silencioso = false) {
     'Isso vai buscar o trajeto REAL (via rota, não linha reta) de cada viagem salva no histórico que ainda não tem, e regravar os arquivos.\n\n' +
     'Pode levar vários minutos e usa a cota diária de requisições de rota (limitada) — se o histórico for grande, pode não terminar tudo hoje; ' +
     'rodar de novo depois (nos dias seguintes) continua de onde parou, sem refazer o que já foi calculado.\n\n' +
-    'A partir de agora isso também roda sozinho, automaticamente, 1x por dia — este botão serve pra forçar uma rodada na hora.\n\n' +
+    'O modo automático está temporariamente DESLIGADO (voltando a validar após o ajuste da trava de sanidade) — por enquanto só roda quando você clica aqui.\n\n' +
     'Deseja continuar?'
   )) return;
   let permOk = false;
@@ -3107,7 +3116,13 @@ window.dashRecalcularKmHistorico = async function(silencioso = false) {
 // abaixo) — dispara em segundo plano, sem travar nada, e só se a pasta do
 // histórico já tiver permissão de escrita concedida de uma vez manual
 // anterior (ver dashRecalcularKmHistorico, modo silencioso).
+// DESLIGADO TEMPORARIAMENTE (ver KM_REAL_AUTO_HABILITADO): depois do episódio
+// de km inflado, é mais seguro só rodar via clique manual (com o resultado
+// visível na hora) até confirmar que a trava de sanidade está funcionando de
+// verdade em produção — reative trocando pra `true` quando estiver validado.
+const KM_REAL_AUTO_HABILITADO = false;
 async function dashAutoRodarKmRealSeNecessario() {
+  if (!KM_REAL_AUTO_HABILITADO) return;
   try {
     const hojeStr = new Date().toISOString().slice(0, 10);
     const chaveLS = 'dashKmRealAutoUltimoRun';
