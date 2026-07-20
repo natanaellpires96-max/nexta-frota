@@ -3118,18 +3118,24 @@ async function dashAutoRodarKmRealSeNecessario() {
   }
 }
 // ─── Desfazer km real calculado automaticamente (rollback) ─────────────────
-// Remove SÓ os valores marcados com _kmAjustadoAuto=true (calculados pela
-// rotina automática/botão de recálculo) — preserva de propósito qualquer
-// _kmAjustado que tenha vindo de um ajuste manual de verdade no mapa (esse
-// nunca leva a marca _kmAjustadoAuto). Existe pra reverter rapidamente se o
-// recálculo em massa gravar algo errado (coordenada ruim, serviço de rota
-// com problema, etc.) sem precisar restaurar backup do zero.
+// Remove _kmAjustado de TODA viagem, com ou sem a marca _kmAjustadoAuto —
+// inclui de propósito o que foi gravado ANTES dessa marca existir (a
+// primeira rodada de recálculo, que gerou km inflado por causa de um bug já
+// corrigido, foi salva sem essa marca, então filtrar só por ela deixava esse
+// lote de fora e a ferramenta de desfazer não revertia nada).
+// TRADE-OFF: se alguém tiver feito algum ajuste manual de verdade no Mapa da
+// Viagem antes dessa funcionalidade existir, ele também seria desfeito aqui
+// (não tem como distinguir os dois casos com certeza nos arquivos antigos).
+// Isso é avisado no confirm() abaixo — se precisar, o ajuste manual é rápido
+// de refazer reabrindo a viagem no mapa.
 window.dashDesfazerKmRealAuto = async function() {
   if (!window.dirHandleHistorico) { alert('Selecione a pasta do histórico primeiro (aba Histórico).'); return; }
   if (!confirm(
-    'Isso vai REMOVER o km real calculado automaticamente (pelo botão/rotina "Recalcular Km Real") de todas as viagens do histórico, ' +
+    'Isso vai REMOVER o km real calculado (pelo botão/rotina "Recalcular Km Real") de TODAS as viagens do histórico, ' +
     'voltando o Km Total pra estimativa por linha reta de antes.\n\n' +
-    'Ajustes MANUAIS feitos no mapa (aba Mapa da Viagem) não são afetados.\n\n' +
+    'ATENÇÃO: como o primeiro recálculo (com o bug já corrigido) foi salvo sem uma marca distintiva, esta limpeza remove _kmAjustado de ' +
+    'TODA viagem, inclusive eventuais ajustes manuais feitos no Mapa da Viagem antes de hoje (raro, mas se existir algum, precisa refazer ' +
+    'manualmente depois).\n\n' +
     'Confirma?'
   )) return;
   let permOk = false;
@@ -3149,7 +3155,7 @@ window.dashDesfazerKmRealAuto = async function() {
     let mudou = false;
     Object.values(data.resultado).forEach(viagensDoVeic => {
       (viagensDoVeic || []).forEach(vi => {
-        if (vi && vi._kmAjustadoAuto === true) {
+        if (vi && typeof vi._kmAjustado === 'number') {
           delete vi._kmAjustado;
           delete vi._kmAjustadoAuto;
           mudou = true;
