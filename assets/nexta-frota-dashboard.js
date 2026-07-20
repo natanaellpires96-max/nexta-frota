@@ -2529,12 +2529,24 @@ window.dashCarregarTodos = async function() {
   const todos = Object.values(store).flat();
   dashRender(todos);
 };
+// ── Ferramentas de Km Real são só pra admin (recalcular/desfazer mexe direto
+// nos arquivos do histórico compartilhado — não é algo pra qualquer usuário
+// operacional/transportador acionar sem querer). Checa via window.S/
+// window.USERS_DB, os mesmos que o resto do app usa pra saber o papel de
+// quem está logado (ver nexta-frota-main.js).
+function dashAtualizarVisibilidadeFerramentasKm() {
+  const el = document.getElementById('dash-km-admin-tools');
+  if (!el) return;
+  const role = window.USERS_DB && window.S && window.USERS_DB[window.S.user]?.role;
+  el.style.display = (role === 'admin') ? '' : 'none';
+}
 // ── Hook: popular meses quando abre a aba ─────────────────────────────────
 const _origShowTab = window.showTab;
 window.showTab = function(tab) {
   if (_origShowTab) _origShowTab(tab);
   if (tab === 'dashboard_rot') {
     dashPopularMeses();
+    dashAtualizarVisibilidadeFerramentasKm();
     dashAutoRodarKmRealSeNecessario(); // idempotente (só roda 1x/dia) — reforça caso a checagem do carregamento inicial não tenha rodado ainda
     // Invalidar mapa se já existir
     setTimeout(() => { if (_dashMap) _dashMap.invalidateSize(); }, 300);
@@ -2563,6 +2575,7 @@ window.excluirEntradaHistorico = async function(filename, btn) {
     }
   } catch (e) { /* segue mesmo se a restauração falhar */ }
   dashPopularMeses();
+  dashAtualizarVisibilidadeFerramentasKm();
   dashAutoRodarKmRealSeNecessario(); // dispara sozinho em segundo plano, no máx 1x/dia — ver comentário na função
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3047,7 +3060,16 @@ async function dashPreencherKmRealResultado(veiculosArr, resultado, terms, opts 
 // Botão manual "🛣️ Recalcular Km Real (Histórico)" continua disponível pra
 // forçar uma rodada na hora (silencioso=false), inclusive pra CONCEDER a
 // permissão de escrita da primeira vez (isso sim precisa de clique).
+// Segunda camada de proteção (além de esconder o botão): mesmo chamando a
+// função direto pelo console, sem ser admin ela recusa. Não é segurança de
+// verdade (é tudo client-side, dá pra burlar com dev tools), mas evita
+// acionar essas ferramentas por engano/curiosidade.
+function _dashEhAdmin() {
+  const role = window.USERS_DB && window.S && window.USERS_DB[window.S.user]?.role;
+  return role === 'admin';
+}
 window.dashRecalcularKmHistorico = async function(silencioso = false) {
+  if (!silencioso && !_dashEhAdmin()) { alert('Restrito ao administrador.'); return; }
   if (!window.dirHandleHistorico) {
     if (!silencioso) alert('Selecione a pasta do histórico primeiro (aba Histórico).');
     return;
@@ -3169,6 +3191,7 @@ async function dashAutoRodarKmRealSeNecessario() {
 // as viagens com a MAIOR razão real/estimativa antiga. Mostra um resumo em
 // alert() (fácil de printar) em vez de depender de copiar log do console.
 window.dashDiagnosticarKmReal = async function() {
+  if (!_dashEhAdmin()) { alert('Restrito ao administrador.'); return; }
   if (!window.dirHandleHistorico) { alert('Selecione a pasta do histórico primeiro (aba Histórico).'); return; }
   let permOk = false;
   try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted'; } catch(e) {}
@@ -3225,6 +3248,7 @@ window.dashDiagnosticarKmReal = async function() {
   );
 };
 window.dashDesfazerKmRealAuto = async function() {
+  if (!_dashEhAdmin()) { alert('Restrito ao administrador.'); return; }
   if (!window.dirHandleHistorico) { alert('Selecione a pasta do histórico primeiro (aba Histórico).'); return; }
   if (!confirm(
     'Isso vai REMOVER o km real calculado (pelo botão/rotina "Recalcular Km Real") de TODAS as viagens do histórico, ' +
