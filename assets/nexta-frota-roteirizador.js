@@ -1334,6 +1334,7 @@ function abrirModalViagem(veiculoId, idxViagem) {
             ${produtos}
           </div>
           ${contrato}${descarga}${espera}${janela}${centroide}
+          ${streetViewBotaoHtml(p.lat, p.lon)}
         </div>`;
     }
     // Marcador arrastável — atualiza waypoint e redesenha rota ao soltar
@@ -1682,12 +1683,14 @@ function renderMapaGeral() {
           <div style="font-family:Inter,sans-serif;min-width:200px;">
             <div style="font-weight:700;font-size:13px;margin-bottom:4px;">🏭 ${p.nome}</div>
             ${placa}
+            ${streetViewBotaoHtml(p.lat, p.lon)}
           </div>`;
       } else if (tipoFim) {
         popupHtml = `
           <div style="font-family:Inter,sans-serif;min-width:200px;">
             <div style="font-weight:700;font-size:13px;margin-bottom:4px;">↩ Retorno — ${p.nome}</div>
             ${placa}
+            ${streetViewBotaoHtml(p.lat, p.lon)}
           </div>`;
       } else {
         popupHtml = `
@@ -1707,6 +1710,7 @@ function renderMapaGeral() {
               ${produtos}
             </div>` : ''}
             ${descarga}${janela}${centroide}
+            ${streetViewBotaoHtml(p.lat, p.lon)}
           </div>`;
       }
       const marcador = L.marker([p.lat, p.lon], { icon }).addTo(camadaMapaGeral);
@@ -1833,6 +1837,22 @@ function _normCidade(cidade) {
 function centroideCidade(cidade) {
   const c = CENTROIDES_CIDADE[_normCidade(cidade)];
   return c ? { lat: c[0], lon: c[1], isCentroide: true } : null;
+}
+// ── Street View de um ponto do mapa ─────────────────────────────────────────
+// Link direto pro Google Street View, sem precisar de chave de API nem
+// integração paga — funciona pra qualquer navegador, abre numa aba nova.
+// "map_action=pano" manda o Google entrar direto no modo Street View, na
+// panorâmica mais próxima daquele ponto (nem sempre existe cobertura de rua
+// em toda parte, principalmente em zona rural/estradas menores — nesse caso
+// o Google mostra a mais próxima que encontrar, ou avisa que não tem).
+function streetViewUrl(lat, lon) {
+  return `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lon}`;
+}
+function streetViewBotaoHtml(lat, lon) {
+  if (lat == null || lon == null || isNaN(parseFloat(lat)) || isNaN(parseFloat(lon))) return '';
+  return `<a href="${streetViewUrl(lat, lon)}" target="_blank" rel="noopener"
+    style="display:inline-flex;align-items:center;gap:4px;margin-top:6px;padding:4px 8px;background:#EEF2FF;color:#4338CA;border-radius:5px;font-size:11px;font-weight:600;text-decoration:none;border:1px solid #C7D2FE;">
+    📷 Street View</a>`;
 }
 // Retorna lat/lon efetivos do pedido: coordenadas próprias → cliente cadastrado → centróide da cidade
 function latLonEfetivo(pedido) {
@@ -3245,6 +3265,7 @@ function renderPedidosMapa() {
           <div style="font-weight:700;color:${totalmenteAlocado ? '#6B7280' : '#4A6535'};">
             ${totalmenteAlocado ? '✓ Já roteirizado' : `Pendente: ${volPendente.toFixed(1)} m³ de ${totalVolPedido(p).toFixed(1)} m³`}
           </div>
+          ${streetViewBotaoHtml(c.lat, c.lon)}
         </div>
       `);
       if (!totalmenteAlocado) {
@@ -6469,6 +6490,7 @@ function abrirMapaVeiculo(veiculoId) {
           ${p.volume ? `<div style="font-size:11px;">Volume: <strong>${p.volume.toFixed(1)} m³</strong></div>` : ''}
           ${p.cidade ? `<div style="font-size:11px;color:#6B7280;">📍 ${p.cidade}</div>` : ''}
           ${p.restricao ? `<div style="font-size:10px;margin-top:4px;color:#D97706;">⏱ ${p.restricao}</div>` : ''}
+          ${streetViewBotaoHtml(p.lat, p.lon)}
         </div>`;
       L.marker([p.lat, p.lon], { icon }).addTo(camadaViagem)
         .bindPopup(popupHtml, { maxWidth: 240 })
