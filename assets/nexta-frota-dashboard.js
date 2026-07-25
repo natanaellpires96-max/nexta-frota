@@ -1087,12 +1087,21 @@ function dashAgregarJornada(entradasTransportadora) {
     if (e._semViagem) return; // dia parado sintético (só diária, do Frete) — sem jornada real pra contar
     const key = e.placa + '__' + e.data;
     if (!porVeiculoDia.has(key)) {
-      porVeiculoDia.set(key, { transportadora: e.transportadora, dispMin: e.jornadaDispMin || 0, usadoMin: 0 });
+      porVeiculoDia.set(key, { placa: e.placa, data: e.data, transportadora: e.transportadora, dispMin: e.jornadaDispMin || 0, usadoMin: 0 });
     }
     porVeiculoDia.get(key).usadoMin += e.jornadaUsadaMin || 0;
   });
   const porTransportadora = {};
   let totalDispMin = 0, totalUsadoMin = 0;
+  // ── Estouro de jornada ─────────────────────────────────────────────────
+  // O agregado por transportadora acima (usadoMin/dispMin somados de TODOS
+  // os veículos) já pinta em âmbar quando passa de 100%, mas isso é uma
+  // MÉDIA — 1 veículo estourando feio num dia com 19 outros dentro do
+  // normal quase não move o agregado. Aqui conta CADA veículo/dia
+  // individualmente: estourou (usadoMin > dispMin) ou não, sem diluir.
+  let diasComEstouro = 0, minutosEstouroTotal = 0;
+  const estourosPorTransportadora = {};
+  const estourosDetalhe = [];
   porVeiculoDia.forEach(reg => {
     totalDispMin  += reg.dispMin;
     totalUsadoMin += reg.usadoMin;
@@ -1101,15 +1110,47 @@ function dashAgregarJornada(entradasTransportadora) {
     porTransportadora[key].dispMin  += reg.dispMin;
     porTransportadora[key].usadoMin += reg.usadoMin;
     porTransportadora[key].veiculosDia += 1;
+
+    if (!estourosPorTransportadora[key]) estourosPorTransportadora[key] = { transportadora: key, diasComEstouro: 0, minutosEstouroTotal: 0, veiculosDia: 0 };
+    estourosPorTransportadora[key].veiculosDia += 1;
+    if (reg.dispMin > 0 && reg.usadoMin > reg.dispMin) {
+      const estouroMin = reg.usadoMin - reg.dispMin;
+      diasComEstouro++;
+      minutosEstouroTotal += estouroMin;
+      estourosPorTransportadora[key].diasComEstouro += 1;
+      estourosPorTransportadora[key].minutosEstouroTotal += estouroMin;
+      estourosDetalhe.push({
+        placa: reg.placa,
+        transportadora: reg.transportadora,
+        data: reg.data,
+        dispMin: reg.dispMin,
+        usadoMin: reg.usadoMin,
+        estouroMin,
+        estouroPct: Math.round((reg.usadoMin / reg.dispMin) * 100),
+      });
+    }
   });
   const porTransportadoraArr = Object.values(porTransportadora)
     .map(t => ({ ...t, pct: t.dispMin > 0 ? Math.round((t.usadoMin / t.dispMin) * 100) : 0 }))
     .sort((a, b) => b.usadoMin - a.usadoMin);
+  const totalVeiculoDia = porVeiculoDia.size;
+  const estourosPorTransportadoraArr = Object.values(estourosPorTransportadora)
+    .filter(t => t.diasComEstouro > 0)
+    .map(t => ({ ...t, pctDiasComEstouro: t.veiculosDia > 0 ? Math.round((t.diasComEstouro / t.veiculosDia) * 100) : 0 }))
+    .sort((a, b) => b.diasComEstouro - a.diasComEstouro);
+  estourosDetalhe.sort((a, b) => b.estouroMin - a.estouroMin);
   return {
     totalDispMin,
     totalUsadoMin,
     totalPct: totalDispMin > 0 ? Math.round((totalUsadoMin / totalDispMin) * 100) : 0,
     porTransportadora: porTransportadoraArr,
+    // Estouro de jornada
+    totalVeiculoDia,
+    diasComEstouro,
+    pctDiasComEstouro: totalVeiculoDia > 0 ? Math.round((diasComEstouro / totalVeiculoDia) * 100) : 0,
+    minutosEstouroTotal,
+    estourosPorTransportadora: estourosPorTransportadoraArr,
+    estourosDetalhe: estourosDetalhe.slice(0, 30), // top 30 piores dias-veículo, pra não pesar a tela
   };
 }
 function _dashFmtHoras(min) {
@@ -1154,7 +1195,62 @@ function dashRenderJornadaTransportadoras(dados) {
       </div>`;
   }).join('');
 }
-// ── Ociosidade da Frota ──────────────────────────────────────────────────────
+// ── Estouro de Jornada por Transportadora ────────────────────────────────────
+// Ranking dedicado (não é média — cada veículo/dia com estouro conta cheio),
+// pra achar rápido quem está estourando com frequência, mesmo que o
+// agregado geral da transportadora pareça saudável.
+let _dashUltimoEstouro = { estourosPorTransportadora: [], estourosDetalhe: [] };
+let _dashEstouroDirecao = 'desc';
+function dashEstouroSetDirecao(direcao) {
+  _dashEstouroDirecao = direcao;
+  document.querySelectorAll('.dash-estourodir-tab').forEach(b => {
+    const ativo = b.dataset.dir === direcao;
+    b.classList.toggle('active-rank', ativo);
+    b.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    b.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+  dashRenderEstouroJornada(_dashUltimoEstouro);
+}
+function dashRenderEstouroJornada(dados) {
+  _dashUltimoEstouro = dados;
+  const box = document.getElementById('dash-estouro-transp');
+  if (!box) return;
+  const lista = [...(dados.estourosPorTransportadora || [])]
+    .sort((a, b) => _dashEstouroDirecao === 'asc' ? a.diasComEstouro - b.diasComEstouro : b.diasComEstouro - a.diasComEstouro);
+  if (!lista.length) {
+    box.innerHTML = `<div style="color:var(--pet-green,#b5e51d);text-align:center;padding:24px;font-size:12px;">✓ Nenhum estouro de jornada neste período/filtro.</div>`;
+    return;
+  }
+  const max = Math.max(...lista.map(t => t.diasComEstouro), 1);
+  const linhasRanking = lista.map((t) => {
+    const pctBarra = Math.max(2, (t.diasComEstouro / max) * 100);
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--border-dk);">
+        <div style="width:170px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);" title="${t.transportadora}">${t.transportadora}</div>
+        <div style="flex:1;background:rgba(255,255,255,.06);border-radius:6px;height:20px;position:relative;overflow:hidden;">
+          <div style="height:100%;width:${pctBarra}%;background:#f0be40;border-radius:6px;transition:width .3s;"></div>
+        </div>
+        <div style="width:90px;flex-shrink:0;text-align:right;font-size:12.5px;font-weight:700;color:var(--text);">${t.diasComEstouro} dia(s)</div>
+        <div style="width:190px;flex-shrink:0;text-align:right;font-size:10.5px;color:var(--text-3);">${t.pctDiasComEstouro}% dos veíc./dia · ${_dashFmtHoras(t.minutosEstouroTotal)} de estouro total</div>
+      </div>`;
+  }).join('');
+  // Detalhe dos piores casos individuais (placa/dia específico), pra dar
+  // pra investigar o "porquê" sem precisar abrir o histórico manualmente.
+  const detalhe = (dados.estourosDetalhe || []).slice(0, 10);
+  const detalheHtml = detalhe.length ? `
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border-dk);">
+      <div style="font-size:11px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">Piores casos individuais (placa/dia)</div>
+      ${detalhe.map(d => `
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 4px;font-size:11.5px;border-bottom:1px solid rgba(255,255,255,.04);">
+          <div style="width:80px;flex-shrink:0;font-weight:600;color:var(--text);">${d.placa}</div>
+          <div style="width:130px;flex-shrink:0;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${d.transportadora}">${d.transportadora}</div>
+          <div style="width:80px;flex-shrink:0;color:var(--text-3);">${(d.data||'').split('-').reverse().slice(0,2).join('/')}</div>
+          <div style="flex:1;text-align:right;color:#f0be40;font-weight:700;">${d.estouroPct}% (${_dashFmtHoras(d.usadoMin)} / ${_dashFmtHoras(d.dispMin)})</div>
+          <div style="width:70px;flex-shrink:0;text-align:right;color:var(--text-3);">+${_dashFmtHoras(d.estouroMin)}</div>
+        </div>`).join('')}
+    </div>` : '';
+  box.innerHTML = linhasRanking + detalheHtml;
+}
 // Diferente da Jornada (que mede aproveitamento de TEMPO de quem trabalhou,
 // vindo das roteirizações), Ociosidade mede quantos VEÍCULOS foram
 // DISPONIBILIZADOS pelo transportador no dia — e essa é uma pergunta do
@@ -2145,6 +2241,7 @@ function dashRender(snapshots) {
   const _elJornadaHoras = document.getElementById('dk-jornada-horas');
   if (_elJornadaHoras) _elJornadaHoras.textContent = `${_dashFmtHoras(_dashJornada.totalUsadoMin)} / ${_dashFmtHoras(_dashJornada.totalDispMin)}`;
   dashRenderJornadaTransportadoras(_dashJornada);
+  dashRenderEstouroJornada(_dashJornada); // mesma fonte (_dashJornada) já traz os campos de estouro calculados
   // Ociosidade — busca no Painel de Disponibilidade (Firestore), cruzando
   // com d.diasComViagemPorPlaca (já filtrado por cidade/operação na fonte,
   // igual à Jornada acima) pra saber quem foi disponibilizado e ficou parado.

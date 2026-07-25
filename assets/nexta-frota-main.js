@@ -54,6 +54,9 @@ import {
   onAuthStateChanged, updatePassword, createUserWithEmailAndPassword,
   deleteUser as fbDeleteUser
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import {
+  getStorage, ref as storageRef, uploadBytes, getDownloadURL
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 const firebaseConfig = {
   apiKey: "AIzaSyBZ9J25d3IjULPv9A7pax4H8_RAtZWJiwU",
   authDomain: "nexta-frota.firebaseapp.com",
@@ -65,6 +68,12 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
 const auth  = getAuth(fbApp);
+// Storage — usado só pra foto do hodômetro (obrigatória às segundas-feiras,
+// ver salvarDisponibilidade). Bucket já existia no projeto (storageBucket no
+// firebaseConfig acima), só precisava do SDK/inicialização — free tier do
+// Firebase (Spark) já cobre isso tranquilamente pro volume de 1 foto/placa
+// por semana.
+const storage = getStorage(fbApp);
 // Auth secundário para criar usuários sem trocar a sessão do admin logado.
 const userCreateApp  = initializeApp(firebaseConfig, "nexta-frota-user-create");
 const userCreateAuth = getAuth(userCreateApp);
@@ -192,25 +201,36 @@ async function dbGetStatus(carrier, plate, dateStr) {
     const id = `${carrier}__${plate}__${dateStr}`;
     const snap = await getDoc(doc(db, "availability", id));
     const value = snap.exists()
-      ? { status: snap.data().status, time: snap.data().time||"", motoristaDiurno: snap.data().motoristaDiurno||"", motoristaNoturno: snap.data().motoristaNoturno||"", hodometro: snap.data().hodometro!==undefined?snap.data().hodometro:null }
+      ? { status: snap.data().status, time: snap.data().time||"", motoristaDiurno: snap.data().motoristaDiurno||"", motoristaNoturno: snap.data().motoristaNoturno||"", hodometro: snap.data().hodometro!==undefined?snap.data().hodometro:null, hodometroFotoUrl: snap.data().hodometroFotoUrl||null }
       : null;
     cacheSet(cKey, value);
     return value;
   } catch { return null; }
 }
-async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodometro) {
+// Sobe a foto do hodômetro pro Storage e devolve a URL pública de download.
+// Caminho inclui carrier/placa/data — sobrescreve se já existir foto pra
+// essa mesma placa/dia (ex.: usuário reenviou uma foto melhor no mesmo dia).
+async function uploadHodometroFoto(carrier, plate, dateStr, file) {
+  const nomeArquivo = `${dateStr}_${Date.now()}.jpg`;
+  const caminho = `hodometro-fotos/${carrier}/${plate}/${nomeArquivo}`;
+  const fileRef = storageRef(storage, caminho);
+  await uploadBytes(fileRef, file);
+  return await getDownloadURL(fileRef);
+}
+async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodometro, hodometroFotoUrl) {
   const id = `${carrier}__${plate}__${dateStr}`;
   const data = {
     carrier, plate, dateStr, status, time: time||"", filled: true,
     motoristaDiurno: motoristaDiurno||"",
     motoristaNoturno: motoristaNoturno||"",
     hodometro: hodometro!==undefined?hodometro:null,
+    hodometroFotoUrl: hodometroFotoUrl!==undefined?hodometroFotoUrl:null,
     updatedAt: new Date().toISOString()
   };
   await setDoc(doc(db, "availability", id), data);
   // Atualiza cache imediatamente após salvar
   const cKey = `status||${carrier}||${plate}||${dateStr}`;
-  cacheSet(cKey, { status, time: time||"", motoristaDiurno: motoristaDiurno||"", motoristaNoturno: motoristaNoturno||"", hodometro: hodometro!==undefined?hodometro:null });
+  cacheSet(cKey, { status, time: time||"", motoristaDiurno: motoristaDiurno||"", motoristaNoturno: motoristaNoturno||"", hodometro: hodometro!==undefined?hodometro:null, hodometroFotoUrl: hodometroFotoUrl!==undefined?hodometroFotoUrl:null });
 }
 async function dbGetPreviousHodometro(plate, currentDateStr) {
   // Cache curto (mesma janela do resto do app) — evita reconsultar o Firestore
@@ -783,8 +803,45 @@ let S = {
   histOpenDays: {},
   registerSubTab: "plates",
   kpiYear: new Date().getFullYear(), kpiMonth: new Date().getMonth(),
+  // "" = todos os contratos, "Dedicado" ou "Spot" — filtro compartilhado
+  // pelo Daily Briefing, Painel de Disponibilidade e KPIs Mensais (ver
+  // renderContratoFilterUI). Falta de disponibilidade do Spot vinha
+  // derrubando o número do Dedicado (que é o que mais importa acompanhar),
+  // sem forma de separar os dois — esse filtro resolve isso nas 3 telas.
+  contratoFilter: "",
+  // "exportar" ou "arquivos" — sub-aba dentro de "Relatórios" (fusão de
+  // Exportar + Arquivos Mensais, que eram duas abas separadas falando da
+  // mesma coisa: baixar dados da frota em arquivo).
+  reportsSubTab: "exportar",
+  // Filtro dinâmico dos relatórios exportados (Exportar → xlsx/csv/pdf) —
+  // "" em qualquer campo = sem filtro (todo mundo). Ver renderExport/buildRows.
+  expFiltro: { carrier:"", operacao:"", tipo:"", identificacao:"", contrato:"", status:"" },
+  // "disponibilidade" ou "atividade" — sub-aba dentro de "Auditoria" (antigo
+  // "Histórico"). "atividade" é só admin — atividade completa dos usuários,
+  // que antes ficava resumida (só 8 itens) solta no Daily Briefing.
+  auditSubTab: "disponibilidade",
+  auditActorFiltro: "",
 };
 const SESSION_KEY = "nexta_frota_user";
+// Toggle "Todos / Dedicado / Spot" reutilizado nas 3 telas que precisam
+// separar os números por tipo de contrato (S.contratoFilter). Cada tela
+// chama isso passando o próprio re-render como callback.
+function renderContratoFilterUI(){
+  const opcoes = [["", "Todos"], ["Dedicado", "Dedicado"], ["Spot", "Spot"]];
+  return `<div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;" title="Separar números de contrato Dedicado e Spot">
+    ${opcoes.map(([val, label]) => {
+      const ativo = S.contratoFilter === val;
+      return `<button onclick="S.contratoFilter='${val}';renderTabBody()"
+        style="padding:6px 13px;font-size:11px;font-weight:700;border:none;border-radius:7px;cursor:pointer;letter-spacing:.02em;
+        background:${ativo?'var(--pet-green,#b5e51d)':'transparent'};color:${ativo?'#000':'var(--text-2)'};">${label}</button>`;
+    }).join('')}
+  </div>`;
+}
+// Aplica o filtro de contrato a uma lista de placas (usado nas 3 telas).
+function filtrarPorContrato(plates){
+  if(!S.contratoFilter) return plates;
+  return (plates||[]).filter(p => p.contrato === S.contratoFilter);
+}
 let ALERT_CUTOFF_HOUR = 16;
 let META_DISP = 95; // % meta de disponibilidade — sobrescrito pelo Firestore no loadConfig
 // ═══════════════════════════════════════════════════════════
@@ -845,6 +902,52 @@ function localDateStr(d){
   const day=String(d.getDate()).padStart(2,'0');
   return `${y}-${m}-${day}`;
 }
+// Segunda-feira = dia obrigatório de foto do hodômetro (ver salvarDisponibilidade).
+// Recebe "YYYY-MM-DD" e monta a data como LOCAL (não UTC) — "new Date('2026-07-27')"
+// sozinho interpretaria como meia-noite UTC, que em fusos negativos (Brasil)
+// pode cair no dia ANTERIOR e detectar segunda-feira errado.
+function isMonday(dsStr){
+  if(!dsStr) return false;
+  const [y,m,d] = dsStr.split('-').map(Number);
+  return new Date(y, m-1, d).getDay() === 1;
+}
+// Célula "Foto Hodômetro" da tabela de disponibilidade — obrigatória só às
+// segundas-feiras (ver validação em salvarDisponibilidade). Nos demais dias
+// mostra só um traço, sem pedir nada (não é opcional-mas-visível: em dias
+// que não são segunda, a foto simplesmente não é parte do fluxo, pra não
+// confundir com um upload "seria bom mas não precisa").
+function renderHodFotoCell(p, rec, ds, isCarrierUser){
+  const jaTemFoto = rec && rec.hodometroFotoUrl;
+  if(!isMonday(ds)){
+    return jaTemFoto
+      ? `<a href="${attr(rec.hodometroFotoUrl)}" target="_blank" rel="noopener" style="font-size:10px;color:var(--dim);">📷 ver foto</a>`
+      : `<span style="font-size:10px;color:var(--muted)">—</span>`;
+  }
+  if(!isCarrierUser){
+    return jaTemFoto
+      ? `<a href="${attr(rec.hodometroFotoUrl)}" target="_blank" rel="noopener" style="font-size:10px;color:var(--dim);">📷 ver foto</a>`
+      : `<span style="font-size:10px;color:var(--red)">Sem foto</span>`;
+  }
+  // Usuário da transportadora, segunda-feira: pede a foto (obrigatória).
+  return `<div style="display:flex;flex-direction:column;gap:3px;">
+    <label class="hod-foto-label" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:4px 7px;border-radius:6px;cursor:pointer;background:${jaTemFoto?'rgba(110,224,74,.12)':'rgba(240,96,96,.12)'};color:${jaTemFoto?'var(--green)':'var(--red)'};border:1px solid ${jaTemFoto?'rgba(110,224,74,.3)':'rgba(240,96,96,.3)'};width:fit-content;">
+      📷 <span class="hod-foto-label-text">${jaTemFoto?'Foto OK (trocar)':'Anexar foto (obrigatório)'}</span>
+      <input type="file" accept="image/*" capture="environment" class="hod-foto-input" style="display:none;" onchange="onHodFotoSelecionada(this)">
+    </label>
+    ${jaTemFoto?`<a href="${attr(rec.hodometroFotoUrl)}" target="_blank" rel="noopener" style="font-size:9.5px;color:var(--dim);">ver foto atual</a>`:''}
+  </div>`;
+}
+// Feedback visual imediato ao escolher o arquivo — antes de salvar de
+// verdade (o upload só acontece no clique em "Salvar", junto com o resto).
+window.onHodFotoSelecionada = function(input){
+  const label = input.closest('.hod-foto-label');
+  if(!label || !input.files || !input.files[0]) return;
+  label.style.background = 'rgba(240,190,64,.14)';
+  label.style.color = 'var(--amber)';
+  label.style.borderColor = 'rgba(240,190,64,.35)';
+  const textEl = label.querySelector('.hod-foto-label-text');
+  if(textEl) textEl.textContent = `${input.files[0].name.slice(0,18)} (selecionada)`;
+};
 function dateStr(off=0){
   const d=new Date();
   d.setDate(d.getDate()+off);
@@ -1025,17 +1128,26 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
   if(!activeCarriers.length) return "";
   // Per-carrier status
   const carrierData = await Promise.all(activeCarriers.map(async carrier=>{
-    const plates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
+    const plates = filtrarPorContrato((allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao))));
     if(!plates.length) return null;
     const lock   = await dbGetLock(carrier, ds);
     const pairs  = plates.map(p=>({carrier,plate:p.placa,dateStr:ds}));
     const sm     = await dbLoadStatusBulk(pairs);
-    const filled = plates.filter(p=>sm[`${carrier}||${p.placa}||${ds}`]).length;
+    const statusesDoDia = plates.map(p=>sm[`${carrier}||${p.placa}||${ds}`]?.status||null);
+    const filled = statusesDoDia.filter(Boolean).length;
     const total  = plates.length;
-    const avail  = plates.filter(p=>sm[`${carrier}||${p.placa}||${ds}`]?.status==="disponivel").length;
-    const pct    = filled ? Math.round((avail/filled)*100) : 0;
+    const avail  = statusesDoDia.filter(s=>s==="disponivel").length;
+    // % disponível não pode ser distorcido por "Folga" ou "Programado/Em
+    // viagem" — quem está de folga ou já programado/em viagem não é uma
+    // "falha de disponibilidade" (a transportadora preencheu certinho, só
+    // não é um veículo ocioso disponível pra escalar) — então não entra no
+    // denominador dessa conta específica. Continua contando normalmente em
+    // "filled" (preenchimento) e nos badges de contagem bruta.
+    const folgaOuProgramado = statusesDoDia.filter(s=>s==="folga"||s==="programado").length;
+    const dispDenom = filled - folgaOuProgramado;
+    const pct    = dispDenom > 0 ? Math.round((avail/dispDenom)*100) : 0;
     const done = !!lock || (total>0 && filled === total);
-    return { carrier, lock, done, filled, total, avail, pct,
+    return { carrier, lock, done, filled, total, avail, pct, folgaOuProgramado,
       pending: total - filled,
       allFilled: filled === total };
   }));
@@ -1044,8 +1156,12 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
   const totalVehicles   = carrierDataFiltered.reduce((s,c)=>s+c.total,0);
   const totalFilled     = carrierDataFiltered.reduce((s,c)=>s+c.filled,0);
   const totalAvail      = carrierDataFiltered.reduce((s,c)=>s+c.avail,0);
+  const totalFolgaOuProgramado = carrierDataFiltered.reduce((s,c)=>s+c.folgaOuProgramado,0);
   const totalPending    = carrierDataFiltered.filter(c=>!c.done).length;
-  const globalPct       = totalFilled ? Math.round((totalAvail/totalFilled)*100) : 0;
+  // Mesma correção do pct por transportadora: folga/programado não entram
+  // no denominador do % disponível global.
+  const globalDispDenom = totalFilled - totalFolgaOuProgramado;
+  const globalPct       = globalDispDenom > 0 ? Math.round((totalAvail/globalDispDenom)*100) : 0;
   const allDone         = totalPending === 0;
   const fillPct         = totalVehicles ? Math.round((totalFilled/totalVehicles)*100) : 0;
   const statusColor = globalPct >= META_DISP ? 'var(--green)' : globalPct >= 70 ? 'var(--amber)' : 'var(--red)';
@@ -1069,7 +1185,7 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
     const tileBorder = c.done
       ? 'rgba(110,224,74,.25)' : isPastCutoff
       ? 'rgba(240,96,96,.3)' : 'rgba(240,190,64,.25)';
-    const dispPct = c.filled ? Math.round((c.avail/c.filled)*100) : 0;
+    const dispPct = c.pct; // já vem calculado certo (sem folga/programado no denominador) do carrierData acima
     const barColor = dispPct >= META_DISP ? 'var(--green)' : dispPct >= 70 ? 'var(--amber)' : 'var(--red)';
     const shortName = c.carrier.replace('Transportes','').replace('Transportadora','').trim();
     const statusLabel = c.done
@@ -1267,9 +1383,8 @@ const MANUAL_OPERACIONAL_HTML = `
     <tbody>
       <tr><td><b>Daily Briefing</b></td><td>Resumo executivo com indicadores do dia e gráficos de tendência</td></tr>
       <tr><td><b>Painel de Disponibilidade</b></td><td>Tabela completa com status de todos os veículos por transportador</td></tr>
-      <tr><td><b>Histórico</b></td><td>Registros dos últimos 7 a 45 dias com filtros avançados</td></tr>
-      <tr><td><b>Exportar</b></td><td>Geração de relatórios em Excel ou CSV</td></tr>
-      <tr><td><b>Arquivos Mensais</b></td><td>Relatórios mensais gerados automaticamente</td></tr>
+      <tr><td><b>Auditoria</b></td><td>Registros dos últimos 7 a 45 dias com filtros avançados (e, para administradores, atividade completa dos usuários)</td></tr>
+      <tr><td><b>Relatórios</b></td><td>Exportação personalizada (Excel/CSV/PDF, com filtros) e arquivos mensais gerados automaticamente</td></tr>
     </tbody>
   </table>
   <div class="hm-section-title">2. Acesso e sessão</div>
@@ -1288,7 +1403,6 @@ const MANUAL_OPERACIONAL_HTML = `
     <li><b>Linha de tendência:</b> evolução da disponibilidade nos últimos 14 dias.</li>
     <li><b>Barras por transportador:</b> comparativo entre as empresas.</li>
     <li><b>Tabela por operacao:</b> resumo por unidade operacional com barra de disponibilidade.</li>
-    <li><b>Últimas ações (auditoria):</b> registro das ações recentes no sistema com descrição legível, autor e horário.</li>
   </ul>
   <div class="hm-section-title">4. Painel de disponibilidade</div>
   <p>Tabela detalhada de todos os veículos agrupados por transportador. Para cada veículo são exibidos:</p>
@@ -1313,13 +1427,13 @@ const MANUAL_OPERACIONAL_HTML = `
     <tbody>
       <tr><td>Operação</td><td>Filtra veículos de uma unidade específica</td></tr>
       <tr><td>Busca livre</td><td>Filtra por placa ou nome do transportador</td></tr>
-      <tr><td>Transportador</td><td>Filtra por empresa (no Histórico)</td></tr>
-      <tr><td>Status</td><td>Filtra por um status específico (no Histórico)</td></tr>
-      <tr><td>Período</td><td>7, 15, 30 ou 45 dias (no Histórico)</td></tr>
+      <tr><td>Transportador</td><td>Filtra por empresa (na Auditoria)</td></tr>
+      <tr><td>Status</td><td>Filtra por um status específico (na Auditoria)</td></tr>
+      <tr><td>Período</td><td>7, 15, 30 ou 45 dias (na Auditoria)</td></tr>
     </tbody>
   </table>
   <div class="hm-section-title">6. Exportação de relatórios</div>
-  <p>Na aba <b>Exportar</b>, gere relatórios em Excel (.xlsx) ou CSV. Os relatórios incluem km percorrido calculado automaticamente.</p>
+  <p>Na aba <b>Relatórios</b> (sub-aba <b>Exportar</b>), gere relatórios em Excel (.xlsx), CSV ou PDF, com filtros por transportadora, operação, tipo de veículo, identificação, contrato e status. Os relatórios incluem km percorrido calculado automaticamente.</p>
   <table class="hm-table">
     <thead><tr><th>Tipo</th><th>Período</th></tr></thead>
     <tbody>
@@ -1343,7 +1457,7 @@ const MANUAL_OPERACIONAL_HTML = `
     <li>Clique em <b>Limpar</b> para arquivar todas as notificações.</li>
   </ul>
   <div class="hm-section-title">9. Log de auditoria</div>
-  <p>Na aba Daily Briefing, o card <b>Últimas ações (auditoria)</b> exibe as ações recentes no sistema em linguagem clara. Exemplos do que é registrado:</p>
+  <p>Na aba <b>Auditoria</b> (sub-aba <b>Atividade dos Usuários</b>, só para administradores) fica o log completo das ações recentes no sistema, em linguagem clara. Exemplos do que é registrado:</p>
   <table class="hm-table">
     <thead><tr><th>Ação</th><th>Descrição exibida</th></tr></thead>
     <tbody>
@@ -1574,12 +1688,13 @@ async function renderCarrier(carrier){
            </div>
          </div>`
       : renderDriverCell(savedMotD, savedMotN);
-    return `<tr data-placa="${attr(p.placa)}">
+    return `<tr data-placa="${attr(p.placa)}" data-tem-foto="${rec&&rec.hodometroFotoUrl?'1':'0'}" data-foto-url="${attr(rec&&rec.hodometroFotoUrl?rec.hodometroFotoUrl:'')}">
       <td style="font-weight:500;font-family:'DM Mono',monospace;font-size:12px">${esc(p.placa)}</td>
       <td style="font-size:11px;color:var(--muted)">${esc(p.operacao)}</td>
       <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
       <td><select class="${selCls}" style="width:128px;box-sizing:border-box;font-size:11px" onchange="onStChange(this)">${sOpts}</select></td>
       <td>${isCarrierUser?`<input class="odo-input" type="number" min="0" placeholder="Ex: 251000" value="${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:''}" style="width:96px;box-sizing:border-box;font-size:11px;padding:5px 8px;border-radius:6px;background:var(--dark);border:1px solid var(--border2);color:var(--text);font-family:'DM Mono',monospace">`:`<span style="font-size:11px;font-family:'DM Mono',monospace;color:var(--muted)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</span>`}</td>
+      <td>${renderHodFotoCell(p, rec, ds, isCarrierUser)}</td>
       <td><select class="${timeCls}" ${timeDisabled} onchange="onTimeChange(this)" style="width:96px;box-sizing:border-box;font-size:11px">${isIndisp?`<option value="">N/A</option>`:buildTimeOpts(curTime,cur==='manutencao')}</select></td>
       <td>${driverCell}</td>
     </tr>`;
@@ -1605,8 +1720,8 @@ async function renderCarrier(carrier){
     </div>
     ${lockedBanner}
     <div class="tscroll">
-      <table class="table" style="min-width:800px">
-        <thead><tr><th style="width:11%">PLACA</th><th style="width:19%">OPERAÇÃO</th><th style="width:10%">TIPO</th><th style="width:15%">STATUS</th><th style="width:12%">HODÔMETRO</th><th style="width:12%">DISPONÍVEL ÀS</th><th style="width:21%">MOTORISTAS</th></tr></thead>
+      <table class="table" style="min-width:900px">
+        <thead><tr><th style="width:10%">PLACA</th><th style="width:16%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:13%">STATUS</th><th style="width:10%">HODÔMETRO</th><th style="width:12%">FOTO HODÔM. <span title="Obrigatória às segundas-feiras, comprovando o km preenchido" style="cursor:help;">ⓘ</span></th><th style="width:10%">DISPONÍVEL ÀS</th><th style="width:20%">MOTORISTAS</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -1661,6 +1776,7 @@ async function saveAll(carrier, ds, btnEl=null){
     return;
   }
   let missing=[];
+  const hojeEhSegunda = isMonday(ds);
   rows.forEach(row=>{
     const plate=row.dataset.placa||row.cells[0]?.textContent.trim()||"";
     const statusSel=row.querySelector(".st-sel");
@@ -1670,10 +1786,19 @@ async function saveAll(carrier, ds, btnEl=null){
     const isIndisp=statusSel&&statusSemHorario(statusSel.value);
     const hasTime=!!(timeSel&&timeSel.value);
     const hasOdo = !isCarrierUser || (odoInput && odoInput.value!=='');
-    if(!hasStatus||(!isIndisp&&!hasTime)||!hasOdo) missing.push(plate);
+    // Foto do hodômetro só é obrigatória às segundas-feiras — já tinha uma
+    // salva antes (data-tem-foto="1") OU foi selecionado um arquivo novo
+    // agora nesta mesma tela, antes de clicar em Salvar.
+    const fotoInput = row.querySelector('.hod-foto-input');
+    const temFotoNova = !!(fotoInput && fotoInput.files && fotoInput.files[0]);
+    const temFotoSalva = row.dataset.temFoto === '1';
+    const hasFotoSeNecessaria = !isCarrierUser || !hojeEhSegunda || temFotoNova || temFotoSalva;
+    if(!hasStatus||(!isIndisp&&!hasTime)||!hasOdo||!hasFotoSeNecessaria) missing.push(plate);
   });
   if(missing.length>0){
-    showToast("Preencha status, hodômetro e horário quando aplicável antes de salvar.",false);
+    showToast(hojeEhSegunda
+      ? "Preencha status, hodômetro, horário quando aplicável e a FOTO do hodômetro (obrigatória às segundas-feiras) antes de salvar."
+      : "Preencha status, hodômetro e horário quando aplicável antes de salvar.", false);
     rows.forEach(row=>{
       const plate=row.dataset.placa||row.cells[0]?.textContent.trim()||"";
       row.style.background=missing.includes(plate)?"rgba(240,96,96,.08)":"";
@@ -1711,7 +1836,8 @@ async function saveAll(carrier, ds, btnEl=null){
   if(btn){btn.disabled=true;btn.dataset.saving="1";btn.textContent="Salvando...";}
   try{
     const allP=await dbGetPlates();
-    const saves=rows.map(row=>{
+    if(btn) btn.textContent="Enviando foto(s)...";
+    const saves=rows.map(async row=>{
       const plate=row.dataset.placa||row.cells[0]?.textContent.trim()||"";
       const statusSel=row.querySelector(".st-sel");
       const timeSel=row.querySelector(".time-sel");
@@ -1723,7 +1849,20 @@ async function saveAll(carrier, ds, btnEl=null){
       const odoInput=row.querySelector('.odo-input');
       const hodometro = odoInput && odoInput.value!==''? Number(odoInput.value) : null;
       const timeValue = statusSemHorario(statusSel.value) ? "" : (timeSel?.value || "");
-      return dbSaveStatus(carrier,plate,ds,statusSel.value,timeValue,motDiurno,motNoturno,hodometro);
+      // Foto do hodômetro: se um arquivo novo foi escolhido nesta tela, sobe
+      // pro Storage primeiro e usa a URL nova; senão, mantém a que já
+      // estava salva (não apaga uma foto de segunda anterior sem motivo).
+      const fotoInput = row.querySelector('.hod-foto-input');
+      let hodometroFotoUrl = row.dataset.fotoUrl || null;
+      if(fotoInput && fotoInput.files && fotoInput.files[0]){
+        try {
+          hodometroFotoUrl = await uploadHodometroFoto(carrier, plate, ds, fotoInput.files[0]);
+        } catch(eFoto) {
+          console.error(`Falha ao subir foto do hodômetro (${plate}):`, eFoto);
+          throw new Error(`Falha ao enviar a foto de ${plate}: ${eFoto.message}`);
+        }
+      }
+      return dbSaveStatus(carrier,plate,ds,statusSel.value,timeValue,motDiurno,motNoturno,hodometro,hodometroFotoUrl);
     });
     const results=await Promise.allSettled(saves);
     const failed=results.filter(r=>r.status==="rejected");
@@ -1775,17 +1914,19 @@ async function renderAdmin(){
     {id:"dashboard",label:"Daily Briefing"},
     {id:"kpis",label:"KPIs Mensais"},
     {id:"today",label:"Painel de Disponibilidade"},
-    {id:"history",label:"Histórico"},
-    {id:"export",label:"Exportar"},
-    {id:"archives",label:"Arquivos Mensais"},
+    {id:"history",label:"Auditoria"},
+    {id:"export",label:"Relatórios"},
     {id:"roteirizador",label:"Roteirizador"},
     {id:"register",label:"Cadastros"},
-    {id:"users",label:"Usuários"},
   ];
-  // Operacional cannot access register or users tabs
-  const tabs=isOper?allTabs.filter(t=>t.id!=="register"&&t.id!=="users"):allTabs;
-  // Reset adminTab if operacional is on a restricted tab
-  if(isOper&&(S.adminTab==="register"||S.adminTab==="users")) S.adminTab="dashboard";
+  // Operacional não acessa Cadastros (que agora também contempla Usuários)
+  const tabs=isOper?allTabs.filter(t=>t.id!=="register"):allTabs;
+  // Reset adminTab se ficou apontando pra uma aba que não existe mais
+  // (archives/users foram fundidas em export/register) ou se operacional
+  // estiver numa aba restrita.
+  if(S.adminTab==="archives") S.adminTab="export";
+  if(S.adminTab==="users") S.adminTab="register";
+  if(isOper&&S.adminTab==="register") S.adminTab="dashboard";
   mc.innerHTML=`
     <p class="sec-title">${isOper?"Painel operacional":"Painel do administrador"}</p>
     <div class="tabs admin-tabs">
@@ -1819,9 +1960,8 @@ async function renderTabBody(){
   else if(S.adminTab==="kpis") await renderKpisMensais(body);
   else if(S.adminTab==="today") await renderToday(body);
   else if(S.adminTab==="history") await renderHistory(body);
-  else if(S.adminTab==="export") await renderExport(body);
-  else if(S.adminTab==="register") await renderRegister(body);
-  else if(S.adminTab==="archives") await renderArchives(body);
+  else if(S.adminTab==="export") await renderExport(body); // "Relatórios" — agora também contém Arquivos Mensais (ver sub-abas dentro de renderExport)
+  else if(S.adminTab==="register") await renderRegister(body); // "Cadastros" — agora também contém Usuários (ver sub-aba dentro de renderRegister)
   else if(S.adminTab==="roteirizador"){
     const uRot=USERS_DB[S.user];
     if(uRot&&uRot.role!=="admin"&&uRot.role!=="operacional"){
@@ -1878,16 +2018,15 @@ async function renderDashboard(body){
   const allP=await dbGetPlates();
   const _uOps=userOperacoes(USERS_DB[S.user]);
   const pendingAlerts=await buildPendingAlerts(allP,_uOps);
-  const auditItems=await dbGetAudit(8);
   const allPairs=[];
-  for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter))) allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   let byCarrier={};
   let byOp={};
   for(const carrier of CARRIERS){
     byCarrier[carrier]={disponivel:0,indisponivel:0,manutencao:0,folga:0};
-    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)){
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter))){
       const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
       const v=rec?rec.status:null;
       const op=p.operacao||"Sem operação";
@@ -1897,9 +2036,9 @@ async function renderDashboard(body){
       byOp[op].total++; counts.total++;
     }
   }
-  const activeCarrierList = CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false));
+  const activeCarrierList = CARRIERS.filter(c=>(allP[c]||[]).some(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)));
   const todayDone = await Promise.all(activeCarrierList.map(async carrier => {
-    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
+    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter));
     const lock=await dbGetLock(carrier, ds);
     const filledByStatus=plates.length>0 && plates.every(p=>recordHasStatus(statusMap[`${carrier}||${p.placa}||${ds}`]));
     return { carrier, done: !!lock || filledByStatus };
@@ -1908,10 +2047,10 @@ async function renderDashboard(body){
   const pendingToday = Math.max(0, activeCarrierList.length - lockedToday);
   const slaToday = activeCarrierList.length ? Math.round((lockedToday/activeCarrierList.length)*100) : 100;
   const pendingRanking = activeCarrierList.map(carrier=>{
-    const opSet = new Set((allP[carrier]||[]).filter(p=>p.ativo!==false).map(p=>p.operacao||"Sem operação"));
+    const opSet = new Set((allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)).map(p=>p.operacao||"Sem operação"));
     let pendOps = 0;
     for(const op of opSet){
-      const opPlates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(p.operacao||"Sem operação")===op);
+      const opPlates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)&&(p.operacao||"Sem operação")===op);
       const opFilled=opPlates.every(p=>recordHasStatus(statusMap[`${carrier}||${p.placa}||${ds}`]));
       if(!opFilled) pendOps++;
     }
@@ -1920,27 +2059,26 @@ async function renderDashboard(body){
   const opOrder=[...OPERACOES,...Object.keys(byOp).filter(o=>!OPERACOES.includes(o)).sort()];
   const opRows=opOrder.filter(op=>byOp[op]).map(op=>{
     const r=byOp[op];
-    const dispPct=r.total?Math.round((r.disponivel/r.total)*100):0;
+    // Mesma correção: folga/"Programado/Em viagem" fora do denominador do %.
+    const denomOp = r.total - r.folga - (r.programado||0);
+    const dispPct = denomOp > 0 ? Math.round((r.disponivel/denomOp)*100) : 0;
     return `<tr><td style="font-weight:500">${esc(op)}</td><td><span class="badge b-green">${r.disponivel}</span></td><td><span class="badge b-red">${r.indisponivel}</span></td><td><span class="badge b-amber">${r.manutencao}</span></td><td><span class="badge b-blue">${r.folga}</span></td><td><span class="badge b-purple">${r.programado||0}</span></td><td><span class="badge b-blank">${r.pendente}</span></td><td><span class="cap-tag">${r.total}</span></td><td><div class="op-meter"><span style="width:${dispPct}%"></span></div><div class="op-meter-label">${dispPct}% disponível</div></td></tr>`;
   }).join("");
   const tDates=getDates(14);
   const tPairs=[];
-  for(const d of tDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) tPairs.push({carrier,plate:p.placa,dateStr:d});
+  for(const d of tDates) for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter))) tPairs.push({carrier,plate:p.placa,dateStr:d});
   const tMap=await dbLoadStatusBulk(tPairs);
-  const tDisp=tDates.map(d=>{ let c=0; for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false)) if(tMap[`${carrier}||${p.placa}||${d}`]?.status==="disponivel") c++; return c; });
+  const tDisp=tDates.map(d=>{ let c=0; for(const carrier of CARRIERS) for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter))) if(tMap[`${carrier}||${p.placa}||${d}`]?.status==="disponivel") c++; return c; });
   const cutoffSel = Array.from({length:24},(_,h)=>`<option value="${h}"${h===ALERT_CUTOFF_HOUR?' selected':''}>${String(h).padStart(2,'0')}:00</option>`).join("");
   const currentUser=USERS_DB[S.user]||{};
   body.innerHTML=`
-    <div class="date-nav"><button onclick="chDate(-1)">&lsaquo;</button><span class="date-label">${fmtDate(S.dateOffset)}</span><button onclick="chDate(1)">&rsaquo;</button></div>
+    <div class="date-nav" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;"><button onclick="chDate(-1)">&lsaquo;</button><span class="date-label">${fmtDate(S.dateOffset)}</span><button onclick="chDate(1)">&rsaquo;</button><div style="margin-left:auto;">${renderContratoFilterUI()}</div></div>
     ${pendingAlerts}
-    <div class="summary-grid">
-      <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--amber)">${counts.manutencao}</div><div class="sum-label">Manutenção</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--blue)">${counts.folga}</div><div class="sum-label">Folga</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--purple)">${counts.programado||0}</div><div class="sum-label">Prog./Viagem</div></div>
-      <div class="sum-card"><div class="sum-num" style="color:var(--lime)">${counts.total}</div><div class="sum-label">Total</div></div>
-    </div>
+    <!-- Cards de contagem bruta (Disponíveis/Indisponíveis/Manutenção/Folga/
+    Prog.Viagem/Total) foram REMOVIDOS daqui de propósito — são a mesma
+    informação, já detalhada, que já existe no topo do Painel de
+    Disponibilidade. O Daily Briefing é a visão do gestor: fica só com o
+    painel de SLA abaixo (% sintetizado), não com contagem bruta de slots. -->
     <div class="sla-panel">
       <!-- Row 1: KPIs -->
       <div class="sla-kpi-row">
@@ -2009,7 +2147,6 @@ async function renderDashboard(body){
         </div>
       </div>` : ''}
     </div>
-    <div class="card" style="margin-bottom:1.25rem"><div style="font-size:13px;color:var(--dim);margin-bottom:8px">Últimas ações (auditoria)</div><div style="display:grid;gap:6px">${auditItems.length ? auditItems.map(a=>`<div style="font-size:12px;color:var(--text);background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span style="color:var(--lime)">${fmtAuditAction(a.action, a.details||{})}</span><span style="color:var(--muted);white-space:nowrap;font-size:11px">${a.actor||"Sistema"} · ${a.atBR||""}</span></div>`).join("") : `<div style="font-size:12px;color:var(--muted)">Sem eventos recentes.</div>`}</div></div>
     <div class="dash-grid"><div class="chart-card"><div class="chart-title">Distribuição de status - hoje</div><canvas id="pie-chart" height="260"></canvas></div><div class="chart-card"><div class="chart-title">Tendência de disponibilidade - 14 dias</div><canvas id="line-chart" height="260"></canvas></div></div>
     <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Disponibilidade por transportador - hoje</div><canvas id="bar-chart" height="300"></canvas></div>
     <div class="chart-card" style="margin-bottom:1.5rem"><div class="chart-title">Resumo por operação - ${fmtDate(S.dateOffset)}</div><div class="tscroll"><table class="table op-summary-table" style="min-width:860px"><thead><tr><th style="width:22%">OPERAÇÃO</th><th>DISP.</th><th>INDISP.</th><th>MANUT.</th><th>FOLGA</th><th>PROG.</th><th>PEND.</th><th>TOTAL</th><th style="width:18%">DISPONIBILIDADE</th></tr></thead><tbody>${opRows||'<tr><td colspan="9" style="color:var(--muted);font-size:13px">Nenhuma operação com placas ativas.</td></tr>'}</tbody></table></div></div>`;
@@ -2043,13 +2180,13 @@ async function renderKpisMensais(body){
   // Bulk load all status for this month
   const allPairs=[];
   for(const carrier of CARRIERS)
-    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false))
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)))
       for(const ds of effectiveDates)
         allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
   // ── Per-carrier metrics ──────────────────────────────────
   const carrierMetrics=CARRIERS.map(carrier=>{
-    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false);
+    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter));
     if(!plates.length) return null;
     let totalSlots=0,filledSlots=0,availSlots=0,unavailSlots=0,manutSlots=0,folgaSlots=0,progSlots=0;
     let diasEnviados=0;
@@ -2068,7 +2205,13 @@ async function renderKpisMensais(body){
         else if(v==="programado") progSlots++;
       }
     }
-    const dispPct=filledSlots?Math.round((availSlots/filledSlots)*100):0;
+    // % Disponível não pode ser distorcido por "Folga" ou "Programado/Em
+    // viagem" — motorista de folga ou já programado/em viagem não é uma
+    // "falha de disponibilidade" da transportadora, então esses dias saem
+    // do denominador dessa conta específica (continuam contando normal em
+    // fillPct/diasEnviados e nos totais brutos de folgaSlots/progSlots).
+    const dispDenom=filledSlots-folgaSlots-progSlots;
+    const dispPct=dispDenom>0?Math.round((availSlots/dispDenom)*100):0;
     const fillPct=totalSlots?Math.round((filledSlots/totalSlots)*100):0;
     const slaEnvio=effectiveDates.length?Math.round((diasEnviados/effectiveDates.length)*100):0;
     return {carrier,plates:plates.length,totalSlots,filledSlots,availSlots,unavailSlots,
@@ -2079,9 +2222,35 @@ async function renderKpisMensais(body){
   const totFilled=carrierMetrics.reduce((s,m)=>s+m.filledSlots,0);
   const totAvail=carrierMetrics.reduce((s,m)=>s+m.availSlots,0);
   const totSlots=carrierMetrics.reduce((s,m)=>s+m.totalSlots,0);
-  const avgDisp=totFilled?Math.round((totAvail/totFilled)*100):0;
+  const totFolga=carrierMetrics.reduce((s,m)=>s+m.folgaSlots,0);
+  const totProg=carrierMetrics.reduce((s,m)=>s+m.progSlots,0);
+  const globalDispDenom=totFilled-totFolga-totProg;
+  const avgDisp=globalDispDenom>0?Math.round((totAvail/globalDispDenom)*100):0;
   const avgFill=totSlots?Math.round((totFilled/totSlots)*100):0;
   const totalPlates=carrierMetrics.reduce((s,m)=>s+m.plates,0);
+  // ── Dias abaixo da meta (substitui os cards "Slots disponíveis"/"Slots
+  // não preenchidos" — números brutos que não diziam nada de acionável pra
+  // um gestor bater o olho. Isso aqui responde uma pergunta de verdade:
+  // "em quantos dias do mês a operação ficou abaixo da meta?" — mesma
+  // trava de folga/programado fora do denominador, pra consistência com o
+  // resto da tela. ─────────────────────────────────────────────────────
+  let diasAbaixoMeta=0;
+  for(const ds of effectiveDates){
+    let availDia=0, filledDia=0, folgaProgDia=0;
+    for(const carrier of CARRIERS){
+      const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter));
+      for(const p of plates){
+        const rec=statusMap[`${carrier}||${p.placa}||${ds}`];
+        if(!rec) continue;
+        filledDia++;
+        if(rec.status==='disponivel') availDia++;
+        else if(rec.status==='folga'||rec.status==='programado') folgaProgDia++;
+      }
+    }
+    const denomDia=filledDia-folgaProgDia;
+    const pctDia=denomDia>0?Math.round((availDia/denomDia)*100):0;
+    if(denomDia>0 && pctDia<META_DISP) diasAbaixoMeta++;
+  }
   // ── 6-month trend (disponibilidade média por mês) ────────
   const trendMonths=[];
   for(let i=5;i>=0;i--){
@@ -2095,7 +2264,7 @@ async function renderKpisMensais(body){
     if(!mDates.length) return {label:tm.label,pct:null};
     const pairs=[];
     for(const carrier of CARRIERS)
-      for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false))
+      for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)))
         for(const ds of mDates)
           pairs.push({carrier,plate:p.placa,dateStr:ds});
     const sm=await dbLoadStatusBulk(pairs);
@@ -2145,6 +2314,7 @@ async function renderKpisMensais(body){
         <p style="font-size:12px;color:var(--muted)">${diasDecorridos} de ${diasNoMes} dias contabilizados · ${totalPlates} veículos ativos</p>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
+        ${renderContratoFilterUI()}
         <select onchange="S.kpiYear=+this.value.split('-')[0];S.kpiMonth=+this.value.split('-')[1];renderTabBody()"
           style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;color:var(--text);padding:8px 12px;font-size:13px;outline:none">${selOpts}</select>
       </div>
@@ -2168,12 +2338,8 @@ async function renderKpisMensais(body){
         <div class="sum-label">Transportadores</div>
       </div>
       <div class="sum-card">
-        <div class="sum-num" style="color:var(--green)">${totAvail}</div>
-        <div class="sum-label">Slots disponíveis</div>
-      </div>
-      <div class="sum-card">
-        <div class="sum-num" style="color:var(--muted)">${totSlots-totFilled}</div>
-        <div class="sum-label">Slots não preenchidos</div>
+        <div class="sum-num" style="color:${diasAbaixoMeta===0?'var(--green)':diasAbaixoMeta<=3?'var(--amber)':'var(--red)'}">${diasAbaixoMeta}<span style="font-size:14px;font-weight:400;color:var(--muted)">/${diasDecorridos}</span></div>
+        <div class="sum-label">Dias abaixo da meta (${META_DISP}%)</div>
       </div>
     </div>
     <!-- Gráfico de tendência 6 meses -->
@@ -2552,12 +2718,12 @@ async function renderToday(body){
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   const allPairs=[];
   for(const carrier of CARRIERS)
-    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter))))
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter))))
       allPairs.push({carrier,plate:p.placa,dateStr:ds});
   const statusMap=await dbLoadStatusBulk(allPairs);
   let sections="";
   for(const carrier of CARRIERS){
-    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)));
+    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)));
     if(!plates.length&&!(allP[carrier]||[]).length){
       sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">🚛</span>${esc(carrier)}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
       continue;
@@ -2620,6 +2786,7 @@ async function renderToday(body){
     <div class="filters-bar">
       <select onchange="S.todayOp=this.value;renderTabBody()">${opOpts}</select>
       <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${attr(S.todayPlaca||"")}" id="today-search-input" oninput="S.todayPlaca=this.value;_debouncedTodaySearch()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;">
+      ${renderContratoFilterUI()}
     </div>
     ${pendingAlerts}
     <div class="summary-grid">
@@ -2636,13 +2803,21 @@ async function renderToday(body){
 // HISTORY
 // ═══════════════════════════════════════════════════════════
 async function renderHistory(body){
+  const u=USERS_DB[S.user];
+  const isAdmin=u&&u.role==='admin';
+  const subTabsAudit=`
+    <div style="display:flex;gap:4px;background:var(--mid);border:1px solid var(--border);border-radius:var(--radius);padding:4px;width:fit-content;margin-bottom:1.5rem">
+      <button class="tab ${S.auditSubTab==='disponibilidade'?'active':''}" onclick="setAuditSubTab('disponibilidade')">📜 Disponibilidade</button>
+      ${isAdmin?`<button class="tab ${S.auditSubTab==='atividade'?'active':''}" onclick="setAuditSubTab('atividade')">🔒 Atividade dos Usuários</button>`:''}
+    </div>`;
+  if(S.auditSubTab==='atividade'&&isAdmin){ await renderAtividadeUsuarios(body, subTabsAudit); return; }
   const cf=S.histCarrier, sf=S.histStatus, of=S.histOp;
   const placaFilter=(S.histPlaca||"").toUpperCase();
   const carrierOpts=`<option value="">Todos transportadores</option>${CARRIERS.map(c=>optHtml(c, c===cf)).join("")}`;
   const statusOpts=`<option value="">Todos os status</option>${STATUS_OPTS.map(s=>`<option value="${attr(s.val)}"${s.val===sf?" selected":""}>${esc(s.label)}</option>`).join("")}<option value="nao_preenchido"${"nao_preenchido"===sf?" selected":""}>Não preenchido</option>`;
   const opOpts=`<option value="">Todas as operações</option>${OPERACOES.map(o=>optHtml(o, o===of)).join("")}`;
   const daysOpts=[7,15,30,45].map(d=>`<option value="${d}"${d===S.histDays?" selected":""}>${d} dias</option>`).join("");
-  body.innerHTML=`
+  body.innerHTML=subTabsAudit+`
     <div class="filters-bar">
       <select onchange="S.histCarrier=this.value;renderTabBody()">${carrierOpts}</select>
       <select onchange="S.histStatus=this.value;renderTabBody()">${statusOpts}</select>
@@ -2691,6 +2866,7 @@ async function renderHistory(body){
           <td>${statusBadge}</td>
           <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${fmtTimeValue(t)}</td>
           <td style="font-family:'DM Mono',monospace">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?esc(rec.hodometro):'Não preenchido'}</td>
+          <td>${rec&&rec.hodometroFotoUrl?`<a href="${attr(rec.hodometroFotoUrl)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--dim);">📷 ver</a>`:isMonday(ds)?`<span style="font-size:10px;color:var(--red)">sem foto</span>`:`<span style="font-size:11px;color:var(--muted)">—</span>`}</td>
           <td>${renderDriverCell(!isBlank?driverAtivoHist(carrier, p.operacao, (rec&&rec.motoristaDiurno)||p.motoristaDiurno||''):'', !isBlank?driverAtivoHist(carrier, p.operacao, (rec&&rec.motoristaNoturno)||p.motoristaNoturno||''):'')}</td>
         </tr>`;
         const g=groups[ds];
@@ -2711,7 +2887,7 @@ async function renderHistory(body){
       <td colspan="8">
         <div class="hist-detail-box">
           <table class="table hist-detail-table">
-            <thead><tr><th style="width:18%">TRANSPORTADOR</th><th style="width:10%">PLACA</th><th style="width:14%">OPERAÇÃO</th><th style="width:9%">TIPO</th><th style="width:13%">STATUS</th><th style="width:9%">HORÁRIO</th><th style="width:12%">HODÔMETRO</th><th style="width:15%">MOTORISTAS</th></tr></thead>
+            <thead><tr><th style="width:16%">TRANSPORTADOR</th><th style="width:9%">PLACA</th><th style="width:13%">OPERAÇÃO</th><th style="width:8%">TIPO</th><th style="width:12%">STATUS</th><th style="width:8%">HORÁRIO</th><th style="width:11%">HODÔMETRO</th><th style="width:8%">FOTO</th><th style="width:15%">MOTORISTAS</th></tr></thead>
             <tbody>${g.rows.join("")}</tbody>
           </table>
         </div>
@@ -2751,9 +2927,49 @@ function toggleHistoryDay(ds){
   }
 }
 // ═══════════════════════════════════════════════════════════
+// AUDITORIA — Atividade dos Usuários (admin-only)
+// ═══════════════════════════════════════════════════════════
+// Antes vivia resumida (só 8 itens) solta no Daily Briefing, sem filtro nem
+// paginação de verdade. Agora é uma sub-aba dedicada dentro de "Auditoria",
+// só pra admin, com o log completo (até 300 eventos, o máximo que
+// dbAddAudit guarda) e um filtro simples por usuário/ação.
+async function renderAtividadeUsuarios(body, subTabs=''){
+  body.innerHTML = subTabs+`<div class="loading"><span class="spin"></span>Carregando atividade...</div>`;
+  const items = await dbGetAudit(300);
+  const actorSet = [...new Set(items.map(a=>a.actor||"Sistema"))].sort();
+  const actorOpts = `<option value="">Todos os usuários</option>${actorSet.map(a=>`<option value="${attr(a)}" ${S.auditActorFiltro===a?'selected':''}>${esc(a)}</option>`).join('')}`;
+  const filtrados = S.auditActorFiltro ? items.filter(a=>(a.actor||"Sistema")===S.auditActorFiltro) : items;
+  const rows = filtrados.length ? filtrados.map(a=>`
+    <tr>
+      <td style="font-size:12px;color:var(--lime)">${fmtAuditAction(a.action, a.details||{})}</td>
+      <td style="font-size:12px;color:var(--text)">${esc(a.actor||"Sistema")}</td>
+      <td style="font-size:11px;color:var(--muted);white-space:nowrap">${esc(a.atBR||"")}</td>
+    </tr>`).join('') : `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:20px;">Nenhuma atividade registrada${S.auditActorFiltro?' para esse usuário':''}.</td></tr>`;
+  body.innerHTML = subTabs+`
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:1rem">
+      <div>
+        <p class="sec-title" style="margin-bottom:2px">🔒 Atividade dos Usuários</p>
+        <p style="font-size:12px;color:var(--muted)">Log completo de ações no sistema — só administradores veem isso. Mostrando ${filtrados.length} de ${items.length} evento(s) guardado(s) (máximo 300).</p>
+      </div>
+      <select onchange="S.auditActorFiltro=this.value;renderTabBody()">${actorOpts}</select>
+    </div>
+    <div class="tscroll">
+      <table class="table">
+        <thead><tr><th style="width:45%">AÇÃO</th><th style="width:25%">USUÁRIO</th><th style="width:30%">DATA/HORA</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+// ═══════════════════════════════════════════════════════════
 // EXPORT
 // ═══════════════════════════════════════════════════════════
 async function renderExport(body){
+  const subTabsReports=`
+    <div style="display:flex;gap:4px;background:var(--mid);border:1px solid var(--border);border-radius:var(--radius);padding:4px;width:fit-content;margin-bottom:1.5rem">
+      <button class="tab ${S.reportsSubTab==='exportar'?'active':''}" onclick="setReportsSubTab('exportar')">📤 Exportar</button>
+      <button class="tab ${S.reportsSubTab==='arquivos'?'active':''}" onclick="setReportsSubTab('arquivos')">🗄 Arquivos Mensais</button>
+    </div>`;
+  if(S.reportsSubTab==='arquivos'){ await renderArchives(body, subTabsReports); return; }
   const now=new Date();
   const mons=["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
   const maxDate=localDateStr(now);
@@ -2763,7 +2979,30 @@ async function renderExport(body){
   const weekDates=getDates(7);
   const weekLabel=`${fmtDateStr(weekDates[0])} → ${fmtDateStr(weekDates[6])}`;
   const monthLabel=`${mons[now.getMonth()]} ${now.getFullYear()}`;
-  body.innerHTML=`
+  const carrierOptsExp=[["",'Todas']].concat(CARRIERS.map(c=>[c,c])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.carrier===v?'selected':''}>${esc(l)}</option>`).join('');
+  const opOptsExp=[["",'Todas']].concat(OPERACOES.map(o=>[o,o])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.operacao===v?'selected':''}>${esc(l)}</option>`).join('');
+  const tipoOptsExp=[["",'Todos']].concat(TIPOS_VEIC.map(t=>[t,t])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.tipo===v?'selected':''}>${esc(l)}</option>`).join('');
+  const identOptsExp=[["",'Todas']].concat(IDENTS.map(i=>[i,i])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.identificacao===v?'selected':''}>${esc(l)}</option>`).join('');
+  const ctOptsExp=[["",'Todos']].concat(CONTRATOS.map(c=>[c,c])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.contrato===v?'selected':''}>${esc(l)}</option>`).join('');
+  const stOptsExp=[["",'Todos']].concat(STATUS_OPTS.map(s=>[s.val,s.label])).concat([["nao_preenchido","Não preenchido"]]).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.status===v?'selected':''}>${esc(l)}</option>`).join('');
+  const filtroAtivo = Object.values(S.expFiltro).some(Boolean);
+  const filtrosBar = `
+    <div class="card" style="margin-bottom:1.5rem;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <p style="font-size:13px;font-weight:600;">🎛 Filtros do relatório</p>
+        ${filtroAtivo?`<button class="btn btn-outline btn-sm" onclick="limparFiltroExport()">✕ Limpar filtros</button>`:''}
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:12px;">Aplica em Diário, Semanal, Mensal e Personalizado — nos 3 formatos (Excel, CSV, PDF). Deixe em "Todas/Todos" pra não filtrar aquele campo.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+        <div class="form-field" style="margin:0"><label>TRANSPORTADORA</label><select onchange="S.expFiltro.carrier=this.value" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:12px;padding:7px 9px;">${carrierOptsExp}</select></div>
+        <div class="form-field" style="margin:0"><label>OPERAÇÃO</label><select onchange="S.expFiltro.operacao=this.value" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:12px;padding:7px 9px;">${opOptsExp}</select></div>
+        <div class="form-field" style="margin:0"><label>TIPO DE VEÍCULO</label><select onchange="S.expFiltro.tipo=this.value" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:12px;padding:7px 9px;">${tipoOptsExp}</select></div>
+        <div class="form-field" style="margin:0"><label>IDENTIFICAÇÃO</label><select onchange="S.expFiltro.identificacao=this.value" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:12px;padding:7px 9px;">${identOptsExp}</select></div>
+        <div class="form-field" style="margin:0"><label>CONTRATO</label><select onchange="S.expFiltro.contrato=this.value" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:12px;padding:7px 9px;">${ctOptsExp}</select></div>
+        <div class="form-field" style="margin:0"><label>STATUS</label><select onchange="S.expFiltro.status=this.value" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:12px;padding:7px 9px;">${stOptsExp}</select></div>
+      </div>
+    </div>`;
+  body.innerHTML=subTabsReports+filtrosBar+`
     <!-- Header -->
     <div style="margin-bottom:2rem">
       <p class="sec-title" style="margin-bottom:4px">Exportar relatórios</p>
@@ -2940,9 +3179,10 @@ async function exportCustom(fmt){
   if(showProg) showExportProgress(0, totalDays);
   else showToast('Gerando relat\u00f3rio...',true);
   const rows=await buildRows(dates, showProg ? pct => showExportProgress(pct, totalDays) : null);
-  const fn=`NEXTA_Personalizado_${from}_a_${to}`;
+  const filtro=resumoFiltroExport();
+  const fn=`NEXTA_Personalizado_${from}_a_${to}${filtro?'_filtrado':''}`;
   if(showProg) hideExportProgress();
-  if(fmt==='pdf') await exportPdf(rows,fn,`Relatório personalizado — ${fmtDateStr(from)} a ${fmtDateStr(to)}`);
+  if(fmt==='pdf') await exportPdf(rows,fn,`Relatório personalizado — ${fmtDateStr(from)} a ${fmtDateStr(to)}${filtro?` · ${filtro}`:''}`);
   else if(fmt==='xlsx') exportXlsx(rows,fn);
   else exportCsv(rows,fn);
 }
@@ -2979,11 +3219,24 @@ function hideExportProgress(){
 }
 async function buildRows(dates, onProgress){
   const allP = await dbGetPlates();
-  // Collect all active plates across all carriers
+  // Filtro dinâmico de relatório (ver painel "🎛 Filtros do relatório" em
+  // renderExport) — aplica nas placas ANTES de buscar os dados (mais
+  // barato: menos placas = menos leituras no Firestore), exceto "status",
+  // que é valor por dia/registro, então esse filtra as LINHAS depois de
+  // montadas (mais abaixo).
+  const f = S.expFiltro || {};
+  const passaFiltroPlaca = p =>
+    (!f.operacao || p.operacao === f.operacao) &&
+    (!f.tipo || p.tipo === f.tipo) &&
+    (!f.identificacao || p.identificacao === f.identificacao) &&
+    (!f.contrato || p.contrato === f.contrato);
+  // Collect all active plates across all carriers (respeitando o filtro)
   const allActivePlates = [];
-  for(const carrier of CARRIERS)
-    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false))
+  for(const carrier of CARRIERS){
+    if(f.carrier && carrier !== f.carrier) continue;
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&passaFiltroPlaca(p)))
       allActivePlates.push({carrier, plate:p.placa, meta:p});
+  }
   // Fetch all records for the requested dates in parallel (batched by date)
   const statusMap = {};
   const totalBatches = dates.length;
@@ -3033,6 +3286,13 @@ async function buildRows(dates, onProgress){
   for(const ds of dates)
     for(const {carrier, plate, meta:p} of allActivePlates){
       const rec = statusMap[`${carrier}||${plate}||${ds}`];
+      // Filtro de status — único campo que é por REGISTRO (dia), não por
+      // cadastro de placa, então filtra aqui, linha a linha, em vez de na
+      // lista de placas (ver passaFiltroPlaca acima).
+      if(f.status){
+        const statusAtual = rec ? rec.status : null;
+        if(f.status==="nao_preenchido" ? statusAtual!==null : statusAtual!==f.status) continue;
+      }
       const statusLabel = rec ? getSt(rec.status).label : "Não preenchido";
       const timeLabel   = rec ? (statusSemHorario(rec.status) ? "N/A" : fmtTimeValue(rec.time)) : "—";
       const hod = rec && rec.hodometro!==undefined && rec.hodometro!==null ? rec.hodometro : "Não preenchido";
@@ -3135,16 +3395,21 @@ async function exportPdf(rows, filename, periodLabel) {
   const prog      = statusCounts["Programado/Em viagem"] || 0;
   const nfill     = statusCounts["Não preenchido"] || 0;
   const filled    = totalVehicles - nfill;
-  const dispPct   = filled ? Math.round((avail/filled)*100) : 0;
+  // Mesma correção do resto do sistema: folga/"Programado/Em viagem" fora
+  // do denominador do % disponível (o PDF de exportação tinha o mesmo
+  // cálculo duplicado, então tinha o mesmo problema).
+  const dispDenomPdf = filled - folga - prog;
+  const dispPct   = dispDenomPdf > 0 ? Math.round((avail/dispDenomPdf)*100) : 0;
   const fillPct   = totalVehicles ? Math.round((filled/totalVehicles)*100) : 0;
   const metaOk    = dispPct >= META_DISP;
   // Per-carrier summary
   const byCarrier = {};
   dataRows.forEach(r => {
-    const c = r[1]; if(!byCarrier[c]) byCarrier[c]={avail:0,total:0,filled:0};
+    const c = r[1]; if(!byCarrier[c]) byCarrier[c]={avail:0,total:0,filled:0,folgaOuProg:0};
     byCarrier[c].total++;
     if(r[8] !== "Não preenchido") byCarrier[c].filled++;
     if(r[8] === "Disponível") byCarrier[c].avail++;
+    if(r[8] === "Folga" || r[8] === "Programado/Em viagem") byCarrier[c].folgaOuProg++;
   });
   // ════════════════════════════════════════════════════════
   // PAGE 1 — COVER + KPIs
@@ -3241,7 +3506,8 @@ async function exportPdf(rows, filename, periodLabel) {
   const cbW = (PW - 28 - (cKeys.length-1)*6) / Math.max(cKeys.length,1);
   cKeys.forEach((c, i) => {
     const d = byCarrier[c];
-    const pct = d.filled ? Math.round((d.avail/d.filled)*100) : 0;
+    const denomC = d.filled - d.folgaOuProg;
+    const pct = denomC > 0 ? Math.round((d.avail/denomC)*100) : 0;
     const col = pct>=META_DISP?C.green:pct>=70?C.amber:C.red;
     const cx2 = 14 + i*(cbW+6);
     const maxBarH = 24;
@@ -3289,7 +3555,12 @@ async function exportPdf(rows, filename, periodLabel) {
       r[2],  // placa
       r[3],  // operação
       r[4],  // tipo
-      r[7]==="Não preenchido"?"—":r[7],  // hodômetro
+      r[10]==="Não preenchido"?"—":r[10],  // hodômetro — ERA r[7] (Capacidade) por engano; a coluna
+                                           // "Hodômetro" de verdade é o índice 10 no array de rows
+                                           // (ver header em buildRows: Data,Transportador,Placa,Operação,
+                                           // Tipo,Identificação,Contrato,Capacidade,Status,Horário,
+                                           // Hodômetro,...) — o PDF estava mostrando a capacidade do
+                                           // veículo (m³) rotulada como hodômetro.
       r[8],  // status
       r[9]==="—"?"":r[9],  // horário
       r[12]||"—", // mot. diurno
@@ -3392,11 +3663,29 @@ function exportCsv(rows,filename){
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename+".csv"; a.click();
   showToast("CSV exportado!");
 }
+// Resumo curto do filtro ativo (ver S.expFiltro / painel "🎛 Filtros do
+// relatório" em renderExport) — aparece no cabeçalho do PDF e no nome do
+// arquivo, pra deixar claro que aquele relatório NÃO é a frota inteira,
+// evitando um gestor ler um PDF filtrado achando que é o total geral.
+function resumoFiltroExport(){
+  const f = S.expFiltro || {};
+  const stLabel = f.status ? (f.status==="nao_preenchido" ? "Não preenchido" : getSt(f.status).label) : "";
+  const partes = [
+    f.carrier && `Transportadora: ${f.carrier}`,
+    f.operacao && `Operação: ${f.operacao}`,
+    f.tipo && `Tipo: ${f.tipo}`,
+    f.identificacao && `Identificação: ${f.identificacao}`,
+    f.contrato && `Contrato: ${f.contrato}`,
+    stLabel && `Status: ${stLabel}`,
+  ].filter(Boolean);
+  return partes.join(" · ");
+}
 async function exportDay(fmt){
   showToast("Gerando relatório...",true);
   const rows=await buildRows([dateStr(S.dateOffset)]);
-  const fn=`NEXTA_Diario_${dateStr(S.dateOffset)}`;
-  if(fmt==="pdf") await exportPdf(rows,fn,`Relatório diário — ${fmtDate(S.dateOffset)}`);
+  const filtro=resumoFiltroExport();
+  const fn=`NEXTA_Diario_${dateStr(S.dateOffset)}${filtro?'_filtrado':''}`;
+  if(fmt==="pdf") await exportPdf(rows,fn,`Relatório diário — ${fmtDate(S.dateOffset)}${filtro?` · ${filtro}`:''}`);
   else if(fmt==="xlsx") exportXlsx(rows,fn);
   else exportCsv(rows,fn);
 }
@@ -3404,8 +3693,9 @@ async function exportWeek(fmt){
   showToast("Gerando relatório...",true);
   const dates=getDates(7);
   const rows=await buildRows(dates);
-  const fn=`NEXTA_Semanal_${dates[0]}_a_${dates[6]}`;
-  if(fmt==="pdf") await exportPdf(rows,fn,`Relatório semanal — ${fmtDateStr(dates[0])} a ${fmtDateStr(dates[6])}`);
+  const filtro=resumoFiltroExport();
+  const fn=`NEXTA_Semanal_${dates[0]}_a_${dates[6]}${filtro?'_filtrado':''}`;
+  if(fmt==="pdf") await exportPdf(rows,fn,`Relatório semanal — ${fmtDateStr(dates[0])} a ${fmtDateStr(dates[6])}${filtro?` · ${filtro}`:''}`);
   else if(fmt==="xlsx") exportXlsx(rows,fn);
   else exportCsv(rows,fn);
 }
@@ -3415,8 +3705,9 @@ async function exportMonth(fmt){
   const mons=["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
   const dates=getMonthDates(now.getFullYear(),now.getMonth());
   const rows=await buildRows(dates);
-  const fn=`NEXTA_Mensal_${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
-  if(fmt==="pdf") await exportPdf(rows,fn,`Relatório mensal — ${mons[now.getMonth()]} ${now.getFullYear()}`);
+  const filtro=resumoFiltroExport();
+  const fn=`NEXTA_Mensal_${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}${filtro?'_filtrado':''}`;
+  if(fmt==="pdf") await exportPdf(rows,fn,`Relatório mensal — ${mons[now.getMonth()]} ${now.getFullYear()}${filtro?` · ${filtro}`:''}`);
   else if(fmt==="xlsx") exportXlsx(rows,fn);
   else exportCsv(rows,fn);
 }
@@ -3432,9 +3723,11 @@ async function renderRegister(body){
       <button class="tab ${S.registerSubTab==='plates'?'active':''}" onclick="setRegSubTab('plates')">🚛 Placas</button>
       <button class="tab ${S.registerSubTab==='drivers'?'active':''}" onclick="setRegSubTab('drivers')">👤 Motoristas</button>
       ${isAdmin?`<button class="tab ${S.registerSubTab==='ops'?'active':''}" onclick="setRegSubTab('ops')">📍 Operações</button>`:''}
+      ${isAdmin?`<button class="tab ${S.registerSubTab==='users'?'active':''}" onclick="setRegSubTab('users')">👥 Usuários</button>`:''}
     </div>`;
   if(S.registerSubTab==='ops'&&isAdmin){ await renderRegisterOps(body, subTabs); return; }
   if(S.registerSubTab==='drivers'){ await renderRegisterDrivers(body, subTabs); return; }
+  if(S.registerSubTab==='users'&&isAdmin){ await renderUsers(body, subTabs); return; }
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando placas...</div>`;
   const allP=await dbGetPlates();
   const carrierOpts=CARRIERS.map(c=>optHtml(c)).join("");
@@ -3607,8 +3900,8 @@ async function generateMonthlyArchive(year, month, silent=false) {
   });
   if(!silent) showToast(`Arquivo de ${label} gerado!`);
 }
-async function renderArchives(body) {
-  body.innerHTML = `<div class="loading"><span class="spin"></span>Carregando arquivos...</div>`;
+async function renderArchives(body, subTabs='') {
+  body.innerHTML = subTabs+`<div class="loading"><span class="spin"></span>Carregando arquivos...</div>`;
   const archives = await dbGetArchives();
   const now = new Date();
   // Available months to manually generate (last 6 months)
@@ -3637,7 +3930,7 @@ async function renderArchives(body) {
           <button class="btn btn-outline btn-sm" onclick="regenArchive('${a.key}')">🔄</button>
         </div>
       </div>`).join('');
-  body.innerHTML = `
+  body.innerHTML = subTabs+`
     <div class="card" style="margin-bottom:1.5rem">
       <p style="font-size:13px;font-weight:500;margin-bottom:.5rem">⚡ Gerar arquivo manualmente</p>
       <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">Selecione o mês e gere ou atualize o arquivo a qualquer momento</p>
@@ -3748,7 +4041,7 @@ async function adminUnlockPlate(carrier, plate, ds){
 // ═══════════════════════════════════════════════════════════
 // USERS MANAGEMENT
 // ═══════════════════════════════════════════════════════════
-async function renderUsers(body){
+async function renderUsers(body, subTabs=''){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   // Busca fresca antes de desenhar a tabela — esta tela é onde o admin
   // decide excluir/criar usuário, então não pode confiar numa cópia da
@@ -3790,7 +4083,7 @@ async function renderUsers(body){
       </td>
     </tr>`;
   }).join("");
-  body.innerHTML=`
+  body.innerHTML=subTabs+`
     <!-- NEW CARRIER -->
     <div class="card" style="margin-bottom:1.5rem">
       <p class="reg-heading">+ Novo transportador</p>
@@ -4044,6 +4337,18 @@ async function saveEditUser(uid){
 // ═══════════════════════════════════════════════════════════
 function setRegSubTab(tab){
   S.registerSubTab=tab;
+  renderTabBody();
+}
+function setReportsSubTab(tab){
+  S.reportsSubTab=tab;
+  renderTabBody();
+}
+function limparFiltroExport(){
+  S.expFiltro = { carrier:"", operacao:"", tipo:"", identificacao:"", contrato:"", status:"" };
+  renderTabBody();
+}
+function setAuditSubTab(tab){
+  S.auditSubTab=tab;
   renderTabBody();
 }
 // ── Populate driver selects in plate form ──
@@ -4838,7 +5143,7 @@ function _mostrarResumoImportacao({ terminais, clientes, veiculos, erros, arquiv
 // para saber qual usuário está logado (ver dashSalvarAtual / exportarRelatorioRoteirizacao).
 window.importarDadosCadastrais = importarDadosCadastrais;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.setReportsSubTab=setReportsSubTab; window.limparFiltroExport=limparFiltroExport; window.setAuditSubTab=setAuditSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates; window.exportPdf=exportPdf;
 window.renderTabBody=renderTabBody; window.buildStatusBoardAlert=buildStatusBoardAlert; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.saveMetaDisp=saveMetaDisp; window.S=S; window.renderKpisMensais=renderKpisMensais;
 window.showToast=showToast; window.dateStr=dateStr; window.sincronizarDisponibilidadeVeiculos=sincronizarDisponibilidadeVeiculos; window.USERS_DB=USERS_DB; window.dbGetPlates=dbGetPlates;
