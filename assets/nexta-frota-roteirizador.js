@@ -723,6 +723,7 @@ function showTab(name) {
   routeRoot.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   routeRoot.querySelector('#tab-' + name)?.classList.add('active');
   if (name === 'operacao') renderTemplateOperacao();
+  if (name === 'resultado') renderPainelJornadaVeiculos();
   if (name === 'aprendizado') renderAprendizado();
   if (name === 'frete') {
     freteRenderContratos();
@@ -4034,6 +4035,49 @@ async function _carregarJornadaHistoricoDoDia(dataStr) {
   _jornadaHistoricoCache = { data: dataStr, porPlaca };
   return porPlaca;
 }
+// ── Painel "Jornada dos Veículos" — sempre visível, sem depender de roteirização ──
+// Diferente do badge dentro de cada card de viagem (que fica espremido no
+// meio de várias outras informações), este é um painel dedicado, simples e
+// direto: placa, jornada total, jornada utilizada e %. Aparece assim que a
+// aba "Otimização Rotas" abre — não precisa ter rodado a otimização nem ter
+// nenhum pedido roteirizado. Usa a MESMA fonte de dados dos outros
+// indicadores (histórico salvo do dia + sessão ao vivo), só apresentada de
+// um jeito limpo, sem disputar espaço com o resto do card.
+function renderPainelJornadaVeiculos() {
+  const box = document.getElementById('painel-jornada-veiculos');
+  if (!box) return;
+  const disponiveis = (veiculos || []).filter(v => (v.disponibilidade || 'Disponível') !== 'Indisponível');
+  if (!disponiveis.length) { box.innerHTML = ''; return; }
+  const cards = disponiveis.map(v => {
+    const totalMin = Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720;
+    const usadoSessaoMin = (ultimoControleTempo && ultimoControleTempo[v.id]?.usadoMin) || 0;
+    const usadoHistoricoMin = (_jornadaHistoricoCache.porPlaca && _jornadaHistoricoCache.porPlaca[v.placa]) || 0;
+    const usadoMin = usadoSessaoMin + usadoHistoricoMin;
+    const totalH = totalMin / 60;
+    const usadoH = usadoMin / 60;
+    const pct = totalMin > 0 ? Math.round((usadoMin / totalMin) * 100) : 0;
+    const estourou = usadoMin > totalMin;
+    const corPct = estourou ? '#DC2626' : pct >= 85 ? '#DC2626' : pct >= 60 ? '#D97706' : '#16A34A';
+    return `
+      <div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;min-width:150px;flex:1;max-width:190px;font-family:var(--font-cond,inherit);">
+        <div style="background:#F3F4F6;border-bottom:1px solid #D1D5DB;padding:6px 10px;font-weight:800;font-size:13px;letter-spacing:.03em;text-align:center;">${v.placa}</div>
+        <div style="padding:8px 10px;display:flex;flex-direction:column;gap:4px;">
+          <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#374151;">
+            <span>Jornada total</span><span style="font-weight:700;">${totalH.toFixed(totalH % 1 === 0 ? 0 : 1)}h</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#374151;">
+            <span>Jornada utilizada</span><span style="font-weight:700;">${usadoH.toFixed(1)}h</span>
+          </div>
+        </div>
+        <div style="text-align:center;padding:5px 0 8px;font-size:15px;font-weight:800;color:${corPct};">
+          ${estourou ? `+${(usadoH - totalH).toFixed(1)}h (estourou)` : `${pct}%`}
+        </div>
+      </div>`;
+  }).join('');
+  box.innerHTML = `
+    <div style="font-size:11px;font-weight:700;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px;">⏱ Jornada dos Veículos — Hoje</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">${cards}</div>`;
+}
 // Diferente da tag azul ao lado (que só mostra o HORÁRIO cadastrado, ex.:
 // "06:00-18:00 (12h)" — a configuração, sempre igual), esta mostra o quanto
 // dessa jornada JÁ FOI CONSUMIDO pela programação de hoje (ultimoControleTempo,
@@ -7019,6 +7063,7 @@ function renderResultado(resultado, controleTempo={}) {
   });
 }
 function _renderResultadoInterno(resultado, controleTempo={}) {
+  renderPainelJornadaVeiculos(); // painel independente do topo — atualiza junto com qualquer mudança na roteirização
   let entregueVol=0, totalQuebras=0, veicsUsados=0;
   const filtroResCliente = valId('f-res-cliente');
   const filtroResCidade = valId('f-res-cidade');
@@ -8680,6 +8725,7 @@ function onDataOperacaoChange(valor) {
   }).then(() => {
     if (document.getElementById('tab-veiculos')?.classList.contains('active')) renderVeiculos();
     if (document.getElementById('tab-resultado')?.classList.contains('active') && ultimoResultado) renderResultado(ultimoResultado, ultimoControleTempo || {});
+    renderPainelJornadaVeiculos();
     showToast(`Disponibilidade atualizada para ${new Date(valor + 'T12:00:00').toLocaleDateString('pt-BR')} ✅`, true);
   }).catch(() => {});
 }
@@ -8690,7 +8736,7 @@ function initDataOperacao() {
   const amanha = new Date(); amanha.setDate(amanha.getDate() + 1);
   const iso = `${amanha.getFullYear()}-${String(amanha.getMonth()+1).padStart(2,'0')}-${String(amanha.getDate()).padStart(2,'0')}`;
   el.value = iso;
-  sincronizarDisponibilidadeVeiculos(iso).then(() => _carregarJornadaHistoricoDoDia(iso).catch(() => {})).catch(() => {});
+  sincronizarDisponibilidadeVeiculos(iso).then(() => _carregarJornadaHistoricoDoDia(iso).catch(() => {})).then(() => renderPainelJornadaVeiculos()).catch(() => {});
 }
 window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() {
   try {
