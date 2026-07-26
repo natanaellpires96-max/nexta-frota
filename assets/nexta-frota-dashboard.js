@@ -2622,6 +2622,24 @@ window.dashCarregarTodos = async function() {
   const todos = Object.values(store).flat();
   dashRender(todos);
 };
+// ── Resumo gerencial do dia — "Hoje" ────────────────────────────────────────
+// Mesmo Dashboard de sempre (todos os KPIs já existentes: viagens, entregas,
+// volume, ocupação, km, ranking, jornada, estouro, pedágio...), só que
+// filtrado pras roteirizações SALVAS hoje — pra um gestor bater o olho no
+// fim do dia e ver como a operação de hoje foi, sem precisar navegar por
+// mês/período. Não cria nenhum KPI novo — reaproveita 100% do que já existe,
+// só troca o conjunto de snapshots que entra no dashRender().
+window.dashCarregarHoje = async function() {
+  const store = await dashGetStoreMerged();
+  const todos = Object.values(store).flat();
+  // Data local (não UTC) — evita virar o dia errado perto da meia-noite.
+  const agora = new Date();
+  const hojeStr = `${agora.getFullYear()}-${String(agora.getMonth()+1).padStart(2,'0')}-${String(agora.getDate()).padStart(2,'0')}`;
+  const doDia = todos.filter(s => (s.savedAt||'').slice(0,10) === hojeStr);
+  dashRender(doDia);
+  const sel = document.getElementById('dash-mes-sel');
+  if (sel) sel.value = ''; // "Hoje" não é nenhum dos meses do dropdown — desmarca visualmente
+};
 // ── Ferramentas de Km Real são só pra admin (recalcular/desfazer mexe direto
 // nos arquivos do histórico compartilhado — não é algo pra qualquer usuário
 // operacional/transportador acionar sem querer). Checa via window.S/

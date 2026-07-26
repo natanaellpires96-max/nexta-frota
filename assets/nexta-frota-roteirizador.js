@@ -3341,10 +3341,14 @@ function pmapaRemoverDaSelecao(id) {
   renderPedidosMapa();
 }
 // ── Painel lateral: lista selecionada + veículo + fechar carga ──────────────
-function _pmapaVeiculosCompativeis(pedidosSel, terminalNome) {
+function _pmapaVeiculosCompativeis(pedidosSel, terminaisNomes) {
+  const listaTerminais = Array.isArray(terminaisNomes) ? terminaisNomes : [terminaisNomes];
   return veiculos.filter(v => {
     if ((v.disponibilidade || 'Disponível') === 'Indisponível') return false;
-    if (terminalNome && !veiculoAtendeTerminal(v, terminalNome)) return false;
+    // O veículo precisa atender TODOS os terminais envolvidos na seleção —
+    // se a carga vem de 2 bases da mesma cidade, ele vai fisicamente passar
+    // pelas duas antes de sair pra entrega.
+    if (listaTerminais.some(t => t && !veiculoAtendeTerminal(v, t))) return false;
     return pedidosSel.every(p =>
       (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
       (!p.identidadePetronas || !!v.identidadePetronas)
@@ -3360,30 +3364,34 @@ function pmapaAtualizarPainel() {
     box.innerHTML = `<div style="font-size:12px;color:var(--text-3);">Nenhum pedido selecionado.<br/><br/>Clique num pedido no mapa, ou use "✏️ Selecionar área" e desenhe um contorno ao redor de vários.</div>`;
     return;
   }
-  // Um caminhão carrega numa base só — bloqueia se a seleção misturar terminais
-  // (só é possível chegar nesse estado com "Todos os terminais" selecionado).
+  // Um caminhão PODE carregar em 2 bases diferentes, DESDE QUE sejam da
+  // MESMA CIDADE (ex.: Paulínia TORRÃO + Paulínia TRANSO) — a trava real é
+  // por cidade, não por nome exato do terminal. Bases de cidades diferentes
+  // continuam bloqueadas (só é possível chegar nesse estado com "Todos os
+  // terminais" selecionado no filtro).
   const terminaisDistintos = [...new Set(selecionados.map(p => p.terminal || '(sem terminal)'))];
-  if (terminaisDistintos.length > 1) {
+  const cidadesDistintas = [...new Set(terminaisDistintos.map(t => normalizarCidade(cidadeDoTerminal(t)) || '(sem cidade)'))];
+  if (cidadesDistintas.length > 1) {
     box.innerHTML = `<div style="font-size:12px;color:#B45309;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:10px;">
-      ⚠ A seleção mistura pedidos de terminais diferentes: <b>${terminaisDistintos.join(', ')}</b>.<br/><br/>
-      Um veículo carrega em uma única base — escolha um terminal específico no filtro acima, ou remova os pedidos de fora dele.
+      ⚠ A seleção mistura pedidos de bases em cidades diferentes: <b>${terminaisDistintos.join(', ')}</b>.<br/><br/>
+      Um veículo pode carregar em mais de uma base, desde que sejam da mesma cidade — escolha um terminal específico no filtro acima, ou remova os pedidos de fora dela.
     </div>`;
     return;
   }
   const totalVol = selecionados.reduce((s, p) => s + _pmapaVolumePendente(p), 0);
-  const veicsOk  = _pmapaVeiculosCompativeis(selecionados, terminaisDistintos[0]);
+  const veicsOk  = _pmapaVeiculosCompativeis(selecionados, terminaisDistintos);
   const listaHtml = selecionados.map(p => `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;">
       <div style="min-width:0;">
         <div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.cliente}</div>
-        <div style="color:var(--text-3);">${_pmapaVolumePendente(p).toFixed(1)} m³</div>
+        <div style="color:var(--text-3);">${_pmapaVolumePendente(p).toFixed(1)} m³${terminaisDistintos.length > 1 ? ` · ${p.terminal || '(sem terminal)'}` : ''}</div>
       </div>
       <button class="btn btn-sm btn-danger" style="padding:2px 6px;" onclick="pmapaRemoverDaSelecao(${p.id})">✕</button>
     </div>
   `).join('');
   box.innerHTML = `
     <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);margin-bottom:6px;">
-      ${selecionados.length} pedido(s) selecionado(s)
+      ${selecionados.length} pedido(s) selecionado(s)${terminaisDistintos.length > 1 ? ` · ${terminaisDistintos.length} bases (mesma cidade)` : ''}
     </div>
     <div style="max-height:220px;overflow-y:auto;margin-bottom:8px;">${listaHtml}</div>
     <div style="font-size:12px;font-weight:700;color:var(--pet-green);margin-bottom:10px;">Total pendente: ${totalVol.toFixed(1)} m³</div>
@@ -3391,7 +3399,7 @@ function pmapaAtualizarPainel() {
     <select id="pmapa-veiculo" style="width:100%;padding:6px 8px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;margin:4px 0 10px;">
       ${veicsOk.length
         ? veicsOk.map(v => `<option value="${v.id}">${v.placa} · ${v.tipo} · ${v.capacidade}m³</option>`).join('')
-        : '<option value="">Nenhum veículo compatível com o terminal/restrições</option>'}
+        : '<option value="">Nenhum veículo compatível com o(s) terminal(is)/restrições</option>'}
     </select>
     <button class="btn btn-green btn-sm" style="width:100%;" ${veicsOk.length ? '' : 'disabled'} onclick="pmapaFecharCarga()">🚚 Fechar Carga</button>
   `;
@@ -3414,8 +3422,9 @@ function pmapaFecharCarga() {
   const selecionados = [...(_pmapaSelecionados)].map(id => pedidos.find(p => p.id === id)).filter(Boolean);
   if (!v || !selecionados.length) return;
   const terminaisDistintos = [...new Set(selecionados.map(p => p.terminal || ''))];
-  if (terminaisDistintos.length !== 1) { alert('A seleção mistura pedidos de terminais diferentes. Ajuste a seleção antes de fechar a carga.'); return; }
-  const terminalSel = terminaisDistintos[0];
+  const cidadesDistintasFechar = [...new Set(terminaisDistintos.map(t => normalizarCidade(cidadeDoTerminal(t)) || '(sem cidade)'))];
+  if (cidadesDistintasFechar.length !== 1) { alert('A seleção mistura pedidos de bases em cidades diferentes. Ajuste a seleção antes de fechar a carga (bases da mesma cidade podem ser combinadas).'); return; }
+  const terminalSel = terminaisDistintos[0]; // usado só como terminal "padrão" da viagem (retorno, exibição) — cada parada usa o PRÓPRIO terminal do pedido no cálculo de distância (ver dadosIncrementoParada abaixo)
   _pmapaGarantirEstruturaResultado();
   // Produtos ainda pendentes de cada pedido selecionado (não roteiriza de novo o que já foi)
   const grupos = selecionados.map(p => {
@@ -3447,7 +3456,12 @@ function pmapaFecharCarga() {
   const viagem = { compsDisp: criarCompsDisp(v), paradas: [], quebras: [], terminalOrigem: terminalSel || v.terminal || '', esperaTerminalMin: 0, tempoConsumidoMin: 0 };
   let custoProdutivoTotal = 0;
   grupos.forEach(({ pedido, produtos }) => {
-    const detalhe = dadosIncrementoParada(viagem, v, pedido, viagem.terminalOrigem);
+    // Usa o terminal DESSE pedido específico, não o terminalOrigem fixo da
+    // viagem — necessário agora que uma carga manual pode vir de 2 bases da
+    // mesma cidade (ver trava relaxada acima); sem isso, a distância da 1ª
+    // parada seria calculada a partir do terminal errado sempre que a
+    // seleção misturasse bases.
+    const detalhe = dadosIncrementoParada(viagem, v, pedido, pedido.terminal || viagem.terminalOrigem);
     let primeiro = true;
     produtos.forEach(pr => {
       const el = viagem.compsDisp.filter(c => compElegivelProduto(c, pr.produto) && c.disponivel > 0);
@@ -3943,6 +3957,43 @@ function removerVeiculo(id) {
   if (alvo) _removerCadastroManual('veiculos', alvo);
   renderVeiculos();
 }
+// ── Jornada do dia, em tempo real, por veículo ──────────────────────────────
+// Diferente da tag azul ao lado (que só mostra o HORÁRIO cadastrado, ex.:
+// "06:00-18:00 (12h)" — a configuração, sempre igual), esta mostra o quanto
+// dessa jornada JÁ FOI CONSUMIDO pela programação de hoje (ultimoControleTempo,
+// atualizado a cada viagem alocada/removida/editada — inclusive drag-and-drop
+// manual, ver recalcularControleTempo) — e quanto ainda sobra, em % e em
+// horas, com cor conforme o quão apertado está:
+//   ≥40% disponível  → verde  (tranquilo, ainda tem bastante margem)
+//   15–40% disponível → âmbar (ficando apertado)
+//   <15% disponível  → vermelho (quase no limite)
+//   já estourou (usado > limite) → vermelho forte, mostra quanto estourou
+function jornadaHojeTagHtml(v) {
+  const ct = ultimoControleTempo && ultimoControleTempo[String(v.id)];
+  const limiteMin = ct?.limiteMin ?? (Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720);
+  const usadoMin = ct?.usadoMin ?? 0;
+  if (limiteMin <= 0) return '';
+  const usadoH = usadoMin / 60;
+  const limiteH = limiteMin / 60;
+  const estourou = usadoMin > limiteMin;
+  const pctDisponivel = Math.max(0, Math.round(((limiteMin - usadoMin) / limiteMin) * 100));
+  let bg, fg, border, texto;
+  if (estourou) {
+    const estouroH = (usadoMin - limiteMin) / 60;
+    bg = '#FEE2E2'; fg = '#B91C1C'; border = '#FECACA';
+    texto = `⏱ Estourou ${estouroH.toFixed(1)}h (${usadoH.toFixed(1)}h/${limiteH.toFixed(1)}h)`;
+  } else if (pctDisponivel >= 40) {
+    bg = '#D1FAE5'; fg = '#065F46'; border = '#6EE7B7';
+    texto = `⏱ ${pctDisponivel}% livre (${usadoH.toFixed(1)}h/${limiteH.toFixed(1)}h)`;
+  } else if (pctDisponivel >= 15) {
+    bg = '#FEF3C7'; fg = '#92400E'; border = '#FCD34D';
+    texto = `⏱ ${pctDisponivel}% livre (${usadoH.toFixed(1)}h/${limiteH.toFixed(1)}h)`;
+  } else {
+    bg = '#FEE2E2'; fg = '#B91C1C'; border = '#FECACA';
+    texto = `⏱ ${pctDisponivel}% livre (${usadoH.toFixed(1)}h/${limiteH.toFixed(1)}h)`;
+  }
+  return `<span class="tag" style="font-size:9px;font-weight:700;background:${bg};color:${fg};border:1px solid ${border};" title="Jornada consumida hoje pela programação atual — atualiza sozinho a cada viagem alocada, removida ou editada">${texto}</span>`;
+}
 function renderVeiculos() {
   // Sempre re-sincroniza motoristas e disponibilidade do painel do dia antes de renderizar.
   // Usa a data do seletor do roteirizador (rot-data-operacao) como prioridade,
@@ -3994,6 +4045,7 @@ function _renderVeiculosInterno() {
             ${v.terminal ? termTag(v.terminal) : `<span class="tag tag-gray">${baseVeiculoLabel(v)}</span>`}
             <span style="font-size:12px;color:#4A6535;">${v.capacidade.toFixed(1)} m³/viagem</span>
             <span class="tag tag-blue" style="font-size:9px;">${v.jornadaInicio||'06:00'}-${v.jornadaFim||'18:00'} (${Math.round((v.jornadaMin||duracaoJornadaMin(v.jornadaInicio||'06:00', v.jornadaFim||'18:00'))/60)}h)</span>
+            ${jornadaHojeTagHtml(v)}
             <span class="tag tag-purple" style="font-size:9px;">V/C: ${(v.velMediaVazio||55).toFixed(0)} / ${(v.velMediaCarregado||45).toFixed(0)} km/h</span>
           </div>
           ${(v.motoristaDiurno || v.motoristaNt) ? `
@@ -5250,15 +5302,22 @@ async function exportarHrrlog() {
       // cliente, não atraso de carregamento no terminal).
       const p0 = vi.paradas[0];
       const inicioCargaMin = temOverrideCarga ? relogioMin : (vi._inicioCargaMin ?? relogioMin);
-      // Terminal desta viagem — o terminal do PEDIDO (dado vivo, o mesmo que
-      // aparece na Otimização Rotas e já foi corrigido no Envio Transportadora)
-      // tem prioridade sobre vi.terminalOrigem, que fica congelado no valor
-      // do momento em que a viagem foi criada e pode ficar desatualizado se o
-      // terminal do pedido for alterado depois.
-      const _termPedidoHrr = vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || '';
-      const termNome = _termPedidoHrr || vi.terminalOrigem || v.terminal || '';
-      const term = terminaisCad.find(t => t.nome === termNome);
-      const codigoTerminal = term?.empresaLocalExpedicao || term?.nome || termNome;
+      // Terminal(is) desta viagem — o terminal do PEDIDO (dado vivo, o mesmo
+      // que aparece na Otimização Rotas e já foi corrigido no Envio
+      // Transportadora) tem prioridade sobre vi.terminalOrigem, que fica
+      // congelado no valor do momento em que a viagem foi criada e pode
+      // ficar desatualizado se o terminal do pedido for alterado depois.
+      // Uma viagem pode carregar em MAIS DE UMA base da mesma cidade (ver
+      // pmapaFecharCarga) — junta todos os terminais distintos usados, pra
+      // gerar um evento de Carregamento PRA CADA UM (ver mais abaixo), em
+      // vez de só o primeiro encontrado escondendo os demais.
+      const _termsDistintosHrr = [...new Set(vi.paradas.map(p => p.pedido?.terminal).filter(Boolean))];
+      const termNome = _termsDistintosHrr[0] || vi.terminalOrigem || v.terminal || '';
+      const terminaisParaCarregamento = _termsDistintosHrr.length ? _termsDistintosHrr : [termNome];
+      const codigosTerminaisCarregamento = terminaisParaCarregamento.map(tn => {
+        const t = terminaisCad.find(x => x.nome === tn);
+        return t?.empresaLocalExpedicao || t?.nome || tn;
+      });
       // Produtos únicos (nome resumido)
       const produtos = [...new Set(
         vi.paradas.flatMap(p => (p.itens || []).map(it => resumoProduto(it.produto)))
@@ -5303,15 +5362,29 @@ async function exportarHrrlog() {
         'Prioridade': 'Normal',
         'Ordem de Retirada': '',
       });
-      // ── Evento: Carregamento (terminal) ──────────────────────────────────────
-      rowsEventos.push({
-        'Código da Viagem*': codViagem,
-        'Codigo do Cliente*': codigoTerminal,
-        'Tipo Evento*': 'Carregamento',
-        'Data Planejada*': fmtHrr(baseDate, inicioCargaRealMin),
+      // ── Evento: Carregamento (1 por base usada nesta viagem) ─────────────────
+      // Antes só existia 1 evento de Carregamento (o do primeiro terminal
+      // encontrado) mesmo quando a carga vinha de 2 bases — a segunda base
+      // simplesmente não aparecia em lugar nenhum do arquivo exportado. Usa o
+      // mesmo horário de início de carga pras duas (não temos como saber o
+      // tempo de deslocamento entre as bases sem essa informação cadastrada).
+      codigosTerminaisCarregamento.forEach(codTerminal => {
+        rowsEventos.push({
+          'Código da Viagem*': codViagem,
+          'Codigo do Cliente*': codTerminal,
+          'Tipo Evento*': 'Carregamento',
+          'Data Planejada*': fmtHrr(baseDate, inicioCargaRealMin),
+        });
       });
-      // ── Eventos: Descarga (cada parada) ──────────────────────────────────────
+      // ── Eventos: Descarga (1 por CLIENTE distinto, não por parada) ──────────
+      // Se o mesmo cliente recebe produto de 2 bases diferentes na mesma
+      // viagem (2 "paradas" pro mesmo codigoSAP), isso não deve virar 2
+      // linhas de descarga duplicadas no arquivo — o cliente só é entregue
+      // uma vez fisicamente, mesmo que o produto tenha vindo de 2 cargas.
+      // Mantém o horário da ÚLTIMA parada daquele cliente na sequência da
+      // viagem (reflete quando a entrega a ele ficou de fato concluída).
       let clock = inicioCargaMin;
+      const descargaPorCliente = new Map(); // codigoSAP (ou índice, se não tiver) -> {inicioDescMin}
       vi.paradas.forEach((p, idxP) => {
         const espOrig = p.tempoEsperaRestricaoMin || 0;
         const wal = p.overnight ? (p.waitAfterLoadingMin || 0) : 0;
@@ -5326,11 +5399,15 @@ async function exportarHrrlog() {
         // Antes era exportado apenas "chegada", o que ignorava a espera e
         // deixava o horário mais cedo do que o exibido na tela.
         const inicioDescMin = chegada + espVis;
+        const codCliente = p.pedido?.codigoSAP || `__semSAP_${idxP}`; // sem codigoSAP: não agrupa (chave única por índice, comportamento antigo preservado)
+        descargaPorCliente.set(codCliente, { codigoSAP: p.pedido?.codigoSAP || '', inicioDescMin });
+      });
+      descargaPorCliente.forEach(d => {
         rowsEventos.push({
           'Código da Viagem*': codViagem,
-          'Codigo do Cliente*': p.pedido?.codigoSAP || '',
+          'Codigo do Cliente*': d.codigoSAP,
           'Tipo Evento*': 'Descarga',
-          'Data Planejada*': fmtHrr(baseDate, inicioDescMin),
+          'Data Planejada*': fmtHrr(baseDate, d.inicioDescMin),
         });
       });
     });
@@ -5427,9 +5504,15 @@ function renderTemplateOperacao() {
     // e esse documento (Envio Transportadora) tem que sempre refletir o que
     // está sendo mostrado/editado agora na Otimização Rotas, não o instante
     // da criação da viagem. Por isso a ordem foi invertida aqui.
-    const _termPedido = viOriginal.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || '';
-    const base = _termPedido || viOriginal.terminalOrigem || v.terminal || cidadeBaseVeiculo(v) || '-';
-    const cia = distribuidoraDoTerminal(_termPedido || viOriginal.terminalOrigem || v.terminal) || '-';
+    // Uma viagem pode ter MAIS DE UMA base (carregamento em 2 terminais da
+    // mesma cidade, ver pmapaFecharCarga) — mostra TODAS as bases distintas
+    // usadas, não só a primeira encontrada, senão a segunda base "some" do
+    // documento mesmo tendo sido carregada de verdade.
+    const _termsDistintos = [...new Set((viOriginal.paradas || []).map(p => p.pedido?.terminal).filter(Boolean))];
+    const _termPedido = _termsDistintos[0] || '';
+    const base = _termsDistintos.length > 1 ? _termsDistintos.join(' + ') : (_termPedido || viOriginal.terminalOrigem || v.terminal || cidadeBaseVeiculo(v) || '-');
+    const _ciasDistintas = [...new Set(_termsDistintos.map(t => distribuidoraDoTerminal(t)).filter(Boolean))];
+    const cia = _ciasDistintas.length > 1 ? _ciasDistintas.join(' + ') : (_ciasDistintas[0] || distribuidoraDoTerminal(viOriginal.terminalOrigem || v.terminal) || '-');
     const capLitros = Math.round((v.capacidade || 0) * 1000);
     const volViagemM3 = (paradasUsar || []).reduce((s, p) => s + (p.volumeTotal || 0), 0);
     const ocupPct = (v.capacidade || 0) > 0 ? Math.round((volViagemM3 / v.capacidade) * 100) : 0;
@@ -6256,9 +6339,68 @@ function _freteDataBase(viagem) {
   if (mt) return new Date(Number(mt[3]), Number(mt[2]) - 1, Number(mt[1]));
   return new Date();
 }
+// ── Calendário de feriados nacionais (Brasil) ───────────────────────────────
+// Usado no cálculo de custo fixo por dia (ver _freteDiasMes logo abaixo):
+// antes dividia o custo fixo mensal pelo total de dias do calendário (ex.:
+// 31 em julho), inflando artificialmente o custo diário em meses "cheios"
+// e sub-avaliando em meses "curtos" — a divisão certa é por DIAS ÚTEIS
+// (sem domingo, sem feriado nacional), que é o que reflete quantos dias o
+// veículo realmente trabalha no mês.
+// Sábado NÃO é excluído de propósito — na operação de vocês, sábado é dia
+// útil de trabalho (só domingo e feriado nacional não são).
+function _calcularPascoa(ano) {
+  // Algoritmo de Gauss/Meeus para a data da Páscoa (domingo) — usado só
+  // pra achar a Sexta-feira Santa (Páscoa - 2 dias), o único feriado móvel
+  // que entra na conta (Corpus Christi é ponto facultativo por decreto, não
+  // feriado nacional por lei — fica de fora de propósito).
+  const a = ano % 19, b = Math.floor(ano / 100), c = ano % 100;
+  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const mes = Math.floor((h + l - 7 * m + 114) / 31);
+  const dia = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(ano, mes - 1, dia);
+}
+function _feriadosNacionais(ano) {
+  const pascoa = _calcularPascoa(ano);
+  const sextaSanta = new Date(pascoa);
+  sextaSanta.setDate(pascoa.getDate() - 2);
+  const fmt = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  const feriados = new Set([
+    `${ano}-01-01`, // Confraternização Universal
+    `${ano}-04-21`, // Tiradentes
+    `${ano}-05-01`, // Dia do Trabalho
+    `${ano}-09-07`, // Independência do Brasil
+    `${ano}-10-12`, // Nossa Senhora Aparecida
+    `${ano}-11-02`, // Finados
+    `${ano}-11-15`, // Proclamação da República
+    `${ano}-12-25`, // Natal
+    fmt(sextaSanta), // Sexta-feira Santa (móvel)
+  ]);
+  // Dia Nacional de Zumbi e da Consciência Negra — feriado nacional desde a
+  // Lei 14.759/2023, vale a partir de 2024.
+  if (ano >= 2024) feriados.add(`${ano}-11-20`);
+  return feriados;
+}
+function _diasUteisNoMes(ano, mesZeroIndex) {
+  const feriados = _feriadosNacionais(ano);
+  const totalDiasCalendario = new Date(ano, mesZeroIndex + 1, 0).getDate();
+  let uteis = 0;
+  for (let dia = 1; dia <= totalDiasCalendario; dia++) {
+    const d = new Date(ano, mesZeroIndex, dia);
+    if (d.getDay() === 0) continue; // domingo — não conta
+    const dataStr = `${ano}-${String(mesZeroIndex + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+    if (feriados.has(dataStr)) continue; // feriado nacional — não conta
+    uteis++;
+  }
+  return uteis;
+}
 function _freteDiasMes(viagem) {
   const d = _freteDataBase(viagem);
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  return _diasUteisNoMes(d.getFullYear(), d.getMonth());
 }
 function _freteTempoViagemMin(viagem, v, kmMapa) {
   const kmRealMapa = Number(kmMapa) || 0;
@@ -10030,6 +10172,14 @@ async function freteCalcular() {
 
   function _freteRenderizarTabela() {
   var grupos = {}, totalGeral = 0, totalPedagiosGeral = 0;
+  // Acumuladores pro "Custo de viagem": dias distintos no período, jornada
+  // usada/disponível somada (pra tirar a média de horas/dia), e viagens
+  // totais já são contadas em grupos[].nViagens — junto dá pra calcular
+  // "dia x rota" (viagens por dia) e "horas por dia" sem precisar de outra
+  // consulta, reaproveitando os mesmos dados já lidos do histórico.
+  var diasComDadoSet = {};
+  var somaJornadaUsadaMin = 0;
+  var totalVeiculoDia = 0; // conta cada entrada placa+dia — denominador de "horas/dia" (média por veículo, não soma da frota)
 
   Object.keys(viagensMap).forEach(function(placa) {
     var entradas = viagensMap[placa];
@@ -10050,6 +10200,9 @@ async function freteCalcular() {
       grupos[chave].m3       += entry.m3Total;
       if (!entry._semViagem) grupos[chave].nViagens += 1; // dias parados (diária) não contam como viagem no KPI
       if (pedagio > 0 && !entry.pedagiosPreciso) grupos[chave].pedagioImpreciso = true;
+      if (entry.data) diasComDadoSet[entry.data] = true;
+      somaJornadaUsadaMin += entry.jornadaUsadaMin || 0;
+      totalVeiculoDia++;
       totalGeral             += custo;
       totalPedagiosGeral     += pedagio;
     });
@@ -10062,6 +10215,9 @@ async function freteCalcular() {
     var totalKm = linhas.reduce(function(s,g){return s+g.km;},0);
     var totalM3 = linhas.reduce(function(s,g){return s+g.m3;},0);
     var totalVi = linhas.reduce(function(s,g){return s+g.nViagens;},0);
+    var diasNoPeriodo = Object.keys(diasComDadoSet).length;
+    var horasDiaMedia = totalVeiculoDia > 0 ? (somaJornadaUsadaMin / totalVeiculoDia / 60) : 0;
+    var viagensDiaMedia = diasNoPeriodo > 0 ? (totalVi / diasNoPeriodo) : 0;
     resumoEl.innerHTML = [
       ['💰 Custo Total', fmt(totalGeral)],
       ['🚧 Pedágios (incluso)', fmt(totalPedagiosGeral)],
@@ -10069,6 +10225,9 @@ async function freteCalcular() {
       ['📏 KM Total (est.)', totalKm.toFixed(0) + ' km'],
       ['📦 Volume Total', totalM3.toFixed(1) + ' m³'],
       ['📊 Custo Médio/Viagem', totalVi ? fmt(totalGeral/totalVi) : '—'],
+      ['📅 Dias no Período', diasNoPeriodo],
+      ['⏱ Horas/Dia (média)', horasDiaMedia.toFixed(1) + ' h'],
+      ['🔁 Viagens/Dia (média)', viagensDiaMedia.toFixed(1)],
     ].map(function(c) {
       return '<div style="background:rgba(0,0,0,0.03);border:1px solid var(--border-dk);border-radius:8px;padding:10px 18px;min-width:140px;">' +
         '<div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;font-weight:600;margin-bottom:4px;">' + c[0] + '</div>' +
