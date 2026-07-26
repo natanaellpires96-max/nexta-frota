@@ -1137,9 +1137,15 @@ function obterPontosRotaComCoords(v, viagem) {
   const terminalNomeOrigem = viagem.terminalOrigem || v.terminal || viagem.paradas[0]?.pedido?.terminal || '';
   const terminal = terminaisCad.find(t => t.nome === terminalNomeOrigem);
   const pontos = [];
-  if (terminal) {
-    pontos.push({ nome: `Origem: ${terminal.nome}`, lat: terminal.lat, lon: terminal.lon, tipo: 'origem' });
-  }
+  // Mesma correção do mapa da viagem: mostra TODAS as bases distintas usadas
+  // (não só uma), pra Street View e outros cálculos também enxergarem os 2
+  // carregamentos quando existirem.
+  const _terminaisUsadosHelper = [...new Set((viagem.paradas || []).map(p => p.pedido?.terminal).filter(Boolean))];
+  const _terminaisParaOrigemHelper = _terminaisUsadosHelper.length ? _terminaisUsadosHelper : (terminal ? [terminal.nome] : []);
+  _terminaisParaOrigemHelper.forEach(tn => {
+    const t = terminaisCad.find(x => x.nome === tn);
+    if (t) pontos.push({ nome: `Origem: ${t.nome}`, lat: t.lat, lon: t.lon, tipo: 'origem' });
+  });
   viagem.paradas.forEach((p, i) => {
     const _coord = latLonEfetivo(p.pedido);
     pontos.push({
@@ -1164,12 +1170,17 @@ function abrirModalViagem(veiculoId, idxViagem) {
   const terminalNomeOrigem = viagem.terminalOrigem || v.terminal || viagem.paradas[0]?.pedido?.terminal || '';
   const terminal = terminaisCad.find(t => t.nome === terminalNomeOrigem);
   if (!terminal) { alert('Terminal de origem do veículo não possui coordenadas cadastradas.'); return; }
-  const pontos = [{
-    nome: `Origem: ${terminal.nome}`,
-    lat: terminal.lat,
-    lon: terminal.lon,
-    tipo: 'origem'
-  }];
+  // Uma viagem pode carregar em MAIS DE UMA base da mesma cidade (ver
+  // pmapaFecharCarga) — mostra TODAS as origens distintas usadas no mapa,
+  // não só a primeira, senão a segunda base carregada "some" do mapa mesmo
+  // tendo sido usada de verdade.
+  const _terminaisUsadosViagem = [...new Set(viagem.paradas.map(p => p.pedido?.terminal).filter(Boolean))];
+  const _terminaisParaOrigem = _terminaisUsadosViagem.length ? _terminaisUsadosViagem : [terminalNomeOrigem];
+  const pontos = [];
+  _terminaisParaOrigem.forEach(tn => {
+    const t = terminaisCad.find(x => x.nome === tn);
+    if (t) pontos.push({ nome: `Origem: ${t.nome}`, lat: t.lat, lon: t.lon, tipo: 'origem' });
+  });
   viagem.paradas.forEach((p, i) => {
     const _coord = latLonEfetivo(p.pedido);
     pontos.push({
@@ -3957,7 +3968,72 @@ function removerVeiculo(id) {
   if (alvo) _removerCadastroManual('veiculos', alvo);
   renderVeiculos();
 }
-// ── Jornada do dia, em tempo real, por veículo ──────────────────────────────
+// ── Jornada usada de uma viagem salva (mesma fórmula usada no painel de Custo) ──
+function _calcularJornadaUsadaViagem(vi) {
+  return Number(vi.tempoConsumidoMin) || (vi.paradas || []).reduce(function(s, p, idx) {
+    return s + (idx === 0 ? (p.tempoCarregamentoMin || 0) : 0)
+      + (p.waitAfterLoadingMin || 0)
+      + (p.deslocCarregadoMin || 0)
+      + (p.tempoEsperaRestricaoMin || 0)
+      + (p.tempoDescargaMin || 0)
+      + (p.deslocVazioMin || 0);
+  }, 0);
+}
+// ── Jornada consumida no HISTÓRICO já salvo, pro dia selecionado ────────────
+// O indicador de jornada do card (jornadaHojeTagHtml) precisa refletir TODA
+// a jornada do veículo naquele dia — não só o que está sendo montado agora
+// na tela (ultimoControleTempo, que começa do zero a cada sessão/reload).
+// Isso varre os arquivos do histórico já salvos, soma a jornada usada por
+// placa nas roteirizações que cobrem a data selecionada, e essa soma vira a
+// BASE sobre a qual ultimoControleTempo (a sessão ao vivo) segue somando —
+// assim, se pela manhã já foram salvas 4h de viagem pra uma placa, e agora
+// à tarde você monta mais 3h nesta sessão, o card mostra 7h consumidas, não
+// só as 3h da sessão atual.
+// Exclui de propósito o arquivo "aberto" nesta sessão (arquivoHistoricoAberto)
+// — ele já está representado ao vivo em ultimoControleTempo, então somar os
+// dois contaria a mesma coisa 2x.
+let _jornadaHistoricoCache = { data: null, porPlaca: {} };
+function _invalidarCacheJornadaHistorico() {
+  _jornadaHistoricoCache = { data: null, porPlaca: {} };
+}
+async function _carregarJornadaHistoricoDoDia(dataStr) {
+  if (_jornadaHistoricoCache.data === dataStr) return _jornadaHistoricoCache.porPlaca;
+  const porPlaca = {};
+  if (!window.dirHandleHistorico) { _jornadaHistoricoCache = { data: dataStr, porPlaca }; return porPlaca; }
+  // datasEntrega é gravado em formato DD/MM/AAAA (dataEntregaLogistica dos
+  // pedidos), mas dataStr chega em AAAA-MM-DD (input type="date") — sem essa
+  // conversão, a comparação nunca bate e o histórico nunca é encontrado.
+  const [anoStr, mesStr, diaStr] = dataStr.split('-');
+  const dataStrBr = `${diaStr}/${mesStr}/${anoStr}`;
+  try {
+    let permOk = false;
+    try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted'; } catch (e) {}
+    if (!permOk) { _jornadaHistoricoCache = { data: dataStr, porPlaca }; return porPlaca; }
+    for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+      if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+      if (name === arquivoHistoricoAberto) continue; // já representado ao vivo — não soma de novo
+      let data;
+      try { data = JSON.parse(await (await handle.getFile()).text()); } catch (e) { continue; }
+      if (data.substituidoPor) continue; // revisão substituída — não conta (mesma regra do Dashboard)
+      if (!Array.isArray(data.datasEntrega) || !data.datasEntrega.includes(dataStrBr)) continue;
+      if (!data.resultado || !Array.isArray(data.veiculos)) continue;
+      data.veiculos.forEach(v => {
+        const viagensDoVeic = data.resultado[v.id];
+        if (!Array.isArray(viagensDoVeic)) return;
+        viagensDoVeic.forEach(vi => {
+          if (!vi || vi._vazio || !(vi.paradas || []).length) return;
+          const chave = v.placa || '';
+          if (!chave) return;
+          porPlaca[chave] = (porPlaca[chave] || 0) + _calcularJornadaUsadaViagem(vi);
+        });
+      });
+    }
+  } catch (e) {
+    console.warn('[_carregarJornadaHistoricoDoDia] falhou:', e);
+  }
+  _jornadaHistoricoCache = { data: dataStr, porPlaca };
+  return porPlaca;
+}
 // Diferente da tag azul ao lado (que só mostra o HORÁRIO cadastrado, ex.:
 // "06:00-18:00 (12h)" — a configuração, sempre igual), esta mostra o quanto
 // dessa jornada JÁ FOI CONSUMIDO pela programação de hoje (ultimoControleTempo,
@@ -3971,7 +4047,9 @@ function removerVeiculo(id) {
 function jornadaHojeTagHtml(v) {
   const ct = ultimoControleTempo && ultimoControleTempo[String(v.id)];
   const limiteMin = ct?.limiteMin ?? (Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720);
-  const usadoMin = ct?.usadoMin ?? 0;
+  const usadoSessaoMin = ct?.usadoMin ?? 0;
+  const usadoHistoricoMin = (_jornadaHistoricoCache.porPlaca && _jornadaHistoricoCache.porPlaca[v.placa]) || 0;
+  const usadoMin = usadoSessaoMin + usadoHistoricoMin;
   if (limiteMin <= 0) return '';
   const usadoH = usadoMin / 60;
   const limiteH = limiteMin / 60;
@@ -3992,7 +4070,7 @@ function jornadaHojeTagHtml(v) {
     bg = '#FEE2E2'; fg = '#B91C1C'; border = '#FECACA';
     texto = `⏱ ${pctDisponivel}% livre (${usadoH.toFixed(1)}h/${limiteH.toFixed(1)}h)`;
   }
-  return `<span class="tag" style="font-size:9px;font-weight:700;background:${bg};color:${fg};border:1px solid ${border};" title="Jornada consumida hoje pela programação atual — atualiza sozinho a cada viagem alocada, removida ou editada">${texto}</span>`;
+  return `<span class="tag" style="font-size:9px;font-weight:700;background:${bg};color:${fg};border:1px solid ${border};" title="Jornada consumida hoje: soma o que já está salvo no histórico pra este dia + o que está sendo montado nesta sessão — atualiza sozinho a cada viagem alocada, removida, editada ou salva">${texto}</span>`;
 }
 function renderVeiculos() {
   // Sempre re-sincroniza motoristas e disponibilidade do painel do dia antes de renderizar.
@@ -4001,7 +4079,11 @@ function renderVeiculos() {
   // Fallback para dateStr(S.dateOffset) caso o input não exista.
   const inputData = document.getElementById('rot-data-operacao')?.value;
   const ds = inputData || dateStr(S.dateOffset);
-  sincronizarDisponibilidadeVeiculos(ds).then(_renderVeiculosInterno).catch(_renderVeiculosInterno);
+  sincronizarDisponibilidadeVeiculos(ds)
+    .catch(() => {})
+    .then(() => _carregarJornadaHistoricoDoDia(ds).catch(() => {}))
+    .then(_renderVeiculosInterno)
+    .catch(_renderVeiculosInterno);
 }
 function _renderVeiculosInterno() {
   atualizarFiltroMapaTransportadora();
@@ -5670,6 +5752,7 @@ function renderTemplateOperacao() {
             produto: a.produto || prodKey,
             volumeL: Math.round((a.volume || 0) * 1000),
             cptOrig: a.cpt || '',
+            terminal: p.pedido?.terminal || '',
           }));
         }
         return [{
@@ -5677,6 +5760,7 @@ function renderTemplateOperacao() {
           produto: prodKey,
           volumeL: Math.round((it.volume || 0) * 1000),
           cptOrig: '',
+          terminal: p.pedido?.terminal || '',
         }];
       });
       linhasParada.forEach(ld => {
@@ -5687,16 +5771,24 @@ function renderTemplateOperacao() {
       });
     });
     linhasDados.sort((a, b) => (parseInt(b.cpt) || 0) - (parseInt(a.cpt) || 0));
-    const linhas = linhasDados.map(ld => `
+    const linhas = linhasDados.map(ld => {
+      // Base/CIA da PRÓPRIA linha (terminal real daquele pedido), não o
+      // valor combinado do cabeçalho da viagem (que junta todas as bases
+      // usadas com "+" só pra dar uma visão geral) — cada linha do SAP
+      // reflete de qual base ESPECÍFICA aquele produto veio.
+      const baseLinha = ld.terminal || base;
+      const ciaLinha = ld.terminal ? (distribuidoraDoTerminal(ld.terminal) || cia) : cia;
+      return `
       <tr>
         <td>${ld.ordemSAP || ''}</td>
-        <td>${cia}</td>
-        <td>${base}</td>
+        <td>${ciaLinha}</td>
+        <td>${baseLinha}</td>
         <td>${ld.postoCidade}</td>
         <td style="text-align:center;font-weight:700;">${ld.cpt || ''}</td>
         <td>${ld.produto || ''}</td>
         <td style="text-align:right;white-space:nowrap;">${ld.volumeL.toLocaleString('pt-BR')}</td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
     const linhasFinal = linhas;
     const _nexta_svg = `<svg style="height:20px;width:auto;" viewBox="0 0 242 45" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M149.631 0.870612H138.515L127.579 14.6805L116.586 0.870612H105.356L121.715 21.6422L104.148 43.9406H114.999L127.078 28.421L139.156 43.7829L139.279 43.9406H150.833L133.011 21.5161L149.631 0.870612ZM67.2515 43.9437H97.073V35.4805H65.8352V26.5725H86.6225V18.1756H65.8352V9.26758H97.073V0.870612H56.9272V43.9437H67.2515ZM196.417 0.870612H155.382V9.26758H171.479V43.9406H180.324V9.27074H196.42V0.870612H196.417ZM224.4 0.870612H211.811L195.01 43.9437H204.426L208.498 33.1273H227.523L231.658 43.9437H241.2L224.4 0.870612ZM224.453 24.7304H211.618L217.892 8.75657L224.457 24.7304H224.453ZM36.8748 0.870612V34.8938C36.8748 35.2786 36.5719 35.6666 36.1019 35.6666C35.9127 35.6666 35.6729 35.6004 35.4963 35.3764L17.8759 4.82621C17.0305 3.35942 15.8508 2.0882 14.3777 1.25545C13.0718 0.517321 11.4504 1.75258e-06 9.54517 1.75258e-06C4.25526 -0.00315263 0 4.25211 0 9.86061V43.9437H8.93006V9.92054C8.93006 9.53571 9.23288 9.14772 9.70289 9.14772C9.89215 9.14772 10.1319 9.21396 10.3085 9.43792L26.5599 37.9031C27.2097 39.0387 27.8595 40.0828 28.503 40.9755C29.7774 42.7514 32.4586 44.8207 36.2691 44.8207C41.559 44.8207 45.8111 40.5654 45.8111 34.9569V0.870612H36.8811H36.8748Z" fill="#2D6A1B"/></svg>`;
     return `
@@ -5743,8 +5835,18 @@ function renderTemplateOperacao() {
               const obs = encontrarClienteDoPedido(p.pedido)?.observacoes || p.pedido?.observacoes || '';
               return p.pedido?.restricao || obs;
             });
-            if (!paradasComJanela.length) return '';
-            const linhasJanela = paradasComJanela.map(p => {
+            // Dedup por cliente: se o mesmo cliente recebe de 2 bases
+            // diferentes (2 "paradas" pro mesmo pedido/codigoSAP), a janela
+            // de recebimento dele é UMA só — não duplica a linha.
+            const jaVistos = new Set();
+            const paradasComJanelaUnicas = paradasComJanela.filter(p => {
+              const chave = p.pedido?.codigoSAP || p.pedido?.cliente || '';
+              if (jaVistos.has(chave)) return false;
+              jaVistos.add(chave);
+              return true;
+            });
+            if (!paradasComJanelaUnicas.length) return '';
+            const linhasJanela = paradasComJanelaUnicas.map(p => {
               const dataEnt = p.pedido.dataEntregaLogistica ? `${p.pedido.dataEntregaLogistica} ` : '';
               const obs = encontrarClienteDoPedido(p.pedido)?.observacoes || p.pedido?.observacoes || '';
               return `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
@@ -7974,6 +8076,7 @@ async function salvarNoHistorico(silencioso = false) {
     }
     arquivoHistoricoAberto = null; // ciclo de correção concluído — próxima ligação só via "Abrir" explícito
     ultimoArquivoSalvoSessao = filename; // próximo salvamento desta sessão pode vincular a este, se data+cidade baterem
+    _invalidarCacheJornadaHistorico(); // a jornada recém-salva precisa entrar na conta do card na próxima renderização
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
     popularSeletorResumoDia().catch(()=>{});
