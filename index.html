@@ -497,11 +497,11 @@
           <div class="sec-title" style="margin:0;">Dashboard de Operações</div>
           <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Análise histórica das roteirizações salvas</div>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap;">
           <!-- Filtro de clientes -->
           <div style="position:relative;">
             <button id="dash-cli-btn" onclick="dashToggleFiltroClientes()"
-              style="display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;font-size:11px;color:var(--text-2);cursor:pointer;white-space:nowrap;">
+              style="display:flex;align-items:center;gap:5px;background:var(--surface);border:1px solid var(--border-dk);border-radius:7px;padding:4px 9px;font-size:10px;color:var(--text-2);cursor:pointer;white-space:nowrap;">
               <span>👥 Clientes</span>
               <span id="dash-cli-badge" style="display:none;background:var(--pet-green);color:#000;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
             </button>
@@ -528,8 +528,8 @@
           <!-- Filtro de Cidade da Operação -->
           <div style="position:relative;">
             <button id="dash-cid-btn" onclick="dashToggleFiltroCidades()"
-              style="display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;font-size:11px;color:var(--text-2);cursor:pointer;white-space:nowrap;">
-              <span>🏙️ Operação (Cidade)</span>
+              style="display:flex;align-items:center;gap:5px;background:var(--surface);border:1px solid var(--border-dk);border-radius:7px;padding:4px 9px;font-size:10px;color:var(--text-2);cursor:pointer;white-space:nowrap;">
+              <span>🏙️ Operação</span>
               <span id="dash-cid-badge" style="display:none;background:var(--pet-green);color:#000;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
             </button>
             <div id="dash-cid-panel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.22);width:280px;max-height:400px;flex-direction:column;overflow:hidden;">
@@ -552,19 +552,19 @@
               </div>
             </div>
           </div>
-          <div style="display:flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:6px 12px;">
-            <span style="font-size:11px;color:var(--text-3);letter-spacing:0.06em;">MES</span>
-            <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--pet-green);font-size:12px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;">
+          <div style="display:flex;align-items:center;gap:5px;background:var(--surface);border:1px solid var(--border-dk);border-radius:7px;padding:4px 9px;">
+            <span style="font-size:10px;color:var(--text-3);letter-spacing:0.06em;">MES</span>
+            <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--pet-green);font-size:11px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;">
               <option value="">Selecionar</option>
             </select>
           </div>
-          <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:11px;padding:6px 14px;">Todos os periodos</button>
-          <button class="btn btn-sm" onclick="dashCarregarHoje()" title="Resumo gerencial do dia — mesmos KPIs, só das roteirizações salvas hoje" style="background:rgba(112,168,240,0.1);color:#70a8f0;border:1px solid rgba(112,168,240,0.3);font-size:11px;padding:6px 14px;">📋 Hoje</button>
-          <button class="btn btn-sm" onclick="dashExportarExcel()" id="dash-export-btn" style="background:rgba(34,197,94,0.12);color:#16A34A;border:1px solid rgba(34,197,94,0.35);font-size:11px;padding:6px 14px;">📊 Exportar Excel</button>
-          <button class="btn btn-sm" onclick="dashSincronizar()" id="dash-sync-btn" style="background:rgba(0,164,153,0.12);color:#00A499;border:1px solid rgba(0,164,153,0.35);font-size:11px;padding:6px 14px;">🔄 Sincronizar</button>
-          <span id="dash-km-admin-tools" style="display:none;align-items:center;gap:10px;">
-            <button class="btn btn-sm" onclick="dashRecalcularKmHistorico()" id="btn-dash-recalcular-km" title="Busca o km real (via rota) das viagens do histórico que ainda não têm. Roda só quando clicado (modo automático desligado por enquanto). Só admin." style="background:rgba(251,146,60,0.12);color:#C2410C;border:1px solid rgba(251,146,60,0.35);font-size:11px;padding:6px 14px;">🛣️ Km Real</button>
-            <button class="btn btn-sm" onclick="dashDiagnosticarKmReal()" id="btn-dash-diagnostico-km" title="Mostra quais viagens têm o maior km real calculado, comparado com a estimativa antiga — sem gastar nenhuma requisição nova. Ajuda a achar viagens/placas com valor suspeito. Só admin." style="background:rgba(59,130,246,0.10);color:#1D4ED8;border:1px solid rgba(59,130,246,0.3);font-size:11px;padding:6px 14px;">🔍 Diagnóstico Km Real</button>
+          <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:10px;padding:4px 9px;white-space:nowrap;">Todos períodos</button>
+          <button class="btn btn-sm" onclick="dashCarregarHoje()" title="Resumo gerencial do dia — mesmos KPIs, só das roteirizações salvas hoje" style="background:rgba(112,168,240,0.1);color:#70a8f0;border:1px solid rgba(112,168,240,0.3);font-size:10px;padding:4px 9px;white-space:nowrap;">📋 Hoje</button>
+          <button class="btn btn-sm" onclick="dashExportarExcel()" id="dash-export-btn" style="background:rgba(34,197,94,0.12);color:#16A34A;border:1px solid rgba(34,197,94,0.35);font-size:10px;padding:4px 9px;white-space:nowrap;">📊 Excel</button>
+          <button class="btn btn-sm" onclick="dashSincronizar()" id="dash-sync-btn" style="background:rgba(0,164,153,0.12);color:#00A499;border:1px solid rgba(0,164,153,0.35);font-size:10px;padding:4px 9px;white-space:nowrap;">🔄 Sincronizar</button>
+          <span id="dash-km-admin-tools" style="display:none;align-items:center;gap:5px;">
+            <button class="btn btn-sm" onclick="dashRecalcularKmHistorico()" id="btn-dash-recalcular-km" title="Busca o km real (via rota) das viagens do histórico que ainda não têm. Roda só quando clicado (modo automático desligado por enquanto). Só admin." style="background:rgba(251,146,60,0.12);color:#C2410C;border:1px solid rgba(251,146,60,0.35);font-size:10px;padding:4px 9px;white-space:nowrap;">🛣️ Km Real</button>
+            <button class="btn btn-sm" onclick="dashDiagnosticarKmReal()" id="btn-dash-diagnostico-km" title="Mostra quais viagens têm o maior km real calculado, comparado com a estimativa antiga — sem gastar nenhuma requisição nova. Ajuda a achar viagens/placas com valor suspeito. Só admin." style="background:rgba(59,130,246,0.10);color:#1D4ED8;border:1px solid rgba(59,130,246,0.3);font-size:10px;padding:4px 9px;white-space:nowrap;">🔍 Diagnóstico</button>
           </span>
         </div>
       </div>
@@ -1040,9 +1040,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=cfd1d905"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=6b8a72f8"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=381f65d9"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=dcc2209e"></script>
 </body>
 </html>
