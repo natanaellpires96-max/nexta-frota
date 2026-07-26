@@ -884,7 +884,14 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           jornadaUsadaMin: Number(vi.tempoConsumidoMin) || vi.paradas.reduce((s,p,idx) =>
             s + (idx === 0 ? (p.tempoCarregamentoMin || 0) : 0)
               + (p.waitAfterLoadingMin || 0) + (p.deslocCarregadoMin || 0)
-              + (p.tempoEsperaRestricaoMin || 0) + (p.tempoDescargaMin || 0) + (p.deslocVazioMin || 0), 0),
+              // Espera overnight (motorista descansando de madrugada até o
+              // cliente abrir) NÃO conta como jornada trabalhada — mesma
+              // isenção já usada no cálculo "ao vivo" da tela (renderResultado)
+              // e no Herrlog. Sem isso, um trecho overnight de 8-12h de
+              // espera inflava a jornada usada pra números impossíveis
+              // (90h+ num dia), mesmo depois da correção da data.
+              + (p.overnight ? 0 : (p.tempoEsperaRestricaoMin || 0))
+              + (p.tempoDescargaMin || 0) + (p.deslocVazioMin || 0), 0),
         });
         // Acumula por OPERAÇÃO (cidade do terminal desta viagem) — volume e
         // capacidade, uma vez por viagem (mesma regra usada pra ocupação de

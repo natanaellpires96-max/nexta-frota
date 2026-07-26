@@ -3975,7 +3975,11 @@ function _calcularJornadaUsadaViagem(vi) {
     return s + (idx === 0 ? (p.tempoCarregamentoMin || 0) : 0)
       + (p.waitAfterLoadingMin || 0)
       + (p.deslocCarregadoMin || 0)
-      + (p.tempoEsperaRestricaoMin || 0)
+      // Espera overnight não conta como jornada trabalhada (mesma isenção
+      // usada no cálculo "ao vivo" da tela e no Herrlog) — sem isso, um
+      // trecho overnight de várias horas de espera inflava a jornada usada
+      // pra números impossíveis.
+      + (p.overnight ? 0 : (p.tempoEsperaRestricaoMin || 0))
       + (p.tempoDescargaMin || 0)
       + (p.deslocVazioMin || 0);
   }, 0);
@@ -4080,19 +4084,26 @@ function renderPainelJornadaVeiculos() {
   const filtroContrato = valId('pjv-contrato');
   const filtroTipo = valId('pjv-tipo');
   const filtroIdent = valId('pjv-ident');
+  const filtroOp = valId('pjv-op');
   const disponiveis = todosDisponiveis.filter(v =>
     (!filtroTransp || v.transportadora === filtroTransp) &&
     (!filtroContrato || (v.contrato || 'Dedicado') === filtroContrato) &&
     (!filtroTipo || v.tipo === filtroTipo) &&
-    (!filtroIdent || (filtroIdent === 'sim' ? !!v.identidadePetronas : !v.identidadePetronas))
+    (!filtroIdent || (filtroIdent === 'sim' ? !!v.identidadePetronas : !v.identidadePetronas)) &&
+    (!filtroOp || cidadeBaseVeiculo(v) === filtroOp)
   );
   const tipoOpts = [...new Set(todosDisponiveis.map(v => v.tipo).filter(Boolean))].sort();
   const transpOpts = [...new Set(todosDisponiveis.map(v => v.transportadora).filter(Boolean))].sort();
+  const opOpts = [...new Set(todosDisponiveis.map(v => cidadeBaseVeiculo(v)).filter(Boolean))].sort();
   const filtrosHtml = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
       <select id="pjv-transp" onchange="renderPainelJornadaVeiculos()" style="font-size:11px;padding:5px 8px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;color:#374151;">
         <option value="">Todas transportadoras</option>
         ${transpOpts.map(t => `<option value="${t}" ${filtroTransp===t?'selected':''}>${t}</option>`).join('')}
+      </select>
+      <select id="pjv-op" onchange="renderPainelJornadaVeiculos()" style="font-size:11px;padding:5px 8px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;color:#374151;">
+        <option value="">Todas as operações</option>
+        ${opOpts.map(o => `<option value="${o}" ${filtroOp===o?'selected':''}>${o}</option>`).join('')}
       </select>
       <select id="pjv-contrato" onchange="renderPainelJornadaVeiculos()" style="font-size:11px;padding:5px 8px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;color:#374151;">
         <option value="">Todos os contratos</option>
@@ -4129,7 +4140,7 @@ function renderPainelJornadaVeiculos() {
     const estourou = usadoMin > totalMin;
     const corPct = estourou ? '#DC2626' : pct >= 85 ? '#DC2626' : pct >= 60 ? '#D97706' : '#16A34A';
     return `
-      <div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;min-width:150px;flex:1;max-width:190px;font-family:var(--font-cond,inherit);">
+      <div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;width:172px;flex:0 0 172px;font-family:var(--font-cond,inherit);">
         <div style="background:#F3F4F6;border-bottom:1px solid #D1D5DB;padding:6px 10px;font-weight:800;font-size:13px;letter-spacing:.03em;text-align:center;">${v.placa}</div>
         <div style="padding:8px 10px;display:flex;flex-direction:column;gap:4px;">
           <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#374151;">
@@ -10236,7 +10247,9 @@ async function freteCalcular() {
           return s + (idx === 0 ? (p.tempoCarregamentoMin || 0) : 0)
             + (p.waitAfterLoadingMin || 0)
             + (p.deslocCarregadoMin || 0)
-            + (p.tempoEsperaRestricaoMin || 0)
+            // Espera overnight não conta como jornada trabalhada (mesma
+            // isenção já usada no cálculo "ao vivo" da tela e no Herrlog).
+            + (p.overnight ? 0 : (p.tempoEsperaRestricaoMin || 0))
             + (p.tempoDescargaMin || 0)
             + (p.deslocVazioMin || 0);
         }, 0);
