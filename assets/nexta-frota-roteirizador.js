@@ -7343,6 +7343,17 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
         const contratoTag = (v.contrato || 'Dedicado') === 'Spot'
           ? `<span class="tag" style="font-size:9px;background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;">Spot</span>`
           : `<span class="tag" style="font-size:9px;background:#EEF3FF;color:#1E40AF;border:1px solid #93C5FD;">Dedicado</span>`;
+        // Jornada do dia mesmo SEM viagem nesta roteirização: soma o que já
+        // está salvo no histórico pra essa data (ex.: uma roteirização da
+        // manhã já salva) com o que está na sessão ao vivo (controleTempo,
+        // que fica em 0 se o veículo realmente não tem nada ainda). Sem
+        // isso, um veículo "vazio" nunca mostrava nenhuma info de jornada —
+        // o card simplesmente pulava esse badge inteiro.
+        const tempoDispVeicVazio = controleTempo[v.id]?.limiteMin || v.jornadaMin || 0;
+        const tempoUsadoSessaoVazio = controleTempo[v.id]?.usadoMin || 0;
+        const tempoUsadoHistoricoVazio = (_jornadaHistoricoCache.porPlaca && _jornadaHistoricoCache.porPlaca[v.placa]) || 0;
+        const tempoUsadoVeicVazio = tempoUsadoSessaoVazio + tempoUsadoHistoricoVazio;
+        const excessoVeicVazio = Math.max(0, tempoUsadoVeicVazio - tempoDispVeicVazio);
         html += `<div class="route-card"
           style="border:2px dashed var(--border-dk);opacity:0.75;"
           ondragenter="dragEnterCard(event,${v.id})"
@@ -7359,7 +7370,11 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
               ${v.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
               <span class="tag tag-blue" style="font-size:9px;">Jornada: ${v.jornadaInicio||'06:00'}–${v.jornadaFim||'18:00'}</span>
             </div>
-            <span class="tag tag-gray">Sem viagens</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span style="font-size:11px;color:#4A6535;">${(tempoUsadoVeicVazio/60).toFixed(1)}/${(tempoDispVeicVazio/60).toFixed(1)} h</span>
+              ${excessoVeicVazio > 0.001 ? `<span class="tag tag-red">+${(excessoVeicVazio/60).toFixed(1)}h</span>` : ''}
+              <span class="tag tag-gray">Sem viagens</span>
+            </div>
           </div>
           <div class="route-body" style="min-height:70px;display:flex;align-items:center;justify-content:center;">
             <span style="font-size:11px;color:var(--text-3);font-family:var(--font-cond);letter-spacing:0.08em;text-transform:uppercase;">
@@ -7389,7 +7404,13 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           _cr += atraso + (p.tempoCarregamentoMin||0) + wal + (p.deslocCarregadoMin||0) + espVis + (p.tempoDescargaMin||0) + (p.deslocVazioMin||0);
         });
       });
-      const tempoUsadoVeic = _cr - _ini;
+      const tempoUsadoVeicSessao = _cr - _ini;
+      // Soma o que já está salvo no histórico pra esse dia (ex.: uma
+      // roteirização da manhã já salva, antes desta sessão) — mesma lógica
+      // do card "sem viagens" acima, pra não subestimar a jornada real
+      // consumida quando o veículo já trabalhou antes hoje.
+      const tempoUsadoHistoricoComViagem = (_jornadaHistoricoCache.porPlaca && _jornadaHistoricoCache.porPlaca[v.placa]) || 0;
+      const tempoUsadoVeic = tempoUsadoVeicSessao + tempoUsadoHistoricoComViagem;
       const excessoJornadaVeicMin = Math.max(0, tempoUsadoVeic - tempoDispVeic);
       let relogioMin = parseHoraMin(v.jornadaInicio || '06:00');
       if (isNaN(relogioMin)) relogioMin = 6 * 60;
@@ -8655,7 +8676,10 @@ function _sincronizarDataOperacaoComPedidos() {
 function onDataOperacaoChange(valor) {
   if (!valor) return;
   sincronizarDisponibilidadeVeiculos(valor).then(() => {
+    return _carregarJornadaHistoricoDoDia(valor).catch(() => {});
+  }).then(() => {
     if (document.getElementById('tab-veiculos')?.classList.contains('active')) renderVeiculos();
+    if (document.getElementById('tab-resultado')?.classList.contains('active') && ultimoResultado) renderResultado(ultimoResultado, ultimoControleTempo || {});
     showToast(`Disponibilidade atualizada para ${new Date(valor + 'T12:00:00').toLocaleDateString('pt-BR')} ✅`, true);
   }).catch(() => {});
 }
@@ -8666,7 +8690,7 @@ function initDataOperacao() {
   const amanha = new Date(); amanha.setDate(amanha.getDate() + 1);
   const iso = `${amanha.getFullYear()}-${String(amanha.getMonth()+1).padStart(2,'0')}-${String(amanha.getDate()).padStart(2,'0')}`;
   el.value = iso;
-  sincronizarDisponibilidadeVeiculos(iso).catch(() => {});
+  sincronizarDisponibilidadeVeiculos(iso).then(() => _carregarJornadaHistoricoDoDia(iso).catch(() => {})).catch(() => {});
 }
 window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() {
   try {

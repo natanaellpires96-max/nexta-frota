@@ -596,9 +596,10 @@
 #roteirizador-shell .filter-bar {
   background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius);
   padding: 11px 14px; margin-bottom: 14px;
-  display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; box-shadow: var(--shadow);
+  display: flex; align-items: flex-end; gap: 8px; flex-wrap: nowrap; box-shadow: var(--shadow);
+  overflow-x: auto; /* nunca quebra linha — se não couber, rola horizontalmente em vez de bagunçar */
 }
-#roteirizador-shell .filter-bar .field { min-width: 130px; }
+#roteirizador-shell .filter-bar .field { min-width: 110px; flex-shrink: 0; }
 /* ══════════════════════════════
    MODAL
 ══════════════════════════════ */
