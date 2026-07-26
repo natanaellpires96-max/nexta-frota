@@ -4043,11 +4043,81 @@ async function _carregarJornadaHistoricoDoDia(dataStr) {
 // nenhum pedido roteirizado. Usa a MESMA fonte de dados dos outros
 // indicadores (histórico salvo do dia + sessão ao vivo), só apresentada de
 // um jeito limpo, sem disputar espaço com o resto do card.
+// Painel começa RECOLHIDO por padrão (ocupava muito espaço sempre aberto) —
+// só mostra um resumo de 1 linha até o usuário clicar pra expandir.
+let _pjvExpandido = false;
+function togglePainelJornadaVeiculos() {
+  _pjvExpandido = !_pjvExpandido;
+  renderPainelJornadaVeiculos();
+}
 function renderPainelJornadaVeiculos() {
   const box = document.getElementById('painel-jornada-veiculos');
   if (!box) return;
-  const disponiveis = (veiculos || []).filter(v => (v.disponibilidade || 'Disponível') !== 'Indisponível');
-  if (!disponiveis.length) { box.innerHTML = ''; return; }
+  const todosDisponiveis = (veiculos || []).filter(v => (v.disponibilidade || 'Disponível') !== 'Indisponível');
+  const setaIcon = _pjvExpandido ? '▲' : '▼';
+  const headerHtml = (resumoExtra) => `
+    <div onclick="togglePainelJornadaVeiculos()" style="cursor:pointer;display:flex;align-items:center;gap:8px;user-select:none;">
+      <span style="font-size:11px;font-weight:700;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase;">⏱ Jornada dos Veículos — Hoje</span>
+      <span style="font-size:10px;color:var(--text-3);">${setaIcon}</span>
+      ${resumoExtra || ''}
+    </div>`;
+  if (!_pjvExpandido) {
+    // Recolhido: só um resumo de 1 linha — quantos veículos disponíveis e
+    // quantos já estouraram a jornada hoje, sem montar os cards (mais leve
+    // e não ocupa espaço na tela até o usuário pedir pra ver o detalhe).
+    const comEstourro = todosDisponiveis.filter(v => {
+      const totalMin = Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720;
+      const usadoMin = ((ultimoControleTempo && ultimoControleTempo[v.id]?.usadoMin) || 0) + ((_jornadaHistoricoCache.porPlaca && _jornadaHistoricoCache.porPlaca[v.placa]) || 0);
+      return usadoMin > totalMin;
+    }).length;
+    const resumo = `<span style="font-size:11px;color:${comEstourro>0?'#DC2626':'var(--text-3)'};font-weight:${comEstourro>0?'700':'400'};">
+      ${todosDisponiveis.length} veículo(s) disponível(is)${comEstourro>0?` · ⚠ ${comEstourro} com estouro`:''}
+    </span>`;
+    box.innerHTML = `<div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;padding:9px 12px;">${headerHtml(resumo)}</div>`;
+    return;
+  }
+  const filtroTransp = valId('pjv-transp');
+  const filtroContrato = valId('pjv-contrato');
+  const filtroTipo = valId('pjv-tipo');
+  const filtroIdent = valId('pjv-ident');
+  const disponiveis = todosDisponiveis.filter(v =>
+    (!filtroTransp || v.transportadora === filtroTransp) &&
+    (!filtroContrato || (v.contrato || 'Dedicado') === filtroContrato) &&
+    (!filtroTipo || v.tipo === filtroTipo) &&
+    (!filtroIdent || (filtroIdent === 'sim' ? !!v.identidadePetronas : !v.identidadePetronas))
+  );
+  const tipoOpts = [...new Set(todosDisponiveis.map(v => v.tipo).filter(Boolean))].sort();
+  const transpOpts = [...new Set(todosDisponiveis.map(v => v.transportadora).filter(Boolean))].sort();
+  const filtrosHtml = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+      <select id="pjv-transp" onchange="renderPainelJornadaVeiculos()" style="font-size:11px;padding:5px 8px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;color:#374151;">
+        <option value="">Todas transportadoras</option>
+        ${transpOpts.map(t => `<option value="${t}" ${filtroTransp===t?'selected':''}>${t}</option>`).join('')}
+      </select>
+      <select id="pjv-contrato" onchange="renderPainelJornadaVeiculos()" style="font-size:11px;padding:5px 8px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;color:#374151;">
+        <option value="">Todos os contratos</option>
+        <option value="Dedicado" ${filtroContrato==='Dedicado'?'selected':''}>Dedicado</option>
+        <option value="Spot" ${filtroContrato==='Spot'?'selected':''}>Spot</option>
+      </select>
+      <select id="pjv-tipo" onchange="renderPainelJornadaVeiculos()" style="font-size:11px;padding:5px 8px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;color:#374151;">
+        <option value="">Todos os tipos</option>
+        ${tipoOpts.map(t => `<option value="${t}" ${filtroTipo===t?'selected':''}>${t}</option>`).join('')}
+      </select>
+      <select id="pjv-ident" onchange="renderPainelJornadaVeiculos()" style="font-size:11px;padding:5px 8px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;color:#374151;">
+        <option value="">Identificação: todas</option>
+        <option value="sim" ${filtroIdent==='sim'?'selected':''}>Com ID Petronas</option>
+        <option value="nao" ${filtroIdent==='nao'?'selected':''}>Sem ID Petronas</option>
+      </select>
+    </div>`;
+  if (!disponiveis.length) {
+    box.innerHTML = `
+      <div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;padding:9px 12px 4px;">
+        ${headerHtml()}
+        ${filtrosHtml}
+        <div style="font-size:12px;color:var(--text-3);padding:2px 0 8px;">Nenhum veículo disponível para os filtros selecionados.</div>
+      </div>`;
+    return;
+  }
   const cards = disponiveis.map(v => {
     const totalMin = Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720;
     const usadoSessaoMin = (ultimoControleTempo && ultimoControleTempo[v.id]?.usadoMin) || 0;
@@ -4075,8 +4145,11 @@ function renderPainelJornadaVeiculos() {
       </div>`;
   }).join('');
   box.innerHTML = `
-    <div style="font-size:11px;font-weight:700;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px;">⏱ Jornada dos Veículos — Hoje</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">${cards}</div>`;
+    <div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;padding:9px 12px 12px;">
+      ${headerHtml()}
+      <div style="margin-top:8px;">${filtrosHtml}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">${cards}</div>
+    </div>`;
 }
 // Diferente da tag azul ao lado (que só mostra o HORÁRIO cadastrado, ex.:
 // "06:00-18:00 (12h)" — a configuração, sempre igual), esta mostra o quanto

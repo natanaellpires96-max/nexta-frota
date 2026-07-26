@@ -856,13 +856,25 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
             : [];
           if (_pedagiosDetectados.length > 0) totalViagensComPedagio++;
         }
+        // Data REAL da entrega desta viagem (não a data em que a
+        // roteirização foi SALVA) — uma sessão/arquivo pode cobrir vários
+        // dias de entrega de uma vez (comum, ver datasEntrega), então usar
+        // "dataSnap" (savedAt) aqui juntava jornada de dias diferentes no
+        // mesmo balde, inflando o "Estouro de Jornada" pra números
+        // impossíveis (ex.: 90h somadas de 8 dias diferentes, todos com o
+        // mesmo savedAt, aparecendo como se fosse 1 dia só).
+        const _dataEntregaBr = vi.paradas?.[0]?.pedido?.dataEntregaLogistica || vi.paradas?.[0]?.pedido?.dataEntrega || '';
+        const _mtDataEntrega = String(_dataEntregaBr).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        const dataViagemReal = _mtDataEntrega
+          ? `${_mtDataEntrega[3]}-${_mtDataEntrega[2].padStart(2,'0')}-${_mtDataEntrega[1].padStart(2,'0')}`
+          : dataSnap;
         // Entrada crua desta viagem para o Ranking de Transportadoras — cálculo
         // de custo (contrato) é feito depois, em dashAgregarTransportadoras,
         // porque precisa do total de viagens do mês (rateio do valor fixo).
         entradasTransportadora.push({
           transportadora: v.transportadora || '(sem transportadora)',
           placa: v.placa,
-          data: dataSnap,
+          data: dataViagemReal,
           mesKey: mesKeySnap,
           termOrigem: vi.terminalOrigem || v.terminal || '',
           destinos: Array.from(new Set(vi.paradas.map(p => (p.pedido?.cidade || p.pedido?.cliente || '')))).join(', '),
