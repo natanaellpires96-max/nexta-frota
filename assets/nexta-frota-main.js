@@ -338,6 +338,8 @@ function fmtAuditAction(action, details={}) {
       return `✅ Disponibilidade enviada${details.carrier ? ` — ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
     case "meta_disp_update":
       return `🎯 Meta de disponibilidade atualizada${details.value !== undefined ? ` para ${details.value}%` : ""}`;
+    case "meta_sla_update":
+      return `🎯 Meta de SLA de preenchimento atualizada${details.value !== undefined ? ` para ${details.value}%` : ""}`;
     case "alert_cutoff_update":
       return `🔔 Horário de corte de alerta atualizado${details.hour !== undefined ? ` para ${String(details.hour).padStart(2,'0')}:00` : ""}`;
     case "plate_add":
@@ -386,6 +388,26 @@ async function dbGetMetaDisp() {
 async function dbSaveMetaDisp(value) {
   await setDoc(doc(db, "config", "meta_disp"), { value: Number(value) });
   cacheSet("cfg_meta_disp", Number(value), 300_000);
+}
+// Meta de SLA de preenchimento — mesmo padrão do meta_disp acima, mas
+// separado (documento próprio no Firestore), porque são metas diferentes:
+// disponibilidade mede QUALIDADE do que foi preenchido (% disponível),
+// SLA de preenchimento mede se o preenchimento ACONTECEU (% enviado).
+async function dbGetMetaSla() {
+  const cached = cacheGet("cfg_meta_sla");
+  if (cached !== undefined) return cached;
+  try {
+    const snap = await getDoc(doc(db, "config", "meta_sla"));
+    if(!snap.exists()) { cacheSet("cfg_meta_sla", null, 300_000); return null; }
+    const v = Number(snap.data().value);
+    const value = Number.isFinite(v) && v > 0 && v <= 100 ? v : null;
+    cacheSet("cfg_meta_sla", value, 300_000);
+    return value;
+  } catch { return null; }
+}
+async function dbSaveMetaSla(value) {
+  await setDoc(doc(db, "config", "meta_sla"), { value: Number(value) });
+  cacheSet("cfg_meta_sla", Number(value), 300_000);
 }
 async function dbGetUsers() {
   const cached = cacheGet("cfg_users");
@@ -461,13 +483,15 @@ async function loadConfig() {
     withTimeout(dbGetOperacoes(), 10000, "Timeout dbGetOperacoes").catch(e=>{console.error(e); return null}),
     withTimeout(dbGetAlertCutoffHour(), 10000, "Timeout dbGetAlertCutoffHour").catch(e=>{console.error(e); return null}),
     withTimeout(dbGetMetaDisp(), 10000, "Timeout dbGetMetaDisp").catch(e=>{console.error(e); return null}),
+    withTimeout(dbGetMetaSla(), 10000, "Timeout dbGetMetaSla").catch(e=>{console.error(e); return null}),
   ];
-  const [fbUsers, fbCarriers, fbOps, fbCutoff, fbMeta] = await Promise.all(loaders);
+  const [fbUsers, fbCarriers, fbOps, fbCutoff, fbMeta, fbMetaSla] = await Promise.all(loaders);
   if(fbUsers) _atualizarUsersDb(fbUsers);
   if(fbCarriers) CARRIERS = fbCarriers;
   if(fbOps) OPERACOES = fbOps;
   if(Number.isFinite(fbCutoff)) ALERT_CUTOFF_HOUR = fbCutoff;
   if(Number.isFinite(fbMeta) && fbMeta > 0) META_DISP = fbMeta;
+  if(Number.isFinite(fbMetaSla) && fbMetaSla > 0) META_SLA = fbMetaSla;
   // Expõe a lista de transportadoras globalmente para outros módulos (ex: Roteirizador)
   // que não têm acesso direto a esta variável de módulo ES.
   window.CARRIERS = CARRIERS;
@@ -800,6 +824,11 @@ let S = {
   user: null, dateOffset: 0, adminTab: "dashboard",
   notifOpen: false, histDays: 45,
   histCarrier:"", histStatus:"", histOp:"", histPlaca:"", todayOp:"", todayPlaca:"",
+  // Filtros novos do Painel de Disponibilidade — Transportadora (dropdown
+  // dedicado, além da busca livre já existente em todayPlaca) e Volume do
+  // veículo (m³ de capacidade, com as opções geradas a partir dos valores
+  // reais já cadastrados nas placas — não é uma lista fixa inventada).
+  todayCarrier:"", todayVolume:"",
   histOpenDays: {},
   registerSubTab: "plates",
   kpiYear: new Date().getFullYear(), kpiMonth: new Date().getMonth(),
@@ -844,6 +873,7 @@ function filtrarPorContrato(plates){
 }
 let ALERT_CUTOFF_HOUR = 16;
 let META_DISP = 95; // % meta de disponibilidade — sobrescrito pelo Firestore no loadConfig
+let META_SLA = 95; // % meta de SLA de preenchimento — sobrescrito pelo Firestore no loadConfig
 // ═══════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════
@@ -1165,7 +1195,7 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
   const allDone         = totalPending === 0;
   const fillPct         = totalVehicles ? Math.round((totalFilled/totalVehicles)*100) : 0;
   const statusColor = globalPct >= META_DISP ? 'var(--green)' : globalPct >= 70 ? 'var(--amber)' : 'var(--red)';
-  const fillColor   = fillPct  >= 90 ? 'var(--green)' : fillPct >= 60 ? 'var(--amber)' : 'var(--red)';
+  const fillColor   = fillPct  >= META_SLA ? 'var(--green)' : fillPct >= 60 ? 'var(--amber)' : 'var(--red)';
   const urgencyBg   = allDone
     ? 'linear-gradient(135deg,rgba(110,224,74,.08),rgba(110,224,74,.04))'
     : isPastCutoff
@@ -2082,10 +2112,10 @@ async function renderDashboard(body){
     <div class="sla-panel">
       <!-- Row 1: KPIs -->
       <div class="sla-kpi-row">
-        <div class="sla-kpi ${slaToday>=95?'sla-kpi-ok':slaToday>=70?'sla-kpi-warn':'sla-kpi-bad'}">
+        <div class="sla-kpi ${slaToday>=META_SLA?'sla-kpi-ok':slaToday>=70?'sla-kpi-warn':'sla-kpi-bad'}">
           <div class="sla-kpi-num">${slaToday}%</div>
           <div class="sla-kpi-lbl">SLA Hoje</div>
-          <div class="sla-kpi-bar"><span style="width:${Math.min(slaToday,100)}%;background:${slaToday>=95?'var(--green)':slaToday>=70?'var(--amber)':'var(--red)'}"></span></div>
+          <div class="sla-kpi-bar"><span style="width:${Math.min(slaToday,100)}%;background:${slaToday>=META_SLA?'var(--green)':slaToday>=70?'var(--amber)':'var(--red)'}"></span></div>
         </div>
         <div class="sla-kpi">
           <div class="sla-kpi-num" style="color:var(--lime)">${lockedToday}<span style="font-size:14px;font-weight:400;color:var(--muted)">/${activeCarrierList.length}</span></div>
@@ -2099,7 +2129,7 @@ async function renderDashboard(body){
         </div>
         <div class="sla-kpi-meta">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px;letter-spacing:.04em">META</div>
-          <div style="font-size:22px;font-weight:600;color:var(--lime)">≥ 95%</div>
+          <div style="font-size:22px;font-weight:600;color:var(--lime)">≥ ${META_SLA}%</div>
           <div style="font-size:10px;color:var(--muted);margin-top:2px">SLA de preenchimento</div>
         </div>
       </div>
@@ -2120,7 +2150,7 @@ async function renderDashboard(body){
           }).join('') || '<div style="font-size:12px;color:var(--green);padding:6px 0">✓ Nenhuma pendência de preenchimento hoje</div>'}
         </div>
       </div>
-      <!-- Config cards — dois lado a lado, só para admin -->
+      <!-- Config cards — três lado a lado, só para admin -->
       ${currentUser.role==="admin" ? `
       <div class="sla-config-row">
         <div class="sla-cutoff">
@@ -2144,6 +2174,19 @@ async function renderDashboard(body){
             <button class="btn btn-lime btn-sm" onclick="saveMetaDisp()">Salvar</button>
           </div>
           <div style="margin-top:10px;font-size:11px;color:var(--muted)">Meta atual: <span style="color:var(--lime);font-weight:500">${META_DISP}%</span></div>
+        </div>
+        <div class="sla-cutoff">
+          <div class="sla-section-title">🎯 Meta de SLA de preenchimento</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px">% mínimo de dias com preenchimento enviado — usado no Daily Briefing e nos KPIs Mensais</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:4px;background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:4px 10px">
+              <input id="meta-sla-input" type="number" min="50" max="100" value="${META_SLA}" oninput="const s=document.getElementById('meta-sla-slider');if(s)s.value=this.value" style="width:48px;background:transparent;border:none;color:var(--lime);font-size:15px;font-weight:600;font-family:'DM Mono',monospace;outline:none;text-align:center">
+              <span style="font-size:13px;color:var(--lime);font-weight:600">%</span>
+            </div>
+            <input id="meta-sla-slider" type="range" min="50" max="100" value="${META_SLA}" oninput="document.getElementById('meta-sla-input').value=this.value" style="flex:1;min-width:80px;accent-color:var(--lime)">
+            <button class="btn btn-lime btn-sm" onclick="saveMetaSla()">Salvar</button>
+          </div>
+          <div style="margin-top:10px;font-size:11px;color:var(--muted)">Meta atual: <span style="color:var(--lime);font-weight:500">${META_SLA}%</span></div>
         </div>
       </div>` : ''}
     </div>
@@ -2282,7 +2325,7 @@ async function renderKpisMensais(body){
     const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
     const aboveMeta=m.dispPct>=META_DISP;
     const barColor=aboveMeta?'var(--green)':m.dispPct>=75?'var(--amber)':'var(--red)';
-    const slaColor=m.slaEnvio>=95?'var(--green)':m.slaEnvio>=70?'var(--amber)':'var(--red)';
+    const slaColor=m.slaEnvio>=META_SLA?'var(--green)':m.slaEnvio>=70?'var(--amber)':'var(--red)';
     return `<tr class="kpi-rank-row">
       <td style="font-size:15px;text-align:center;width:36px">${medal}</td>
       <td style="font-weight:500;font-size:13px">${esc(m.carrier)}</td>
@@ -2326,7 +2369,7 @@ async function renderKpisMensais(body){
         <div class="sum-label">Disponibilidade média</div>
       </div>
       <div class="sum-card">
-        <div class="sum-num" style="color:${avgFill>=95?'var(--green)':avgFill>=70?'var(--amber)':'var(--red)'}">${avgFill}%</div>
+        <div class="sum-num" style="color:${avgFill>=META_SLA?'var(--green)':avgFill>=70?'var(--amber)':'var(--red)'}">${avgFill}%</div>
         <div class="sum-label">SLA de preenchimento</div>
       </div>
       <div class="sum-card">
@@ -2415,13 +2458,13 @@ function drawKpiTrend(trendData){
     ctx.textAlign="right"; ctx.fillText(v+"%",pad.l-4,y+3); ctx.textAlign="left";
   });
   // Meta line
-  const metaY=pad.t+H2-(95/maxV)*H2;
+  const metaY=pad.t+H2-(META_DISP/maxV)*H2;
   ctx.strokeStyle="rgba(200,240,50,.4)"; ctx.lineWidth=1.5;
   ctx.setLineDash([5,4]);
   ctx.beginPath(); ctx.moveTo(pad.l,metaY); ctx.lineTo(pad.l+W2,metaY); ctx.stroke();
   ctx.setLineDash([]);
   ctx.fillStyle="rgba(200,240,50,.7)"; ctx.font="600 11px DM Sans,sans-serif";
-  ctx.fillText("meta 95%",pad.l+W2-60,metaY-5);
+  ctx.fillText(`meta ${META_DISP}%`,pad.l+W2-60,metaY-5);
   // Gradient fill
   const grad=ctx.createLinearGradient(0,pad.t,0,pad.t+H2);
   grad.addColorStop(0,"rgba(110,224,74,.22)"); grad.addColorStop(1,"rgba(110,224,74,0)");
@@ -2449,7 +2492,7 @@ function drawKpiTrend(trendData){
     if(p.y===null) return;
     const v=trendData[i].pct;
     ctx.beginPath(); ctx.arc(p.x,p.y,4,0,2*Math.PI);
-    ctx.fillStyle=v>=95?C.green:v>=75?C.amber:C.red; ctx.fill();
+    ctx.fillStyle=v>=META_DISP?C.green:v>=75?C.amber:C.red; ctx.fill();
     ctx.strokeStyle=C.dark; ctx.lineWidth=2; ctx.stroke();
     ctx.fillStyle=C.text; ctx.font="700 12px DM Sans,sans-serif";
     ctx.textAlign="center"; ctx.fillText(v+"%",p.x,p.y-10); ctx.textAlign="left";
@@ -2678,6 +2721,20 @@ async function saveMetaDisp(){
   showToast(`Meta de disponibilidade definida para ${val}%! ✓`);
   await renderTabBody();
 }
+async function saveMetaSla(){
+  const input = document.getElementById("meta-sla-input");
+  if(!input) return;
+  const val = parseInt(input.value, 10);
+  if(isNaN(val) || val < 50 || val > 100){
+    showToast("Meta deve ser entre 50% e 100%.", false);
+    return;
+  }
+  META_SLA = val;
+  await dbSaveMetaSla(val);
+  await dbAddAudit("meta_sla_update", { value: val });
+  showToast(`Meta de SLA de preenchimento definida para ${val}%! ✓`);
+  await renderTabBody();
+}
 async function saveCutoffHour(){
   const u = USERS_DB[S.user];
   if(!u || u.role!=="admin"){ showToast("Acesso restrito.", false); return; }
@@ -2715,15 +2772,28 @@ async function renderToday(body){
   const pendingAlerts = await buildPendingAlerts(allP,_uOps2);
   const opFilter=S.todayOp||"";
   const placaFilter=(S.todayPlaca||"").toUpperCase();
+  const carrierFilter=S.todayCarrier||"";
+  const volumeFilter=S.todayVolume||"";
+  // Lista real de volumes/capacidades cadastrados (não é uma lista fixa
+  // inventada) — junta todas as placas ativas de todos os transportadores,
+  // pega os valores distintos de capacidade e ordena numericamente.
+  const volumesDisponiveis = [...new Set(
+    CARRIERS.flatMap(c => (allP[c]||[]).filter(p=>p.ativo!==false).map(p=>p.capacidade)).filter(v=>v!=null&&v!=='')
+  )].sort((a,b)=>Number(a)-Number(b));
+  const volumeOpts=`<option value="">Todos os volumes</option>${volumesDisponiveis.map(v=>`<option value="${attr(v)}" ${String(v)===volumeFilter?'selected':''}>${esc(v)} m³</option>`).join('')}`;
+  const carrierOptsToday=`<option value="">Todos os transportadores</option>${CARRIERS.map(c=>`<option value="${attr(c)}" ${c===carrierFilter?'selected':''}>${esc(c)}</option>`).join('')}`;
   let counts={disponivel:0,indisponivel:0,manutencao:0,folga:0,total:0};
   const allPairs=[];
-  for(const carrier of CARRIERS)
-    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter))))
+  for(const carrier of CARRIERS){
+    if(carrierFilter && carrier!==carrierFilter) continue;
+    for(const p of (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)&&(!opFilter||p.operacao===opFilter)&&(!volumeFilter||String(p.capacidade)===volumeFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter))))
       allPairs.push({carrier,plate:p.placa,dateStr:ds});
+  }
   const statusMap=await dbLoadStatusBulk(allPairs);
   let sections="";
   for(const carrier of CARRIERS){
-    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)&&(!opFilter||p.operacao===opFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)));
+    if(carrierFilter && carrier!==carrierFilter){ continue; }
+    const plates=(allP[carrier]||[]).filter(p=>p.ativo!==false&&(!S.contratoFilter||p.contrato===S.contratoFilter)&&(!opFilter||p.operacao===opFilter)&&(!volumeFilter||String(p.capacidade)===volumeFilter)&&(!placaFilter||p.placa.toUpperCase().includes(placaFilter)||carrier.toUpperCase().includes(placaFilter)));
     if(!plates.length&&!(allP[carrier]||[]).length){
       sections+=`<div class="carrier-block"><div class="carrier-head"><span class="ch-icon">🚛</span>${esc(carrier)}</div><div style="background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:1rem;font-size:13px;color:var(--muted)">Nenhuma placa cadastrada</div></div>`;
       continue;
@@ -2784,7 +2854,9 @@ async function renderToday(body){
       <button onclick="chDate(1)">›</button>
     </div>
     <div class="filters-bar">
+      <select onchange="S.todayCarrier=this.value;renderTabBody()">${carrierOptsToday}</select>
       <select onchange="S.todayOp=this.value;renderTabBody()">${opOpts}</select>
+      <select onchange="S.todayVolume=this.value;renderTabBody()">${volumeOpts}</select>
       <input type="text" placeholder="🔍 Buscar placa ou transportador..." value="${attr(S.todayPlaca||"")}" id="today-search-input" oninput="S.todayPlaca=this.value;_debouncedTodaySearch()" style="background:var(--dark);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-size:13px;padding:8px 12px;outline:none;transition:border-color .15s;">
       ${renderContratoFilterUI()}
     </div>
@@ -3441,7 +3513,7 @@ async function exportPdf(rows, filename, periodLabel) {
   // ── KPI cards row ─────────────────────────────────────
   const kpis = [
     { label: "Disponibilidade",  value: `${dispPct}%`,   sub: `${avail} disponíveis`,         color: metaOk ? C.green : C.amber },
-    { label: "Preenchimento",    value: `${fillPct}%`,   sub: `${filled}/${totalVehicles}`,    color: fillPct>=90?C.green:C.amber },
+    { label: "Preenchimento",    value: `${fillPct}%`,   sub: `${filled}/${totalVehicles}`,    color: fillPct>=META_SLA?C.green:C.amber },
     { label: "Meta",             value: `${META_DISP}%`, sub: metaOk?"✓ Atingida":"✗ Abaixo", color: metaOk?C.green:C.red },
     { label: "Transportadores",  value: `${carrierSet.size}`, sub: `${opSet.size} operações`, color: C.blue },
     { label: "Total de veículos",value: `${totalVehicles}`, sub: `${filled} preenchidos`,     color: C.lime },
@@ -5145,7 +5217,7 @@ window.importarDadosCadastrais = importarDadosCadastrais;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
 window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.setReportsSubTab=setReportsSubTab; window.limparFiltroExport=limparFiltroExport; window.setAuditSubTab=setAuditSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates; window.exportPdf=exportPdf;
-window.renderTabBody=renderTabBody; window.buildStatusBoardAlert=buildStatusBoardAlert; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.saveMetaDisp=saveMetaDisp; window.S=S; window.renderKpisMensais=renderKpisMensais;
+window.renderTabBody=renderTabBody; window.buildStatusBoardAlert=buildStatusBoardAlert; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.saveMetaDisp=saveMetaDisp; window.saveMetaSla=saveMetaSla; window.S=S; window.renderKpisMensais=renderKpisMensais;
 window.showToast=showToast; window.dateStr=dateStr; window.sincronizarDisponibilidadeVeiculos=sincronizarDisponibilidadeVeiculos; window.USERS_DB=USERS_DB; window.dbGetPlates=dbGetPlates;
 window.addEventListener("resize", _debouncedViewportQualityRefresh, { passive:true });
 window.visualViewport?.addEventListener("resize", _debouncedViewportQualityRefresh, { passive:true });
