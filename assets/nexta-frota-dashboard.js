@@ -2027,6 +2027,7 @@ window.dashAplicarFiltroCidades   = dashAplicarFiltroCidades;
 
 function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
+  window._dashSnapshotsAtivos = _dashSnapshotsAtivos; // acessível pra funções fora deste IIFE (ex.: dashDiagnosticarPedagioHoje)
   if (!snapshots || !snapshots.length) {
     document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada,#dk-ociosidade,#dk-drop-entregas,#dk-drop-volume,#dk-perc-pedagiadas,#dk-tempo-pedagio')
       .forEach(el => { if(el) el.textContent = '-'; });
@@ -3312,7 +3313,7 @@ async function dashAutoRodarKmRealSeNecessario() {
 // de "é dado incompleto" de "é realmente 0 mesmo".
 window.dashDiagnosticarPedagioHoje = function() {
   if (!_dashEhAdmin()) { alert('Restrito ao administrador.'); return; }
-  const snapshots = _dashSnapshotsAtivos || [];
+  const snapshots = window._dashSnapshotsAtivos || [];
   if (!snapshots.length) { alert('Nenhum dado carregado no filtro atual — selecione um período primeiro.'); return; }
   let semPontos = 0, comPontosSemPedagio = 0, comPedagio = 0, semTerminalCadastrado = 0;
   const exemplosSemPontos = [];
