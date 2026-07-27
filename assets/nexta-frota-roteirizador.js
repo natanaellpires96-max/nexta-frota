@@ -9960,6 +9960,17 @@ function freteRenderSpot() {
 }
 
 // ── CRUD ─────────────────────────────────────────────────────────────────────
+// Expandir/recolher a tabela "Contratos por placa" — pode ficar bem longa
+// (uma linha por placa cadastrada), então dá pra esconder quando não estiver
+// editando contrato nenhum, sem perder o acesso rápido pelos botões do topo.
+function toggleContratosPlacaTabela() {
+  const conteudo = document.getElementById('contratos-placa-conteudo');
+  const seta = document.getElementById('contratos-placa-seta');
+  if (!conteudo) return;
+  const oculto = conteudo.style.display === 'none';
+  conteudo.style.display = oculto ? '' : 'none';
+  if (seta) seta.textContent = oculto ? '▲' : '▼';
+}
 function freteAdicionarContrato() {
   var arr = freteCarregarContratos();
   arr.push({ placa: '', transportadora: '', tipo:'fixo_km', kmModo:'ida_volta', fixo:'', km:'', m3:'', diaria:'' });
