@@ -1703,6 +1703,7 @@ async function renderCarrier(carrier){
         <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
         <td>${stBadge}</td>
         <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--dim)">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?rec.hodometro:'—'}</td>
+        <td>${rec&&rec.hodometroFotoUrl?`<a href="${attr(rec.hodometroFotoUrl)}" target="_blank" rel="noopener" style="font-size:10px;color:var(--dim);">📷 ver foto</a>`:isMonday(ds)?`<span style="font-size:10px;color:var(--red)">Sem foto</span>`:`<span style="font-size:10px;color:var(--muted)">—</span>`}</td>
         <td style="font-size:11px;font-family:'DM Mono',monospace">${timeBadge}</td>
         <td>${renderDriverCell(motD,motN)}</td>
       </tr>`;
