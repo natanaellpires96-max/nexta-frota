@@ -3324,8 +3324,10 @@ window.dashDiagnosticarPedagioHoje = function() {
     vecs.forEach(v => {
       const term = terms.find(t => t.nome === v.terminal);
       const tLat = term?.lat, tLon = term?.lon;
+      const viagensDoVeic = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      if (!viagensDoVeic.length) return; // veículo sem viagem no filtro atual — não entra na contagem
       if (!term) semTerminalCadastrado++;
-      (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length).forEach(vi => {
+      viagensDoVeic.forEach(vi => {
         const pontosPedagio = [];
         if (NextaKm.coordenadaValida(tLat, tLon)) pontosPedagio.push({ lat: parseFloat(tLat), lon: parseFloat(tLon) });
         vi.paradas.forEach(par => {
