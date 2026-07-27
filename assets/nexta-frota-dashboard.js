@@ -3311,10 +3311,26 @@ async function dashAutoRodarKmRealSeNecessario() {
 // pedágio no trajeto (dado correto, rota realmente não passa perto de
 // nenhuma praça conhecida), ou com pedágio detectado — pra separar "é bug"
 // de "é dado incompleto" de "é realmente 0 mesmo".
-window.dashDiagnosticarPedagioHoje = function() {
+window.dashDiagnosticarPedagioHoje = async function() {
   if (!_dashEhAdmin()) { alert('Restrito ao administrador.'); return; }
   const snapshots = window._dashSnapshotsAtivos || [];
   if (!snapshots.length) { alert('Nenhum dado carregado no filtro atual — selecione um período primeiro.'); return; }
+  // A busca de coordenada do cliente (latLonEfetivo → encontrarClienteDoPedido)
+  // usa a lista "clientes" carregada NA SESSÃO ATUAL da Otimização Rotas —
+  // não busca direto no Firestore. Se essa lista ainda não foi carregada
+  // (ex.: usuário foi direto pra aba Dashboard, sem passar por Clientes),
+  // clientes cadastrados de verdade apareciam como "sem coordenada" aqui só
+  // por causa disso — não porque o cadastro estivesse incompleto. Garante
+  // uma carga fresca antes de analisar, pra não dar diagnóstico falso.
+  if ((!clientes || !clientes.length) && typeof window.dbGetCadastro === 'function') {
+    try {
+      const fsCli = await window.dbGetCadastro('clientes');
+      if (fsCli && Object.keys(fsCli).length) {
+        let id = 100;
+        clientes = Object.values(fsCli).map(c => ({ ...c, id: c.id ?? id++ }));
+      }
+    } catch (e) { console.warn('[dashDiagnosticarPedagioHoje] falha ao carregar clientes do Firestore:', e); }
+  }
   let semPontos = 0, comPontosSemPedagio = 0, comPedagio = 0, semTerminalCadastrado = 0;
   const exemplosSemPontos = [];
   snapshots.forEach(snap => {
