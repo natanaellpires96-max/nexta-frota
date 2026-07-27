@@ -635,27 +635,6 @@
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">⚠️ Estouro de Jornada</div>
-            <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Veículo/dia onde a jornada usada passou da jornada disponível — conta cada ocorrência individualmente (não é média, então não esconde 1 veículo estourando dentro de uma frota saudável). Acompanha os mesmos filtros de mês/período e operação (cidade) acima</div>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
-            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;" title="Ordenar do maior pro menor ou do menor pro maior">
-              <button class="dash-estourodir-tab active-rank" data-dir="desc" onclick="dashEstouroSetDirecao('desc')"
-                style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior</button>
-              <button class="dash-estourodir-tab" data-dir="asc" onclick="dashEstouroSetDirecao('asc')"
-                style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Menor</button>
-            </div>
-            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;" title="Aumentar/diminuir o tamanho do gráfico">
-              <button class="btn btn-sm" onclick="dashChartZoom('dash-estouro-transp',-1)" style="padding:5px 11px;font-size:12px;font-weight:700;background:transparent;color:var(--text-2);border:none;">−</button>
-              <button class="btn btn-sm" onclick="dashChartZoom('dash-estouro-transp',1)" style="padding:5px 11px;font-size:12px;font-weight:700;background:transparent;color:var(--text-2);border:none;">+</button>
-            </div>
-          </div>
-        </div>
-        <div id="dash-estouro-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
-      </div>
-      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
-          <div>
             <div style="font-size:14px;font-weight:700;color:var(--text);">🅿️ Ociosidade da Frota por Transportadora</div>
             <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Veículos disponibilizados no dia que ficaram sem nenhuma viagem — conta por veículo, não por hora. Ex.: 20 disponibilizados, 10 usados = 50% de ociosidade. Acompanha os mesmos filtros de mês/período e operação (cidade) acima</div>
           </div>
@@ -1040,9 +1019,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=6b8a72f8"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=820be0ec"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=dcc2209e"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=8168fbb7"></script>
 </body>
 </html>
