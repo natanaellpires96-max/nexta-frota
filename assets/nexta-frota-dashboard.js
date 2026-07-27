@@ -3370,6 +3370,8 @@ window.dashDiagnosticarPedagioHoje = async function() {
     });
   });
   const total = semPontos + comPontosSemPedagio + comPedagio;
+  console.log('[dashDiagnosticarPedagioHoje] Exemplos sem coordenada suficiente (detalhe completo):');
+  console.table(exemplosSemPontos.map(linha => ({ detalhe: linha })));
   alert(
     `DIAGNÓSTICO — % ROTAS PEDAGIADAS (filtro atual)\n\n` +
     `Clientes carregados na sessão pra fazer o match: ${clientes ? clientes.length : 0}\n\n` +
@@ -3378,7 +3380,7 @@ window.dashDiagnosticarPedagioHoje = async function() {
     `– Com coordenadas OK, mas sem pedágio no trajeto (correto, não é bug): ${comPontosSemPedagio}\n` +
     `⚠ SEM coordenada suficiente pra sequer tentar detectar (cliente/terminal sem lat-lon): ${semPontos}\n` +
     `⚠ Veículos com terminal não encontrado no cadastro deste arquivo: ${semTerminalCadastrado}\n\n` +
-    (exemplosSemPontos.length ? `Exemplos sem coordenada:\n${exemplosSemPontos.join('\n')}` : '')
+    (exemplosSemPontos.length ? `Exemplos sem coordenada (ver lista completa e detalhada no Console, F12):\n${exemplosSemPontos.slice(0,3).join('\n')}${exemplosSemPontos.length > 3 ? `\n...+${exemplosSemPontos.length - 3} no Console` : ''}` : '')
   );
 };
 window.dashDiagnosticarKmReal = async function() {
