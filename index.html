@@ -779,14 +779,14 @@
     <div style="border:1px solid var(--border-dk);border-radius:10px;overflow:hidden;margin-bottom:16px;">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(0,0,0,0.03);border-bottom:1px solid var(--border-dk);">
         <span style="font-size:12px;font-weight:700;color:var(--text);cursor:pointer;user-select:none;" onclick="toggleContratosPlacaTabela()">
-          Contratos por placa <span id="contratos-placa-seta" style="font-size:10px;color:var(--text-3);">▲</span>
+          Contratos por placa <span id="contratos-placa-seta" style="font-size:10px;color:var(--text-3);">▼</span>
         </span>
         <div style="display:flex;gap:8px;">
           <button class="btn btn-sm" onclick="freteAbrirRestaurarBackup()" title="Recuperar contratos a partir de um backup salvo no Histórico">↺ Restaurar de backup</button>
           <button class="btn btn-green btn-sm" onclick="freteAdicionarContrato()">+ Adicionar</button>
         </div>
       </div>
-      <div id="contratos-placa-conteudo" style="overflow-x:auto;">
+      <div id="contratos-placa-conteudo" style="overflow-x:auto;display:none;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:760px;">
           <thead><tr style="background:rgba(0,0,0,0.02);">
             <th style="padding:8px;text-align:left;font-size:11px;color:var(--text-3);">PLACA</th>
