@@ -10529,9 +10529,9 @@ async function freteCalcular() {
       ['⏱ Horas/Dia (média)', horasDiaMedia.toFixed(1) + ' h'],
       ['🔁 Viagens/Dia (média)', viagensDiaMedia.toFixed(1)],
     ].map(function(c) {
-      return '<div style="background:rgba(0,0,0,0.03);border:1px solid var(--border-dk);border-radius:8px;padding:10px 18px;min-width:140px;">' +
-        '<div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;font-weight:600;margin-bottom:4px;">' + c[0] + '</div>' +
-        '<div style="font-size:16px;font-weight:700;color:var(--text);">' + c[1] + '</div></div>';
+      return '<div style="background:rgba(0,0,0,0.03);border:1px solid var(--border-dk);border-radius:8px;padding:12px 16px;display:flex;flex-direction:column;justify-content:center;min-height:64px;">' +
+        '<div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;font-weight:600;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + c[0] + '</div>' +
+        '<div style="font-size:16px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + c[1] + '</div></div>';
     }).join('');
   }
 
