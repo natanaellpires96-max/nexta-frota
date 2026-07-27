@@ -3333,6 +3333,7 @@ window.dashDiagnosticarPedagioHoje = async function() {
   }
   let semPontos = 0, comPontosSemPedagio = 0, comPedagio = 0, semTerminalCadastrado = 0;
   const exemplosSemPontos = [];
+  const exemplosTerminal = [];
   snapshots.forEach(snap => {
     const res = snap.resultado || {};
     const vecs = snap.veiculos || [];
@@ -3342,7 +3343,20 @@ window.dashDiagnosticarPedagioHoje = async function() {
       const tLat = term?.lat, tLon = term?.lon;
       const viagensDoVeic = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
       if (!viagensDoVeic.length) return; // veículo sem viagem no filtro atual — não entra na contagem
-      if (!term) semTerminalCadastrado++;
+      if (!term) {
+        semTerminalCadastrado++;
+        if (exemplosTerminal.length < 8) {
+          // Mostra o nome EXATO do terminal do veículo vs. os nomes que
+          // realmente existem no arquivo — pra revelar se é diferença de
+          // escrita/espaço/acento (o motivo mais comum desse tipo de falha).
+          exemplosTerminal.push(`${v.placa} — terminal do veículo: "${v.terminal || '(vazio)'}" | terminais disponíveis neste arquivo: ${terms.map(t => `"${t.nome}"`).join(', ') || '(nenhum)'}`);
+        }
+      } else if (!NextaKm.coordenadaValida(tLat, tLon)) {
+        semTerminalCadastrado++;
+        if (exemplosTerminal.length < 8) {
+          exemplosTerminal.push(`${v.placa} — terminal "${term.nome}" encontrado, mas lat/lon dele é "${tLat}"/"${tLon}" (inválido)`);
+        }
+      }
       viagensDoVeic.forEach(vi => {
         const pontosPedagio = [];
         if (NextaKm.coordenadaValida(tLat, tLon)) pontosPedagio.push({ lat: parseFloat(tLat), lon: parseFloat(tLon) });
@@ -3370,6 +3384,8 @@ window.dashDiagnosticarPedagioHoje = async function() {
     });
   });
   const total = semPontos + comPontosSemPedagio + comPedagio;
+  console.log('[dashDiagnosticarPedagioHoje] Exemplos de terminal não encontrado/inválido:');
+  console.table(exemplosTerminal.map(linha => ({ detalhe: linha })));
   console.log('[dashDiagnosticarPedagioHoje] Exemplos sem coordenada suficiente (detalhe completo):');
   console.table(exemplosSemPontos.map(linha => ({ detalhe: linha })));
   alert(
@@ -3380,6 +3396,7 @@ window.dashDiagnosticarPedagioHoje = async function() {
     `– Com coordenadas OK, mas sem pedágio no trajeto (correto, não é bug): ${comPontosSemPedagio}\n` +
     `⚠ SEM coordenada suficiente pra sequer tentar detectar (cliente/terminal sem lat-lon): ${semPontos}\n` +
     `⚠ Veículos com terminal não encontrado no cadastro deste arquivo: ${semTerminalCadastrado}\n\n` +
+    (exemplosTerminal.length ? `Exemplos de terminal com problema (ver lista completa no Console, F12):\n${exemplosTerminal.slice(0,2).join('\n')}${exemplosTerminal.length > 2 ? `\n...+${exemplosTerminal.length - 2} no Console` : ''}\n\n` : '') +
     (exemplosSemPontos.length ? `Exemplos sem coordenada (ver lista completa e detalhada no Console, F12):\n${exemplosSemPontos.slice(0,3).join('\n')}${exemplosSemPontos.length > 3 ? `\n...+${exemplosSemPontos.length - 3} no Console` : ''}` : '')
   );
 };
