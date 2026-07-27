@@ -2842,6 +2842,7 @@ async function renderToday(body){
         <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
         <td>${v?`<span class="badge ${st.badge}">${esc(st.label)}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
         <td style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;white-space:nowrap">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?`<span style="color:var(--dim)">${rec.hodometro}</span>`:'—'}</td>
+        <td>${rec&&rec.hodometroFotoUrl?`<a href="${attr(rec.hodometroFotoUrl)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--dim);">📷 ver</a>`:isMonday(ds)?`<span style="font-size:10px;color:var(--red)">sem foto</span>`:`<span style="font-size:11px;color:var(--muted)">—</span>`}</td>
         <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?fmtTimeValue(rec.time):'—'}</td>
         <td>${renderDriverCell(motDToday,motNToday)}</td>
         <td style="text-align:center">${unlockPlateBtn}</td>
@@ -2866,7 +2867,7 @@ async function renderToday(body){
     sections+=`<div class="carrier-block">
       <div class="carrier-head"><span class="ch-icon">🚛</span>${esc(carrier)}<span class="ch-count">${plates.length} placa(s)</span>${lockBadge}<span style="flex:1"></span>${unlockBtn}</div>
       <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1100px">
-        <thead><tr><th style="width:7%">PLACA</th><th style="width:11%">OPERAÇÃO</th><th style="width:7%">TIPO</th><th style="width:7%">IDENTIFICAÇÃO</th><th style="width:6%">CONTRATO</th><th style="width:6%">CAPACIDADE</th><th style="width:11%">STATUS</th><th style="width:7%"><span style="font-size:9px">HODÔMETRO</span></th><th style="width:6%">HORÁRIO</th><th style="width:17%">MOTORISTAS</th><th style="width:5%">AÇÃO</th></tr></thead>
+        <thead><tr><th style="width:7%">PLACA</th><th style="width:10%">OPERAÇÃO</th><th style="width:6%">TIPO</th><th style="width:6%">IDENTIFICAÇÃO</th><th style="width:6%">CONTRATO</th><th style="width:6%">CAPACIDADE</th><th style="width:10%">STATUS</th><th style="width:6%"><span style="font-size:9px">HODÔMETRO</span></th><th style="width:7%"><span style="font-size:9px">FOTO</span></th><th style="width:6%">HORÁRIO</th><th style="width:16%">MOTORISTAS</th><th style="width:5%">AÇÃO</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }
