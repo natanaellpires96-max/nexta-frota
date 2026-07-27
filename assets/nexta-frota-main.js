@@ -2377,7 +2377,7 @@ async function renderKpisMensais(body){
         <div class="sum-label">Veículos ativos</div>
       </div>
       <div class="sum-card">
-        <div class="sum-num" style="color:var(--lime)">${CARRIERS.length}</div>
+        <div class="sum-num" style="color:var(--lime)">${carrierMetrics.length}</div>
         <div class="sum-label">Transportadores</div>
       </div>
       <div class="sum-card">

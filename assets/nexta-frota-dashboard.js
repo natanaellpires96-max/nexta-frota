@@ -2595,9 +2595,16 @@ window.dashCarregarHoje = async function() {
   const store = await dashGetStoreMerged();
   const todos = Object.values(store).flat();
   // Data local (não UTC) — evita virar o dia errado perto da meia-noite.
+  // Formato DD/MM/AAAA — é assim que datasEntrega guarda as datas (vem de
+  // pedido.dataEntregaLogistica), diferente de savedAt (que é AAAA-MM-DD).
   const agora = new Date();
-  const hojeStr = `${agora.getFullYear()}-${String(agora.getMonth()+1).padStart(2,'0')}-${String(agora.getDate()).padStart(2,'0')}`;
-  const doDia = todos.filter(s => (s.savedAt||'').slice(0,10) === hojeStr);
+  const hojeBr = `${String(agora.getDate()).padStart(2,'0')}/${String(agora.getMonth()+1).padStart(2,'0')}/${agora.getFullYear()}`;
+  // Filtra pela data de ENTREGA real das viagens (datasEntrega), não pela
+  // data em que a roteirização foi salva (savedAt) — uma roteirização feita
+  // hoje pode ser toda pra entregas de amanhã ou depois, e uma salva ontem
+  // pode ter entregas de hoje. "Hoje" precisa refletir a operação de hoje,
+  // não quando alguém mexeu no sistema.
+  const doDia = todos.filter(s => Array.isArray(s.datasEntrega) && s.datasEntrega.includes(hojeBr));
   dashRender(doDia);
   const sel = document.getElementById('dash-mes-sel');
   if (sel) sel.value = ''; // "Hoje" não é nenhum dos meses do dropdown — desmarca visualmente
