@@ -365,6 +365,47 @@ function _atualizarPetSeq(resultado) {
 var resultadoOriginal    = null;   // cópia do resultado puro da otimização
 var historicoManual      = [];     // pilha de estados para desfazer
 var dragInfo             = null;   // { tipo, veiculoId, tripIndex, ... } durante drag
+// ── Auto-scroll durante o arrastar (drag-and-drop) ──────────────────────────
+// O drag-and-drop nativo do navegador rola a página sozinho perto da borda
+// INFERIOR da tela, mas não confiavelmente perto da borda SUPERIOR — na
+// prática, arrastar uma viagem/parada pra cima "trava" contra o topo da
+// janela sem rolar, mesmo destacando o card de destino como válido. Isso
+// implementa rolagem manual nas duas direções durante qualquer arraste
+// (viagem, parada, pedido pendente), baseada na posição do mouse perto das
+// bordas da tela — sem isso, é impossível soltar num veículo mais acima se
+// ele não estiver visível na hora que o arraste começou.
+let _autoScrollDragInterval = null;
+let _autoScrollDragVelocidade = 0;
+function _iniciarAutoScrollDrag() {
+  if (_autoScrollDragInterval) return;
+  _autoScrollDragInterval = setInterval(() => {
+    if (_autoScrollDragVelocidade !== 0) window.scrollBy(0, _autoScrollDragVelocidade);
+  }, 16);
+}
+function _pararAutoScrollDrag() {
+  if (_autoScrollDragInterval) { clearInterval(_autoScrollDragInterval); _autoScrollDragInterval = null; }
+  _autoScrollDragVelocidade = 0;
+}
+document.addEventListener('dragover', (event) => {
+  if (!dragInfo) { _pararAutoScrollDrag(); return; }
+  const margem = 90;       // px da borda que já aciona o scroll
+  const velocidadeMax = 20; // px por "tick" (16ms) na borda, escala com a proximidade
+  const y = event.clientY;
+  const alturaJanela = window.innerHeight;
+  if (y < margem) {
+    const forca = (margem - y) / margem;
+    _autoScrollDragVelocidade = -Math.ceil(velocidadeMax * forca);
+    _iniciarAutoScrollDrag();
+  } else if (y > alturaJanela - margem) {
+    const forca = (y - (alturaJanela - margem)) / margem;
+    _autoScrollDragVelocidade = Math.ceil(velocidadeMax * forca);
+    _iniciarAutoScrollDrag();
+  } else {
+    _autoScrollDragVelocidade = 0;
+  }
+});
+document.addEventListener('dragend', _pararAutoScrollDrag);
+document.addEventListener('drop', _pararAutoScrollDrag);
 // ── Pedágios (rota real) ────────────────────────────────────────────────────
 // Token incrementado a cada renderResultado(): usado pra descartar a resposta
 // de uma busca assíncrona de rota real que ficou "presa" no ar depois que o
