@@ -763,12 +763,21 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
       if (!viagens.length) return;
       diasComViagemPorPlaca.add((v.placa || '').trim().toUpperCase() + '__' + dataSnap);
       // capV é acumulado por VIAGEM realizada (dentro do loop de viagens abaixo)
-      // Terminal lat/lon
-      const term = terms.find(t => t.nome === v.terminal);
-      const tLat = term?.lat, tLon = term?.lon;
       const capV = v.capacidade || v.capacidadeTotal || 0;
       viagens.forEach((vi, iV) => {
         totalViagens++;
+        // Terminal DESTA viagem específica — prioriza o terminal do PEDIDO
+        // (vi.paradas[x].pedido.terminal), não o do veículo (v.terminal).
+        // Desde que passou a ser possível um veículo carregar em mais de uma
+        // base da mesma cidade, v.terminal ficou vazio de propósito (o
+        // veículo não tem mais UM terminal fixo) — usar só v.terminal fazia
+        // a detecção de pedágio (e o ponto de origem no mapa) nunca achar
+        // NENHUM terminal pra NENHUMA viagem, silenciosamente. Mantém
+        // v.terminal como fallback só pra arquivos antigos, de antes dessa
+        // mudança, que ainda tinham o campo preenchido no veículo.
+        const termNomeViagem = vi.terminalOrigem || vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || v.terminal;
+        const term = terms.find(t => t.nome === termNomeViagem);
+        const tLat = term?.lat, tLon = term?.lon;
         const rotaPontos = { termLat: tLat, termLon: tLon, placa: v.placa, paradas: [] };
         // Pontos pra detecção de pedágio (% de Rotas Pedagiadas / Tempo Gasto
         // com Lançamento de Pedágios): terminal de origem + cada parada na
@@ -2134,9 +2143,10 @@ function dashRender(snapshots) {
       const vecs = snap.veiculos  || [];
       const terms = snap.terminais || [];
       vecs.forEach(v => {
-        const term = terms.find(t => t.nome === v.terminal);
-        const tLat = term?.lat, tLon = term?.lon;
         (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length).forEach(vi => {
+          const termNomeViagem = vi.terminalOrigem || vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || v.terminal;
+          const term = terms.find(t => t.nome === termNomeViagem);
+          const tLat = term?.lat, tLon = term?.lon;
           if (_dashCidadesSelecionadas && !_dashCidadesSelecionadas.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
           const temCliente = vi.paradas.some(par => {
             const nome = (par.pedido||{}).cliente || (par.pedido||{}).nomeCliente || par.nome || '';
@@ -2828,7 +2838,8 @@ window.dashExportarExcel = async function dashExportarExcel() {
           let volViagem = 0;
           vi.paradas.forEach(par => { volViagem += par.volumeTotal || 0; });
           const ocupV = capV > 0 ? Math.round((volViagem / capV) * 100) : '';
-          const term = terms.find(t => t.nome === v.terminal);
+          const termNomeViagem = vi.terminalOrigem || vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || v.terminal;
+          const term = terms.find(t => t.nome === termNomeViagem);
 
           vi.paradas.forEach((par, iP) => {
             const ped   = par.pedido || {};
@@ -3339,25 +3350,28 @@ window.dashDiagnosticarPedagioHoje = async function() {
     const vecs = snap.veiculos || [];
     const terms = snap.terminais || [];
     vecs.forEach(v => {
-      const term = terms.find(t => t.nome === v.terminal);
-      const tLat = term?.lat, tLon = term?.lon;
       const viagensDoVeic = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
       if (!viagensDoVeic.length) return; // veículo sem viagem no filtro atual — não entra na contagem
-      if (!term) {
-        semTerminalCadastrado++;
-        if (exemplosTerminal.length < 8) {
-          // Mostra o nome EXATO do terminal do veículo vs. os nomes que
-          // realmente existem no arquivo — pra revelar se é diferença de
-          // escrita/espaço/acento (o motivo mais comum desse tipo de falha).
-          exemplosTerminal.push(`${v.placa} — terminal do veículo: "${v.terminal || '(vazio)'}" | terminais disponíveis neste arquivo: ${terms.map(t => `"${t.nome}"`).join(', ') || '(nenhum)'}`);
-        }
-      } else if (!NextaKm.coordenadaValida(tLat, tLon)) {
-        semTerminalCadastrado++;
-        if (exemplosTerminal.length < 8) {
-          exemplosTerminal.push(`${v.placa} — terminal "${term.nome}" encontrado, mas lat/lon dele é "${tLat}"/"${tLon}" (inválido)`);
-        }
-      }
       viagensDoVeic.forEach(vi => {
+        // Terminal DESTA viagem — vi.terminalOrigem (gravado na criação da
+        // viagem) tem prioridade, depois o terminal do primeiro pedido com
+        // essa info, só then o terminal do veículo (v.terminal) — que hoje
+        // fica vazio de propósito pra veículos sem base fixa (podem carregar
+        // em mais de uma base da mesma cidade).
+        const termNomeViagem = vi.terminalOrigem || vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || v.terminal;
+        const term = terms.find(t => t.nome === termNomeViagem);
+        const tLat = term?.lat, tLon = term?.lon;
+        if (!term) {
+          semTerminalCadastrado++;
+          if (exemplosTerminal.length < 8) {
+            exemplosTerminal.push(`${v.placa} — terminal desta viagem: "${termNomeViagem || '(vazio)'}" | terminais disponíveis neste arquivo: ${terms.map(t => `"${t.nome}"`).join(', ') || '(nenhum)'}`);
+          }
+        } else if (!NextaKm.coordenadaValida(tLat, tLon)) {
+          semTerminalCadastrado++;
+          if (exemplosTerminal.length < 8) {
+            exemplosTerminal.push(`${v.placa} — terminal "${term.nome}" encontrado, mas lat/lon dele é "${tLat}"/"${tLon}" (inválido)`);
+          }
+        }
         const pontosPedagio = [];
         if (NextaKm.coordenadaValida(tLat, tLon)) pontosPedagio.push({ lat: parseFloat(tLat), lon: parseFloat(tLon) });
         vi.paradas.forEach(par => {
