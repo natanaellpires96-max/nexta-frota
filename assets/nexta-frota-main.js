@@ -54,9 +54,6 @@ import {
   onAuthStateChanged, updatePassword, createUserWithEmailAndPassword,
   deleteUser as fbDeleteUser
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import {
-  getStorage, ref as storageRef, uploadBytes, getDownloadURL
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 const firebaseConfig = {
   apiKey: "AIzaSyBZ9J25d3IjULPv9A7pax4H8_RAtZWJiwU",
   authDomain: "nexta-frota.firebaseapp.com",
@@ -68,12 +65,6 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const db    = getFirestore(fbApp);
 const auth  = getAuth(fbApp);
-// Storage — usado só pra foto do hodômetro (obrigatória às segundas-feiras,
-// ver salvarDisponibilidade). Bucket já existia no projeto (storageBucket no
-// firebaseConfig acima), só precisava do SDK/inicialização — free tier do
-// Firebase (Spark) já cobre isso tranquilamente pro volume de 1 foto/placa
-// por semana.
-const storage = getStorage(fbApp);
 // Auth secundário para criar usuários sem trocar a sessão do admin logado.
 const userCreateApp  = initializeApp(firebaseConfig, "nexta-frota-user-create");
 const userCreateAuth = getAuth(userCreateApp);
@@ -210,12 +201,44 @@ async function dbGetStatus(carrier, plate, dateStr) {
 // Sobe a foto do hodômetro pro Storage e devolve a URL pública de download.
 // Caminho inclui carrier/placa/data — sobrescreve se já existir foto pra
 // essa mesma placa/dia (ex.: usuário reenviou uma foto melhor no mesmo dia).
+// Foto do hodômetro — sobe pro Cloudinary (plano gratuito, sem precisar de
+// cartão de crédito) em vez do Firebase Storage. O Firebase Storage exige o
+// plano pago (Blaze) desde 2024, mesmo pra uso mínimo — o Cloudinary tem
+// uma camada grátis bem folgada (25GB de armazenamento/tráfego por mês) que
+// cobre tranquilamente 1 foto por placa por semana.
+// "Unsigned upload": o preset configurado no painel do Cloudinary já define
+// as regras (pasta, tamanho, formato aceito) — não precisa de chave secreta
+// no código do navegador, só o nome da conta (cloud name) e do preset,
+// nenhum dos dois é sigiloso.
+const CLOUDINARY_CLOUD_NAME = 's6fazigd';
+const CLOUDINARY_UPLOAD_PRESET = 'vknwz7ua';
 async function uploadHodometroFoto(carrier, plate, dateStr, file) {
-  const nomeArquivo = `${dateStr}_${Date.now()}.jpg`;
-  const caminho = `hodometro-fotos/${carrier}/${plate}/${nomeArquivo}`;
-  const fileRef = storageRef(storage, caminho);
-  await uploadBytes(fileRef, file);
-  return await getDownloadURL(fileRef);
+  const comTimeout = (promessa, ms, msgTimeout) => Promise.race([
+    promessa,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(msgTimeout)), ms)),
+  ]);
+  const form = new FormData();
+  form.append('file', file);
+  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  // public_id organiza o nome do arquivo dentro da pasta já definida no
+  // preset (hodometro-fotos) — inclui transportadora/placa/data pra achar
+  // fácil depois, igual ao caminho que usávamos no Storage.
+  form.append('public_id', `${carrier}_${plate}_${dateStr}_${Date.now()}`.replace(/[^a-zA-Z0-9_.-]/g, '_'));
+  try {
+    const resp = await comTimeout(
+      fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, { method: 'POST', body: form }),
+      25000,
+      'Tempo esgotado enviando a foto (25s) — verifique sua conexão e tente de novo.'
+    );
+    const data = await resp.json();
+    if (!resp.ok || !data.secure_url) {
+      throw new Error(data?.error?.message || `Falha ao enviar a foto (status ${resp.status}).`);
+    }
+    return data.secure_url;
+  } catch (e) {
+    console.error('[uploadHodometroFoto] falha no upload:', e);
+    throw new Error(e.message || 'Falha ao enviar a foto do hodômetro.');
+  }
 }
 async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodometro, hodometroFotoUrl) {
   const id = `${carrier}__${plate}__${dateStr}`;
