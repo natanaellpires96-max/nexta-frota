@@ -983,8 +983,12 @@ function renderHodFotoCell(p, rec, ds, isCarrierUser){
       : `<span style="font-size:10px;color:var(--red)">Sem foto</span>`;
   }
   // Usuário da transportadora, segunda-feira: pede a foto (obrigatória).
-  return `<div style="display:flex;flex-direction:column;gap:3px;">
-    <label class="hod-foto-label" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:4px 7px;border-radius:6px;cursor:pointer;background:${jaTemFoto?'rgba(110,224,74,.12)':'rgba(240,96,96,.12)'};color:${jaTemFoto?'var(--green)':'var(--red)'};border:1px solid ${jaTemFoto?'rgba(110,224,74,.3)':'rgba(240,96,96,.3)'};width:fit-content;">
+  // max-width:100% + white-space:normal (em vez de "width:fit-content",
+  // que ignora a largura da célula) evita o botão "vazar" visualmente pra
+  // cima da coluna vizinha (Disponível às) quando o texto é mais longo,
+  // tipo "Anexar foto (obrigatório)" — agora quebra linha dentro da célula.
+  return `<div style="display:flex;flex-direction:column;gap:3px;max-width:100%;overflow:hidden;">
+    <label class="hod-foto-label" style="display:flex;align-items:center;gap:4px;font-size:9.5px;padding:4px 6px;border-radius:6px;cursor:pointer;background:${jaTemFoto?'rgba(110,224,74,.12)':'rgba(240,96,96,.12)'};color:${jaTemFoto?'var(--green)':'var(--red)'};border:1px solid ${jaTemFoto?'rgba(110,224,74,.3)':'rgba(240,96,96,.3)'};max-width:100%;box-sizing:border-box;white-space:normal;line-height:1.25;">
       📷 <span class="hod-foto-label-text">${jaTemFoto?'Foto OK (trocar)':'Anexar foto (obrigatório)'}</span>
       <input type="file" accept="image/*" capture="environment" class="hod-foto-input" style="display:none;" onchange="onHodFotoSelecionada(this)">
     </label>
