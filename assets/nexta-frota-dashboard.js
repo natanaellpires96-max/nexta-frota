@@ -3302,6 +3302,60 @@ async function dashAutoRodarKmRealSeNecessario() {
 // a mesma conta que o Dashboard usava antes de existir "km real"), pra achar
 // as viagens com a MAIOR razão real/estimativa antiga. Mostra um resumo em
 // alert() (fácil de printar) em vez de depender de copiar log do console.
+// ── Diagnóstico: por que % Rotas Pedagiadas está em 0 (ou baixo) ────────────
+// Roda em cima do que já está carregado na tela (_dashSnapshotsAtivos —
+// respeita qualquer filtro ativo, incluindo "Hoje"), sem gastar nenhuma
+// requisição nova. Categoriza cada viagem em: sem pontos suficientes pra
+// detectar (coordenada de cliente/terminal ausente), com pontos mas sem
+// pedágio no trajeto (dado correto, rota realmente não passa perto de
+// nenhuma praça conhecida), ou com pedágio detectado — pra separar "é bug"
+// de "é dado incompleto" de "é realmente 0 mesmo".
+window.dashDiagnosticarPedagioHoje = function() {
+  if (!_dashEhAdmin()) { alert('Restrito ao administrador.'); return; }
+  const snapshots = _dashSnapshotsAtivos || [];
+  if (!snapshots.length) { alert('Nenhum dado carregado no filtro atual — selecione um período primeiro.'); return; }
+  let semPontos = 0, comPontosSemPedagio = 0, comPedagio = 0, semTerminalCadastrado = 0;
+  const exemplosSemPontos = [];
+  snapshots.forEach(snap => {
+    const res = snap.resultado || {};
+    const vecs = snap.veiculos || [];
+    const terms = snap.terminais || [];
+    vecs.forEach(v => {
+      const term = terms.find(t => t.nome === v.terminal);
+      const tLat = term?.lat, tLon = term?.lon;
+      if (!term) semTerminalCadastrado++;
+      (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length).forEach(vi => {
+        const pontosPedagio = [];
+        if (NextaKm.coordenadaValida(tLat, tLon)) pontosPedagio.push({ lat: parseFloat(tLat), lon: parseFloat(tLon) });
+        vi.paradas.forEach(par => {
+          const coords = latLonEfetivo ? latLonEfetivo(par.pedido) : { lat: par.lat, lon: par.lon };
+          const lat = coords?.lat ?? par.lat, lon = coords?.lon ?? par.lon;
+          if (NextaKm.coordenadaValida(lat, lon)) pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
+        });
+        if (pontosPedagio.length < 2) {
+          semPontos++;
+          if (exemplosSemPontos.length < 5) {
+            exemplosSemPontos.push(`${v.placa} — ${vi.paradas.map(p => p.pedido?.cliente || '?').join(', ')}`);
+          }
+          return;
+        }
+        const eixos = v.eixos || 2;
+        const pd = (typeof detectarPedagiosNaRota === 'function') ? detectarPedagiosNaRota(pontosPedagio, eixos, 3) : [];
+        if (pd.length > 0) comPedagio++; else comPontosSemPedagio++;
+      });
+    });
+  });
+  const total = semPontos + comPontosSemPedagio + comPedagio;
+  alert(
+    `DIAGNÓSTICO — % ROTAS PEDAGIADAS (filtro atual)\n\n` +
+    `Total de viagens analisadas: ${total}\n` +
+    `✓ Com pedágio detectado: ${comPedagio}\n` +
+    `– Com coordenadas OK, mas sem pedágio no trajeto (correto, não é bug): ${comPontosSemPedagio}\n` +
+    `⚠ SEM coordenada suficiente pra sequer tentar detectar (cliente/terminal sem lat-lon): ${semPontos}\n` +
+    `⚠ Veículos com terminal não encontrado no cadastro deste arquivo: ${semTerminalCadastrado}\n\n` +
+    (exemplosSemPontos.length ? `Exemplos sem coordenada:\n${exemplosSemPontos.join('\n')}` : '')
+  );
+};
 window.dashDiagnosticarKmReal = async function() {
   if (!_dashEhAdmin()) { alert('Restrito ao administrador.'); return; }
   if (!window.dirHandleHistorico) { alert('Selecione a pasta do histórico primeiro (aba Histórico).'); return; }
