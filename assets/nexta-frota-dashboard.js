@@ -3349,15 +3349,20 @@ window.dashDiagnosticarPedagioHoje = async function() {
         vi.paradas.forEach(par => {
           const coords = latLonEfetivo ? latLonEfetivo(par.pedido) : { lat: par.lat, lon: par.lon };
           const lat = coords?.lat ?? par.lat, lon = coords?.lon ?? par.lon;
-          if (NextaKm.coordenadaValida(lat, lon)) pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
-        });
-        if (pontosPedagio.length < 2) {
-          semPontos++;
-          if (exemplosSemPontos.length < 5) {
-            exemplosSemPontos.push(`${v.placa} — ${vi.paradas.map(p => p.pedido?.cliente || '?').join(', ')}`);
+          if (NextaKm.coordenadaValida(lat, lon)) {
+            pontosPedagio.push({ lat: parseFloat(lat), lon: parseFloat(lon) });
+          } else if (exemplosSemPontos.length < 8) {
+            // Detalha o motivo exato — pra distinguir "sem match no cadastro"
+            // de "match achado mas coordenada do cliente também inválida" de
+            // "pedido já vinha com coordenada própria zerada".
+            const cliMatch = encontrarClienteDoPedido ? encontrarClienteDoPedido(par.pedido) : null;
+            const motivo = !cliMatch
+              ? `SEM MATCH no cadastro (nome/SAP não bateu — codigoSAP do pedido: "${par.pedido?.codigoSAP || '(vazio)'}", nome: "${par.pedido?.cliente || '?'}")`
+              : `Match achado ("${cliMatch.nome}"), mas lat/lon do cadastro é "${cliMatch.lat}"/"${cliMatch.lon}"`;
+            exemplosSemPontos.push(`${par.pedido?.cliente || '?'} — ${motivo}`);
           }
-          return;
-        }
+        });
+        if (pontosPedagio.length < 2) { semPontos++; return; }
         const eixos = v.eixos || 2;
         const pd = (typeof detectarPedagiosNaRota === 'function') ? detectarPedagiosNaRota(pontosPedagio, eixos, 3) : [];
         if (pd.length > 0) comPedagio++; else comPontosSemPedagio++;
@@ -3367,6 +3372,7 @@ window.dashDiagnosticarPedagioHoje = async function() {
   const total = semPontos + comPontosSemPedagio + comPedagio;
   alert(
     `DIAGNÓSTICO — % ROTAS PEDAGIADAS (filtro atual)\n\n` +
+    `Clientes carregados na sessão pra fazer o match: ${clientes ? clientes.length : 0}\n\n` +
     `Total de viagens analisadas: ${total}\n` +
     `✓ Com pedágio detectado: ${comPedagio}\n` +
     `– Com coordenadas OK, mas sem pedágio no trajeto (correto, não é bug): ${comPontosSemPedagio}\n` +
