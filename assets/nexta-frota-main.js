@@ -666,7 +666,8 @@ async function dbLoadStatusBulk(pairs) {
             time:            d.time            || "",
             motoristaDiurno: d.motoristaDiurno || "",
             motoristaNoturno:d.motoristaNoturno|| "",
-            hodometro:       d.hodometro !== undefined ? d.hodometro : null
+            hodometro:       d.hodometro !== undefined ? d.hodometro : null,
+            hodometroFotoUrl: d.hodometroFotoUrl || null
           };
           const key  = `${carrier}||${d.plate}||${dateStr}`;
           const cKey = `status||${carrier}||${d.plate}||${dateStr}`;
