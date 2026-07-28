@@ -802,3 +802,67 @@
   /* Botões de ação mais altos = alvo de toque melhor no dedo. */
   #roteirizador-shell .btn { min-height: 34px; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   TOOLBAR — grupos de ações do cabeçalho (ex.: barra de filtros/ações do
+   Dashboard). Antes cada botão tinha sua própria cor "de marca" (verde,
+   azul, laranja, teal...) numa fileira só, sem hierarquia visual — ficava
+   parecendo confete. Padrão novo, mais parecido com SaaS grande (Linear/
+   Vercel/Notion): botões neutros por padrão, agrupados visualmente por
+   função (filtro | período | ações), com UMA cor de destaque reservada
+   pra ação primária (ex.: exportar), e ferramentas avançadas/admin
+   escondidas atrás de um menu — não espalhadas na barra o tempo todo.
+   ══════════════════════════════════════════════════════════════════════ */
+/* Agrupa vários controles com uma borda só ao redor (efeito "segmented
+   control"): remove borda/raio individual de cada filho e desenha um
+   divisor fino entre eles. */
+#roteirizador-shell .toolbar-group {
+  display: flex; align-items: stretch;
+  background: var(--surface); border: 1px solid var(--border-dk);
+  border-radius: 8px; overflow: hidden;
+}
+#roteirizador-shell .toolbar-group > * { border-radius: 0 !important; border: none !important; }
+#roteirizador-shell .toolbar-group > *:not(:last-child) { border-right: 1px solid var(--border-dk) !important; }
+/* Separador entre grupos de função diferente (filtro vs. ação). */
+#roteirizador-shell .toolbar-divider { width: 1px; height: 22px; background: var(--border-dk); margin: 0 2px; flex-shrink: 0; }
+/* Botão neutro padrão dentro de um grupo (ou solto). */
+#roteirizador-shell .toolbar-btn {
+  display: flex; align-items: center; gap: 5px;
+  background: transparent; border: none; padding: 7px 11px;
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  cursor: pointer; white-space: nowrap; font-family: var(--font);
+  transition: background .15s, color .15s;
+}
+#roteirizador-shell .toolbar-btn:hover { background: rgba(17,24,39,.045); color: var(--text); }
+#roteirizador-shell .toolbar-btn.is-active { color: var(--accent); background: var(--accent-bg); }
+/* Botão de destaque (ação primária — ex.: exportar). Mantém identidade
+   própria de cor, mas é o ÚNICO botão colorido "cheio" da barra. */
+#roteirizador-shell .toolbar-btn-primary {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 13px; font-size: 11px; font-weight: 700;
+  border-radius: 8px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--green-border);
+  background: var(--green-bg); color: var(--green-text);
+  transition: filter .15s;
+}
+#roteirizador-shell .toolbar-btn-primary:hover { filter: brightness(.97); }
+/* Menu dropdown (ferramentas avançadas) — mesmo visual dos painéis de
+   filtro já existentes (Clientes/Operação), reaproveitado aqui. */
+#roteirizador-shell .toolbar-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 500;
+  background: var(--surface); border: 1px solid var(--border-dk);
+  border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,.16);
+  min-width: 220px; overflow: hidden; padding: 5px;
+}
+#roteirizador-shell .toolbar-menu-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; box-sizing: border-box;
+  text-align: left; padding: 9px 10px; font-size: 12px; font-weight: 500;
+  color: var(--text-2); background: none; border: none; border-radius: 6px;
+  cursor: pointer; white-space: nowrap; font-family: var(--font);
+  transition: background .12s, color .12s;
+}
+#roteirizador-shell .toolbar-menu-item:hover { background: var(--accent-bg); color: var(--accent-dk); }
+#roteirizador-shell .toolbar-menu-item .tmi-desc { display: block; font-size: 10.5px; font-weight: 400; color: var(--text-4); margin-top: 1px; white-space: normal; }
+@media (max-width: 900px) {
+  #roteirizador-shell .toolbar-group { flex-wrap: wrap; }
+}

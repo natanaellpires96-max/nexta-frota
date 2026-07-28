@@ -2631,6 +2631,23 @@ function dashAtualizarVisibilidadeFerramentasKm() {
   const role = window.USERS_DB && window.S && window.USERS_DB[window.S.user]?.role;
   el.style.display = (role === 'admin') ? 'inline-flex' : 'none';
 }
+// ── Menu "Ferramentas" (admin) — Km Real / Diagnóstico / Diag. Pedágio ─────
+// Antes eram 3 botões coloridos soltos direto na barra, mesmo sendo ações
+// avançadas de uso raro. Agora ficam atrás de um menu, mesmo padrão visual
+// dos painéis de filtro (Clientes/Operação) já existentes nesta tela.
+function dashToggleFerramentas() {
+  const menu = document.getElementById('dash-tools-menu');
+  if (!menu) return;
+  menu.style.display = menu.style.display !== 'none' ? 'none' : 'block';
+}
+document.addEventListener('click', function(e) {
+  const menu = document.getElementById('dash-tools-menu');
+  const btn  = document.getElementById('dash-tools-btn');
+  if (menu && menu.style.display !== 'none' && !menu.contains(e.target) && !btn?.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
+window.dashToggleFerramentas = dashToggleFerramentas;
 // ── Hook: popular meses quando abre a aba ─────────────────────────────────
 const _origShowTab = window.showTab;
 window.showTab = function(tab) {
