@@ -181,7 +181,7 @@
   width: 1px; height: 14px; background: var(--border);
 }
 #roteirizador-shell .tab.active {
-  color: var(--accent); border-bottom-color: var(--accent); background: none;
+  color: var(--green); border-bottom-color: var(--green); background: none;
 }
 #roteirizador-shell .tab:hover:not(.active) { color: var(--text-2); background: none; }
 /* ══════════════════════════════

@@ -1989,7 +1989,7 @@ async function renderAdmin(){
   mc.innerHTML=`
     <p class="sec-title">${isOper?"Painel operacional":"Painel do administrador"}</p>
     <div class="tabs admin-tabs">
-      ${tabs.map(t=>`<button class="tab ${S.adminTab===t.id?"active":""}" onclick="setTab('${t.id}')">${t.label}</button>`).join("")}
+      ${tabs.map(t=>`<button class="tab ${S.adminTab===t.id?"active":""}" data-tab="${t.id}" onclick="setTab('${t.id}')">${t.label}</button>`).join("")}
     </div>
     <div id="tab-body"><div class="loading"><span class="spin"></span>Carregando...</div></div>`;
   await renderTabBody();
@@ -2005,9 +2005,14 @@ async function setTab(t){
     showToast("Acesso restrito.",false); return;
   }
   S.adminTab=t;
+  // Marca a aba ativa pelo id (data-tab), não pelo texto exibido — comparar
+  // texto contra um mapa de rótulos "congelado" quebra silenciosamente toda
+  // vez que um rótulo muda (foi o que aconteceu com Auditoria/Relatórios:
+  // o mapa antigo ainda tinha "Histórico"/"Exportar", nomes que esta tela
+  // já não usa há tempo, então a comparação nunca batia e o grifo lima
+  // sumia só nessas duas abas).
   document.querySelectorAll("#main-content .admin-tabs .tab").forEach(el=>{
-    const map={dashboard:"Daily Briefing",kpis:"KPIs Mensais",today:"Painel de Disponibilidade",history:"Histórico",export:"Exportar",archives:"Arquivos Mensais",roteirizador:"Roteirizador",register:"Cadastros",users:"Usuários"};
-    el.classList.toggle("active",el.textContent.trim()===map[t]);
+    el.classList.toggle("active", el.dataset.tab===t);
   });
   await renderTabBody();
 }
