@@ -8189,21 +8189,6 @@ async function salvarNoHistorico(silencioso = false) {
     if (!dirHandleHistorico) return;
   }
   if (!await _histGarantirPermissao()) { if (!silencioso) alert('Permissão de escrita negada.'); return; }
-  // Busca o KM REAL (trajeto de verdade via rota, não linha reta) de cada
-  // viagem ANTES de salvar — grava em vi._kmAjustado, o mesmo campo já usado
-  // quando alguém ajusta a rota manualmente no mapa (ver mvRecalcularDistancia
-  // em nexta-frota-dashboard.js). Assim o Dashboard e o cálculo de frete já
-  // usam o km real automaticamente, sem precisar abrir o mapa de cada viagem
-  // uma por uma. Pula viagens que já têm _kmAjustado (ajuste manual anterior,
-  // ou já preenchido numa tentativa anterior desta mesma função).
-  if (typeof window.dashPreencherKmRealResultado === 'function' && terminaisCad?.length) {
-    if (!silencioso) showToast('Calculando km real das viagens (trajeto de rota)...', true);
-    try {
-      await window.dashPreencherKmRealResultado(veiculos, ultimoResultado, terminaisCad);
-    } catch (e) {
-      console.warn('[salvarNoHistorico] falha ao calcular km real — salvando com o km estimado (linha reta):', e);
-    }
-  }
   let totalViagens = 0, totalVolume = 0, totalPedidos = 0, totalRotas = 0;
   const terminaisUsados = new Set();
   veiculos.forEach(v => {
@@ -8326,9 +8311,52 @@ async function salvarNoHistorico(silencioso = false) {
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
     popularSeletorResumoDia().catch(()=>{});
+    // ── Km real em segundo plano (NÃO bloqueia o salvamento) ────────────────
+    // Antes, essa busca (via ORS, trajeto de verdade) rodava ANTES de gravar
+    // o arquivo — com o limitador de 30 req/min compartilhado com todo o
+    // resto do sistema, uma roteirização com várias viagens podia travar o
+    // "Salvar"/"Exportar" por minutos, e o arquivo só aparecia no Histórico
+    // depois que isso terminasse (por isso clicar "Atualizar" não adiantava
+    // nada — o arquivo simplesmente ainda não tinha sido escrito). Agora o
+    // arquivo é gravado na hora com o km estimado por linha reta; o km real
+    // é calculado depois, em segundo plano, e regrava o MESMO arquivo quando
+    // terminar — sem travar a tela nem o Histórico. Usa cópias próprias
+    // (JSON.parse/stringify) em vez das variáveis vivas (veiculos/
+    // ultimoResultado/terminaisCad), pra não se confundir se o usuário trocar
+    // de roteirização enquanto isso ainda está calculando em segundo plano.
+    if (typeof window.dashPreencherKmRealResultado === 'function' && terminaisCad?.length) {
+      _atualizarKmRealHistoricoEmBackground(
+        filename,
+        JSON.parse(JSON.stringify(veiculos)),
+        JSON.parse(JSON.stringify(ultimoResultado)),
+        JSON.parse(JSON.stringify(terminaisCad))
+      );
+    }
   } catch(e) {
     if (!silencioso) alert('Erro ao salvar: ' + e.message);
     else throw e; // propaga erro para o chamador tratar
+  }
+}
+async function _atualizarKmRealHistoricoEmBackground(filename, veiculosSnap, resultadoSnap, terminaisSnap) {
+  try {
+    const r = await window.dashPreencherKmRealResultado(veiculosSnap, resultadoSnap, terminaisSnap);
+    if (!r || !r.processadas) return; // nada novo pra gravar (tudo já tinha km real, ou tudo falhou)
+    if (!dirHandleHistorico) return; // pasta do histórico foi desvinculada nesse meio tempo
+    const fh = await dirHandleHistorico.getFileHandle(filename);
+    const file = await fh.getFile();
+    const data = JSON.parse(await file.text());
+    data.resultado = resultadoSnap; // só o campo de resultado muda — resto do arquivo intacto
+    const ws = await fh.createWritable();
+    await ws.write(JSON.stringify(data, null, 2));
+    await ws.close();
+    delete _histMetaCache[filename]; // força releitura na próxima listagem do Histórico
+    console.log(`[historico] km real de "${filename}" atualizado em segundo plano (${r.processadas} viagem(ns), ${r.falhas} falha(s)).`);
+  } catch (e) {
+    // Falha aqui não afeta o que já foi salvo (o arquivo já está gravado e
+    // íntegro desde o salvamento original) — só o km real fica sem o
+    // refinamento automático dessa rodada. O botão "Recalcular Km Real"
+    // (aba Dashboard → Ferramentas) continua disponível pra tentar de novo.
+    console.warn(`[historico] falha ao atualizar km real em segundo plano de "${filename}":`, e);
   }
 }
 async function carregarListaHistorico() {
