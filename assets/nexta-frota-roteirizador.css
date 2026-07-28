@@ -173,6 +173,12 @@
   border-bottom: 2px solid transparent; margin-bottom: -0.5px;
   font-family: var(--font); transition: color 0.15s;
 }
+/* Separador vertical sutil entre as abas — puramente visual, não interfere
+   no clique nem no destaque da aba ativa (border-left, não border, então
+   não some quando o tab ganha .active). Sem separador antes da 1ª aba. */
+#roteirizador-shell .tab:not(:first-child) {
+  border-left: 1px solid var(--border);
+}
 #roteirizador-shell .tab.active {
   color: var(--accent); border-bottom-color: var(--accent); background: none;
 }
