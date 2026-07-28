@@ -4180,19 +4180,23 @@ function renderPainelJornadaVeiculos() {
     const pct = totalMin > 0 ? Math.round((usadoMin / totalMin) * 100) : 0;
     const estourou = usadoMin > totalMin;
     const corPct = estourou ? '#DC2626' : pct >= 85 ? '#DC2626' : pct >= 60 ? '#D97706' : '#16A34A';
+    const transp = v.transportadora || '—';
     return `
-      <div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;width:172px;flex:0 0 172px;font-family:var(--font-cond,inherit);">
-        <div style="background:#F3F4F6;border-bottom:1px solid #D1D5DB;padding:6px 10px;font-weight:800;font-size:13px;letter-spacing:.03em;text-align:center;">${v.placa}</div>
-        <div style="padding:8px 10px;display:flex;flex-direction:column;gap:4px;">
-          <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#374151;">
-            <span>Jornada total</span><span style="font-weight:700;">${totalH.toFixed(totalH % 1 === 0 ? 0 : 1)}h</span>
+      <div style="background:#fff;border:1px solid #D1D5DB;border-radius:7px;overflow:hidden;font-family:var(--font-cond,inherit);">
+        <div style="background:#F3F4F6;border-bottom:1px solid #D1D5DB;padding:4px 6px;text-align:center;">
+          <div style="font-weight:800;font-size:11px;letter-spacing:.02em;">${v.placa}</div>
+          <div style="font-size:9px;color:#6B7280;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${transp}">${transp}</div>
+        </div>
+        <div style="padding:5px 7px;display:flex;flex-direction:column;gap:2px;">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
+            <span>Total</span><span style="font-weight:700;">${totalH.toFixed(totalH % 1 === 0 ? 0 : 1)}h</span>
           </div>
-          <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#374151;">
-            <span>Jornada utilizada</span><span style="font-weight:700;">${usadoH.toFixed(1)}h</span>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
+            <span>Usada</span><span style="font-weight:700;">${usadoH.toFixed(1)}h</span>
           </div>
         </div>
-        <div style="text-align:center;padding:5px 0 8px;font-size:15px;font-weight:800;color:${corPct};">
-          ${estourou ? `+${(usadoH - totalH).toFixed(1)}h (estourou)` : `${pct}%`}
+        <div style="text-align:center;padding:3px 0 5px;font-size:12.5px;font-weight:800;color:${corPct};">
+          ${estourou ? `+${(usadoH - totalH).toFixed(1)}h` : `${pct}%`}
         </div>
       </div>`;
   }).join('');
@@ -4200,7 +4204,7 @@ function renderPainelJornadaVeiculos() {
     <div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;padding:9px 12px 12px;">
       ${headerHtml()}
       <div style="margin-top:8px;">${filtrosHtml}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">${cards}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;">${cards}</div>
     </div>`;
 }
 // Diferente da tag azul ao lado (que só mostra o HORÁRIO cadastrado, ex.:
