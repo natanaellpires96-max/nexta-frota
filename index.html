@@ -13,7 +13,7 @@
 <script type="module" src="assets/nexta-frota-main.js?v=7e4d4705"></script>
 <link rel="stylesheet" href="assets/nexta-frota-main.css?v=ca908e38">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=ab982084">
+<link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=cf9e9b82">
 </head>
 <body>
 <div class="app" id="app"><div class="loading" style="min-height:100vh"><span class="spin"></span>Iniciando o sistema...</div></div>
@@ -497,78 +497,106 @@
           <div class="sec-title" style="margin:0;">Dashboard de Operações</div>
           <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Análise histórica das roteirizações salvas</div>
         </div>
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap;">
-          <!-- Filtro de clientes -->
-          <div style="position:relative;">
-            <button id="dash-cli-btn" onclick="dashToggleFiltroClientes()"
-              style="display:flex;align-items:center;gap:5px;background:var(--surface);border:1px solid var(--border-dk);border-radius:7px;padding:4px 9px;font-size:10px;color:var(--text-2);cursor:pointer;white-space:nowrap;">
-              <span>👥 Clientes</span>
-              <span id="dash-cli-badge" style="display:none;background:var(--pet-green);color:#000;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
-            </button>
-            <div id="dash-cli-panel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.22);width:320px;max-height:400px;flex-direction:column;overflow:hidden;">
-              <div style="padding:12px 14px 10px;border-bottom:1px solid var(--border-dk);flex-shrink:0;">
-                <div style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.06em;margin-bottom:8px;">FILTRAR CLIENTES</div>
-                <div style="position:relative;">
-                  <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;">🔍</span>
-                  <input id="dash-cli-search" type="text" placeholder="Buscar cliente..." oninput="dashFiltrarListaClientes(this.value)"
-                    style="width:100%;box-sizing:border-box;background:rgba(0,0,0,.04);border:1px solid var(--border-dk);border-radius:8px;padding:7px 10px 7px 30px;font-size:12px;color:var(--text);outline:none;"/>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <!-- Grupo: filtros de escopo dos dados -->
+          <div class="toolbar-group">
+            <!-- Filtro de clientes -->
+            <div style="position:relative;">
+              <button id="dash-cli-btn" class="toolbar-btn" onclick="dashToggleFiltroClientes()">
+                <span>👥 Clientes</span>
+                <span id="dash-cli-badge" style="display:none;background:var(--accent);color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
+              </button>
+              <div id="dash-cli-panel" style="display:none;position:absolute;top:calc(100% + 8px);left:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);width:320px;max-height:400px;flex-direction:column;overflow:hidden;">
+                <div style="padding:12px 14px 10px;border-bottom:1px solid var(--border-dk);flex-shrink:0;">
+                  <div style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.06em;margin-bottom:8px;">FILTRAR CLIENTES</div>
+                  <div style="position:relative;">
+                    <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;">🔍</span>
+                    <input id="dash-cli-search" type="text" placeholder="Buscar cliente..." oninput="dashFiltrarListaClientes(this.value)"
+                      style="width:100%;box-sizing:border-box;background:rgba(0,0,0,.04);border:1px solid var(--border-dk);border-radius:8px;padding:7px 10px 7px 30px;font-size:12px;color:var(--text);outline:none;"/>
+                  </div>
+                </div>
+                <div id="dash-cli-list" style="overflow-y:auto;flex:1;padding:6px 0;min-height:0;"></div>
+                <div style="padding:10px 14px;border-top:1px solid var(--border-dk);display:flex;gap:8px;flex-shrink:0;background:var(--surface);">
+                  <button onclick="dashSelecionarTodosClientes(true)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Todos</button>
+                  <button onclick="dashSelecionarTodosClientes(false)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Limpar</button>
+                  <button onclick="dashAplicarFiltroClientes()"
+                    style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:var(--accent);color:#fff;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
                 </div>
               </div>
-              <div id="dash-cli-list" style="overflow-y:auto;flex:1;padding:6px 0;min-height:0;"></div>
-              <div style="padding:10px 14px;border-top:1px solid var(--border-dk);display:flex;gap:8px;flex-shrink:0;background:var(--surface);">
-                <button onclick="dashSelecionarTodosClientes(true)"
-                  style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Todos</button>
-                <button onclick="dashSelecionarTodosClientes(false)"
-                  style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Limpar</button>
-                <button onclick="dashAplicarFiltroClientes()"
-                  style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
-              </div>
             </div>
-          </div>
-          <!-- Filtro de Cidade da Operação -->
-          <div style="position:relative;">
-            <button id="dash-cid-btn" onclick="dashToggleFiltroCidades()"
-              style="display:flex;align-items:center;gap:5px;background:var(--surface);border:1px solid var(--border-dk);border-radius:7px;padding:4px 9px;font-size:10px;color:var(--text-2);cursor:pointer;white-space:nowrap;">
-              <span>🏙️ Operação</span>
-              <span id="dash-cid-badge" style="display:none;background:var(--pet-green);color:#000;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
-            </button>
-            <div id="dash-cid-panel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.22);width:280px;max-height:400px;flex-direction:column;overflow:hidden;">
-              <div style="padding:12px 14px 10px;border-bottom:1px solid var(--border-dk);flex-shrink:0;">
-                <div style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.06em;margin-bottom:8px;">FILTRAR POR CIDADE DA OPERAÇÃO</div>
-                <div style="position:relative;">
-                  <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;">🔍</span>
-                  <input id="dash-cid-search" type="text" placeholder="Buscar cidade..." oninput="dashFiltrarListaCidades(this.value)"
-                    style="width:100%;box-sizing:border-box;background:rgba(0,0,0,.04);border:1px solid var(--border-dk);border-radius:8px;padding:7px 10px 7px 30px;font-size:12px;color:var(--text);outline:none;"/>
+            <!-- Filtro de Cidade da Operação -->
+            <div style="position:relative;">
+              <button id="dash-cid-btn" class="toolbar-btn" onclick="dashToggleFiltroCidades()">
+                <span>🏙️ Operação</span>
+                <span id="dash-cid-badge" style="display:none;background:var(--accent);color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
+              </button>
+              <div id="dash-cid-panel" style="display:none;position:absolute;top:calc(100% + 8px);left:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);width:280px;max-height:400px;flex-direction:column;overflow:hidden;">
+                <div style="padding:12px 14px 10px;border-bottom:1px solid var(--border-dk);flex-shrink:0;">
+                  <div style="font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.06em;margin-bottom:8px;">FILTRAR POR CIDADE DA OPERAÇÃO</div>
+                  <div style="position:relative;">
+                    <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;">🔍</span>
+                    <input id="dash-cid-search" type="text" placeholder="Buscar cidade..." oninput="dashFiltrarListaCidades(this.value)"
+                      style="width:100%;box-sizing:border-box;background:rgba(0,0,0,.04);border:1px solid var(--border-dk);border-radius:8px;padding:7px 10px 7px 30px;font-size:12px;color:var(--text);outline:none;"/>
+                  </div>
+                </div>
+                <div id="dash-cid-list" style="overflow-y:auto;flex:1;padding:6px 0;min-height:0;"></div>
+                <div style="padding:10px 14px;border-top:1px solid var(--border-dk);display:flex;gap:8px;flex-shrink:0;background:var(--surface);">
+                  <button onclick="dashSelecionarTodosCidades(true)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Todas</button>
+                  <button onclick="dashSelecionarTodosCidades(false)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Limpar</button>
+                  <button onclick="dashAplicarFiltroCidades()"
+                    style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:var(--accent);color:#fff;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
                 </div>
               </div>
-              <div id="dash-cid-list" style="overflow-y:auto;flex:1;padding:6px 0;min-height:0;"></div>
-              <div style="padding:10px 14px;border-top:1px solid var(--border-dk);display:flex;gap:8px;flex-shrink:0;background:var(--surface);">
-                <button onclick="dashSelecionarTodosCidades(true)"
-                  style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Todas</button>
-                <button onclick="dashSelecionarTodosCidades(false)"
-                  style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid var(--border-dk);border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">Limpar</button>
-                <button onclick="dashAplicarFiltroCidades()"
-                  style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
-              </div>
+            </div>
+            <!-- Mês -->
+            <div class="toolbar-btn" style="cursor:default;">
+              <span style="font-size:10px;color:var(--text-3);letter-spacing:0.06em;">MÊS</span>
+              <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--accent);font-size:11px;font-weight:700;font-family:var(--font);outline:none;cursor:pointer;">
+                <option value="">Selecionar</option>
+              </select>
             </div>
           </div>
-          <div style="display:flex;align-items:center;gap:5px;background:var(--surface);border:1px solid var(--border-dk);border-radius:7px;padding:4px 9px;">
-            <span style="font-size:10px;color:var(--text-3);letter-spacing:0.06em;">MES</span>
-            <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--pet-green);font-size:11px;font-weight:600;font-family:Inter,sans-serif;outline:none;cursor:pointer;">
-              <option value="">Selecionar</option>
-            </select>
+
+          <!-- Grupo: atalhos de período -->
+          <div class="toolbar-group">
+            <button class="toolbar-btn" onclick="dashCarregarTodos()">Todos períodos</button>
+            <button class="toolbar-btn" onclick="dashCarregarHoje()" title="Resumo gerencial do dia — mesmos KPIs, só das roteirizações salvas hoje">📋 Hoje</button>
           </div>
-          <button class="btn btn-sm" onclick="dashCarregarTodos()" style="background:rgba(200,240,50,0.1);color:var(--pet-green);border:1px solid rgba(200,240,50,0.25);font-size:10px;padding:4px 9px;white-space:nowrap;">Todos períodos</button>
-          <button class="btn btn-sm" onclick="dashCarregarHoje()" title="Resumo gerencial do dia — mesmos KPIs, só das roteirizações salvas hoje" style="background:rgba(112,168,240,0.1);color:#70a8f0;border:1px solid rgba(112,168,240,0.3);font-size:10px;padding:4px 9px;white-space:nowrap;">📋 Hoje</button>
-          <button class="btn btn-sm" onclick="dashExportarExcel()" id="dash-export-btn" style="background:rgba(34,197,94,0.12);color:#16A34A;border:1px solid rgba(34,197,94,0.35);font-size:10px;padding:4px 9px;white-space:nowrap;">📊 Excel</button>
-          <button class="btn btn-sm" onclick="dashSincronizar()" id="dash-sync-btn" style="background:rgba(0,164,153,0.12);color:#00A499;border:1px solid rgba(0,164,153,0.35);font-size:10px;padding:4px 9px;white-space:nowrap;">🔄 Sincronizar</button>
-          <span id="dash-km-admin-tools" style="display:none;align-items:center;gap:5px;">
-            <button class="btn btn-sm" onclick="dashRecalcularKmHistorico()" id="btn-dash-recalcular-km" title="Busca o km real (via rota) das viagens do histórico que ainda não têm. Roda só quando clicado (modo automático desligado por enquanto). Só admin." style="background:rgba(251,146,60,0.12);color:#C2410C;border:1px solid rgba(251,146,60,0.35);font-size:10px;padding:4px 9px;white-space:nowrap;">🛣️ Km Real</button>
-            <button class="btn btn-sm" onclick="dashDiagnosticarKmReal()" id="btn-dash-diagnostico-km" title="Mostra quais viagens têm o maior km real calculado, comparado com a estimativa antiga — sem gastar nenhuma requisição nova. Ajuda a achar viagens/placas com valor suspeito. Só admin." style="background:rgba(59,130,246,0.10);color:#1D4ED8;border:1px solid rgba(59,130,246,0.3);font-size:10px;padding:4px 9px;white-space:nowrap;">🔍 Diagnóstico</button>
-            <button class="btn btn-sm" onclick="dashDiagnosticarPedagioHoje()" id="btn-dash-diagnostico-pedagio" title="Mostra por que % Rotas Pedagiadas está baixo/zerado no filtro atual — separa coordenada ausente (dado incompleto) de rota realmente sem pedágio. Sem gastar requisição nova. Só admin." style="background:rgba(234,88,12,0.10);color:#C2410C;border:1px solid rgba(234,88,12,0.3);font-size:10px;padding:4px 9px;white-space:nowrap;">🛣️ Diag. Pedágio</button>
-          </span>
+
+          <div class="toolbar-divider"></div>
+
+          <!-- Ações -->
+          <button class="toolbar-btn" onclick="dashSincronizar()" id="dash-sync-btn" title="Relê o histórico em disco e atualiza tudo"
+            style="border:1px solid var(--border-dk);border-radius:8px;background:var(--surface);">🔄 Sincronizar</button>
+          <button class="toolbar-btn-primary" onclick="dashExportarExcel()" id="dash-export-btn">📊 Exportar Excel</button>
+
+          <!-- Ferramentas avançadas (só admin) — antes 3 botões coloridos soltos
+               na barra, agora escondidos atrás de um menu, igual sistemas
+               grandes fazem com ações administrativas pouco usadas. -->
+          <div id="dash-km-admin-tools" style="display:none;position:relative;">
+            <button id="dash-tools-btn" class="toolbar-btn" onclick="dashToggleFerramentas()"
+              style="border:1px solid var(--border-dk);border-radius:8px;background:var(--surface);">
+              ⚙️ Ferramentas <span style="font-size:8px;">▾</span>
+            </button>
+            <div id="dash-tools-menu" class="toolbar-menu" style="display:none;">
+              <button class="toolbar-menu-item" onclick="dashRecalcularKmHistorico(); dashToggleFerramentas();" id="btn-dash-recalcular-km">
+                🛣️<span>Km Real<span class="tmi-desc">Busca o km real (via rota) das viagens que ainda não têm</span></span>
+              </button>
+              <button class="toolbar-menu-item" onclick="dashDiagnosticarKmReal(); dashToggleFerramentas();" id="btn-dash-diagnostico-km">
+                🔍<span>Diagnóstico Km<span class="tmi-desc">Compara km real vs. estimativa — acha valor suspeito</span></span>
+              </button>
+              <button class="toolbar-menu-item" onclick="dashDiagnosticarPedagioHoje(); dashToggleFerramentas();" id="btn-dash-diagnostico-pedagio">
+                🛣️<span>Diag. Pedágio<span class="tmi-desc">Por que % Rotas Pedagiadas está baixo/zerado</span></span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
+
       <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:18px;">
         <div class="sum-card" title="Total de viagens realizadas nas roteirizações salvas dentro do período/filtro selecionado — cada trecho de carro carregado (terminal → paradas) conta como 1 viagem." style="cursor:help;"><div class="sum-num" id="dk-viagens" style="color:#FFFFFF">-</div><div class="sum-label">Viagens</div></div>
         <div class="sum-card" title="Total de paradas de entrega realizadas — cada cliente visitado numa viagem conta como 1 entrega. Pode ser diferente do nº de pedidos se um pedido foi dividido em mais de uma carga." style="cursor:help;"><div class="sum-num" id="dk-entregas" style="color:#70a8f0">-</div><div class="sum-label">Entregas</div></div>
@@ -1025,6 +1053,6 @@
 <script defer src="assets/nexta-frota-roteirizador.js?v=9261ca75"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=cb059870"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=4cf5f747"></script>
 </body>
 </html>
