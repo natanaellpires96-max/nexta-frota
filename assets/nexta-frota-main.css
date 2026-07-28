@@ -58,7 +58,7 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
 .hm-steps{display:grid;gap:8px;margin-bottom:.75rem;}
 .hm-step{display:flex;gap:12px;align-items:flex-start;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;font-size:12px;color:var(--dim);}
 .hm-step-n{width:22px;height:22px;border-radius:50%;background:var(--lime);color:var(--dark);font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;}
-.main{flex:1;padding:1.75rem;max-width:1180px;margin:0 auto;width:100%;}
+.main{flex:1;padding:1.75rem 2.5rem;max-width:1900px;margin:0 auto;width:100%;}
 .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;}
 .login-card{background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:2.5rem;width:100%;max-width:400px;}
 .login-logo{margin-bottom:2rem;}
