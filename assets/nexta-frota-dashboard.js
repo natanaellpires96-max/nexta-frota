@@ -2956,6 +2956,31 @@ async function _orsAguardarVaga() {
   _orsHistoricoChamadas.push(Date.now());
 }
 async function osrmFetchSegmento(a, b) {
+  // ── Cache em memória por par de coordenadas ─────────────────────────────
+  // Trechos entre terminal↔cliente e cliente↔cliente se repetem MUITO (o
+  // mesmo terminal atende dezenas de rotas, o mesmo cliente aparece em
+  // vários dias) — sem cache, cada abertura de mapa refazia a chamada pra
+  // ORS do zero, mesmo pra um trecho já calculado minutos antes na mesma
+  // sessão. Isso somava tempo de espera (rate limiter de 30/min é
+  // compartilhado com TODO o resto do sistema, incluindo o "Km Real" em
+  // lote) sem necessidade nenhuma, já que o trajeto de um mesmo par de
+  // pontos não muda. Arredonda a 4 casas decimais (~11m de precisão) pra
+  // reaproveitar mesmo com pequena variação de ponto flutuante.
+  const _round = (n) => Math.round(n * 10000) / 10000;
+  const _cacheKey = `${_round(a.lat)},${_round(a.lon)}|${_round(b.lat)},${_round(b.lon)}`;
+  if (!window._osrmSegmentoCache) window._osrmSegmentoCache = new Map();
+  const _cached = window._osrmSegmentoCache.get(_cacheKey);
+  if (_cached) return _cached;
+  const _resultado = await _osrmFetchSegmentoSemCache(a, b);
+  // Só guarda em cache resultado de rota real (não o fallback de linha
+  // reta) — a linha reta é barata de recalcular e não vale a pena travar
+  // no cache caso a ORS volte a funcionar logo em seguida.
+  if (_resultado && _resultado.coords && _resultado.coords.length > 2) {
+    window._osrmSegmentoCache.set(_cacheKey, _resultado);
+  }
+  return _resultado;
+}
+async function _osrmFetchSegmentoSemCache(a, b) {
   // ── OpenRouteService (via proxy), perfil driving-hgv (caminhão de verdade) ──
   // Substituiu o OSRM público (router.project-osrm.org), que NUNCA teve
   // perfil de caminhão de verdade — confirmado em issue oficial do projeto

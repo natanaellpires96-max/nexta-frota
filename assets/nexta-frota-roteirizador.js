@@ -220,7 +220,11 @@ async function uploadPedidosOverlay(input) {
     pedidos = novos;
     renderPedidos();
     _pedidosCarregados = true;
-    _setStatus('upload-ped-status', 'ok', `✓ ${novos.length} pedido(s) carregado(s).`);
+    const suspeitos = novos.filter(p => dataEntregaSuspeita(p.dataEntregaLogistica));
+    const avisoSuspeitos = suspeitos.length
+      ? ` ⚠️ ${suspeitos.length} com data de entrega suspeita (confira o ano) — marcados em vermelho na lista.`
+      : '';
+    _setStatus('upload-ped-status', 'ok', `✓ ${novos.length} pedido(s) carregado(s).${avisoSuspeitos}`);
   } catch (err) {
     _setStatus('upload-ped-status', 'erro', `✕ Erro ao processar: ${err.message}`);
   } finally {
@@ -1975,6 +1979,23 @@ function parseDataBr(texto) {
   if (m) return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
   return null;
 }
+// ── Trava de data de entrega suspeita ───────────────────────────────────────
+// Esse é um roteirizador diário — pedidos de verdade quase sempre têm data de
+// entrega a poucos dias da operação, nunca a um ano de distância. Um erro de
+// digitação clássico (ano trocado, ex.: 2027 em vez de 2026) passava batido
+// porque dia e mês continuavam corretos — só o histórico/dashboard revelavam
+// o problema bem depois, misturado com pedidos de verdade (rota indo pro
+// "Jul/2027" do seletor de mês, ou aparecendo como uma 2ª data de entrega
+// "duplicada" num card do Histórico). Mesmo espírito da trava de coordenada
+// (0,0) em km-utils.js: pegar o dado ruim na entrada, não deixar ele se
+// espalhar silenciosamente pro resto do sistema.
+function dataEntregaSuspeita(dataStrBr) {
+  const d = parseDataBr(dataStrBr);
+  if (!d) return false;
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const diffDias = Math.round((d.getTime() - hoje.getTime()) / 86400000);
+  return Math.abs(diffDias) > 45; // fora dessa janela, quase sempre é erro de digitação
+}
 function minutoNoDia(minAbs) {
   const d = 24 * 60;
   return ((Math.round(minAbs) % d) + d) % d;
@@ -2898,6 +2919,14 @@ function salvarPedido() {
   });
   if (!produtos.length) erros.push('• Ao menos um produto com quantidade');
   if (erros.length) { alert('Preencha os campos obrigatórios:\n\n' + erros.join('\n')); return; }
+  if (dataEnt) {
+    const [y, m, d] = dataEnt.split('-');
+    const dataBr = `${d}/${m}/${y}`;
+    if (dataEntregaSuspeita(dataBr)) {
+      const ok = confirm(`A data de entrega informada (${dataBr}) está bem longe de hoje — confere se o ANO está certo (erro comum: digitar ${y} em vez de ${+y - 1} ou ${+y + 1}).\n\nClique OK pra salvar assim mesmo, ou Cancelar pra corrigir.`);
+      if (!ok) return;
+    }
+  }
   const ordens = [...new Set(produtos.map(pr => pr.ordemSAP).filter(Boolean))];
   const dados = {
     codigoSAP: document.getElementById('p-sap').value.trim(),
@@ -2968,7 +2997,9 @@ function renderPedidos() {
             <span style="font-weight:700;font-size:14px;font-family:var(--font-cond);">${p.cliente}</span>
             <span style="font-size:12px;color:#4A6535;">${p.cidade}</span>
             ${p.terminal ? termTag(p.terminal) : ''}
-            ${p.dataEntregaLogistica ? `<span class="tag tag-blue" style="font-size:9px;">📅 ${p.dataEntregaLogistica}</span>` : ''}
+            ${p.dataEntregaLogistica ? (dataEntregaSuspeita(p.dataEntregaLogistica)
+              ? `<span class="tag tag-red" style="font-size:9px;" title="Data bem longe de hoje — confira se o ano está certo">⚠️ 📅 ${p.dataEntregaLogistica}</span>`
+              : `<span class="tag tag-blue" style="font-size:9px;">📅 ${p.dataEntregaLogistica}</span>`) : ''}
             ${p.restricao ? `<span class="tag tag-yellow">${p.restricao}</span>` : ''}
             ${p.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             ${tiposHtml}
@@ -3737,6 +3768,9 @@ async function carregarPedidosLiberados() {
       arquivoHistoricoAberto = null;
       ultimoArquivoSalvoSessao = null;
       renderPedidos();
+      const suspeitos = novos.filter(p => dataEntregaSuspeita(p.dataEntregaLogistica));
+      if (suspeitos.length && typeof window.showToast === 'function')
+        window.showToast(`⚠️ ${suspeitos.length} pedido(s) com data de entrega suspeita (confira o ano) — marcados em vermelho.`, false);
       return true;
     } catch (e) {
       console.warn(`[${arquivo}]`, e.message);
@@ -3762,6 +3796,9 @@ function uploadPedidosLiberados(input) {
       _sincronizarDataOperacaoComPedidos();
       renderPedidos();
       showTab('pedidos');
+      const suspeitos = novos.filter(p => dataEntregaSuspeita(p.dataEntregaLogistica));
+      if (suspeitos.length && typeof window.showToast === 'function')
+        window.showToast(`⚠️ ${suspeitos.length} pedido(s) com data de entrega suspeita (confira o ano) — marcados em vermelho.`, false);
     } catch (err) {
       alert('Erro ao processar o arquivo: ' + err.message);
     } finally {
@@ -6828,13 +6865,27 @@ function renderCustoMapaViagem() {
   // Renderiza alerta de pedágios (se houver) com número de eixos
   const alertaPedagios = window.renderizarAlertaPedagios ? window.renderizarAlertaPedagios(pedagios, custoPedagios, eixosVeiculo) : '';
   
+  // Sem contrato, calc.custo é sempre 0 — custoTotalComPedagios vira só o
+  // pedágio. Antes isso aparecia em verde forte igual um total "completo",
+  // dando a impressão de que o sistema não calculou nada (quando na
+  // verdade calculou: frete = 0 porque não há contrato). Agora sinaliza
+  // isso explicitamente (cor âmbar + rótulo), pra não confundir "sem
+  // contrato" com "cálculo quebrado".
+  const semContrato = !calc.contrato;
+  const corCustoViagem = semContrato ? '#B45309' : '#15803d';
+  const labelCustoViagem = semContrato ? 'Custo viagem (só pedágio)' : 'Custo viagem';
+  const avisoSemContrato = semContrato
+    ? `<div style="font-size:10px;color:#B45309;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:4px 8px;margin-bottom:6px;">⚠️ Sem contrato cadastrado pra esta placa — o valor acima é <strong>só pedágio</strong>. O componente de frete (fixo/variável) entra assim que a placa <strong>${v.placa}</strong> tiver contrato na aba Frete.</div>`
+    : '';
+
   box.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:7px;">
       <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Contrato</div><div style="font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${calc.tipo}</div></div>
       <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">KM mapa</div><div style="font-weight:700;color:#3730A3;">${calc.km.toFixed(1)} km</div></div>
-      <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Custo viagem</div><div style="font-weight:800;color:#15803d;">${_freteMoeda(custoTotalComPedagios)}</div></div>
+      <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">${labelCustoViagem}</div><div style="font-weight:800;color:${corCustoViagem};">${_freteMoeda(custoTotalComPedagios)}</div></div>
       <div><div style="font-size:9px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;">Media</div><div style="font-weight:700;color:var(--text);">R$ ${custoLitroMedio.toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})}/L</div></div>
     </div>
+    ${avisoSemContrato}
     <div style="font-size:10px;color:var(--text-3);margin-bottom:5px;">${calc.detalhe || '&nbsp;'} · Rateio por volume x distancia da parada; ultimo cliente ajusta centavos para fechar o total.</div>
     <div style="display:grid;gap:4px;font-size:11px;line-height:1.35;">${clienteHtml || '<span style="color:var(--text-3);">Sem clientes para rateio.</span>'}</div>
     ${alertaPedagios}`;
