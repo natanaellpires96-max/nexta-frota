@@ -2345,12 +2345,23 @@ async function renderKpisMensais(body){
         for(const ds of mDates)
           pairs.push({carrier,plate:p.placa,dateStr:ds});
     const sm=await dbLoadStatusBulk(pairs);
-    let f=0,a=0;
+    // Mesma regra do card "Disponibilidade média" do topo: Folga e
+    // Programado/Em viagem saem do denominador (não são falha de
+    // disponibilidade da transportadora). Antes essa exclusão só existia no
+    // card, não aqui — o gráfico contava esses dias como "indisponível" no
+    // denominador, puxando a % pra baixo e destoando do card (ex.: card em
+    // 96%, gráfico em 75-81% no mesmo período, mesma base de dados).
+    let f=0,a=0,folgaProg=0;
     for(const {carrier,plate,dateStr:ds} of pairs){
       const rec=sm[`${carrier}||${plate}||${ds}`];
-      if(rec){f++; if(rec.status==="disponivel") a++;}
+      if(rec){
+        f++;
+        if(rec.status==="disponivel") a++;
+        else if(rec.status==="folga"||rec.status==="programado") folgaProg++;
+      }
     }
-    return {label:tm.label,pct:f?Math.round((a/f)*100):null};
+    const denom=f-folgaProg;
+    return {label:tm.label,pct:denom>0?Math.round((a/denom)*100):null};
   }));
   // ── Ranking (sorted by dispPct desc) ─────────────────────
   const ranked=[...carrierMetrics].sort((a,b)=>b.dispPct-a.dispPct);
