@@ -101,12 +101,15 @@ input,select,button,textarea{font-family:'DM Sans',sans-serif;}
    vez do estilo genérico "caixinha" acima, que ficava destoando visualmente
    do resto do app assim que o usuário entrava na aba Roteirizador. */
 .admin-tabs{flex-wrap:nowrap;width:100%;gap:0;background:transparent;border:none;border-radius:0;border-bottom:0.5px solid var(--border);padding:0;overflow-x:auto;}
-.admin-tabs .tab{flex:1;border-radius:0;padding:10px 12px;white-space:nowrap;}
+.admin-tabs .tab{flex:1;border-radius:0;padding:10px 12px;white-space:nowrap;position:relative;}
 .admin-tabs .tab.active{background:none;color:var(--pet-green,#b5e51d);border-bottom:2px solid var(--pet-green,#b5e51d);}
-/* Separador vertical sutil entre as abas do topo — mesmo tratamento aplicado
-   nas abas internas do Roteirizador, por consistência visual entre os dois
-   sistemas. border-left (não border) pra não sumir quando a aba fica .active. */
-.admin-tabs .tab:not(:first-child){border-left:1px solid var(--border);}
+/* Separador entre as abas do topo — traço curto e centralizado (não a altura
+   toda do tab), efeito mais leve/moderno do que uma borda de ponta a ponta.
+   ::before em vez de border-left pra poder controlar a altura do traço. */
+.admin-tabs .tab:not(:first-child)::before{
+  content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+  width:1px;height:14px;background:var(--border);
+}
 .tab{padding:7px 16px;font-size:13px;border:none;border-radius:7px;cursor:pointer;color:var(--muted);background:none;transition:all .15s;}
 .tab.active{background:var(--lime);color:var(--dark);font-weight:600;}
 .tab:not(.active):hover{color:var(--lime);}

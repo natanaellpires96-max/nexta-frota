@@ -166,18 +166,19 @@
   flex-wrap: nowrap; width: 100%; gap: 0; border: none; border-radius: 0; margin-bottom: 0;
 }
 #roteirizador-shell .tab {
-  flex: 1; text-align: center;
+  flex: 1; text-align: center; position: relative;
   padding: 11px 8px; font-size: 13px; font-weight: 500;
   letter-spacing: 0; text-transform: none; cursor: pointer; border: none;
   background: none; white-space: nowrap; color: var(--text-3);
   border-bottom: 2px solid transparent; margin-bottom: -0.5px;
   font-family: var(--font); transition: color 0.15s;
 }
-/* Separador vertical sutil entre as abas — puramente visual, não interfere
-   no clique nem no destaque da aba ativa (border-left, não border, então
-   não some quando o tab ganha .active). Sem separador antes da 1ª aba. */
-#roteirizador-shell .tab:not(:first-child) {
-  border-left: 1px solid var(--border);
+/* Separador entre as abas — traço curto e centralizado (não a altura toda
+   do tab), efeito mais leve/moderno do que uma borda de ponta a ponta.
+   ::before em vez de border-left pra poder controlar a altura do traço. */
+#roteirizador-shell .tab:not(:first-child)::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 1px; height: 14px; background: var(--border);
 }
 #roteirizador-shell .tab.active {
   color: var(--accent); border-bottom-color: var(--accent); background: none;
