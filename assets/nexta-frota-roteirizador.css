@@ -304,8 +304,8 @@
    depois dele deslizava 2 células, e os dois lados ficavam desalinhados
    entre si (o motivo de "Carregamento/Retorno base/Motorista/Cap./Ocupação"
    aparecerem afastados de "Transportador/Cavalo/Implemento/Base"). */
-#roteirizador-shell .op-head-grid { display: flex; gap: 5px 24px; font-size: 12px; }
-#roteirizador-shell .op-head-col { flex: 1 1 0; min-width: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: baseline; align-content: start; }
+#roteirizador-shell .op-head-grid { display: flex; justify-content: space-between; gap: 5px 24px; font-size: 12px; }
+#roteirizador-shell .op-head-col { flex: 0 0 auto; display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: baseline; align-content: start; }
 #roteirizador-shell .op-head-lbl { color: var(--text-3); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
 #roteirizador-shell .op-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 #roteirizador-shell .op-table th,
