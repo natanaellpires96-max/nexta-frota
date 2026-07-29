@@ -1136,7 +1136,7 @@ document.addEventListener('click', (e) => {
 function limparFiltros(aba) {
   const mapa = {
     terminais: ['f-term-terminal','f-term-cidade'],
-    clientes: ['f-cli-cliente','f-cli-cidade'],
+    clientes: ['f-cli-cliente','f-cli-cidade','f-cli-segmento'],
     pedidos: ['f-ped-cliente','f-ped-cidade','f-ped-terminal'],
     veiculos: ['f-vei-placa','f-vei-transp','f-vei-terminal','f-vei-cidade','f-vei-tipo'],
     resultado: ['f-res-cliente','f-res-cidade','f-res-terminal','f-res-placa','f-res-transp'],
@@ -2775,9 +2775,11 @@ function renderClientes() {
   }
   const filtroCliente = valId('f-cli-cliente');
   const filtroCidade = valId('f-cli-cidade');
+  const filtroSegmento = valId('f-cli-segmento');
   const lista = clientes.filter(c =>
     containsFiltro(c.nome, filtroCliente) &&
-    containsFiltro(c.cidade, filtroCidade)
+    containsFiltro(c.cidade, filtroCidade) &&
+    containsFiltro(c.segmento, filtroSegmento)
   );
   if (!lista.length) {
     el.innerHTML = '<div class="empty">Nenhum cliente encontrado para os filtros.</div>';
@@ -2795,6 +2797,7 @@ function renderClientes() {
             <span style="font-family:var(--font-cond);font-weight:700;font-size:14px;letter-spacing:0.03em;">${c.nome}</span>
             ${c.cidade ? `<span style="font-size:12px;color:#4A6535;">${c.cidade}</span>` : ''}
             ${c.restricaoHorario ? `<span class="tag tag-yellow">${c.restricaoHorario}</span>` : ''}
+            ${c.segmento ? `<span class="tag tag-blue" style="font-size:9px;">${c.segmento}</span>` : ''}
             ${c.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             <span class="tag tag-lime" style="font-size:9px;">Descarga média: ${(c.tempoDescargaMediaMin||45).toFixed(0)} min</span>
           </div>
@@ -9529,8 +9532,8 @@ function _clonarBlocoParaExport(blocoEl) {
       #roteirizador-shell { all: unset; }
       .op-bloco { border: 0.5px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
       .op-head { padding: 11px 16px; background: var(--bg); border-bottom: 0.5px solid var(--border); }
-      .op-head-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 20px; font-size: 12px; }
-      .op-head-col { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: baseline; align-content: start; }
+      .op-head-grid { display: flex; gap: 5px 24px; font-size: 12px; }
+      .op-head-col { flex: 1 1 0; min-width: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: baseline; align-content: start; }
       .op-head-lbl { color: var(--text-3); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
       .op-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
       .op-table th, .op-table td { border: 0.5px solid var(--border); padding: 7px 9px; text-align: left; overflow-wrap: break-word; word-break: break-word; }
