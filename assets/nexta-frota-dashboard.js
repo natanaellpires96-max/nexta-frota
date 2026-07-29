@@ -1826,6 +1826,129 @@ window.dashExportarHistoricoVeiculoXLSX = dashExportarHistoricoVeiculoXLSX;
 // ── Renderizar Dashboard ───────────────────────────────────────────────────
 // ── Filtro de clientes ────────────────────────────────────────────────────
 let _dashClientesSelecionados = null; // null = todos; Set = filtro ativo
+let _dashSegmentosSelecionados = null; // null = todos; Set = filtro ativo (B2B/B2C/TRR/'—')
+const _DASH_SEGMENTOS_TODOS = ['B2B', 'B2C', 'TRR', '—']; // '—' = cliente sem segmento cadastrado
+// ── Segmento do cliente (B2B/B2C/TRR) ───────────────────────────────────────
+// Campo vive no CADASTRO de cliente (aba Cadastros → Clientes), não no
+// pedido salvo no histórico — então sempre consulta o cadastro ATUAL
+// (window.clientes, populado pelo script do Roteirizador, ver comentário
+// "var no nível de topo vira window.X" perto da declaração de `clientes`).
+// Isso significa que o segmento aplicado é sempre o de HOJE, mesmo pra
+// pedidos antigos — não existe "segmento histórico" por pedido, e não faz
+// muito sentido ter (é um atributo do cliente, não da entrega).
+function dashClienteSegmento(nome) {
+  const arr = (typeof clientes !== 'undefined' && clientes) || window.clientes || [];
+  const c = arr.find(x => (x.nome || '').trim().toLowerCase() === String(nome || '').trim().toLowerCase());
+  return (c && c.segmento) || '';
+}
+// ── Conjunto efetivo de clientes visíveis ───────────────────────────────────
+// Combina (E lógico, não OU) o filtro do picker de Clientes com o filtro de
+// Segmento — os dois se cruzam. Ex.: picker com "Posto X" selecionado, mas
+// segmento filtrado só em "TRR": se Posto X não for TRR, ele fica de fora
+// mesmo estando no picker. Retorna null quando NENHUM dos dois filtros está
+// ativo (comportamento idêntico ao "sem filtro" de antes, sem custo extra).
+function dashClientesEfetivos(nomesBase) {
+  if (!_dashClientesSelecionados && !_dashSegmentosSelecionados) return null;
+  const permitido = (nome) => {
+    if (_dashClientesSelecionados && !_dashClientesSelecionados.has(nome)) return false;
+    if (_dashSegmentosSelecionados) {
+      const seg = dashClienteSegmento(nome) || '—';
+      if (!_dashSegmentosSelecionados.has(seg)) return false;
+    }
+    return true;
+  };
+  return new Set(nomesBase.filter(permitido));
+}
+const _DASH_SEGMENTO_OPCOES = [
+  { valor: 'B2B', label: 'B2B' },
+  { valor: 'B2C', label: 'B2C' },
+  { valor: 'TRR', label: 'TRR' },
+  { valor: '—',   label: 'Sem segmento cadastrado' },
+];
+// ── Dropdown de Segmento — mesmo padrão visual/comportamento do filtro de
+// Clientes (botão + painel com checkbox + Todos/Limpar/Aplicar), só que com
+// 4 opções fixas em vez de lista dinâmica. Existem DUAS instâncias na tela
+// (toolbar do topo e o card "Clientes sem comprar"), ambas lendo/escrevendo
+// o MESMO estado global (_dashSegmentosSelecionados) — abrir qualquer uma
+// sempre mostra o filtro atualizado, e aplicar em qualquer uma atualiza a
+// tela inteira.
+function _dashSegmentoListHtml() {
+  return _DASH_SEGMENTO_OPCOES.map(o => {
+    const checked = !_dashSegmentosSelecionados || _dashSegmentosSelecionados.has(o.valor);
+    return `<div data-seg="${o.valor}" data-checked="${checked ? 1 : 0}" onclick="_dashSegToggleRow(this)"
+      style="display:flex;align-items:center;gap:9px;padding:8px 14px;cursor:pointer;font-size:12.5px;color:#111827;"
+      onmouseover="this.style.background='rgba(0,0,0,.03)'" onmouseout="this.style.background='none'">
+      <span class="dash-seg-checkbox" style="width:16px;height:16px;border-radius:4px;border:1.5px solid ${checked ? 'var(--pet-green,#b5e51d)' : '#bbb'};background:${checked ? 'var(--pet-green,#b5e51d)' : 'transparent'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">${checked ? _dashCheckSVG() : ''}</span>
+      ${o.label}
+    </div>`;
+  }).join('');
+}
+function _dashSegToggleRow(el) {
+  const novo = el.dataset.checked !== '1';
+  el.dataset.checked = novo ? '1' : '0';
+  const box = el.querySelector('.dash-seg-checkbox');
+  box.style.borderColor = novo ? 'var(--pet-green,#b5e51d)' : '#bbb';
+  box.style.background  = novo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+  box.innerHTML = novo ? _dashCheckSVG() : '';
+}
+function dashTogglePainelSegmento(painelId) {
+  const panel = document.getElementById(painelId);
+  if (!panel) return;
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : 'flex';
+  if (!visible) {
+    // Repopula toda vez que abre — reflete o estado atual mesmo se a OUTRA
+    // instância do filtro (topo vs. card de inatividade) mudou por último.
+    const list = panel.querySelector('.dash-seg-list-inner');
+    if (list) list.innerHTML = _dashSegmentoListHtml();
+  }
+}
+function dashSelecionarTodosSegmento(painelId, sel) {
+  const panel = document.getElementById(painelId);
+  if (!panel) return;
+  panel.querySelectorAll('[data-seg]').forEach(el => {
+    el.dataset.checked = sel ? '1' : '0';
+    const box = el.querySelector('.dash-seg-checkbox');
+    box.style.borderColor = sel ? 'var(--pet-green,#b5e51d)' : '#bbb';
+    box.style.background  = sel ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    box.innerHTML = sel ? _dashCheckSVG() : '';
+  });
+}
+function dashAplicarFiltroSegmento(painelId) {
+  const panel = document.getElementById(painelId);
+  if (!panel) return;
+  const selecionados = new Set();
+  panel.querySelectorAll('[data-seg][data-checked="1"]').forEach(el => selecionados.add(el.dataset.seg));
+  _dashSegmentosSelecionados = selecionados.size === _DASH_SEGMENTOS_TODOS.length ? null : selecionados;
+  panel.style.display = 'none';
+  ['dash-seg-badge', 'dash-seg-inativos-badge'].forEach(bid => {
+    const badge = document.getElementById(bid);
+    if (!badge) return;
+    if (_dashSegmentosSelecionados) {
+      badge.textContent = _dashSegmentosSelecionados.size;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  });
+  dashRenderComFiltro(); // reaplica sobre os snapshots já carregados, sem reler o disco
+  dashRenderClientesInativosUI(_dashUltimaListaInativos); // painel de inatividade também respeita Segmento/Clientes
+}
+window.dashTogglePainelSegmento  = dashTogglePainelSegmento;
+window.dashSelecionarTodosSegmento = dashSelecionarTodosSegmento;
+window.dashAplicarFiltroSegmento = dashAplicarFiltroSegmento;
+// Fecha os painéis de Segmento ao clicar fora (mesmo padrão dos outros
+// dropdowns da tela — Clientes, Operação, Ferramentas).
+document.addEventListener('click', function(e) {
+  ['dash-seg-panel', 'dash-seg-inativos-panel'].forEach(painelId => {
+    const btnId = painelId.replace('-panel', '-btn');
+    const panel = document.getElementById(painelId);
+    const btn   = document.getElementById(btnId);
+    if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && !btn?.contains(e.target)) {
+      panel.style.display = 'none';
+    }
+  });
+});
 let _dashCidadesSelecionadas  = null; // null = todas as cidades de operação; Set = filtro ativo
 let _dashTodasCidades         = [];   // lista completa de cidades de operação do período
 let _dashSnapshotsAtivos = [];        // snapshots atualmente carregados
@@ -2083,12 +2206,15 @@ function dashRender(snapshots) {
     }
   }
   dashPopularListaClientes();
+  // Conjunto efetivo (picker de Clientes ∩ filtro de Segmento) — ver
+  // dashClientesEfetivos(). null = nenhum dos dois filtros ativo.
+  const _efetivos = dashClientesEfetivos(_novaListaClientes.length ? _novaListaClientes : _dashTodosClientes);
   // Aplica filtro se ativo
-  const clientesFiltrados = _dashClientesSelecionados
-    ? d.clientes.filter(c => _dashClientesSelecionados.has(c.nome))
+  const clientesFiltrados = _efetivos
+    ? d.clientes.filter(c => _efetivos.has(c.nome))
     : d.clientes;
-  const ocupFiltrados = _dashClientesSelecionados
-    ? d.clientes_ocup.filter(c => _dashClientesSelecionados.has(c.nome))
+  const ocupFiltrados = _efetivos
+    ? d.clientes_ocup.filter(c => _efetivos.has(c.nome))
     : d.clientes_ocup;
   // KPIs — calculados sobre os clientes filtrados (respeita filtro de cliente ativo)
   const set = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
@@ -2103,9 +2229,9 @@ function dashRender(snapshots) {
   // filtro de cidade ativo (_dashCidadesSelecionadas), já que elas iteram os
   // snapshots crus (não passam por dashAgregar).
   let _kpiOcup = d.totalOcup;
-  if (_dashClientesSelecionados) {
+  if (_efetivos) {
     let _filtVol = 0, _filtCap = 0;
-    const _nomesF = _dashClientesSelecionados;
+    const _nomesF = _efetivos;
     _dashSnapshotsAtivos.forEach((snap, sIdx) => {
       const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
       vecs.forEach(v => {
@@ -2132,7 +2258,7 @@ function dashRender(snapshots) {
     _kpiOcup = _filtCap > 0 ? Math.round((_filtVol / _filtCap) * 100) : d.totalOcup;
   }
   // Viagens: conta apenas viagens que atendem ao menos um cliente filtrado
-  const _nomesFilter = _dashClientesSelecionados;
+  const _nomesFilter = _efetivos;
   let _kpiViagens = d.totalViagens;
   let _kpiViagensComPedagio = d.totalViagensComPedagio;
   if (_nomesFilter) {
@@ -2264,8 +2390,15 @@ function dashRender(snapshots) {
   // direto (já veio filtrado por cidade dentro de dashAgregar); não é afetado
   // pelo filtro de CLIENTE de propósito, é uma visão por operação.
   dashOcupVolPorOperacaoChart('dash-chart-op-ocup-vol', d.operacoes_ocup);
-  // Mapa
-  dashRenderMapa(d.rotasMap);
+  // Mapa — antes não respeitava NENHUM filtro de cliente (nem o do picker
+  // de Clientes, que já existia). d.rotasMap é montado direto em
+  // dashAgregar() só com o filtro de cidade aplicado; filtra aqui em cima,
+  // por parada, mantendo a rota (terminal) mesmo que fique sem nenhuma
+  // parada visível após o filtro.
+  const _rotasMapFiltradas = _efetivos
+    ? d.rotasMap.map(r => ({ ...r, paradas: (r.paradas || []).filter(p => _efetivos.has(p.nome)) }))
+    : d.rotasMap;
+  dashRenderMapa(_rotasMapFiltradas);
   // Ranking de Transportadoras — já vem filtrado por cidade (d.entradasTransportadora
   // é derivado de dashAgregar, que já aplicou o filtro de cidade na fonte).
   // NÃO é filtrado por cliente de propósito: o ranking é sobre quem prestou o
@@ -2288,6 +2421,11 @@ function dashRender(snapshots) {
       </tr>`;
     }).join('');
   }
+  // "Clientes sem comprar" não é recalculado aqui (ele olha o histórico
+  // completo, não os snapshots do período/mês selecionado) — só reaplica o
+  // filtro de Cliente/Segmento em cima do que já foi calculado, pra ficar
+  // consistente com o resto da tela sem reler o disco a cada troca de filtro.
+  dashRenderClientesInativosUI(_dashUltimaListaInativos);
 }
 let _dashOrdemVol = 'desc'; // 'desc' = maior primeiro, 'asc' = menor primeiro
 let _dashOrdemEnt = 'desc';
@@ -2697,14 +2835,19 @@ function dashRenderClientesInativosUI(lista) {
   _dashUltimaListaInativos = lista;
   const box = document.getElementById('dash-clientes-inativos');
   if (!box) return;
-  if (!lista.length) {
-    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum pedido com data de entrega encontrado no histórico.</div>`;
+  // Mesmo conjunto efetivo (picker de Clientes ∩ Segmento) usado no resto da
+  // tela — assim "Clientes sem comprar" também respeita o filtro de
+  // Segmento, mesmo olhando o histórico completo (não o mês/período).
+  const _efetivosInativos = dashClientesEfetivos(lista.map(c => c.nome));
+  const listaFiltrada = _efetivosInativos ? lista.filter(c => _efetivosInativos.has(c.nome)) : lista;
+  if (!listaFiltrada.length) {
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">${lista.length ? 'Nenhum cliente com o filtro atual (Clientes/Segmento).' : 'Nenhum pedido com data de entrega encontrado no histórico.'}</div>`;
     return;
   }
   const limiar = _dashInativosLimiarDias;
-  const alertas = lista.filter(c => c.dias >= limiar);
+  const alertas = listaFiltrada.filter(c => c.dias >= limiar);
   if (!alertas.length) {
-    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">✅ Nenhum cliente passou de ${limiar} dias sem comprar (${lista.length} cliente${lista.length > 1 ? 's' : ''} no histórico).</div>`;
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">✅ Nenhum cliente passou de ${limiar} dias sem comprar (${listaFiltrada.length} cliente${listaFiltrada.length > 1 ? 's' : ''} no filtro atual).</div>`;
     return;
   }
   // Crítico = já dobrou o limite escolhido (ex.: limite 15 dias → crítico com 30+)
@@ -2800,8 +2943,9 @@ window.dashExportarExcel = async function dashExportarExcel() {
     alert('Nenhum dado carregado. Selecione um mês ou clique em "Todos os períodos" primeiro.');
     return;
   }
-  // Respeita filtro de clientes ativo
-  const filtroAtivo = _dashClientesSelecionados; // null = todos, Set = filtro
+  // Respeita filtro de clientes E segmento ativos (mesmo conjunto efetivo
+  // usado em toda a tela — ver dashClientesEfetivos())
+  const filtroAtivo = dashClientesEfetivos(_dashTodosClientes);
 
   // Verifica SheetJS
   if (typeof XLSX === 'undefined') {
