@@ -2576,6 +2576,7 @@ window.dashSincronizar = async function() {
     } else {
       await window.dashCarregarTodos();
     }
+    dashAtualizarClientesInativos();
     showToast('Dashboard sincronizado com o histórico ✅');
   } catch(e) {
     showToast('Erro ao sincronizar: ' + e.message, false);
@@ -2648,6 +2649,106 @@ document.addEventListener('click', function(e) {
   }
 });
 window.dashToggleFerramentas = dashToggleFerramentas;
+// ═══════════════════════════════════════════════════════════════════════════
+// CLIENTES SEM COMPRAR (alerta de inatividade)
+// ═══════════════════════════════════════════════════════════════════════════
+// Diferente do resto do Dashboard (que respeita o filtro de mês/período do
+// topo), este painel sempre olha o HISTÓRICO COMPLETO — o objetivo é avisar
+// "esse cliente sumiu", e um cliente que não compra há 40 dias já teria
+// desaparecido da tela se o painel só olhasse o mês selecionado (ele
+// simplesmente não apareceria em lugar nenhum, o que é o oposto de um alerta).
+// Usa dashChaveCliente()/dashNomeCanônico() — as MESMAS funções que o resto
+// do Dashboard já usa pra agrupar cliente por código SAP (com fallback pro
+// nome normalizado), evitando contar "Auto Posto Moraes LTDA" e "Auto Posto
+// Moraes" como dois clientes diferentes.
+let _dashInativosLimiarDias = 15; // padrão: alerta a partir de 15 dias sem comprar
+let _dashUltimaListaInativos = [];
+function _dashParseDataBr(s) {
+  const m = String(s || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  return new Date(parseInt(m[3], 10), parseInt(m[2], 10) - 1, parseInt(m[1], 10));
+}
+async function dashCalcularClientesInativos() {
+  const store = await dashGetStoreMerged();
+  const todos = Object.values(store).flat();
+  // key (dashChaveCliente) -> { nome, ultimaData }
+  const porCliente = {};
+  todos.forEach(snap => {
+    (snap.pedidos || []).forEach(p => {
+      if (!p || !p.cliente) return;
+      const d = _dashParseDataBr(p.dataEntregaLogistica);
+      if (!d) return;
+      const key = dashChaveCliente(p);
+      if (!porCliente[key]) porCliente[key] = { nome: p.cliente, ultimaData: d };
+      else {
+        porCliente[key].nome = dashNomeCanônico(porCliente[key].nome, p.cliente);
+        if (d > porCliente[key].ultimaData) porCliente[key].ultimaData = d;
+      }
+    });
+  });
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  return Object.values(porCliente).map(c => ({
+    nome: c.nome,
+    ultimaData: c.ultimaData,
+    dias: Math.round((hoje - c.ultimaData) / 86400000),
+  })).sort((a, b) => b.dias - a.dias);
+}
+function dashRenderClientesInativosUI(lista) {
+  _dashUltimaListaInativos = lista;
+  const box = document.getElementById('dash-clientes-inativos');
+  if (!box) return;
+  if (!lista.length) {
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Nenhum pedido com data de entrega encontrado no histórico.</div>`;
+    return;
+  }
+  const limiar = _dashInativosLimiarDias;
+  const alertas = lista.filter(c => c.dias >= limiar);
+  if (!alertas.length) {
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">✅ Nenhum cliente passou de ${limiar} dias sem comprar (${lista.length} cliente${lista.length > 1 ? 's' : ''} no histórico).</div>`;
+    return;
+  }
+  // Crítico = já dobrou o limite escolhido (ex.: limite 15 dias → crítico com 30+)
+  box.innerHTML = alertas.map(c => {
+    const critico = c.dias >= limiar * 2;
+    const cor = critico
+      ? { bg: 'rgba(220,38,38,.08)', border: '#DC2626', badge: '#DC2626' }
+      : { bg: 'rgba(245,158,11,.08)', border: '#F59E0B', badge: '#F59E0B' };
+    const dataFmt = c.ultimaData.toLocaleDateString('pt-BR');
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;margin-bottom:5px;background:${cor.bg};border-left:3px solid ${cor.border};border-radius:0 6px 6px 0;">
+        <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);" title="${c.nome}">${critico ? '🔴' : '🟡'} ${c.nome}</div>
+        <div style="font-size:11px;color:var(--text-3);white-space:nowrap;">última entrega: ${dataFmt}</div>
+        <div style="font-size:11px;font-weight:800;color:#fff;background:${cor.badge};border-radius:99px;padding:3px 10px;white-space:nowrap;">${c.dias} dias sem comprar</div>
+      </div>`;
+  }).join('');
+}
+async function dashAtualizarClientesInativos() {
+  const box = document.getElementById('dash-clientes-inativos');
+  if (!box) return; // aba ainda não montada nessa carga da página
+  if (!window.dirHandleHistorico) {
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Selecione a pasta do histórico primeiro.</div>`;
+    return;
+  }
+  try {
+    const lista = await dashCalcularClientesInativos();
+    dashRenderClientesInativosUI(lista);
+  } catch (e) {
+    console.warn('[dashAtualizarClientesInativos] falha ao calcular:', e);
+    box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Erro ao calcular — veja o console.</div>`;
+  }
+}
+function dashSetLimiarInativos(dias) {
+  _dashInativosLimiarDias = dias;
+  document.querySelectorAll('.dash-inativo-limiar-tab').forEach(el => {
+    const ativo = parseInt(el.dataset.dias, 10) === dias;
+    el.classList.toggle('active-rank', ativo);
+    el.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    el.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+  dashRenderClientesInativosUI(_dashUltimaListaInativos);
+}
+window.dashAtualizarClientesInativos = dashAtualizarClientesInativos;
+window.dashSetLimiarInativos = dashSetLimiarInativos;
 // ── Hook: popular meses quando abre a aba ─────────────────────────────────
 const _origShowTab = window.showTab;
 window.showTab = function(tab) {
@@ -2656,6 +2757,7 @@ window.showTab = function(tab) {
     dashPopularMeses();
     dashAtualizarVisibilidadeFerramentasKm();
     dashAutoRodarKmRealSeNecessario(); // idempotente (só roda 1x/dia) — reforça caso a checagem do carregamento inicial não tenha rodado ainda
+    dashAtualizarClientesInativos(); // independe do filtro de mês/período — olha o histórico completo
     // Invalidar mapa se já existir
     setTimeout(() => { if (_dashMap) _dashMap.invalidateSize(); }, 300);
   }
@@ -2685,6 +2787,7 @@ window.excluirEntradaHistorico = async function(filename, btn) {
   dashPopularMeses();
   dashAtualizarVisibilidadeFerramentasKm();
   dashAutoRodarKmRealSeNecessario(); // dispara sozinho em segundo plano, no máx 1x/dia — ver comentário na função
+  dashAtualizarClientesInativos(); // idempotente — silencioso se a pasta do histórico ainda não estiver selecionada
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXPORTAÇÃO EXCEL — Dashboard

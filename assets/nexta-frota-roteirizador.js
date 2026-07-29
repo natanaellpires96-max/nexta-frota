@@ -6075,10 +6075,10 @@ function renderTemplateOperacao() {
           <colgroup>
             <col style="width:90px"/>
             <col style="width:50px"/>
-            <col style="width:130px"/>
-            <col/>
+            <col style="width:200px"/>
+            <col style="width:240px"/>
             <col style="width:44px"/>
-            <col style="width:220px"/>
+            <col style="width:290px"/>
             <col style="width:76px"/>
           </colgroup>
           <thead>
