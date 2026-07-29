@@ -159,19 +159,47 @@ async function dbAdicionarCadastroItens(tipo, itensPorChave) {
 // (Terminais/Clientes/Veículos na tela). Aqui SIM sobrescreve a chave, porque
 // é uma edição explícita e intencional de uma pessoa, diferente da
 // importação em lote (que nunca deve sobrescrever sem querer).
+//
+// FILA POR TIPO — CORREÇÃO DE CONDIÇÃO DE CORRIDA:
+// Antes, cada chamada fazia ler-modificar-escrever (lê o documento inteiro,
+// muda só a chave editada, regrava tudo) sem nenhuma fila. Editar e salvar
+// VÁRIOS registros em sequência rápida (ex.: passar por uma lista de
+// clientes preenchendo o Segmento de cada um) disparava várias chamadas
+// quase ao mesmo tempo — a 2ª podia ler o Firestore ANTES da 1ª terminar de
+// gravar, e ao regravar "por cima" apagava a mudança da 1ª sem ninguém
+// perceber. Resultado: só a(s) última(s) edição(ões) da sequência
+// "grudavam" de verdade — todo o resto voltava pro valor antigo assim que a
+// página recarregava (ou outra sessão relia do Firestore), como se tivesse
+// "resetado" sozinho. A fila abaixo garante que cada gravação só começa
+// depois que a ANTERIOR (do mesmo tipo) terminou de verdade — inclusive a
+// invalidação do cache — então cada uma sempre lê o estado mais recente.
+const _dbCadastroFila = {}; // tipo -> Promise da última operação em andamento
+function _dbCadastroEnfileirar(tipo, tarefa) {
+  const anterior = _dbCadastroFila[tipo] || Promise.resolve();
+  // .catch(()=>{}) na corrente pra uma falha não travar a fila pras
+  // próximas chamadas — cada tarefa ainda propaga seu próprio erro pra
+  // quem chamou (o await de fora continua rejeitando normalmente).
+  const atual = anterior.catch(() => {}).then(tarefa);
+  _dbCadastroFila[tipo] = atual.catch(() => {});
+  return atual;
+}
 async function dbSalvarCadastroItem(tipo, chave, item) {
   if (!chave) return;
-  const atual = await dbGetCadastro(tipo);
-  atual[chave] = item;
-  await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
-  cacheInvalidate(`cadastro||${tipo}`);
+  return _dbCadastroEnfileirar(tipo, async () => {
+    const atual = await dbGetCadastro(tipo);
+    atual[chave] = item;
+    await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
+    cacheInvalidate(`cadastro||${tipo}`);
+  });
 }
 async function dbRemoverCadastroItem(tipo, chave) {
   if (!chave) return;
-  const atual = await dbGetCadastro(tipo);
-  delete atual[chave];
-  await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
-  cacheInvalidate(`cadastro||${tipo}`);
+  return _dbCadastroEnfileirar(tipo, async () => {
+    const atual = await dbGetCadastro(tipo);
+    delete atual[chave];
+    await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
+    cacheInvalidate(`cadastro||${tipo}`);
+  });
 }
 window.chaveCadastro            = chaveCadastro;
 window.dbGetCadastro            = dbGetCadastro;
