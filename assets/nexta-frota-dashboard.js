@@ -2936,9 +2936,20 @@ function dashRenderClientesInativosUI(lista) {
       ? { bg: 'rgba(220,38,38,.08)', border: '#DC2626', badge: '#DC2626' }
       : { bg: 'rgba(245,158,11,.08)', border: '#F59E0B', badge: '#F59E0B' };
     const dataFmt = c.ultimaData.toLocaleDateString('pt-BR');
+    // Tag de diagnóstico — mostra o que o sistema ENCONTROU pra esse
+    // cliente: o segmento (se achou) ou o motivo de não ter achado (sem
+    // SAP no pedido + nome não bateu com nenhum cadastro). Fica visível
+    // direto na tela, sem precisar abrir o console, pra confirmar se a
+    // busca está funcionando ou não pra cada cliente específico.
+    const segDetectado = dashClienteSegmento(c.nome);
+    const sapUsado = _dashMapaNomeParaSAP[c.nome] || '';
+    const tagSeg = segDetectado
+      ? `<span style="font-size:9px;font-weight:700;color:#3730A3;background:#EEF2FF;border:1px solid #C7D2FE;border-radius:4px;padding:1px 6px;white-space:nowrap;" title="${sapUsado ? 'Encontrado via SAP ' + sapUsado : 'Encontrado por nome'}">${segDetectado}</span>`
+      : `<span style="font-size:9px;font-weight:600;color:#9CA3AF;background:#F3F4F6;border:1px solid #E5E7EB;border-radius:4px;padding:1px 6px;white-space:nowrap;" title="${sapUsado ? 'Tem SAP ' + sapUsado + ' mas nenhum cadastro com esse SAP tem Segmento preenchido' : 'Sem Código SAP neste pedido — tentou por nome (\"' + c.nome + '\") e não achou cadastro com esse nome e Segmento preenchido'}">sem segmento — ⓘ</span>`;
     return `
       <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;margin-bottom:5px;background:${cor.bg};border-left:3px solid ${cor.border};border-radius:0 6px 6px 0;">
         <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:var(--text);" title="${c.nome}">${critico ? '🔴' : '🟡'} ${c.nome}</div>
+        ${tagSeg}
         <div style="font-size:11px;color:var(--text-3);white-space:nowrap;">última entrega: ${dataFmt}</div>
         <div style="font-size:11px;font-weight:800;color:#fff;background:${cor.badge};border-radius:99px;padding:3px 10px;white-space:nowrap;">${c.dias} dias sem comprar</div>
       </div>`;
