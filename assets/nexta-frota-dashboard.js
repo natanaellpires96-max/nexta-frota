@@ -661,18 +661,24 @@ window.dashPopularMeses = async function() {
 // ── Extrair dados agregados de snapshots ───────────────────────────────────
 // ── Chave de unificação de cliente ────────────────────────────────────────
 // Prioridade: codigoSAP > nome normalizado (sem acentos, sem sufixo jurídico, maiúsculo)
-function dashChaveCliente(ped) {
-  const sap = (ped.codigoSAP || ped.codSAP || ped.sap || '').toString().trim();
-  if (sap) return 'SAP:' + sap;
-  // Fallback: normaliza o nome removendo acentos, sufixos jurídicos e espaços extras
-  const nome = (ped.cliente || ped.nomeCliente || ped.nome || '?').toString();
-  return 'NM:' + nome
+// ── Normaliza nome de cliente pra comparação (remove acentos, sufixos
+// jurídicos, pontuação e espaços extras) — extraído de dashChaveCliente()
+// pra poder ser reaproveitado na busca de Segmento (ver dashClienteSegmento).
+function dashNormalizarNomeCliente(nome) {
+  return (nome || '?').toString()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
     .toUpperCase()
     .replace(/\b(LTDA|EIRELI|ME|EPP|SA|S\.A\.|COMERCIO|COMERCIAL|INDUSTRIA|IND|COM)\b\.?/g, '')
     .replace(/[^A-Z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+function dashChaveCliente(ped) {
+  const sap = (ped.codigoSAP || ped.codSAP || ped.sap || '').toString().trim();
+  if (sap) return 'SAP:' + sap;
+  // Fallback: normaliza o nome removendo acentos, sufixos jurídicos e espaços extras
+  const nome = (ped.cliente || ped.nomeCliente || ped.nome || '?').toString();
+  return 'NM:' + dashNormalizarNomeCliente(nome);
 }
 // ── Nome canônico preferido (mais curto = menos abreviado) ─────────────────
 function dashNomeCanônico(atual, novo) {
@@ -1837,10 +1843,27 @@ const _DASH_SEGMENTOS_TODOS = ['B2B', 'B2C', 'TRR', '—']; // '—' = cliente s
 // Isso significa que o segmento aplicado é sempre o de HOJE, mesmo pra
 // pedidos antigos — não existe "segmento histórico" por pedido, e não faz
 // muito sentido ter (é um atributo do cliente, não da entrega).
-function dashClienteSegmento(nome) {
+//
+// IMPORTANTE: usa nome NORMALIZADO (dashNormalizarNomeCliente — remove
+// acento, sufixo jurídico como "LTDA", maiúsculas, espaço extra), a MESMA
+// regra de identidade que dashChaveCliente() já usa pra agrupar entregas
+// por cliente em todo o resto do Dashboard. Antes comparava o nome exato
+// (trim+lowercase só) — "AMNETO TRANSPORTES LTDA" no pedido salvo vs.
+// "Amneto Transportes" no cadastro (ou qualquer variação de maiúscula/
+// sufixo) não batiam, e TODO cliente caía em "sem segmento", mesmo já
+// tendo sido cadastrado.
+function _dashSegmentoLookup() {
   const arr = (typeof clientes !== 'undefined' && clientes) || window.clientes || [];
-  const c = arr.find(x => (x.nome || '').trim().toLowerCase() === String(nome || '').trim().toLowerCase());
-  return (c && c.segmento) || '';
+  const map = {};
+  arr.forEach(c => {
+    if (!c || !c.segmento) return;
+    map[dashNormalizarNomeCliente(c.nome)] = c.segmento;
+  });
+  return map;
+}
+function dashClienteSegmento(nome) {
+  const lookup = _dashSegmentoLookup();
+  return lookup[dashNormalizarNomeCliente(nome)] || '';
 }
 // ── Conjunto efetivo de clientes visíveis (filtro GLOBAL) ──────────────────
 // Combina (E lógico, não OU) o filtro do picker de Clientes com o filtro de
