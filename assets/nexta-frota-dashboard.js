@@ -836,8 +836,9 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
                 : _kmAjustadoViagem / vi.paradas.length)
             : kmBase;
           const chave = dashChaveCliente(ped);
-          if (!clientes[chave]) clientes[chave] = { nome, cidade, entregas:0, volume:0, km:0, kmTotal:0, lat, lon, capTotal:0, viagensIds: new Set() };
+          if (!clientes[chave]) clientes[chave] = { nome, cidade, entregas:0, volume:0, km:0, kmTotal:0, lat, lon, capTotal:0, viagensIds: new Set(), codigoSAP: '' };
           clientes[chave].nome = dashNomeCanônico(clientes[chave].nome, nome);
+          if (!clientes[chave].codigoSAP && ped.codigoSAP) clientes[chave].codigoSAP = String(ped.codigoSAP).trim();
           clientes[chave].entregas++;
           clientes[chave].volume += vol;
           // capTotal por cliente: acumula a capacidade do veículo UMA VEZ por viagem
@@ -1835,6 +1836,23 @@ let _dashClientesSelecionados = null; // null = todos; Set = filtro ativo
 let _dashSegmentosSelecionados = null; // GLOBAL (botão do topo) — null = todos; Set = filtro ativo (B2B/B2C/TRR/'—'). Afeta TODA a tela (KPIs, gráficos, tabela, mapa, Excel, e também o card "Clientes sem comprar" abaixo).
 let _dashSegmentosInativosSelecionados = null; // LOCAL (botão dentro do card "Clientes sem comprar") — null = todos; Set = filtro ativo. Afeta SÓ aquele card, não mexe no resto da tela.
 const _DASH_SEGMENTOS_TODOS = ['B2B', 'B2C', 'TRR', '—']; // '—' = cliente sem segmento cadastrado
+// ── Mapa nome → Código SAP ──────────────────────────────────────────────────
+// dashClientesEfetivos()/dashRenderClientesInativosUI() só têm o NOME do
+// cliente pra trabalhar (a lista de nomes do filtro já existia assim antes
+// do Segmento existir, e mudar isso mexeria no filtro de Clientes que já
+// funciona). Esse mapa é o jeito de "lembrar" qual SAP corresponde a qual
+// nome, preenchido toda vez que dashAgregar()/dashCalcularClientesInativos()
+// rodam (que SIM têm o pedido completo, com codigoSAP) — assim
+// dashClienteSegmento(nome) consegue montar a MESMA chave que
+// dashChaveCliente() usaria (SAP primeiro, nome normalizado como
+// fallback), garantindo que "mesmo cliente" aqui é exatamente "mesmo
+// cliente" no resto do Dashboard.
+let _dashMapaNomeParaSAP = {};
+function _dashAtualizarMapaNomeSAP(itens) {
+  (itens || []).forEach(it => {
+    if (it && it.nome && it.codigoSAP) _dashMapaNomeParaSAP[it.nome] = it.codigoSAP;
+  });
+}
 // ── Segmento do cliente (B2B/B2C/TRR) ───────────────────────────────────────
 // Campo vive no CADASTRO de cliente (aba Cadastros → Clientes), não no
 // pedido salvo no histórico — então sempre consulta o cadastro ATUAL
@@ -1844,26 +1862,28 @@ const _DASH_SEGMENTOS_TODOS = ['B2B', 'B2C', 'TRR', '—']; // '—' = cliente s
 // pedidos antigos — não existe "segmento histórico" por pedido, e não faz
 // muito sentido ter (é um atributo do cliente, não da entrega).
 //
-// IMPORTANTE: usa nome NORMALIZADO (dashNormalizarNomeCliente — remove
-// acento, sufixo jurídico como "LTDA", maiúsculas, espaço extra), a MESMA
-// regra de identidade que dashChaveCliente() já usa pra agrupar entregas
-// por cliente em todo o resto do Dashboard. Antes comparava o nome exato
-// (trim+lowercase só) — "AMNETO TRANSPORTES LTDA" no pedido salvo vs.
-// "Amneto Transportes" no cadastro (ou qualquer variação de maiúscula/
-// sufixo) não batiam, e TODO cliente caía em "sem segmento", mesmo já
-// tendo sido cadastrado.
+// Usa a MESMA chave de identidade que dashChaveCliente() já usa pra
+// agrupar entregas por cliente em todo o resto do Dashboard: Código SAP
+// primeiro (exato, sem ambiguidade), nome normalizado (sem acento, sem
+// sufixo jurídico como "LTDA", maiúsculo, sem espaço extra) como fallback
+// só quando não há SAP. Antes comparava só o nome exato — bastava
+// qualquer diferença de maiúscula/sufixo/acento entre o nome salvo no
+// pedido histórico e o nome no cadastro pra nunca bater, e TODO cliente
+// caía em "sem segmento" mesmo já tendo sido cadastrado.
 function _dashSegmentoLookup() {
   const arr = (typeof clientes !== 'undefined' && clientes) || window.clientes || [];
   const map = {};
   arr.forEach(c => {
     if (!c || !c.segmento) return;
-    map[dashNormalizarNomeCliente(c.nome)] = c.segmento;
+    const key = dashChaveCliente({ codigoSAP: c.codigoSAP, cliente: c.nome });
+    map[key] = c.segmento;
   });
   return map;
 }
 function dashClienteSegmento(nome) {
-  const lookup = _dashSegmentoLookup();
-  return lookup[dashNormalizarNomeCliente(nome)] || '';
+  const sap = _dashMapaNomeParaSAP[nome] || '';
+  const key = dashChaveCliente({ codigoSAP: sap, cliente: nome });
+  return _dashSegmentoLookup()[key] || '';
 }
 // ── Conjunto efetivo de clientes visíveis (filtro GLOBAL) ──────────────────
 // Combina (E lógico, não OU) o filtro do picker de Clientes com o filtro de
@@ -2238,6 +2258,7 @@ function dashRender(snapshots) {
   // por isso todo o resto do dashboard (KPIs, gráficos, mapa, ranking) já sai
   // filtrado corretamente, sem precisar re-filtrar depois.
   const d = dashAgregar(snapshots, _dashCidadesSelecionadas);
+  _dashAtualizarMapaNomeSAP(d.clientes); // alimenta a busca de Segmento por SAP (ver dashClienteSegmento)
   _dashUltimoAgregado = d; // reaproveitado pelo Histórico por Veículo (km por dia), sem recalcular
   // Atualiza lista global de clientes para o filtro
   // Só reinicia a lista visual se não houver filtro ativo (evita resetar seleção do usuário)
@@ -2865,19 +2886,23 @@ async function dashCalcularClientesInativos() {
       const d = _dashParseDataBr(p.dataEntregaLogistica);
       if (!d) return;
       const key = dashChaveCliente(p);
-      if (!porCliente[key]) porCliente[key] = { nome: p.cliente, ultimaData: d };
+      if (!porCliente[key]) porCliente[key] = { nome: p.cliente, ultimaData: d, codigoSAP: p.codigoSAP ? String(p.codigoSAP).trim() : '' };
       else {
         porCliente[key].nome = dashNomeCanônico(porCliente[key].nome, p.cliente);
+        if (!porCliente[key].codigoSAP && p.codigoSAP) porCliente[key].codigoSAP = String(p.codigoSAP).trim();
         if (d > porCliente[key].ultimaData) porCliente[key].ultimaData = d;
       }
     });
   });
   const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
-  return Object.values(porCliente).map(c => ({
+  const resultado = Object.values(porCliente).map(c => ({
     nome: c.nome,
+    codigoSAP: c.codigoSAP,
     ultimaData: c.ultimaData,
     dias: Math.round((hoje - c.ultimaData) / 86400000),
   })).sort((a, b) => b.dias - a.dias);
+  _dashAtualizarMapaNomeSAP(resultado); // alimenta a busca de Segmento por SAP (ver dashClienteSegmento)
+  return resultado;
 }
 function dashRenderClientesInativosUI(lista) {
   _dashUltimaListaInativos = lista;
