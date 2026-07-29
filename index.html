@@ -196,6 +196,17 @@
           <textarea id="cl-obs" placeholder="Acesso restrito, portaria, contato, instruções de entrega…"></textarea>
         </div>
       </div>
+      <div class="row">
+        <div class="field" style="max-width:160px;">
+          <label>Segmento</label>
+          <select id="cl-segmento">
+            <option value="">— não informado —</option>
+            <option value="B2B">B2B</option>
+            <option value="B2C">B2C</option>
+            <option value="TRR">TRR</option>
+          </select>
+        </div>
+      </div>
       <hr class="divider"/>
       <div style="font-size:9.5px;color:var(--text-2);font-weight:700;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px;">
         Tipos de caminhão aceitos
@@ -571,6 +582,20 @@
               style="background:transparent;border:none;border-right:1px solid #D1D5DB;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;">Todos períodos</button>
             <button onclick="dashCarregarHoje()" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'" title="Resumo gerencial do dia — mesmos KPIs, só das roteirizações salvas hoje"
               style="background:transparent;border:none;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;">📋 Hoje</button>
+          </div>
+
+          <!-- Grupo: filtro de Segmento (B2B/B2C/TRR) — afeta todos os
+               gráficos/tabela/mapa que envolvem cliente no Dashboard, junto
+               com o filtro de Clientes (os dois se cruzam, não se somam). -->
+          <div style="display:flex;align-items:stretch;background:#fff;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;" title="Filtrar por segmento de cliente">
+            <button class="dash-segmento-tab active-rank" data-seg="B2B" onclick="dashToggleSegmento('B2B')"
+              style="background:var(--pet-green,#b5e51d);border:none;border-right:1px solid #D1D5DB;padding:7px 11px;font-size:11px;font-weight:700;color:#000;cursor:pointer;white-space:nowrap;font-family:inherit;">B2B</button>
+            <button class="dash-segmento-tab active-rank" data-seg="B2C" onclick="dashToggleSegmento('B2C')"
+              style="background:var(--pet-green,#b5e51d);border:none;border-right:1px solid #D1D5DB;padding:7px 11px;font-size:11px;font-weight:700;color:#000;cursor:pointer;white-space:nowrap;font-family:inherit;">B2C</button>
+            <button class="dash-segmento-tab active-rank" data-seg="TRR" onclick="dashToggleSegmento('TRR')"
+              style="background:var(--pet-green,#b5e51d);border:none;border-right:1px solid #D1D5DB;padding:7px 11px;font-size:11px;font-weight:700;color:#000;cursor:pointer;white-space:nowrap;font-family:inherit;">TRR</button>
+            <button class="dash-segmento-tab active-rank" data-seg="—" onclick="dashToggleSegmento('—')"
+              style="background:var(--pet-green,#b5e51d);border:none;padding:7px 11px;font-size:11px;font-weight:700;color:#000;cursor:pointer;white-space:nowrap;font-family:inherit;" title="Clientes sem segmento cadastrado">Sem segmento</button>
           </div>
 
           <div style="width:1px;height:22px;background:#D1D5DB;margin:0 2px;flex-shrink:0;"></div>
@@ -1079,9 +1104,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=56dee894"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=fe59d7a0"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=4f58dd75"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=8aadfece"></script>
 </body>
 </html>
