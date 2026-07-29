@@ -2831,6 +2831,11 @@ function _mesclarClientesDuplicadosSilencioso() {
   return duplicados.length;
 }
 function renderClientes() {
+  // Auto-mescla duplicados (ver _mesclarClientesDuplicadosSilencioso) toda
+  // vez que a lista é desenhada — não só nos pontos que carregam do
+  // Firestore/salvam — pra nunca depender de prever todo caminho que pode
+  // popular `clientes` (import de planilha, exemplos de demonstração etc.).
+  _mesclarClientesDuplicadosSilencioso();
   const el = document.getElementById('clientes-list');
   if (!clientes.length) {
     el.innerHTML = '<div class="empty">Nenhum cliente cadastrado.<br>Clique em "+ Cliente" para começar.</div>';
