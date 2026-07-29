@@ -2792,43 +2792,71 @@ function removerCliente(id) {
 // (SAP/nome, a gaveta compartilhada que originou a duplicidade).
 // Retorna quantos grupos duplicados foram mesclados (0 = nada a fazer).
 function _mesclarClientesDuplicadosSilencioso() {
+  // IMPORTANTE: a cópia "antiga" (chave por SAP) e a cópia "nova" (chave por
+  // id) do MESMO cliente têm o `id` IDÊNTICO — é o cenário mais comum que
+  // esta função precisa tratar. Por isso agrupamos e removemos por POSIÇÃO
+  // no array (índice), nunca por `id`: um filtro por id (versão anterior
+  // deste código) apagava a cópia mesclada também, porque ela carrega o
+  // mesmo id da cópia extra — resultado: o cliente inteiro desaparecia,
+  // tanto localmente quanto no Firestore. Bug real já causado por isso e
+  // corrigido aqui.
   const chaveIdentidade = (c) => [
     (c.codigoSAP || '').trim().toUpperCase(),
     (c.nome || '').trim().toUpperCase(),
     Number.isFinite(c.lat) ? c.lat.toFixed(4) : '',
     Number.isFinite(c.lon) ? c.lon.toFixed(4) : '',
   ].join('|');
-  const grupos = new Map();
-  clientes.forEach(c => {
+  const gruposPorIndice = new Map();
+  clientes.forEach((c, idx) => {
     const k = chaveIdentidade(c);
-    if (!grupos.has(k)) grupos.set(k, []);
-    grupos.get(k).push(c);
+    if (!gruposPorIndice.has(k)) gruposPorIndice.set(k, []);
+    gruposPorIndice.get(k).push(idx);
   });
-  const duplicados = [...grupos.values()].filter(g => g.length > 1);
-  if (!duplicados.length) return 0;
-  duplicados.forEach(grupo => {
-    let mesclado = { ...grupo[0] };
-    for (let i = 1; i < grupo.length; i++) {
-      Object.entries(grupo[i]).forEach(([k, v]) => {
-        if (k === 'id') return;
+  const gruposDuplicados = [...gruposPorIndice.values()].filter(idxs => idxs.length > 1);
+  if (!gruposDuplicados.length) return 0;
+  const indicesRemover = new Set();
+  const tarefasPersistencia = [];
+  gruposDuplicados.forEach(idxs => {
+    const [idxPrincipal, ...idxsExtra] = idxs;
+    const principal = clientes[idxPrincipal];
+    let mesclado = { ...principal };
+    idxsExtra.forEach(i => {
+      Object.entries(clientes[i]).forEach(([k, v]) => {
+        if (k === 'id') return; // mantém o id do principal — os demais campos, o preenchido vence
         const vazio = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
         if (!vazio) mesclado[k] = v;
       });
-    }
-    const idsRemover = grupo.slice(1).map(c => c.id);
-    const idxPrincipal = clientes.findIndex(c => c.id === grupo[0].id);
-    if (idxPrincipal !== -1) clientes[idxPrincipal] = mesclado;
-    clientes = clientes.filter(c => !idsRemover.includes(c.id));
+    });
+    clientes[idxPrincipal] = mesclado;
+    idxsExtra.forEach(i => { indicesRemover.add(i); });
+    tarefasPersistencia.push({ mesclado, extras: idxsExtra.map(i => clientes[i]) });
+  });
+  // Remove pelas POSIÇÕES marcadas (não pelo id) — assim a cópia mesclada,
+  // que ficou na posição do principal e pode carregar o mesmo id de uma
+  // cópia extra, nunca é removida junto.
+  clientes = clientes.filter((c, idx) => !indicesRemover.has(idx));
+  tarefasPersistencia.forEach(({ mesclado, extras }) => {
     _persistirCadastroManual('clientes', mesclado, null);
-    grupo.slice(1).forEach(extra => {
-      _removerCadastroManual('clientes', extra); // remove pela chave nova (id) da cópia
+    extras.forEach(extra => {
+      // Só remove a chave nova (por id) da cópia extra se o id dela for
+      // DIFERENTE do id que ficou (mesclado.id) — quando o id é igual (o
+      // caso comum: cópia antiga por SAP + cópia nova por id do MESMO
+      // registro), remover essa chave apagaria o próprio registro mesclado
+      // que acabamos de gravar nela.
+      if (extra.id !== mesclado.id) {
+        _removerCadastroManual('clientes', extra);
+      }
+      // A chave antiga (SAP/nome) é sempre a "gaveta compartilhada" que
+      // originou a duplicidade — segura remover em qualquer caso, já que
+      // o grupo todo (por identidade SAP+nome+coordenadas) representa o
+      // MESMO cliente físico, agora consolidado só na chave por id.
       if (typeof window.chaveCadastro === 'function' && typeof window.dbRemoverCadastroItem === 'function') {
-        const chaveAntiga = window.chaveCadastro('clientes', extra); // a "gaveta" antiga (SAP/nome) compartilhada
+        const chaveAntiga = window.chaveCadastro('clientes', extra);
         window.dbRemoverCadastroItem('clientes', chaveAntiga).catch(() => {});
       }
     });
   });
-  return duplicados.length;
+  return gruposDuplicados.length;
 }
 function renderClientes() {
   // Auto-mescla duplicados (ver _mesclarClientesDuplicadosSilencioso) toda
