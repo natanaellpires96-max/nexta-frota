@@ -295,15 +295,33 @@
 #roteirizador-shell .op-head {
   padding: 11px 16px; background: var(--bg); border-bottom: 0.5px solid var(--border);
 }
-#roteirizador-shell .op-head-grid { display: grid; grid-template-columns: 140px 1fr 140px 1fr; gap: 6px 10px; font-size: 12px; }
+/* Duas sub-grids independentes (esquerda/direita), cada uma com seu próprio
+   par label/valor — assim uma linha opcional (ex.: Implemento, que só existe
+   quando o veículo tem esse dado) some ou aparece SÓ do lado dela, sem
+   empurrar as linhas do outro lado pra fora do alinhamento. Antes disso era
+   uma única grid de 4 colunas "fluindo" por todos os campos em sequência:
+   quando um campo opcional no meio da sequência era omitido, tudo que vinha
+   depois dele deslizava 2 células, e os dois lados ficavam desalinhados
+   entre si (o motivo de "Carregamento/Retorno base/Motorista/Cap./Ocupação"
+   aparecerem afastados de "Transportador/Cavalo/Implemento/Base"). */
+#roteirizador-shell .op-head-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 20px; font-size: 12px; }
+#roteirizador-shell .op-head-col { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: baseline; align-content: start; }
 #roteirizador-shell .op-head-lbl { color: var(--text-3); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
-#roteirizador-shell .op-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#roteirizador-shell .op-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 #roteirizador-shell .op-table th,
-#roteirizador-shell .op-table td { border: 0.5px solid var(--border); padding: 7px 9px; text-align: left; }
+#roteirizador-shell .op-table td { border: 0.5px solid var(--border); padding: 7px 9px; text-align: left; overflow-wrap: break-word; word-break: break-word; }
 #roteirizador-shell .op-table th {
   background: var(--bg); font-family: var(--font); letter-spacing: 0.04em;
   text-transform: uppercase; font-size: 11px; color: var(--text-3); font-weight: 600;
 }
+/* Célula "Cód. Produto — Descrição": código em destaque numa linha, descrição
+   menor e mais discreta na linha de baixo — antes era uma string só
+   ("2000033 - PETRONAS ETANOL COMUM") num td sem table-layout:fixed, então o
+   texto forçava a coluna (e a tabela toda) a esticar além da largura
+   definida no colgroup, ficando desalinhada com o cabeçalho e visualmente
+   pesada. */
+#roteirizador-shell .op-prod-codigo { font-weight: 700; font-family: var(--font-mono); font-size: 11px; color: var(--text); letter-spacing: 0.01em; }
+#roteirizador-shell .op-prod-desc { font-size: 10.5px; color: var(--text-3); line-height: 1.35; margin-top: 1px; }
 #roteirizador-shell .op-ocup { display: inline-block; padding: 2px 8px; border-radius: 20px; font-weight: 500; font-size: 11px; border: 0.5px solid; }
 #roteirizador-shell .op-ocup-verde   { background: var(--green-bg);  color: var(--green-text);  border-color: var(--green-border); }
 #roteirizador-shell .op-ocup-amarelo { background: var(--amber-bg);  color: var(--amber-text);  border-color: var(--amber-border); }

@@ -2559,14 +2559,24 @@ function lerHorarios(diasAtivos) {
 // Firestore — usa as funções expostas por window.* no main.js (mesmo padrão
 // de config/plates). Fire-and-forget: não trava a UI esperando a gravação,
 // só avisa no console se falhar (ex.: sem internet no momento do clique).
+function _chavePersistCadastro(tipo, item) {
+  // chavePersistenciaCadastro (id-based pra clientes) evita que dois
+  // cadastros de cliente com o mesmo Código SAP corporativo "compartilhem
+  // gaveta" no Firestore — ver comentário completo no main.js. Cai pra
+  // chaveCadastro se a função nova ainda não tiver sido carregada por
+  // algum motivo (ordem de scripts), pra nunca ficar sem gravar.
+  if (typeof window.chavePersistenciaCadastro === 'function') return window.chavePersistenciaCadastro(tipo, item);
+  if (typeof window.chaveCadastro === 'function') return window.chaveCadastro(tipo, item);
+  return '';
+}
 function _persistirCadastroManual(tipo, item, itemAntigo) {
-  if (typeof window.dbSalvarCadastroItem !== 'function' || typeof window.chaveCadastro !== 'function') return;
-  const chave = window.chaveCadastro(tipo, item);
-  // Se a edição mudou o campo-chave (ex.: renomear terminal, trocar SAP do
-  // cliente, trocar placa do veículo), remove o registro antigo pra não
-  // deixar um "fantasma" duplicado no Firestore.
+  if (typeof window.dbSalvarCadastroItem !== 'function') return;
+  const chave = _chavePersistCadastro(tipo, item);
+  // Se a edição mudou o campo-chave (ex.: renomear terminal, trocar placa do
+  // veículo), remove o registro antigo pra não deixar um "fantasma"
+  // duplicado no Firestore.
   if (itemAntigo) {
-    const chaveAntiga = window.chaveCadastro(tipo, itemAntigo);
+    const chaveAntiga = _chavePersistCadastro(tipo, itemAntigo);
     if (chaveAntiga && chaveAntiga !== chave && typeof window.dbRemoverCadastroItem === 'function') {
       window.dbRemoverCadastroItem(tipo, chaveAntiga).catch(e => console.warn(`[Firestore ${tipo}]`, e));
     }
@@ -2575,8 +2585,8 @@ function _persistirCadastroManual(tipo, item, itemAntigo) {
   window.dbSalvarCadastroItem(tipo, chave, item).catch(e => console.warn(`[Firestore ${tipo}]`, e));
 }
 function _removerCadastroManual(tipo, item) {
-  if (typeof window.dbRemoverCadastroItem !== 'function' || typeof window.chaveCadastro !== 'function') return;
-  const chave = window.chaveCadastro(tipo, item);
+  if (typeof window.dbRemoverCadastroItem !== 'function') return;
+  const chave = _chavePersistCadastro(tipo, item);
   if (!chave) return;
   window.dbRemoverCadastroItem(tipo, chave).catch(e => console.warn(`[Firestore ${tipo}]`, e));
 }
@@ -2695,6 +2705,7 @@ function abrirFormCliente(id) {
     document.getElementById('cl-restricao').value= c.restricaoHorario || '';
     document.getElementById('cl-obs').value      = c.observacoes || '';
     document.getElementById('cl-identidade-petronas').checked = !!c.identidadePetronas;
+    document.getElementById('cl-segmento').value = c.segmento || '';
     renderTipoBtns('cl-tipos-btns', c.tiposCaminhao || []);
   } else {
     document.getElementById('form-cliente-title').textContent = 'Novo cliente';
@@ -2703,6 +2714,7 @@ function abrirFormCliente(id) {
     });
     document.getElementById('cl-descarga').value = 45;
     document.getElementById('cl-identidade-petronas').checked = false;
+    document.getElementById('cl-segmento').value = '';
     if (document.getElementById('cl-tipos-btns')) renderTipoBtns('cl-tipos-btns', []);
   }
   document.getElementById('form-cliente').classList.remove('hidden');
@@ -2730,6 +2742,7 @@ function salvarCliente() {
     observacoes:     document.getElementById('cl-obs').value.trim(),
     tiposCaminhao:   lerTiposSelecionados('cl-tipos-btns'),
     identidadePetronas: document.getElementById('cl-identidade-petronas').checked,
+    segmento:        document.getElementById('cl-segmento').value,
   };
   if (editandoClienteId !== null) {
     const idx = clientes.findIndex(c => c.id === editandoClienteId);
@@ -5988,6 +6001,13 @@ function renderTemplateOperacao() {
       // reflete de qual base ESPECÍFICA aquele produto veio.
       const baseLinha = ld.terminal || base;
       const ciaLinha = ld.terminal ? (distribuidoraDoTerminal(ld.terminal) || cia) : cia;
+      // "2000033 - PETRONAS ETANOL COMUM" → código em destaque + descrição
+      // menor abaixo, em vez da string crua inteira numa linha só (o que
+      // ficava grande/desalinhado e forçava a coluna a esticar).
+      const _prodTxt = (ld.produto || '').toString();
+      const _prodSep = _prodTxt.indexOf(' - ');
+      const prodCodigo = _prodSep !== -1 ? _prodTxt.slice(0, _prodSep).trim() : _prodTxt;
+      const prodDesc   = _prodSep !== -1 ? _prodTxt.slice(_prodSep + 3).trim() : '';
       return `
       <tr>
         <td>${ld.ordemSAP || ''}</td>
@@ -5995,7 +6015,7 @@ function renderTemplateOperacao() {
         <td>${baseLinha}</td>
         <td>${ld.postoCidade}</td>
         <td style="text-align:center;font-weight:700;">${ld.cpt || ''}</td>
-        <td>${ld.produto || ''}</td>
+        <td><div class="op-prod-codigo">${prodCodigo || '-'}</div>${prodDesc ? `<div class="op-prod-desc">${prodDesc}</div>` : ''}</td>
         <td style="text-align:right;white-space:nowrap;">${ld.volumeL.toLocaleString('pt-BR')}</td>
       </tr>`;
     }).join('');
@@ -6028,17 +6048,23 @@ function renderTemplateOperacao() {
               </button>
             </div>
           </div>
-          <!-- Grid de dados -->
-          <div style="display:grid;grid-template-columns:repeat(4,auto);gap:5px 16px;font-size:12px;align-items:baseline;">
-            <div class="op-head-lbl">Carregamento</div><div><b>${fmtOpDT(inicioCargaCicloMin)}</b></div>
-            <div class="op-head-lbl">Transportador</div><div>${v.transportadora || '-'}</div>
-            <div class="op-head-lbl">Retorno base</div><div>${fmtOpDT(retornoBaseCicloMin)}</div>
-            <div class="op-head-lbl">Cavalo</div><div>${v.placa || '-'}</div>
-            <div class="op-head-lbl">Motorista</div><div>${motoristaDaViagem(v, inicioCargaCicloMin, viOriginal) || '—'}</div>
-            ${v.implemento ? `<div class="op-head-lbl">Implemento</div><div>${v.implemento}</div>` : ''}
-            <div class="op-head-lbl">Cap. (L)</div><div>${capLitros.toLocaleString('pt-BR')}</div>
-            <div class="op-head-lbl">Base</div><div>${base}</div>
-            <div class="op-head-lbl">Ocupação</div><div><span class="op-ocup ${ocupClasse}">${ocupPct}%</span><span style="margin-left:5px;font-size:11px;">(${volViagemM3.toFixed(1)} / ${(v.capacidade||0).toFixed(1)} m³)</span></div>
+          <!-- Grid de dados: duas sub-grids independentes (esquerda/direita) — ver
+               comentário em .op-head-grid/.op-head-col no CSS sobre por que isso
+               evita o desalinhamento quando um campo opcional (Implemento) some. -->
+          <div class="op-head-grid">
+            <div class="op-head-col">
+              <div class="op-head-lbl">Carregamento</div><div><b>${fmtOpDT(inicioCargaCicloMin)}</b></div>
+              <div class="op-head-lbl">Retorno base</div><div>${fmtOpDT(retornoBaseCicloMin)}</div>
+              <div class="op-head-lbl">Motorista</div><div>${motoristaDaViagem(v, inicioCargaCicloMin, viOriginal) || '—'}</div>
+              <div class="op-head-lbl">Cap. (L)</div><div>${capLitros.toLocaleString('pt-BR')}</div>
+              <div class="op-head-lbl">Ocupação</div><div><span class="op-ocup ${ocupClasse}">${ocupPct}%</span><span style="margin-left:5px;font-size:11px;">(${volViagemM3.toFixed(1)} / ${(v.capacidade||0).toFixed(1)} m³)</span></div>
+            </div>
+            <div class="op-head-col">
+              <div class="op-head-lbl">Transportador</div><div>${v.transportadora || '-'}</div>
+              <div class="op-head-lbl">Cavalo</div><div>${v.placa || '-'}</div>
+              ${v.implemento ? `<div class="op-head-lbl">Implemento</div><div>${v.implemento}</div>` : ''}
+              <div class="op-head-lbl">Base</div><div>${base}</div>
+            </div>
           </div>
           ${(() => {
             const paradasComJanela = (viOriginal.paradas || []).filter(p => {
@@ -9503,10 +9529,14 @@ function _clonarBlocoParaExport(blocoEl) {
       #roteirizador-shell { all: unset; }
       .op-bloco { border: 0.5px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
       .op-head { padding: 11px 16px; background: var(--bg); border-bottom: 0.5px solid var(--border); }
+      .op-head-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 20px; font-size: 12px; }
+      .op-head-col { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: baseline; align-content: start; }
       .op-head-lbl { color: var(--text-3); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
-      .op-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-      .op-table th, .op-table td { border: 0.5px solid var(--border); padding: 7px 9px; text-align: left; }
+      .op-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+      .op-table th, .op-table td { border: 0.5px solid var(--border); padding: 7px 9px; text-align: left; overflow-wrap: break-word; word-break: break-word; }
       .op-table th { background: var(--bg); font-family: var(--font); letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px; color: var(--text-3); font-weight: 600; }
+      .op-prod-codigo { font-weight: 700; font-family: var(--font-mono); font-size: 11px; color: var(--text); letter-spacing: 0.01em; }
+      .op-prod-desc { font-size: 10.5px; color: var(--text-3); line-height: 1.35; margin-top: 1px; }
       .op-ocup { display: inline-block; padding: 2px 8px; border-radius: 20px; font-weight: 500; font-size: 11px; border: 0.5px solid; }
       .op-ocup-verde   { background: var(--green-bg); color: var(--green-text); border-color: var(--green-border); }
       .op-ocup-amarelo { background: var(--amber-bg); color: var(--amber-text); border-color: var(--amber-border); }

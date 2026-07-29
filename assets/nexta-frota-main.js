@@ -117,13 +117,42 @@ async function dbSavePlates(plates) {
 //   Terminal → nome (normalizado)  |  Cliente → Código SAP  |  Veículo → placa
 // Compartilhado entre todos os usuários (mesma coleção "config" já usada
 // pra placas/motoristas), respeitando as mesmas regras de acesso do Firestore.
-const CADASTRO_DOC_ID = { terminais: 'roteirizador_terminais', clientes: 'roteirizador_clientes', veiculos: 'roteirizador_veiculos' };
+//
+// chaveCadastro() é a chave de IDENTIDADE DE NEGÓCIO — usada pra perguntar
+// "esse cadastro já existe?" (ex.: na importação de planilha, pra não
+// duplicar um cliente que já foi cadastrado antes). Continua SAP-ou-nome
+// pra Cliente de propósito: é exatamente essa comparação que a importação
+// precisa pra reconhecer "essa linha da planilha é o mesmo cliente que já
+// existe".
 function chaveCadastro(tipo, item) {
   if (tipo === 'terminais') return (item.nome      || '').trim().toLowerCase();
   if (tipo === 'clientes')  return (item.codigoSAP || item.nome || '').trim().toUpperCase();
   if (tipo === 'veiculos')  return (item.placa     || '').trim().toUpperCase();
   return '';
 }
+// chavePersistenciaCadastro() é a chave de ARMAZENAMENTO no Firestore — a
+// "gaveta" onde o registro é gravado. Pra Terminal e Veículo isso pode ser a
+// mesma coisa que a identidade de negócio (nome e placa são, de fato, únicos
+// por registro nesses dois cadastros). Cliente é diferente: Código SAP é o
+// código do CLIENTE CORPORATIVO, não do cadastro (posto/ponto de entrega) —
+// é normal e comum várias entradas de cadastro distintas (nomes e
+// coordenadas diferentes) pertencerem ao MESMO Código SAP (vários postos da
+// mesma bandeira/rede). Usar SAP como chave de ARMAZENAMENTO fazia esses
+// cadastros "compartilharem uma gaveta": editar o Segmento (ou qualquer
+// outro campo) de UM deles e salvar sobrescrevia no Firestore o registro
+// inteiro daquela gaveta compartilhada, e todo outro cadastro com o mesmo
+// SAP passava a "herdar" os mesmos dados (inclusive o Segmento) na próxima
+// vez que a lista era recarregada — dando a impressão de que o valor
+// replicou pra todos os outros clientes. Por isso, pra Cliente, a chave de
+// armazenamento usa o `id` interno (sempre único por cadastro, gerado na
+// criação) em vez do SAP — cada cadastro fica na SUA PRÓPRIA gaveta, mesmo
+// que compartilhe o SAP corporativo com outro. Cai pra chaveCadastro() só no
+// caso raríssimo de um registro sem id.
+function chavePersistenciaCadastro(tipo, item) {
+  if (tipo === 'clientes' && item && item.id != null) return `ID:${item.id}`;
+  return chaveCadastro(tipo, item);
+}
+const CADASTRO_DOC_ID = { terminais: 'roteirizador_terminais', clientes: 'roteirizador_clientes', veiculos: 'roteirizador_veiculos' };
 async function dbGetCadastro(tipo) {
   const cKey = `cadastro||${tipo}`;
   const cached = cacheGet(cKey);
@@ -202,6 +231,7 @@ async function dbRemoverCadastroItem(tipo, chave) {
   });
 }
 window.chaveCadastro            = chaveCadastro;
+window.chavePersistenciaCadastro = chavePersistenciaCadastro;
 window.dbGetCadastro            = dbGetCadastro;
 window.dbAdicionarCadastroItens = dbAdicionarCadastroItens;
 window.dbSalvarCadastroItem     = dbSalvarCadastroItem;
@@ -5183,7 +5213,11 @@ async function importarDadosCadastrais(input) {
         let id = proxId(clientes, 100);
         novos.forEach(c => { c.id = id++; clientes.push(c); });
         if (novos.length) {
-          const mapa = {}; novos.forEach(c => { mapa[chaveCadastro('clientes', c)] = c; });
+          // Chave de ARMAZENAMENTO por id (não por SAP) — várias linhas novas
+          // da planilha podem legitimamente compartilhar o mesmo Código SAP
+          // corporativo (vários postos da mesma rede); usar SAP aqui faria a
+          // 2ª sobrescrever a 1ª no próprio objeto `mapa` antes de gravar.
+          const mapa = {}; novos.forEach(c => { mapa[chavePersistenciaCadastro('clientes', c)] = c; });
           try { await dbAdicionarCadastroItens('clientes', mapa); } catch(e) { console.warn('[Firestore clientes]', e); }
         }
         if (typeof renderClientes === 'function')         renderClientes();
