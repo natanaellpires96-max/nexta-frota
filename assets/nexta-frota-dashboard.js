@@ -1826,7 +1826,8 @@ window.dashExportarHistoricoVeiculoXLSX = dashExportarHistoricoVeiculoXLSX;
 // ── Renderizar Dashboard ───────────────────────────────────────────────────
 // ── Filtro de clientes ────────────────────────────────────────────────────
 let _dashClientesSelecionados = null; // null = todos; Set = filtro ativo
-let _dashSegmentosSelecionados = null; // null = todos; Set = filtro ativo (B2B/B2C/TRR/'—')
+let _dashSegmentosSelecionados = null; // GLOBAL (botão do topo) — null = todos; Set = filtro ativo (B2B/B2C/TRR/'—'). Afeta TODA a tela (KPIs, gráficos, tabela, mapa, Excel, e também o card "Clientes sem comprar" abaixo).
+let _dashSegmentosInativosSelecionados = null; // LOCAL (botão dentro do card "Clientes sem comprar") — null = todos; Set = filtro ativo. Afeta SÓ aquele card, não mexe no resto da tela.
 const _DASH_SEGMENTOS_TODOS = ['B2B', 'B2C', 'TRR', '—']; // '—' = cliente sem segmento cadastrado
 // ── Segmento do cliente (B2B/B2C/TRR) ───────────────────────────────────────
 // Campo vive no CADASTRO de cliente (aba Cadastros → Clientes), não no
@@ -1841,12 +1842,15 @@ function dashClienteSegmento(nome) {
   const c = arr.find(x => (x.nome || '').trim().toLowerCase() === String(nome || '').trim().toLowerCase());
   return (c && c.segmento) || '';
 }
-// ── Conjunto efetivo de clientes visíveis ───────────────────────────────────
+// ── Conjunto efetivo de clientes visíveis (filtro GLOBAL) ──────────────────
 // Combina (E lógico, não OU) o filtro do picker de Clientes com o filtro de
-// Segmento — os dois se cruzam. Ex.: picker com "Posto X" selecionado, mas
-// segmento filtrado só em "TRR": se Posto X não for TRR, ele fica de fora
-// mesmo estando no picker. Retorna null quando NENHUM dos dois filtros está
-// ativo (comportamento idêntico ao "sem filtro" de antes, sem custo extra).
+// Segmento GLOBAL (botão do topo) — os dois se cruzam. Ex.: picker com
+// "Posto X" selecionado, mas segmento filtrado só em "TRR": se Posto X não
+// for TRR, ele fica de fora mesmo estando no picker. Retorna null quando
+// NENHUM dos dois filtros está ativo (comportamento idêntico ao "sem
+// filtro" de antes, sem custo extra). NÃO usa o filtro local do card
+// "Clientes sem comprar" — esse é aplicado só ali, ver
+// dashRenderClientesInativosUI().
 function dashClientesEfetivos(nomesBase) {
   if (!_dashClientesSelecionados && !_dashSegmentosSelecionados) return null;
   const permitido = (nome) => {
@@ -1867,14 +1871,17 @@ const _DASH_SEGMENTO_OPCOES = [
 ];
 // ── Dropdown de Segmento — mesmo padrão visual/comportamento do filtro de
 // Clientes (botão + painel com checkbox + Todos/Limpar/Aplicar), só que com
-// 4 opções fixas em vez de lista dinâmica. Existem DUAS instâncias na tela
-// (toolbar do topo e o card "Clientes sem comprar"), ambas lendo/escrevendo
-// o MESMO estado global (_dashSegmentosSelecionados) — abrir qualquer uma
-// sempre mostra o filtro atualizado, e aplicar em qualquer uma atualiza a
-// tela inteira.
-function _dashSegmentoListHtml() {
+// 4 opções fixas em vez de lista dinâmica. Existem DUAS instâncias na tela,
+// cada uma com seu PRÓPRIO estado — de propósito, não são a mesma coisa:
+//   • "dash-seg-panel"          (topo)  → _dashSegmentosSelecionados         → filtra a tela inteira
+//   • "dash-seg-inativos-panel" (card)  → _dashSegmentosInativosSelecionados → filtra só o card "Clientes sem comprar"
+function _dashSegEstadoDoPainel(painelId) {
+  return painelId === 'dash-seg-inativos-panel' ? _dashSegmentosInativosSelecionados : _dashSegmentosSelecionados;
+}
+function _dashSegmentoListHtml(painelId) {
+  const estado = _dashSegEstadoDoPainel(painelId);
   return _DASH_SEGMENTO_OPCOES.map(o => {
-    const checked = !_dashSegmentosSelecionados || _dashSegmentosSelecionados.has(o.valor);
+    const checked = !estado || estado.has(o.valor);
     return `<div data-seg="${o.valor}" data-checked="${checked ? 1 : 0}" onclick="_dashSegToggleRow(this)"
       style="display:flex;align-items:center;gap:9px;padding:8px 14px;cursor:pointer;font-size:12.5px;color:#111827;"
       onmouseover="this.style.background='rgba(0,0,0,.03)'" onmouseout="this.style.background='none'">
@@ -1883,6 +1890,11 @@ function _dashSegmentoListHtml() {
     </div>`;
   }).join('');
 }
+// IMPORTANTE: onclick="..." no HTML sempre resolve a função no escopo
+// GLOBAL (window), nunca dentro da IIFE — mesmo declarada com `function`
+// aqui dentro, sem window.X = X ela fica invisível pro atributo onclick, e
+// o clique não faz NADA (erro silencioso, sem aviso na tela). Foi o bug do
+// checkbox não marcar: a função existia, só não estava exposta.
 function _dashSegToggleRow(el) {
   const novo = el.dataset.checked !== '1';
   el.dataset.checked = novo ? '1' : '0';
@@ -1891,16 +1903,17 @@ function _dashSegToggleRow(el) {
   box.style.background  = novo ? 'var(--pet-green,#b5e51d)' : 'transparent';
   box.innerHTML = novo ? _dashCheckSVG() : '';
 }
+window._dashSegToggleRow = _dashSegToggleRow;
 function dashTogglePainelSegmento(painelId) {
   const panel = document.getElementById(painelId);
   if (!panel) return;
   const visible = panel.style.display !== 'none';
   panel.style.display = visible ? 'none' : 'flex';
   if (!visible) {
-    // Repopula toda vez que abre — reflete o estado atual mesmo se a OUTRA
-    // instância do filtro (topo vs. card de inatividade) mudou por último.
+    // Repopula toda vez que abre — reflete o estado ATUAL DESTE painel
+    // especificamente (cada painel tem o seu, ver _dashSegEstadoDoPainel).
     const list = panel.querySelector('.dash-seg-list-inner');
-    if (list) list.innerHTML = _dashSegmentoListHtml();
+    if (list) list.innerHTML = _dashSegmentoListHtml(painelId);
   }
 }
 function dashSelecionarTodosSegmento(painelId, sel) {
@@ -1914,25 +1927,37 @@ function dashSelecionarTodosSegmento(painelId, sel) {
     box.innerHTML = sel ? _dashCheckSVG() : '';
   });
 }
+function _dashAtualizarBadgeSegmento(badgeId, estado) {
+  const badge = document.getElementById(badgeId);
+  if (!badge) return;
+  if (estado) {
+    badge.textContent = estado.size;
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
 function dashAplicarFiltroSegmento(painelId) {
   const panel = document.getElementById(painelId);
   if (!panel) return;
   const selecionados = new Set();
   panel.querySelectorAll('[data-seg][data-checked="1"]').forEach(el => selecionados.add(el.dataset.seg));
-  _dashSegmentosSelecionados = selecionados.size === _DASH_SEGMENTOS_TODOS.length ? null : selecionados;
+  const novoEstado = selecionados.size === _DASH_SEGMENTOS_TODOS.length ? null : selecionados;
   panel.style.display = 'none';
-  ['dash-seg-badge', 'dash-seg-inativos-badge'].forEach(bid => {
-    const badge = document.getElementById(bid);
-    if (!badge) return;
-    if (_dashSegmentosSelecionados) {
-      badge.textContent = _dashSegmentosSelecionados.size;
-      badge.style.display = '';
-    } else {
-      badge.style.display = 'none';
-    }
-  });
-  dashRenderComFiltro(); // reaplica sobre os snapshots já carregados, sem reler o disco
-  dashRenderClientesInativosUI(_dashUltimaListaInativos); // painel de inatividade também respeita Segmento/Clientes
+  if (painelId === 'dash-seg-inativos-panel') {
+    // Filtro LOCAL — só o card "Clientes sem comprar". Não toca no resto
+    // da tela (não chama dashRenderComFiltro).
+    _dashSegmentosInativosSelecionados = novoEstado;
+    _dashAtualizarBadgeSegmento('dash-seg-inativos-badge', novoEstado);
+    dashRenderClientesInativosUI(_dashUltimaListaInativos);
+  } else {
+    // Filtro GLOBAL — a tela inteira, incluindo o card "Clientes sem
+    // comprar" (ver comentário no topo do arquivo: "filtra tudo").
+    _dashSegmentosSelecionados = novoEstado;
+    _dashAtualizarBadgeSegmento('dash-seg-badge', novoEstado);
+    dashRenderComFiltro(); // reaplica sobre os snapshots já carregados, sem reler o disco
+    dashRenderClientesInativosUI(_dashUltimaListaInativos);
+  }
 }
 window.dashTogglePainelSegmento  = dashTogglePainelSegmento;
 window.dashSelecionarTodosSegmento = dashSelecionarTodosSegmento;
@@ -2835,11 +2860,17 @@ function dashRenderClientesInativosUI(lista) {
   _dashUltimaListaInativos = lista;
   const box = document.getElementById('dash-clientes-inativos');
   if (!box) return;
-  // Mesmo conjunto efetivo (picker de Clientes ∩ Segmento) usado no resto da
-  // tela — assim "Clientes sem comprar" também respeita o filtro de
-  // Segmento, mesmo olhando o histórico completo (não o mês/período).
-  const _efetivosInativos = dashClientesEfetivos(lista.map(c => c.nome));
-  const listaFiltrada = _efetivosInativos ? lista.filter(c => _efetivosInativos.has(c.nome)) : lista;
+  // Dois filtros se cruzam aqui: o GLOBAL (picker de Clientes + Segmento do
+  // topo — "filtra tudo") e o LOCAL (Segmento dentro deste card, só afeta
+  // este card). Um cliente só aparece se passar nos dois ao mesmo tempo.
+  const _efetivosGlobais = dashClientesEfetivos(lista.map(c => c.nome));
+  let listaFiltrada = _efetivosGlobais ? lista.filter(c => _efetivosGlobais.has(c.nome)) : lista;
+  if (_dashSegmentosInativosSelecionados) {
+    listaFiltrada = listaFiltrada.filter(c => {
+      const seg = dashClienteSegmento(c.nome) || '—';
+      return _dashSegmentosInativosSelecionados.has(seg);
+    });
+  }
   if (!listaFiltrada.length) {
     box.innerHTML = `<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">${lista.length ? 'Nenhum cliente com o filtro atual (Clientes/Segmento).' : 'Nenhum pedido com data de entrega encontrado no histórico.'}</div>`;
     return;
