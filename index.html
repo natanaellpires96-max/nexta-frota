@@ -743,6 +743,25 @@
           <div id="dash-chart-km" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
         </div>
       </div>
+      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🔔 Clientes sem comprar</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Última entrega de cada cliente no histórico COMPLETO (não muda com o filtro de mês/período acima) — quem passar do limite escolhido entra no alerta</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
+            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;" title="A partir de quantos dias sem comprar considerar alerta">
+              <button class="dash-inativo-limiar-tab" data-dias="7" onclick="dashSetLimiarInativos(7)"
+                style="padding:6px 13px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">7 dias</button>
+              <button class="dash-inativo-limiar-tab active-rank" data-dias="15" onclick="dashSetLimiarInativos(15)"
+                style="padding:6px 13px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">15 dias</button>
+              <button class="dash-inativo-limiar-tab" data-dias="30" onclick="dashSetLimiarInativos(30)"
+                style="padding:6px 13px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">30 dias</button>
+            </div>
+          </div>
+        </div>
+        <div id="dash-clientes-inativos" style="margin-top:10px;"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
+      </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:14px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
           <div style="font-size:12px;font-weight:600;color:var(--text-2);">Mapa Historico de Viagens</div>
@@ -1060,9 +1079,9 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=f5743b9b"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=56dee894"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-<script defer src="assets/nexta-frota-dashboard.js?v=7f8e164a"></script>
+<script defer src="assets/nexta-frota-dashboard.js?v=4f58dd75"></script>
 </body>
 </html>
