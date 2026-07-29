@@ -712,6 +712,7 @@ async function carregarDadosFixos() {
       if (fsCli && Object.keys(fsCli).length) {
         let id = 100;
         clientes = Object.values(fsCli).map(c => ({ ...c, id: c.id ?? id++ }));
+        _mesclarClientesDuplicadosSilencioso();
         renderClientes(); atualizarDropdownsClientes();
       }
       if (fsVei && Object.keys(fsVei).length) {
@@ -2756,6 +2757,7 @@ function salvarCliente() {
   }
   editandoClienteId = null;
   cancelarFormCliente();
+  _mesclarClientesDuplicadosSilencioso();
   renderClientes();
   atualizarDropdownsClientes();
 }
@@ -2766,6 +2768,67 @@ function removerCliente(id) {
   if (alvo) _removerCadastroManual('clientes', alvo);
   renderClientes();
   atualizarDropdownsClientes();
+}
+// ── Mesclar cadastros de cliente duplicados (automático, silencioso) ───────
+// Efeito colateral esperado (uma vez só) da correção do bug "Segmento
+// replicando pra outros clientes": antes, vários cadastros de cliente com o
+// mesmo Código SAP corporativo "compartilhavam gaveta" no Firestore (ver
+// chavePersistenciaCadastro no main.js). Agora que cada cadastro grava na SUA
+// PRÓPRIA gaveta (por id), a PRIMEIRA edição de um cliente que estava nessa
+// situação passa a existir em DUAS gavetas ao mesmo tempo: a antiga
+// (compartilhada, com os dados de ANTES da edição) e a nova (só dele, já com
+// os dados editados) — aparecendo como dois cadastros idênticos na lista.
+//
+// Roda automaticamente (sem pedir confirmação) toda vez que a lista de
+// clientes é carregada/recarregada — ver chamadas em carregarDadosFixos() e
+// no fim de salvarCliente(). Agrupa por identidade "de verdade" — SAP + nome
+// + coordenadas, bem mais estrito que a chave antiga (só SAP) — pra NUNCA
+// fundir por engano dois postos DIFERENTES que só coincidem de ter o mesmo
+// SAP corporativo (esse era exatamente o problema original; usar só SAP
+// aqui reintroduziria ele). Dentro de um grupo duplicado, mescla os campos
+// (qualquer valor preenchido vence sobre um vazio, então o Segmento
+// preenchido na edição recente sobrevive) num cadastro só, e remove as
+// cópias extras — tanto pela chave nova (id) quanto pela chave antiga
+// (SAP/nome, a gaveta compartilhada que originou a duplicidade).
+// Retorna quantos grupos duplicados foram mesclados (0 = nada a fazer).
+function _mesclarClientesDuplicadosSilencioso() {
+  const chaveIdentidade = (c) => [
+    (c.codigoSAP || '').trim().toUpperCase(),
+    (c.nome || '').trim().toUpperCase(),
+    Number.isFinite(c.lat) ? c.lat.toFixed(4) : '',
+    Number.isFinite(c.lon) ? c.lon.toFixed(4) : '',
+  ].join('|');
+  const grupos = new Map();
+  clientes.forEach(c => {
+    const k = chaveIdentidade(c);
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(c);
+  });
+  const duplicados = [...grupos.values()].filter(g => g.length > 1);
+  if (!duplicados.length) return 0;
+  duplicados.forEach(grupo => {
+    let mesclado = { ...grupo[0] };
+    for (let i = 1; i < grupo.length; i++) {
+      Object.entries(grupo[i]).forEach(([k, v]) => {
+        if (k === 'id') return;
+        const vazio = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
+        if (!vazio) mesclado[k] = v;
+      });
+    }
+    const idsRemover = grupo.slice(1).map(c => c.id);
+    const idxPrincipal = clientes.findIndex(c => c.id === grupo[0].id);
+    if (idxPrincipal !== -1) clientes[idxPrincipal] = mesclado;
+    clientes = clientes.filter(c => !idsRemover.includes(c.id));
+    _persistirCadastroManual('clientes', mesclado, null);
+    grupo.slice(1).forEach(extra => {
+      _removerCadastroManual('clientes', extra); // remove pela chave nova (id) da cópia
+      if (typeof window.chaveCadastro === 'function' && typeof window.dbRemoverCadastroItem === 'function') {
+        const chaveAntiga = window.chaveCadastro('clientes', extra); // a "gaveta" antiga (SAP/nome) compartilhada
+        window.dbRemoverCadastroItem('clientes', chaveAntiga).catch(() => {});
+      }
+    });
+  });
+  return duplicados.length;
 }
 function renderClientes() {
   const el = document.getElementById('clientes-list');
@@ -9532,8 +9595,8 @@ function _clonarBlocoParaExport(blocoEl) {
       #roteirizador-shell { all: unset; }
       .op-bloco { border: 0.5px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
       .op-head { padding: 11px 16px; background: var(--bg); border-bottom: 0.5px solid var(--border); }
-      .op-head-grid { display: flex; gap: 5px 24px; font-size: 12px; }
-      .op-head-col { flex: 1 1 0; min-width: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: baseline; align-content: start; }
+      .op-head-grid { display: flex; justify-content: space-between; gap: 5px 24px; font-size: 12px; }
+      .op-head-col { flex: 0 0 auto; display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: baseline; align-content: start; }
       .op-head-lbl { color: var(--text-3); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
       .op-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
       .op-table th, .op-table td { border: 0.5px solid var(--border); padding: 7px 9px; text-align: left; overflow-wrap: break-word; word-break: break-word; }
