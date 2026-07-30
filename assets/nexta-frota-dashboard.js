@@ -2381,7 +2381,15 @@ function dashRender(snapshots) {
   set('dk-volume',   parseFloat(_kpiVol.toFixed(1)).toLocaleString('pt-BR', {minimumFractionDigits:0, maximumFractionDigits:1}) + ' m³');
   set('dk-ocup',     _kpiOcup + '%');
   set('dk-km',       Math.round(_kpiKm).toLocaleString('pt-BR') + ' km');
-  set('dk-clientes', clientesFiltrados.length);
+  // Conta NOMES distintos, não entradas cruas do array: d.clientes é
+  // agregado por chave (SAP-ou-nome-normalizado — ver dashChaveCliente), e o
+  // mesmo cliente pode acabar em DUAS entradas com o MESMO nome exibido se,
+  // por exemplo, uma entrega tinha o Código SAP preenchido e outra pro
+  // "mesmo" cliente não tinha. O painel de filtro conta por nome (um Set,
+  // que já deduplica sozinho) — esse KPI precisa contar do mesmo jeito, ou
+  // o número aqui fica maior que o total que aparece pra selecionar no
+  // filtro, o que é confuso e parece bug.
+  set('dk-clientes', new Set(clientesFiltrados.map(c => c.nome)).size);
   // Drop médio = entregas/volume totais (já filtrados por cliente/cidade/período
   // acima) divididos pelo total de viagens (idem, respeita os mesmos filtros).
   const _kpiDropEntregas = _kpiViagens  > 0 ? _kpiEntregas / _kpiViagens  : 0;
