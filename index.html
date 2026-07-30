@@ -513,11 +513,19 @@
           <!-- Grupo: filtros de escopo dos dados (visual "segmented control" — um
                contêiner só, com divisor fino desenhado direto em cada item via
                border-right inline, em vez de depender de seletor CSS externo). -->
-          <div style="display:flex;align-items:stretch;background:#fff;border:1px solid #D1D5DB;border-radius:8px;overflow:hidden;">
+          <div style="display:flex;align-items:stretch;background:#fff;border:1px solid #D1D5DB;border-radius:8px;">
+            <!-- overflow:hidden foi removido daqui de propósito: os painéis de
+                 Clientes e Operação (abaixo) usam position:absolute pra pop
+                 out por cima do resto da tela, mas overflow:hidden num
+                 ancestral corta/esconde esse conteúdo mesmo com display:flex
+                 ativo — o painel ficava "aberto" só que invisível, o clique
+                 parecia não fazer nada. O visual de pílula arredondada
+                 continua pela borda do próprio contêiner (border-radius
+                 abaixo); só não recorta mais o conteúdo. -->
             <!-- Filtro de clientes -->
             <div style="position:relative;border-right:1px solid #D1D5DB;">
               <button id="dash-cli-btn" onclick="dashToggleFiltroClientes()" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'"
-                style="display:flex;align-items:center;gap:5px;background:transparent;border:none;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;height:100%;">
+                style="display:flex;align-items:center;gap:5px;background:transparent;border:none;border-radius:8px 0 0 8px;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;height:100%;">
                 <span>👥 Clientes</span>
                 <span id="dash-cli-badge" style="display:none;background:var(--accent,#4F46E5);color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
               </button>
