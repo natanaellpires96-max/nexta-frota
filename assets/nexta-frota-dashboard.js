@@ -2801,6 +2801,22 @@ window.dashSincronizar = async function() {
     if (btn) { btn.textContent = '🔄 Sincronizar'; btn.disabled = false; }
   }
 };
+// ── Reseta todos os filtros do Dashboard (Clientes/Operação/Segmento) ──────
+// Usado pelos atalhos de período ("Todos períodos" e "Hoje") — trocar o
+// período deve ser um ponto de partida limpo, sem carregar filtros de
+// cliente/cidade/segmento que ficaram marcados de uma navegação anterior
+// (o que fazia "Todos períodos" parecer que não tinha "resetado" nada,
+// mesmo mudando os dados exibidos).
+function _dashResetarTodosFiltros() {
+  _dashClientesSelecionados = null;
+  _dashCidadesSelecionadas = null;
+  _dashSegmentosSelecionados = null;
+  const badgeCli = document.getElementById('dash-cli-badge'); if (badgeCli) badgeCli.style.display = 'none';
+  const badgeCid = document.getElementById('dash-cid-badge'); if (badgeCid) badgeCid.style.display = 'none';
+  _dashAtualizarBadgeSegmento('dash-seg-badge', null);
+  const buscaCli = document.getElementById('dash-cli-search'); if (buscaCli) buscaCli.value = '';
+  const buscaCid = document.getElementById('dash-cid-search'); if (buscaCid) buscaCid.value = '';
+}
 // ── Carregar por mês selecionado ───────────────────────────────────────────
 window.dashCarregarMes = async function(chave) {
   if (!chave) return;
@@ -2809,6 +2825,7 @@ window.dashCarregarMes = async function(chave) {
 };
 // ── Carregar todos os períodos ─────────────────────────────────────────────
 window.dashCarregarTodos = async function() {
+  _dashResetarTodosFiltros();
   const store = await dashGetStoreMerged();
   const todos = Object.values(store).flat();
   dashRender(todos);
@@ -2821,6 +2838,7 @@ window.dashCarregarTodos = async function() {
 // mês/período. Não cria nenhum KPI novo — reaproveita 100% do que já existe,
 // só troca o conjunto de snapshots que entra no dashRender().
 window.dashCarregarHoje = async function() {
+  _dashResetarTodosFiltros();
   const store = await dashGetStoreMerged();
   const todos = Object.values(store).flat();
   // Data local (não UTC) — evita virar o dia errado perto da meia-noite.
