@@ -2032,6 +2032,7 @@ function dashToggleFiltroClientes() {
   panel.style.display = visible ? 'none' : 'flex';
   if (!visible) {
     document.getElementById('dash-cli-search').value = '';
+    dashPopularListaClientes(); // sempre redesenha com o estado atual (não depende de um render anterior ter rodado até aqui)
     dashFiltrarListaClientes('');
   }
 }
@@ -2152,6 +2153,7 @@ function dashToggleFiltroCidades() {
   panel.style.display = visible ? 'none' : 'flex';
   if (!visible) {
     document.getElementById('dash-cid-search').value = '';
+    dashPopularListaCidades(); // sempre redesenha com o estado atual (não depende de um render anterior ter rodado até aqui)
     dashFiltrarListaCidades('');
   }
 }
