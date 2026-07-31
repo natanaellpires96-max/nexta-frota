@@ -5643,8 +5643,18 @@ function utilEstilo(pct) {
   return 'border-left:5px solid #DC2626;background:linear-gradient(to right,#FCA5A5,#F87171);';
 }
 // ── Exportação Herrlog ────────────────────────────────────────────────────────
-async function exportarHrrlog() {
-  if (!ultimoResultado || !veiculos.length) { alert('Execute a otimização primeiro.'); return; }
+// `dados` permite gerar o Herrlog a partir de um snapshot do Histórico (ver
+// exportarHerrlogHistorico) em vez do estado "ao vivo" da tela — por padrão
+// usa as variáveis vivas (resultado/veículos/terminais atuais), que é o
+// comportamento de sempre chamado pelo botão de Envio Transportadora.
+// `salvarHistorico=false` pula o salvamento automático no histórico — usado
+// pela reexportação a partir de um snapshot já salvo, que é só uma cópia do
+// arquivo pra baixar de novo, não deve criar/alterar nenhuma entrada.
+async function exportarHrrlog(dados = null, { salvarHistorico = true } = {}) {
+  const resultadoUso  = dados ? dados.resultado  : ultimoResultado;
+  const veiculosUso   = dados ? dados.veiculos   : veiculos;
+  const terminaisUso  = dados ? dados.terminais  : terminaisCad;
+  if (!resultadoUso || !veiculosUso?.length) { alert('Execute a otimização primeiro.'); return; }
   if (typeof XLSX === 'undefined') { alert('SheetJS não carregado.'); return; }
   const rowsViagens = [];
   const rowsEventos = [];
@@ -5659,8 +5669,8 @@ async function exportarHrrlog() {
     const mn = String(m % 60).padStart(2, '0');
     return `${yy}-${mo}-${dy} ${hh}:${mn}:00`;
   };
-  veiculos.forEach(v => {
-    const todasViagens = (ultimoResultado[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+  veiculosUso.forEach(v => {
+    const todasViagens = (resultadoUso[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
     if (!todasViagens.length) return;
     const _jIniRawCt = parseHoraMin(v.jornadaInicio || '06:00');
     let jIniMin = isNaN(_jIniRawCt) ? 360 : _jIniRawCt;
@@ -5672,8 +5682,8 @@ async function exportarHrrlog() {
       // 2º a data do pedido, 3º hoje (apenas como último recurso).
       const _fp = vi.paradas[0];
       let baseDate = null;
-      if (ultimoResultado._baseDataEntrega) {
-        const _bd = new Date(ultimoResultado._baseDataEntrega);
+      if (resultadoUso._baseDataEntrega) {
+        const _bd = new Date(resultadoUso._baseDataEntrega);
         if (!isNaN(_bd.getTime())) baseDate = _bd;
       }
       if (!baseDate) {
@@ -5719,7 +5729,7 @@ async function exportarHrrlog() {
       const termNome = _termsDistintosHrr[0] || vi.terminalOrigem || v.terminal || '';
       const terminaisParaCarregamento = _termsDistintosHrr.length ? _termsDistintosHrr : [termNome];
       const codigosTerminaisCarregamento = terminaisParaCarregamento.map(tn => {
-        const t = terminaisCad.find(x => x.nome === tn);
+        const t = (terminaisUso || []).find(x => x.nome === tn);
         return t?.empresaLocalExpedicao || t?.nome || tn;
       });
       // Produtos únicos (nome resumido)
@@ -5828,12 +5838,36 @@ async function exportarHrrlog() {
   const hoje = new Date();
   const fname = `Herrlog_${String(hoje.getDate()).padStart(2,'0')}${String(hoje.getMonth()+1).padStart(2,'0')}${hoje.getFullYear()}_${String(hoje.getHours()).padStart(2,'0')}${String(hoje.getMinutes()).padStart(2,'0')}.xlsx`;
   XLSX.writeFile(wb, fname);
+  if (!salvarHistorico) return; // reexportação a partir do Histórico: só baixa o arquivo, não mexe em nada salvo
   // Salva automaticamente no histórico do dashboard após exportar
   try {
     await salvarNoHistorico(true);
     showToast('Herrlog exportado e salvo no histórico ✅', true);
   } catch(e) {
     showToast('Herrlog exportado. Falha ao salvar histórico: ' + e.message, false);
+  }
+}
+// ── Reexportar Herrlog a partir de um snapshot já salvo no Histórico ───────
+// Botão "Exportar Herrlog" no modal de detalhe de uma roteirização salva
+// (abrirDetalheHistorico) — pra quando alguém perdeu o arquivo .xlsx original
+// e só precisa baixar de novo. Usa os dados CONGELADOS daquele snapshot
+// específico (não o estado "ao vivo" da tela, que pode ser outra
+// roteirização diferente da que está sendo visualizada no modal), e nunca
+// chama salvarNoHistorico — é só uma cópia pra download, não deve criar
+// nem alterar nenhuma entrada do histórico.
+async function exportarHerrlogHistorico(filename) {
+  if (!filename) return;
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  try {
+    const fh   = await dirHandleHistorico.getFileHandle(filename);
+    const file = await fh.getFile();
+    const data = JSON.parse(await file.text());
+    await exportarHrrlog(
+      { resultado: data.resultado || {}, veiculos: data.veiculos || [], terminais: data.terminais || [] },
+      { salvarHistorico: false }
+    );
+  } catch(e) {
+    alert('Erro ao reexportar Herrlog: ' + e.message);
   }
 }
 // Cor da placa-badge baseada na % de ocupação
@@ -8733,7 +8767,9 @@ function _histRenderLista(entries) {
 // ── Modal de detalhe: ID + m³ de cada pedido de um snapshot do histórico ───
 // Metadados em cache (_histMetaCache) não guardam `pedidos` (só resumo), por
 // isso relê o arquivo completo aqui, sob demanda, só quando o usuário pede.
+let _histDetalheFilenameAtual = null;
 async function abrirDetalheHistorico(filename) {
+  _histDetalheFilenameAtual = filename;
   const modal   = document.getElementById('modal-hist-detalhe');
   const body    = document.getElementById('hist-detalhe-body');
   const titulo  = document.getElementById('hist-detalhe-titulo');
@@ -9269,11 +9305,28 @@ async function popularSeletorResumoDia() {
     return m ? `${m[3]}${m[2]}${m[1]}` : (de || '');
   };
   const entregas = [...entregaMap.entries()].sort((a, b) => paraOrdenar(b[0]).localeCompare(paraOrdenar(a[0])));
-  _resumoDiaOpcoes = entregas.map(([de, info]) => ({
-    de,
-    qtdArq: info.arquivos.size,
-    diasRoteirizados: [...info.diasRoteirizados].sort(),
-  }));
+  // Sinaliza data de entrega implausivelmente distante no futuro (> 90 dias
+  // a partir de hoje) — quase sempre é erro de digitação (ex.: "29/07/2027"
+  // em vez de "29/07/2026") em algum pedido importado, não uma entrega real
+  // programada com mais de 3 meses de antecedência. Sem esse aviso, um erro
+  // desses "gruda" no topo da lista pra sempre (nada mais vai ser "mais
+  // recente" que um ano digitado errado), e passa despercebido — é
+  // exatamente esse o cenário reportado: uma data grudada no topo há dias.
+  // Não removemos a data da lista (os dados continuam acessíveis e corretos
+  // por baixo, o problema é só o ano digitado) — só avisamos visualmente.
+  const HOJE = new Date(); HOJE.setHours(0,0,0,0);
+  const LIMITE_FUTURO_MS = 90 * 24 * 60 * 60 * 1000;
+  _resumoDiaOpcoes = entregas.map(([de, info]) => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(de || '');
+    const dataObj = m ? new Date(parseInt(m[3]), parseInt(m[2]) - 1, parseInt(m[1])) : null;
+    const suspeita = !!(dataObj && (dataObj - HOJE) > LIMITE_FUTURO_MS);
+    return {
+      de,
+      qtdArq: info.arquivos.size,
+      diasRoteirizados: [...info.diasRoteirizados].sort(),
+      suspeita,
+    };
+  });
   // Mantém só as datas que ainda existem na seleção atual (histórico pode
   // ter mudado desde a última vez que a lista foi montada).
   const validos = new Set(_resumoDiaOpcoes.map(o => o.de));
@@ -9297,12 +9350,15 @@ function resumoDiaRenderLista(filtroTexto = '') {
   box.innerHTML = opcoes.map(o => {
     const marcado = _resumoDiaSelecionadas.has(o.de);
     const diasStr = o.diasRoteirizados.join(', ');
+    const avisoHtml = o.suspeita
+      ? ` <span title="Data de entrega mais de 90 dias no futuro — confira se o ano foi digitado certo (ex.: 2027 em vez de 2026) num dos pedidos." style="color:#c0392b;font-weight:700;cursor:help;">⚠ confira o ano</span>`
+      : '';
     return `
       <label style="display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;font-size:12.5px;border-radius:6px;" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background='transparent'">
         <input type="checkbox" ${marcado ? 'checked' : ''} onchange="resumoDiaToggleData('${o.de}', this.checked)" style="cursor:pointer;">
         <span style="flex:1;">
           <strong>${o.de}</strong>
-          <span style="color:var(--text-3);"> (${o.qtdArq} roteirização${o.qtdArq === 1 ? '' : 'ões'})</span>
+          <span style="color:var(--text-3);"> (${o.qtdArq} roteirização${o.qtdArq === 1 ? '' : 'ões'})</span>${avisoHtml}
           <br><span style="font-size:10.5px;color:var(--text-3);">roteirizado em: ${diasStr}</span>
         </span>
       </label>`;
