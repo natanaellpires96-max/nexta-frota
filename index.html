@@ -1105,7 +1105,10 @@
     <div class="modal-card" style="max-width:640px;width:96vw;" onclick="event.stopPropagation()">
       <div class="modal-head">
         <div id="hist-detalhe-titulo" style="font-family:var(--font-cond);font-size:16px;font-weight:700;">Detalhe da roteirização</div>
-        <button class="btn btn-sm btn-danger" onclick="fecharDetalheHistorico()">Fechar</button>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-sm" onclick="exportarHerrlogHistorico(_histDetalheFilenameAtual)" title="Reexportar o mesmo Excel do Envio Transportadora a partir deste snapshot salvo — só baixa o arquivo de novo, não altera o histórico">📊 Exportar Herrlog</button>
+          <button class="btn btn-sm btn-danger" onclick="fecharDetalheHistorico()">Fechar</button>
+        </div>
       </div>
       <div class="modal-body">
         <div id="hist-detalhe-body"><div class="empty">Carregando...</div></div>
