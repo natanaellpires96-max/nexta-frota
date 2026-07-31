@@ -9285,6 +9285,17 @@ async function popularSeletorResumoDia() {
       const file = await handle.getFile();
       const data = JSON.parse(await file.text());
       if (!data.versao || !data.savedAt || !data.resumo) continue;
+      // Ignora arquivos já SUBSTITUÍDOS por uma revisão posterior — mesma
+      // regra usada na aba Histórico (vigentes) e no Dashboard
+      // (dashLerHistoricoDisco). Sem isso, uma correção salva por cima
+      // (ex.: consertar um ano de entrega digitado errado) não tirava a
+      // data ERRADA antiga desta lista — o arquivo velho, já corrigido na
+      // versão nova, continuava sendo varrido e a data errada persistia no
+      // topo mesmo depois de "corrigida". Esse foi exatamente o caso da
+      // entrega "29/07/2027": a revisão mais nova já tinha só "29/07/2026",
+      // mas a revisão antiga (substituída) ainda tinha as duas datas e
+      // seguia contando aqui.
+      if (data.substituidoPor) continue;
       const datas = data.datasEntrega && data.datasEntrega.length
         ? data.datasEntrega
         : (data.pedidos || []).map(p => p.dataEntregaLogistica).filter(Boolean);
