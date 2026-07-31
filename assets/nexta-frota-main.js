@@ -4897,7 +4897,7 @@ async function refreshEditDriverOpts(carrier){
 async function saveEdit(){
   const {carrier, idx} = _editPending;
   if(!carrier && carrier!==0){ showToast('Erro: dados da placa não encontrados.', false); return; }
-  const operação=document.getElementById('e-op').value;
+  const operacao=document.getElementById('e-op').value;
   const tipo=document.getElementById('e-tipo').value;
   const identificacao=document.getElementById('e-id').value;
   const contrato=document.getElementById('e-contrato').value;
