@@ -9441,6 +9441,14 @@ async function gerarResumoDia() {
         const file = await handle.getFile();
         const data = JSON.parse(await file.text());
         if (!data.versao || !data.savedAt || !data.resumo) continue;
+        // Ignora arquivos já SUBSTITUÍDOS por uma revisão posterior — mesma
+        // regra usada em toda parte do sistema que lê o histórico (aba
+        // Histórico, Dashboard, seletor de datas). Sem isso, uma
+        // roteirização que foi aberta e corrigida (gerando uma revisão
+        // nova) contava DUAS VEZES aqui — uma vez pelo arquivo antigo,
+        // outra pelo corrigido — inflando volume/pedidos/viagens do resumo
+        // acima do que a aba Histórico mostra (que já ignora o antigo).
+        if (data.substituidoPor) continue;
         const temAlgumaDessasDatas = (data.datasEntrega || []).some(d => setAlvo.has(d))
           || (data.pedidos || []).some(p => setAlvo.has(p.dataEntregaLogistica));
         if (temAlgumaDessasDatas) snaps.push(data);
