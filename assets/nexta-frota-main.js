@@ -4903,17 +4903,30 @@ async function saveEdit(){
   const contrato=document.getElementById('e-contrato').value;
   const capacidade=document.getElementById('e-cap').value.trim();
   if(!capacidade||isNaN(capacidade)||+capacidade<=0){showToast('Informe a capacidade.',false);return;}
-  const allP=await dbGetPlates();
-  if(!allP[carrier]||!allP[carrier][idx]){ showToast('Placa não encontrada.',false); return; }
   const motD=document.getElementById('e-mot-d')?.value||'';
   const motN=document.getElementById('e-mot-n')?.value||'';
-  allP[carrier][idx]={...allP[carrier][idx], operacao, tipo, identificacao, contrato, capacidade:+capacidade, motoristaDiurno:motD, motoristaNoturno:motN};
-  await dbSavePlates(allP);
-  const modal=document.getElementById('edit-modal');
-  if(modal) modal.remove();
-  _editPending={};
-  showToast('Placa atualizada com sucesso!');
-  await renderTabBody();
+  const btn=document.querySelector('#edit-modal .btn-lime');
+  if(btn){ btn.disabled=true; btn.textContent='Salvando...'; }
+  try {
+    const allP=await dbGetPlates();
+    if(!allP[carrier]||!allP[carrier][idx]){ showToast('Placa não encontrada.',false); return; }
+    allP[carrier][idx]={...allP[carrier][idx], operacao, tipo, identificacao, contrato, capacidade:+capacidade, motoristaDiurno:motD, motoristaNoturno:motN};
+    await dbSavePlates(allP);
+    const modal=document.getElementById('edit-modal');
+    if(modal) modal.remove();
+    _editPending={};
+    showToast('Placa atualizada com sucesso!');
+    await renderTabBody();
+  } catch(e) {
+    // Antes, uma falha aqui (permissão do Firestore, rede, etc.) parava a
+    // função no meio sem avisar nada — o modal continuava aberto, sem
+    // mensagem nenhuma, e parecia que o botão "não fazia nada". Agora o
+    // erro real aparece no toast (e no console), em vez de falhar em
+    // silêncio.
+    console.error('[saveEdit] falha ao salvar placa:', e);
+    showToast('Erro ao salvar: ' + (e.code || e.message || 'falha desconhecida'), false);
+    if(btn){ btn.disabled=false; btn.textContent='💾 Salvar alterações'; }
+  }
 }
 // ── Expose to window for inline onclick handlers ──
 // ═══════════════════════════════════════════════════════════
