@@ -8406,7 +8406,19 @@ async function salvarNoHistorico(silencioso = false) {
   };
   const now = new Date();
   const p2  = n => String(n).padStart(2, '0');
-  const filename = `${now.getFullYear()}${p2(now.getMonth()+1)}${p2(now.getDate())}_${p2(now.getHours())}${p2(now.getMinutes())}_rotas.json`;
+  // Antes o nome do arquivo só tinha precisão de MINUTO
+  // (YYYYMMDD_HHMM_rotas.json), sem mais nada pra diferenciar. Duas pessoas
+  // salvando roteirizações DIFERENTES dentro do mesmo minuto — bem provável
+  // numa pasta compartilhada com várias pessoas mexendo perto do fim do
+  // expediente — geravam o MESMO nome de arquivo. getFileHandle(nome,
+  // {create:true}) + write() não avisa de colisão nenhuma: a segunda
+  // gravação simplesmente SOBRESCREVIA a primeira por cima, sem erro, sem
+  // vínculo de revisão, sem nada — a programação de quem salvou primeiro
+  // sumia sem deixar rastro em lugar nenhum. Segundos + um sufixo aleatório
+  // deixam colisão praticamente impossível, mesmo com vários usuários
+  // salvando ao mesmo tempo, e o nome continua ordenável por data/hora.
+  const sufixoAleatorio = Math.random().toString(36).slice(2, 6);
+  const filename = `${now.getFullYear()}${p2(now.getMonth()+1)}${p2(now.getDate())}_${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}_${sufixoAleatorio}_rotas.json`;
   try {
     const fh = await dirHandleHistorico.getFileHandle(filename, { create: true });
     const ws = await fh.createWritable();
@@ -8965,12 +8977,54 @@ async function excluirEntradaHistorico(filename, btn) {
   if (!confirm(`Excluir "${filename}" do histórico?`)) return;
   if (!await _histGarantirPermissao()) return;
   try {
-    await dirHandleHistorico.removeEntry(filename);
-    btn.closest('.hist-entry').remove();
-    const el = document.getElementById('historico-list');
-    if (!el.querySelector('.hist-entry')) {
-      el.innerHTML = '<div class="empty">Nenhuma roteirização salva nesta pasta.</div>';
+    // ── Desfaz vínculos de revisão ANTES de excluir ──────────────────────
+    // Sem isso: excluir a versão MAIS RECENTE de uma correção (que tem
+    // revisaoDe apontando pra uma anterior) deixava a anterior com
+    // substituidoPor "pendurado" num arquivo que não existe mais — e como
+    // tanto esta lista quanto o Dashboard tratam "tem substituidoPor" como
+    // "não é a versão vigente, não conta", a entrada anterior (com dados
+    // reais, ainda em disco) sumia de vez das duas telas, sem exclusão
+    // nenhuma ter sido pedida pra ela. Mesmo problema no sentido inverso:
+    // excluir uma entrada mais ANTIGA deixava o sucessor com revisaoDe
+    // apontando pro nada (inofensivo pra exibição, mas limpa mesmo assim).
+    try {
+      const fh = await dirHandleHistorico.getFileHandle(filename);
+      const file = await fh.getFile();
+      const data = JSON.parse(await file.text());
+      if (data.revisaoDe) {
+        try {
+          const fhAnt = await dirHandleHistorico.getFileHandle(data.revisaoDe);
+          const fileAnt = await fhAnt.getFile();
+          const dataAnt = JSON.parse(await fileAnt.text());
+          if (dataAnt.substituidoPor === filename) {
+            delete dataAnt.substituidoPor;
+            const wsAnt = await fhAnt.createWritable();
+            await wsAnt.write(JSON.stringify(dataAnt, null, 2));
+            await wsAnt.close();
+            delete _histMetaCache[data.revisaoDe];
+          }
+        } catch(eAnt) { /* arquivo anterior já não existe — nada a desfazer */ }
+      }
+      if (data.substituidoPor) {
+        try {
+          const fhSuc = await dirHandleHistorico.getFileHandle(data.substituidoPor);
+          const fileSuc = await fhSuc.getFile();
+          const dataSuc = JSON.parse(await fileSuc.text());
+          if (dataSuc.revisaoDe === filename) {
+            delete dataSuc.revisaoDe;
+            const wsSuc = await fhSuc.createWritable();
+            await wsSuc.write(JSON.stringify(dataSuc, null, 2));
+            await wsSuc.close();
+            delete _histMetaCache[data.substituidoPor];
+          }
+        } catch(eSuc) { /* arquivo sucessor já não existe — nada a desfazer */ }
+      }
+    } catch(ePrep) {
+      // Não conseguiu ler o próprio arquivo pra checar vínculos — segue com
+      // a exclusão mesmo assim (comportamento anterior), só sem a limpeza.
     }
+    await dirHandleHistorico.removeEntry(filename);
+    await carregarListaHistorico(); // não só remove a linha — reconstrói a lista pra refletir qualquer vínculo desfeito acima
   } catch(e) {
     alert('Erro ao excluir: ' + e.message);
   }
