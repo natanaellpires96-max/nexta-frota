@@ -9750,7 +9750,7 @@ window.popularSeletorResumoDia = popularSeletorResumoDia;
  * Clona um op-bloco para um iframe oculto com estilos inline,
  * garantindo renderização fiel sem depender das classes CSS da página.
  */
-function _clonarBlocoParaExport(blocoEl) {
+function _clonarBlocoParaExport(blocoEl, larguraPx = 1050) {
   // Coleta as folhas de estilo relevantes como texto inline
   const cssTexto = Array.from(document.styleSheets)
     .flatMap(ss => {
@@ -9760,7 +9760,7 @@ function _clonarBlocoParaExport(blocoEl) {
 
   // Cria iframe temporário fora da viewport
   const iframe = document.createElement('iframe');
-  iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1050px;height:auto;border:none;visibility:hidden;';
+  iframe.style.cssText = `position:fixed;top:-9999px;left:-9999px;width:${larguraPx}px;height:auto;border:none;visibility:hidden;`;
   document.body.appendChild(iframe);
 
   const doc = iframe.contentDocument;
@@ -9824,13 +9824,13 @@ async function _capturarCanvas(el, escala = 2) {
  * @param {string} nomeArq  - nome base do arquivo (sem extensão)
  * @param {Event}  ev       - evento click (para stopPropagation)
  */
-async function exportarBlocoPDF(blocoId, nomeArq, ev) {
+async function exportarBlocoPDF(blocoId, nomeArq, ev, larguraPx = 1050) {
   if (ev) ev.stopPropagation();
   const blocoEl = document.querySelector(`[data-bloco-id="${blocoId}"]`);
   if (!blocoEl) { showToast('Card não encontrado.', false); return; }
   showToast('Gerando PDF…', true);
   try {
-    const iframe = _clonarBlocoParaExport(blocoEl);
+    const iframe = _clonarBlocoParaExport(blocoEl, larguraPx);
     // Aguarda fontes carregarem
     await new Promise(r => setTimeout(r, 600));
     const clone = iframe.contentDocument.querySelector('.op-bloco');
@@ -9859,13 +9859,13 @@ async function exportarBlocoPDF(blocoId, nomeArq, ev) {
 /**
  * Exporta um único bloco de programação como PNG.
  */
-async function exportarBlocoPNG(blocoId, nomeArq, ev) {
+async function exportarBlocoPNG(blocoId, nomeArq, ev, larguraPx = 1050) {
   if (ev) ev.stopPropagation();
   const blocoEl = document.querySelector(`[data-bloco-id="${blocoId}"]`);
   if (!blocoEl) { showToast('Card não encontrado.', false); return; }
   showToast('Gerando PNG…', true);
   try {
-    const iframe = _clonarBlocoParaExport(blocoEl);
+    const iframe = _clonarBlocoParaExport(blocoEl, larguraPx);
     await new Promise(r => setTimeout(r, 600));
     const clone = iframe.contentDocument.querySelector('.op-bloco');
     const canvas = await _capturarCanvas(clone, 3);
@@ -10085,6 +10085,7 @@ function _coletarLinhasPassagemTurno(snaps) {
           horarioCarregamento: _fmtHoraPassagemTurno(baseDate, inicioCargaRealMin),
           horarioEntrega,
           observacao: observacoes.join(' · '),
+          observacoesArr: observacoes,
           _ordCarga: baseDate.getTime() + inicioCargaRealMin * 60000, // pra ordenar cronologicamente
         });
       });
@@ -10150,27 +10151,74 @@ function _tituloDataPassagemTurno(datasEntregaSelecionadas) {
 // usadas no Resumo Transportadora — mesmo visual, e os botões de exportar
 // PDF/PNG genéricos (exportarBlocoPDF/PNG) funcionam sem nenhuma mudança
 // neles, já que procuram por essas mesmas classes dentro do bloco clonado).
+// Agrupa as linhas por operação (base de carregamento) — uma viagem com
+// carga em mais de uma base forma seu próprio grupo combinado (reflete a
+// combinação real usada, em vez de aparecer duplicada em duas seções).
+// Grupos ordenados pelo horário de carga mais cedo dentro dele (a operação
+// que começa mais cedo no dia aparece primeiro); linhas dentro de cada
+// grupo, por horário de carga.
+function _agruparLinhasPorOperacao(linhas) {
+  const grupos = new Map();
+  linhas.forEach(l => {
+    if (!grupos.has(l.bases)) grupos.set(l.bases, []);
+    grupos.get(l.bases).push(l);
+  });
+  const lista = [...grupos.entries()].map(([base, itens]) => {
+    itens.sort((a, b) => a._ordCarga - b._ordCarga);
+    return { base, itens, _ordGrupo: itens[0]._ordCarga };
+  });
+  lista.sort((a, b) => a._ordGrupo - b._ordGrupo);
+  return lista;
+}
+
+// Pluralização simples: "1 viagem" / "2 viagens" — o bug anterior
+// (`viagem${n===1?'':'ns'}`) gerava "viagemns" no plural, porque só
+// acrescentava "ns" no fim de "viagem" em vez de trocar pra "viagens".
+function _pl(n, singular, plural) { return n === 1 ? singular : plural; }
+
 function _montarHtmlPassagemTurno(linhas, datasEntregaSelecionadas) {
   const dataStr = _tituloDataPassagemTurno(datasEntregaSelecionadas);
   const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
-  const linhasHtml = linhas.length
-    ? linhas.map(l => `
+  const grupos = _agruparLinhasPorOperacao(linhas);
+  const colgroupHtml = `
+    <colgroup>
+      <col style="width:160px"/><col style="width:260px"/><col style="width:100px"/><col style="width:100px"/>
+      <col style="width:160px"/><col style="width:150px"/><col style="width:130px"/><col style="width:130px"/><col style="width:280px"/>
+    </colgroup>`;
+  const theadHtml = `
+    <thead>
       <tr>
-        <td>${l.bases}</td>
-        <td>${l.clientes}</td>
-        <td style="font-family:var(--font-mono);font-weight:700;white-space:nowrap;">${l.numeroViagem}</td>
-        <td style="font-family:var(--font-mono);font-weight:700;white-space:nowrap;">${l.placa}</td>
-        <td>${l.motorista}</td>
-        <td>${l.transportador}</td>
-        <td style="text-align:center;white-space:nowrap;font-weight:700;">${l.horarioCarregamento}</td>
-        <td style="text-align:center;white-space:nowrap;font-weight:700;">${l.horarioEntrega}</td>
-        <td>${l.observacao ? `<span style="color:#B45309;font-weight:600;">⚠ ${l.observacao}</span>` : '<span style="color:var(--text-3);">—</span>'}</td>
-      </tr>`).join('')
-    : `<tr><td colspan="9" style="text-align:center;color:var(--text-3);padding:16px;">Nenhuma viagem encontrada para a(s) data(s) selecionada(s).</td></tr>`;
+        <th>Base(s) de Carregamento</th><th>Clientes (Destinos)</th><th>Nº Viagem</th><th>Placa</th>
+        <th>Motorista</th><th>Transportador</th><th>Horário Estimado de Carregamento</th><th>Horário Estimado de Entrega</th><th>Observação</th>
+      </tr>
+    </thead>`;
+  const gruposHtml = grupos.length
+    ? grupos.map(g => `
+      <div style="margin-top:14px;margin-bottom:4px;font-family:var(--font-cond);font-weight:700;font-size:14px;color:var(--text);letter-spacing:.02em;">
+        📍 ${g.base} <span style="font-family:var(--font);font-weight:500;font-size:11px;color:var(--text-3);">(${g.itens.length} ${_pl(g.itens.length, 'viagem', 'viagens')})</span>
+      </div>
+      <table class="op-table">
+        ${colgroupHtml}
+        ${theadHtml}
+        <tbody>${g.itens.map(l => `
+          <tr>
+            <td>${l.bases}</td>
+            <td>${l.clientes}</td>
+            <td style="font-family:var(--font-mono);font-weight:700;white-space:nowrap;">${l.numeroViagem}</td>
+            <td style="font-family:var(--font-mono);font-weight:700;white-space:nowrap;">${l.placa}</td>
+            <td>${l.motorista}</td>
+            <td>${l.transportador}</td>
+            <td style="text-align:center;white-space:nowrap;font-weight:700;">${l.horarioCarregamento}</td>
+            <td style="text-align:center;white-space:nowrap;font-weight:700;">${l.horarioEntrega}</td>
+            <td>${l.observacao ? `<span style="color:#B45309;font-weight:600;">⚠ ${l.observacao}</span>` : '<span style="color:var(--text-3);">—</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`).join('')
+    : `<div style="text-align:center;color:var(--text-3);padding:24px;">Nenhuma viagem encontrada para a(s) data(s) selecionada(s).</div>`;
   return `
     <div class="op-bloco" data-bloco-id="passagem-turno" style="max-width:100%;">
       <div class="op-head">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
           <div style="display:flex;align-items:baseline;gap:10px;">
             <span style="font-family:var(--font-cond);font-weight:800;font-size:20px;color:var(--pet-green);letter-spacing:.02em;">NEXTA</span>
             <span style="font-size:10px;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;">Relatório de Passagem de Turno</span>
@@ -10180,43 +10228,47 @@ function _montarHtmlPassagemTurno(linhas, datasEntregaSelecionadas) {
             <div>Gerado em ${geradoEm}</div>
           </div>
         </div>
-        <div style="font-size:11px;color:var(--text-3);">${linhas.length} viagem${linhas.length === 1 ? '' : 'ns'}</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:4px;">${linhas.length} ${_pl(linhas.length, 'viagem', 'viagens')} em ${grupos.length} ${_pl(grupos.length, 'operação', 'operações')}</div>
       </div>
-      <table class="op-table">
-        <colgroup>
-          <col style="width:150px"/><col style="width:220px"/><col style="width:90px"/><col style="width:90px"/>
-          <col style="width:140px"/><col style="width:130px"/><col style="width:70px"/><col style="width:70px"/><col style="width:220px"/>
-        </colgroup>
-        <thead>
-          <tr>
-            <th>Base(s) de Carregamento</th><th>Clientes (Destinos)</th><th>Nº Viagem</th><th>Placa</th>
-            <th>Motorista</th><th>Transportador</th><th>Carga (est.)</th><th>Entrega (est.)</th><th>Observação</th>
-          </tr>
-        </thead>
-        <tbody>${linhasHtml}</tbody>
-      </table>
+      <div style="padding:0 16px 16px;">${gruposHtml}</div>
     </div>`;
 }
 
+// Texto pro WhatsApp: cabeçalho único, divisórias claras entre operações,
+// viagens numeradas dentro de cada grupo (facilita "viagem 3 de 5" na
+// leitura corrida), campos sempre na mesma ordem com o mesmo rótulo, e
+// cada restrição de horário na sua própria linha (em vez de tudo
+// concatenado com "·", que ficava difícil de separar visualmente quando
+// tinha mais de uma).
 function _montarTextoPassagemTurnoWhatsApp(linhas, datasEntregaSelecionadas) {
   const dataStr = _tituloDataPassagemTurno(datasEntregaSelecionadas);
+  const grupos = _agruparLinhasPorOperacao(linhas);
+  const DIVISOR = '▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
+  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
   const L = [];
-  L.push(`*Passagem de Turno — ${dataStr}*`);
-  L.push(`${linhas.length} viagem${linhas.length === 1 ? '' : 'ns'}`);
-  L.push('');
-  if (!linhas.length) {
+  L.push(`🔄 *PASSAGEM DE TURNO*`);
+  L.push(`Entrega: *${dataStr}*`);
+  L.push(`${linhas.length} ${_pl(linhas.length, 'viagem', 'viagens')} em ${grupos.length} ${_pl(grupos.length, 'operação', 'operações')} · gerado em ${geradoEm}`);
+  if (!grupos.length) {
+    L.push('');
     L.push('Nenhuma viagem encontrada para a(s) data(s) selecionada(s).');
-  } else {
-    linhas.forEach(l => {
-      L.push(`*${l.numeroViagem}* · ${l.placa} · ${l.transportador}`);
-      L.push(`  Base: ${l.bases}`);
-      L.push(`  Destino(s): ${l.clientes}`);
-      L.push(`  Motorista: ${l.motorista}`);
-      L.push(`  Carga: ${l.horarioCarregamento} → Entrega: ${l.horarioEntrega}`);
-      if (l.observacao) L.push(`  ⚠ ${l.observacao}`);
-      L.push('');
-    });
+    return L.join('\n');
   }
+  grupos.forEach(g => {
+    L.push('');
+    L.push(DIVISOR);
+    L.push(`📍 *${g.base.toUpperCase()}* — ${g.itens.length} ${_pl(g.itens.length, 'viagem', 'viagens')}`);
+    L.push(DIVISOR);
+    g.itens.forEach((l, i) => {
+      L.push('');
+      L.push(`${i + 1}. *${l.numeroViagem}*  —  ${l.placa}  —  ${l.transportador}`);
+      L.push(`   Motorista: ${l.motorista}`);
+      L.push(`   Destino(s): ${l.clientes}`);
+      L.push(`   🕐 Carregamento: ${l.horarioCarregamento}`);
+      L.push(`   🏁 Entrega: ${l.horarioEntrega}`);
+      (l.observacoesArr || []).forEach(obs => L.push(`   ⚠️ ${obs}`));
+    });
+  });
   return L.join('\n');
 }
 
@@ -10255,8 +10307,8 @@ async function gerarPassagemTurno(formato) {
   const p2 = n => String(n).padStart(2, '0');
   const nomeArq = `Passagem_Turno_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
   try {
-    if (formato === 'pdf') await exportarBlocoPDF('passagem-turno', nomeArq, null);
-    else await exportarBlocoPNG('passagem-turno', nomeArq, null);
+    if (formato === 'pdf') await exportarBlocoPDF('passagem-turno', nomeArq, null, 1600);
+    else await exportarBlocoPNG('passagem-turno', nomeArq, null, 1600);
   } finally {
     document.body.removeChild(wrap);
   }
