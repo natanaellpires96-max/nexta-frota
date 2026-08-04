@@ -10040,6 +10040,15 @@ function _coletarLinhasPassagemTurno(snaps) {
         // Base(s) de carregamento — pode ser mais de uma na mesma viagem.
         const basesUsadas = [...new Set(vi.paradas.map(p => p.pedido?.terminal).filter(Boolean))];
         const bases = (basesUsadas.length ? basesUsadas : [vi.terminalOrigem || v.terminal || '']).filter(Boolean);
+        // Cidade da operação (pra agrupar) — usa o cadastro de terminais DO
+        // PRÓPRIO SNAPSHOT (não o cadastro ao vivo, que pode ter mudado
+        // desde então), olhando a base PRINCIPAL (1ª) da viagem. Ex.:
+        // "Paulínia TORRÃO Nexta" → "Paulínia"; "Ribeirão Preto POOL" →
+        // "Ribeirão Preto" — nunca corta no meio de cidade composta, porque
+        // vem do campo "cidade" já cadastrado, não de um split ingênuo do
+        // nome da base.
+        const terminalPrincipal = (terminaisSnap || []).find(t => t.nome === bases[0]);
+        const cidadeOperacao = terminalPrincipal?.cidade || bases[0] || 'Sem operação definida';
 
         // Percorre as paradas calculando chegada/descarga de cada uma —
         // mesma lógica de exportarHrrlog — pra saber o horário da 1ª e da
@@ -10077,6 +10086,7 @@ function _coletarLinhasPassagemTurno(snaps) {
 
         linhas.push({
           bases: bases.join(' / ') || '—',
+          cidadeOperacao,
           clientes: clientesVistos.join(', ') || '—',
           numeroViagem: codViagem,
           placa: v.placa || '',
@@ -10160,8 +10170,8 @@ function _tituloDataPassagemTurno(datasEntregaSelecionadas) {
 function _agruparLinhasPorOperacao(linhas) {
   const grupos = new Map();
   linhas.forEach(l => {
-    if (!grupos.has(l.bases)) grupos.set(l.bases, []);
-    grupos.get(l.bases).push(l);
+    if (!grupos.has(l.cidadeOperacao)) grupos.set(l.cidadeOperacao, []);
+    grupos.get(l.cidadeOperacao).push(l);
   });
   const lista = [...grupos.entries()].map(([base, itens]) => {
     itens.sort((a, b) => a._ordCarga - b._ordCarga);
@@ -10210,7 +10220,7 @@ function _montarHtmlPassagemTurno(linhas, datasEntregaSelecionadas) {
             <td>${l.transportador}</td>
             <td style="text-align:center;white-space:nowrap;font-weight:700;">${l.horarioCarregamento}</td>
             <td style="text-align:center;white-space:nowrap;font-weight:700;">${l.horarioEntrega}</td>
-            <td>${l.observacao ? `<span style="color:#B45309;font-weight:600;">⚠ ${l.observacao}</span>` : '<span style="color:var(--text-3);">—</span>'}</td>
+            <td>${(l.observacoesArr && l.observacoesArr.length) ? l.observacoesArr.map(o => `<div style="color:#B45309;font-weight:600;line-height:1.5;">⚠ ${o}</div>`).join('') : '<span style="color:var(--text-3);">—</span>'}</td>
           </tr>`).join('')}
         </tbody>
       </table>`).join('')
