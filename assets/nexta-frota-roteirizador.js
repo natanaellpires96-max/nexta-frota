@@ -270,6 +270,13 @@ var lockedViagens = new Set();
 // pelo seletor de roteirização). Usado para vincular uma correção salva à
 // programação original que ela substitui — ver salvarNoHistorico().
 var arquivoHistoricoAberto = null;
+// Último arquivo salvo NESTA sessão de trabalho, mesmo sem ter sido aberto
+// explicitamente do histórico (ex.: salvar → ajustar um detalhe → salvar de
+// novo, tudo na mesma sessão). Só linka como revisão se, além disso, os
+// PEDIDOS realmente se sobrepuserem em boa parte — ver a checagem de
+// sobreposição em salvarNoHistorico(). Resetado nos mesmos pontos que
+// arquivoHistoricoAberto (planilha nova / lista de pedidos zerada).
+var ultimoArquivoSalvoSessao = null;
 // ── Contador de IDs de viagem (P + MM + YY + seq 3 dígitos) ─────────────────
 // Formato: P{MM}{YY}{NNN} ex: P0626001
 // Chave interna: MM+YY ex: "0626" — sequência global por mês/ano, sem repetição
@@ -3868,6 +3875,7 @@ async function carregarPedidosLiberados() {
       if (!novos.length) continue;
       pedidos = novos;
       arquivoHistoricoAberto = null;
+      ultimoArquivoSalvoSessao = null;
       renderPedidos();
       const suspeitos = novos.filter(p => dataEntregaSuspeita(p.dataEntregaLogistica));
       if (suspeitos.length && typeof window.showToast === 'function')
@@ -3893,6 +3901,7 @@ function uploadPedidosLiberados(input) {
       if (!novos.length) { alert('Nenhum pedido reconhecido. Verifique se o arquivo segue o modelo correto.'); return; }
       pedidos = novos;
       arquivoHistoricoAberto = null; // planilha nova = trabalho novo, não continuação do que estava aberto
+      ultimoArquivoSalvoSessao = null;
       _sincronizarDataOperacaoComPedidos();
       renderPedidos();
       showTab('pedidos');
@@ -3912,6 +3921,7 @@ function limparTodosPedidos() {
   if (!confirm('Remover todos os ' + pedidos.length + ' pedido(s) carregados?')) return;
   pedidos = [];
   arquivoHistoricoAberto = null; // lista zerada = trabalho novo
+  ultimoArquivoSalvoSessao = null;
   renderPedidos();
 }
 function baixarModeloPedidos() {
@@ -8361,20 +8371,36 @@ async function salvarNoHistorico(silencioso = false) {
     });
   });
   const datasEntrega = [...new Set(pedidos.map(p => p.dataEntregaLogistica).filter(Boolean))];
-  // Vincula como revisão SOMENTE quando o usuário explicitamente abriu uma
-  // entrada específica do histórico (via "Abrir" ou pelo seletor de
-  // roteirização) — nunca por suposição de "foi o último salvo nesta
-  // sessão". Essa suposição (mesmo com a trava de data+cidade abaixo) já
-  // vinculou por engano duas programações genuinamente independentes só
-  // porque coincidiam em data de entrega E cidade-base — bem comum quando
-  // se roteiriza mais de um lote pra mesma cidade no mesmo dia. O resultado
-  // era grave: uma programação real ficava escondida atrás de "Ver
-  // revisões anteriores" sem AVISO NENHUM — só quem já sabe que esse
-  // vínculo automático existe (e sabe procurar) percebe e desvincula na
-  // mão. Vínculo automático por "achismo" não vale o risco; só a ação
-  // explícita do usuário (abrir UM arquivo específico pra corrigir) cria
-  // uma revisão agora.
-  let revisaoDeValida = arquivoHistoricoAberto || null;
+  // Chaves estáveis de identidade de um conjunto de pedidos: usa os números
+  // de Ordem SAP quando existem (o identificador mais confiável — vem do
+  // ERP, não muda entre salvamentos do "mesmo" trabalho); cai pra
+  // SAP+terminal do cliente só como fallback pra pedidos sem ordem.
+  const _chavesPedidos = (arr) => {
+    const chaves = new Set();
+    (arr || []).forEach(p => {
+      if (p.ordens && p.ordens.length) p.ordens.forEach(o => chaves.add(o));
+      else chaves.add(`${p.codigoSAP || ''}||${p.terminal || ''}`);
+    });
+    return chaves;
+  };
+  const chavesPedidosNovos = _chavesPedidos(pedidos);
+  // Vincula como revisão quando: (a) o usuário abriu explicitamente uma
+  // entrada do histórico pra corrigir, OU (b) é o último arquivo salvo
+  // NESTA sessão de trabalho (ex.: salvar → ajustar um detalhe → salvar de
+  // novo, sem nunca clicar "Abrir") — mas em QUALQUER um dos dois casos,
+  // só confirma o vínculo se os PEDIDOS realmente se sobrepõem em boa
+  // parte, não só a data de entrega e a cidade-base.
+  //
+  // Por quê pedidos, e não só data+cidade: duas programações diferentes pra
+  // MESMA cidade e MESMA data de entrega são um cenário normal (ex.: dois
+  // lotes distintos roteirizados em horários diferentes do dia) — usar só
+  // esses dois critérios já vinculou por engano uma programação real como
+  // se fosse "correção" de outra completamente independente, escondendo-a
+  // sem aviso nenhum. Comparar os pedidos de verdade (número de Ordem SAP)
+  // resolve isso: duas programações do mesmo lote refinado comprovadamente
+  // compartilham a maioria dos pedidos; duas programações independentes,
+  // mesmo pra mesma cidade/data, quase sempre não compartilham quase nada.
+  let revisaoDeValida = arquivoHistoricoAberto || ultimoArquivoSalvoSessao || null;
   if (revisaoDeValida) {
     try {
       const fhAberto = await dirHandleHistorico.getFileHandle(revisaoDeValida);
@@ -8382,13 +8408,20 @@ async function salvarNoHistorico(silencioso = false) {
       const dataAberto = JSON.parse(await fileAberto.text());
       const datasAntigas = new Set(dataAberto.datasEntrega || []);
       const temDataEmComum = datasEntrega.some(d => datasAntigas.has(d));
-      const terminaisAntigos = new Set(dataAberto.resumo?.terminaisUsados || []);
-      const temTerminalEmComum = [...terminaisUsados].some(t => terminaisAntigos.has(t));
+      const chavesPedidosAntigos = _chavesPedidos(dataAberto.pedidos);
+      const interseccao = [...chavesPedidosNovos].filter(k => chavesPedidosAntigos.has(k)).length;
+      const menorConjunto = Math.min(chavesPedidosNovos.size, chavesPedidosAntigos.size) || 1;
+      const proporcaoSobreposicao = interseccao / menorConjunto;
+      // 60% dos pedidos do menor dos dois conjuntos em comum — limiar
+      // conservador: refino normal (motorista, horário manual, remover 1-2
+      // pedidos) sempre fica bem acima disso; um lote diferente do mesmo
+      // dia/cidade quase sempre fica bem abaixo.
+      const temSobreposicaoForte = proporcaoSobreposicao >= 0.6;
       if (!temDataEmComum) {
-        console.warn(`[historico] "${revisaoDeValida}" foi aberto, mas a nova roteirização tem data(s) de entrega diferente(s) (${datasEntrega.join(', ')} vs ${[...datasAntigas].join(', ')}) — salvando como programação independente, não como revisão.`);
+        console.warn(`[historico] "${revisaoDeValida}" não vinculado: data(s) de entrega diferente(s) (${datasEntrega.join(', ')} vs ${[...datasAntigas].join(', ')}) — salvando como programação independente.`);
         revisaoDeValida = null;
-      } else if (!temTerminalEmComum) {
-        console.warn(`[historico] "${revisaoDeValida}" foi aberto, mas a nova roteirização não usa nenhuma cidade/terminal em comum (${[...terminaisUsados].join(', ')} vs ${[...terminaisAntigos].join(', ')}) — salvando como programação independente, não como revisão.`);
+      } else if (!temSobreposicaoForte) {
+        console.warn(`[historico] "${revisaoDeValida}" não vinculado: só ${Math.round(proporcaoSobreposicao*100)}% dos pedidos em comum (esperado ≥60%) — parece programação independente, não uma correção da mesma.`);
         revisaoDeValida = null;
       }
     } catch(eCheck) {
@@ -8472,6 +8505,7 @@ async function salvarNoHistorico(silencioso = false) {
       }
     }
     arquivoHistoricoAberto = null; // ciclo de correção concluído — próxima ligação só via "Abrir" explícito
+    ultimoArquivoSalvoSessao = filename; // próximo salvamento desta sessão pode vincular a este, se pedidos se sobrepuserem fortemente (ver checagem acima)
     _invalidarCacheJornadaHistorico(); // a jornada recém-salva precisa entrar na conta do card na próxima renderização
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
@@ -9928,6 +9962,307 @@ window.exportarBlocoPDF              = exportarBlocoPDF;
 window.exportarBlocoPNG              = exportarBlocoPNG;
 window.exportarTodasProgramacoesPDF  = exportarTodasProgramacoesPDF;
 window.exportarTodasProgramacoesPNG  = exportarTodasProgramacoesPNG;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RELATÓRIO DE PASSAGEM DE TURNO
+// ══════════════════════════════════════════════════════════════════════════════
+// Uma linha por VIAGEM (não por card de veículo como o Resumo Transportadora):
+// base(s) de carregamento, clientes/destinos, nº da viagem, placa, motorista,
+// transportador, horário estimado de carregamento e de entrega, e observação
+// (restrição de horário do cliente, quando houver) — pra quem assume o turno
+// bater o olho e já saber o que esperar de cada viagem em andamento/prevista.
+// Reaproveita a MESMA seleção de data(s) de entrega do botão "Gerar Resumo"
+// (📅 Selecionar data(s) de entrega) e a mesma regra de "só vigentes" (ignora
+// arquivos substituídos por revisão posterior) — ver gerarResumoDia().
+
+// Formata minuto absoluto (pode passar de 1440 = vira o dia) + data base → "HH:MM"
+function _fmtHoraPassagemTurno(baseDate, absMin) {
+  if (absMin == null || isNaN(absMin)) return '';
+  const m = Math.round(absMin);
+  const hh = Math.floor(((m % 1440) + 1440) % 1440 / 60);
+  const mm = ((m % 60) + 60) % 60;
+  return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
+}
+
+// Monta a lista de linhas (1 por viagem) a partir de uma lista de snapshots
+// (mesmo formato usado por gerarResumoDia: {resultado, veiculos, terminais,
+// pedidos, ...}). Reaproveita a MESMA matemática de horário de carga/entrega
+// já usada e testada em exportarHrrlog — não reinventa o cálculo.
+function _coletarLinhasPassagemTurno(snaps) {
+  const linhas = [];
+  snaps.forEach(snap => {
+    const resultado = snap.resultado || {};
+    const veiculosSnap = snap.veiculos || [];
+    const terminaisSnap = snap.terminais || [];
+    veiculosSnap.forEach(v => {
+      const todasViagens = (resultado[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      if (!todasViagens.length) return;
+      const _jIniRawCt = parseHoraMin(v.jornadaInicio || '06:00');
+      let jIniMin = isNaN(_jIniRawCt) ? 360 : _jIniRawCt;
+      if (v._horarioDisponivelAPartirDe) { const _dmCt = parseHoraMin(v._horarioDisponivelAPartirDe); if (!isNaN(_dmCt) && _dmCt > jIniMin) jIniMin = _dmCt; }
+      todasViagens.forEach((vi, idx) => {
+        const _fp = vi.paradas[0];
+        let baseDate = null;
+        if (resultado._baseDataEntrega) {
+          const _bd = new Date(resultado._baseDataEntrega);
+          if (!isNaN(_bd.getTime())) baseDate = _bd;
+        }
+        if (!baseDate) {
+          const _dl = _fp?.pedido?.dataEntregaLogistica;
+          if (_dl) {
+            const pts = _dl.split('/');
+            if (pts.length >= 3) {
+              const d = new Date(parseInt(pts[2]), parseInt(pts[1]) - 1, parseInt(pts[0]));
+              if (_fp.overnight) d.setDate(d.getDate() - 1);
+              baseDate = d;
+            }
+          }
+        }
+        if (!baseDate) baseDate = new Date();
+        let relogioMin = inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
+        relogioMin += vi.esperaTerminalMin || 0;
+        const temOverrideCarga = vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin);
+        if (temOverrideCarga) {
+          const clockAnterior = idx > 0
+            ? inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1)
+            : jIniMin;
+          const baseDay = Math.floor(clockAnterior / 1440) * 1440;
+          let alvo = baseDay + vi.horarioCargaManualMin;
+          if (alvo < clockAnterior - 0.001) alvo += 1440;
+          relogioMin = alvo;
+        }
+        const inicioCargaMin = temOverrideCarga ? relogioMin : (vi._inicioCargaMin ?? relogioMin);
+        const p0Hrr = vi.paradas[0];
+        const espOrigP0 = p0Hrr?.tempoEsperaRestricaoMin || 0;
+        const atrasoP0 = (!temOverrideCarga && !p0Hrr?.overnight && espOrigP0 > 0 && (p0Hrr?.tempoCarregamentoMin || 0) > 0) ? espOrigP0 : 0;
+        const inicioCargaRealMin = inicioCargaMin + atrasoP0;
+
+        // Base(s) de carregamento — pode ser mais de uma na mesma viagem.
+        const basesUsadas = [...new Set(vi.paradas.map(p => p.pedido?.terminal).filter(Boolean))];
+        const bases = (basesUsadas.length ? basesUsadas : [vi.terminalOrigem || v.terminal || '']).filter(Boolean);
+
+        // Percorre as paradas calculando chegada/descarga de cada uma —
+        // mesma lógica de exportarHrrlog — pra saber o horário da 1ª e da
+        // última entrega, e juntar clientes + observações de restrição.
+        let clock = inicioCargaMin;
+        const clientesVistos = [];
+        const observacoes = [];
+        let primeiraChegadaMin = null;
+        let ultimaDescMin = null;
+        vi.paradas.forEach((p, idxP) => {
+          const espOrig = p.tempoEsperaRestricaoMin || 0;
+          const wal = p.overnight ? (p.waitAfterLoadingMin || 0) : 0;
+          const atraso = idxP === 0 ? atrasoP0 : 0;
+          const fimCarga = clock + atraso + (p.tempoCarregamentoMin || 0);
+          const chegada  = fimCarga + wal + (p.deslocCarregadoMin || 0);
+          const espVis   = p.overnight ? 0 : (espOrig - atraso);
+          const inicioDescMin = chegada + espVis;
+          const fimDesc  = inicioDescMin + (p.tempoDescargaMin || 0);
+          clock = fimDesc + (p.deslocVazioMin || 0);
+          if (primeiraChegadaMin === null) primeiraChegadaMin = chegada;
+          ultimaDescMin = fimDesc;
+          const nomeCliente = p.pedido?.cliente || '?';
+          if (!clientesVistos.includes(nomeCliente)) clientesVistos.push(nomeCliente);
+          const restricao = (p.pedido?.restricao || '').trim();
+          if (restricao) {
+            const obsTxt = `${nomeCliente}: janela ${restricao}`;
+            if (!observacoes.includes(obsTxt)) observacoes.push(obsTxt);
+          }
+        });
+
+        const codViagem = vi.petId || `VIA${v.placa}${idx + 1}`;
+        const horarioEntrega = (primeiraChegadaMin !== null && ultimaDescMin !== null && Math.round(primeiraChegadaMin) !== Math.round(ultimaDescMin))
+          ? `${_fmtHoraPassagemTurno(baseDate, primeiraChegadaMin)} – ${_fmtHoraPassagemTurno(baseDate, ultimaDescMin)}`
+          : _fmtHoraPassagemTurno(baseDate, primeiraChegadaMin);
+
+        linhas.push({
+          bases: bases.join(' / ') || '—',
+          clientes: clientesVistos.join(', ') || '—',
+          numeroViagem: codViagem,
+          placa: v.placa || '',
+          motorista: motoristaDaViagem(v, inicioCargaRealMin, vi) || '—',
+          transportador: v.transportadora || '—',
+          horarioCarregamento: _fmtHoraPassagemTurno(baseDate, inicioCargaRealMin),
+          horarioEntrega,
+          observacao: observacoes.join(' · '),
+          _ordCarga: baseDate.getTime() + inicioCargaRealMin * 60000, // pra ordenar cronologicamente
+        });
+      });
+    });
+  });
+  linhas.sort((a, b) => a._ordCarga - b._ordCarga);
+  return linhas;
+}
+
+// Reúne os snapshots pra passagem de turno: mesma fonte e mesmas travas que
+// gerarResumoDia (histórico em disco, filtrado pelas datas selecionadas no
+// seletor "📅 Selecionar data(s) de entrega", ignorando arquivos já
+// substituídos por revisão posterior) — ou a roteirização atual em memória
+// quando nenhuma data foi selecionada.
+async function _reunirSnapsPassagemTurno() {
+  const datasEntregaSelecionadas = [..._resumoDiaSelecionadas];
+  let snaps = [];
+  if (datasEntregaSelecionadas.length && dirHandleHistorico) {
+    if (!await _histGarantirPermissao()) { showToast('Permissão da pasta do histórico negada.', false); return null; }
+    const setAlvo = new Set(datasEntregaSelecionadas);
+    for await (const [name, handle] of dirHandleHistorico.entries()) {
+      if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+      try {
+        const file = await handle.getFile();
+        const data = JSON.parse(await file.text());
+        if (!data.versao || !data.savedAt || !data.resumo) continue;
+        if (data.substituidoPor) continue; // só vigentes — ver comentário em gerarResumoDia
+        const temAlgumaDessasDatas = (data.datasEntrega || []).some(d => setAlvo.has(d))
+          || (data.pedidos || []).some(p => setAlvo.has(p.dataEntregaLogistica));
+        if (temAlgumaDessasDatas) snaps.push(data);
+      } catch(e) {}
+    }
+    snaps.sort((a, b) => a.savedAt.localeCompare(b.savedAt));
+  } else if (ultimoResultado) {
+    snaps = [{
+      savedAt: new Date().toISOString(),
+      datasEntrega: [],
+      resumo: {},
+      veiculos,
+      terminais: terminaisCad,
+      resultado: ultimoResultado,
+      pedidos,
+    }];
+  } else {
+    showToast('Selecione uma ou mais datas de entrega, ou execute a otimização primeiro.', false);
+    return null;
+  }
+  return { snaps, datasEntregaSelecionadas };
+}
+
+function _tituloDataPassagemTurno(datasEntregaSelecionadas) {
+  if (!datasEntregaSelecionadas.length) return 'Roteirização atual';
+  if (datasEntregaSelecionadas.length === 1) return datasEntregaSelecionadas[0];
+  const paraOrdenar = (de) => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(de || '');
+    return m ? `${m[3]}${m[2]}${m[1]}` : (de || '');
+  };
+  const ordenadas = [...datasEntregaSelecionadas].sort((a, b) => paraOrdenar(a).localeCompare(paraOrdenar(b)));
+  return `${ordenadas[0]} a ${ordenadas[ordenadas.length - 1]}`;
+}
+
+// Monta o HTML do relatório (reaproveita as classes .op-bloco/.op-table já
+// usadas no Resumo Transportadora — mesmo visual, e os botões de exportar
+// PDF/PNG genéricos (exportarBlocoPDF/PNG) funcionam sem nenhuma mudança
+// neles, já que procuram por essas mesmas classes dentro do bloco clonado).
+function _montarHtmlPassagemTurno(linhas, datasEntregaSelecionadas) {
+  const dataStr = _tituloDataPassagemTurno(datasEntregaSelecionadas);
+  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  const linhasHtml = linhas.length
+    ? linhas.map(l => `
+      <tr>
+        <td>${l.bases}</td>
+        <td>${l.clientes}</td>
+        <td style="font-family:var(--font-mono);font-weight:700;white-space:nowrap;">${l.numeroViagem}</td>
+        <td style="font-family:var(--font-mono);font-weight:700;white-space:nowrap;">${l.placa}</td>
+        <td>${l.motorista}</td>
+        <td>${l.transportador}</td>
+        <td style="text-align:center;white-space:nowrap;font-weight:700;">${l.horarioCarregamento}</td>
+        <td style="text-align:center;white-space:nowrap;font-weight:700;">${l.horarioEntrega}</td>
+        <td>${l.observacao ? `<span style="color:#B45309;font-weight:600;">⚠ ${l.observacao}</span>` : '<span style="color:var(--text-3);">—</span>'}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="9" style="text-align:center;color:var(--text-3);padding:16px;">Nenhuma viagem encontrada para a(s) data(s) selecionada(s).</td></tr>`;
+  return `
+    <div class="op-bloco" data-bloco-id="passagem-turno" style="max-width:100%;">
+      <div class="op-head">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="display:flex;align-items:baseline;gap:10px;">
+            <span style="font-family:var(--font-cond);font-weight:800;font-size:20px;color:var(--pet-green);letter-spacing:.02em;">NEXTA</span>
+            <span style="font-size:10px;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;">Relatório de Passagem de Turno</span>
+          </div>
+          <div style="text-align:right;font-size:11px;color:var(--text-3);">
+            <div><b style="color:var(--text);">Entrega:</b> ${dataStr}</div>
+            <div>Gerado em ${geradoEm}</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-3);">${linhas.length} viagem${linhas.length === 1 ? '' : 'ns'}</div>
+      </div>
+      <table class="op-table">
+        <colgroup>
+          <col style="width:150px"/><col style="width:220px"/><col style="width:90px"/><col style="width:90px"/>
+          <col style="width:140px"/><col style="width:130px"/><col style="width:70px"/><col style="width:70px"/><col style="width:220px"/>
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Base(s) de Carregamento</th><th>Clientes (Destinos)</th><th>Nº Viagem</th><th>Placa</th>
+            <th>Motorista</th><th>Transportador</th><th>Carga (est.)</th><th>Entrega (est.)</th><th>Observação</th>
+          </tr>
+        </thead>
+        <tbody>${linhasHtml}</tbody>
+      </table>
+    </div>`;
+}
+
+function _montarTextoPassagemTurnoWhatsApp(linhas, datasEntregaSelecionadas) {
+  const dataStr = _tituloDataPassagemTurno(datasEntregaSelecionadas);
+  const L = [];
+  L.push(`*Passagem de Turno — ${dataStr}*`);
+  L.push(`${linhas.length} viagem${linhas.length === 1 ? '' : 'ns'}`);
+  L.push('');
+  if (!linhas.length) {
+    L.push('Nenhuma viagem encontrada para a(s) data(s) selecionada(s).');
+  } else {
+    linhas.forEach(l => {
+      L.push(`*${l.numeroViagem}* · ${l.placa} · ${l.transportador}`);
+      L.push(`  Base: ${l.bases}`);
+      L.push(`  Destino(s): ${l.clientes}`);
+      L.push(`  Motorista: ${l.motorista}`);
+      L.push(`  Carga: ${l.horarioCarregamento} → Entrega: ${l.horarioEntrega}`);
+      if (l.observacao) L.push(`  ⚠ ${l.observacao}`);
+      L.push('');
+    });
+  }
+  return L.join('\n');
+}
+
+// Ponto de entrada único pros 3 botões — formato: 'pdf' | 'png' | 'whatsapp'
+async function gerarPassagemTurno(formato) {
+  showToast('Coletando viagens…', true);
+  const reunido = await _reunirSnapsPassagemTurno();
+  if (!reunido) return;
+  const { snaps, datasEntregaSelecionadas } = reunido;
+  const linhas = _coletarLinhasPassagemTurno(snaps);
+
+  if (formato === 'whatsapp') {
+    const texto = _montarTextoPassagemTurnoWhatsApp(linhas, datasEntregaSelecionadas);
+    try {
+      await navigator.clipboard.writeText(texto);
+    } catch(e) {
+      const ta = document.createElement('textarea');
+      ta.value = texto;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    showToast('✅ Passagem de turno copiada! Cole no WhatsApp.', true);
+    return;
+  }
+
+  // pdf / png: monta o bloco fora da tela, exporta com as funções genéricas
+  // já existentes (exportarBlocoPDF/PNG), depois remove.
+  const html = _montarHtmlPassagemTurno(linhas, datasEntregaSelecionadas);
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap);
+  const agora = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const nomeArq = `Passagem_Turno_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+  try {
+    if (formato === 'pdf') await exportarBlocoPDF('passagem-turno', nomeArq, null);
+    else await exportarBlocoPNG('passagem-turno', nomeArq, null);
+  } finally {
+    document.body.removeChild(wrap);
+  }
+}
+window.gerarPassagemTurno = gerarPassagemTurno;
+
 // ══════════════════════════════════════════════════════════════════════════════
 // CALCULADORA DE FRETE
 // Contratos: fixo+km | fixo+m3 | diaria | diaria+km | spot por rota
