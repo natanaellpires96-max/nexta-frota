@@ -270,16 +270,6 @@ var lockedViagens = new Set();
 // pelo seletor de roteirização). Usado para vincular uma correção salva à
 // programação original que ela substitui — ver salvarNoHistorico().
 var arquivoHistoricoAberto = null;
-// Último arquivo salvo NESTA sessão de trabalho, mesmo sem ter sido aberto
-// explicitamente do histórico (ex.: otimizar → exportar Herrlog → ajustar
-// algo → exportar de novo, tudo na mesma sessão). Sem isso, duas exportações
-// seguidas do mesmo trabalho viravam entradas independentes no histórico em
-// vez de uma "corrigir" a outra — mesmo sendo, na prática, a mesma
-// programação sendo refinada. Resetado nos mesmos pontos que
-// arquivoHistoricoAberto (planilha nova / lista de pedidos zerada), e
-// validado pelas mesmas travas de data+cidade em salvarNoHistorico() — não
-// vincula automaticamente se o trabalho mudou de escopo no meio da sessão.
-var ultimoArquivoSalvoSessao = null;
 // ── Contador de IDs de viagem (P + MM + YY + seq 3 dígitos) ─────────────────
 // Formato: P{MM}{YY}{NNN} ex: P0626001
 // Chave interna: MM+YY ex: "0626" — sequência global por mês/ano, sem repetição
@@ -3878,7 +3868,6 @@ async function carregarPedidosLiberados() {
       if (!novos.length) continue;
       pedidos = novos;
       arquivoHistoricoAberto = null;
-      ultimoArquivoSalvoSessao = null;
       renderPedidos();
       const suspeitos = novos.filter(p => dataEntregaSuspeita(p.dataEntregaLogistica));
       if (suspeitos.length && typeof window.showToast === 'function')
@@ -3904,7 +3893,6 @@ function uploadPedidosLiberados(input) {
       if (!novos.length) { alert('Nenhum pedido reconhecido. Verifique se o arquivo segue o modelo correto.'); return; }
       pedidos = novos;
       arquivoHistoricoAberto = null; // planilha nova = trabalho novo, não continuação do que estava aberto
-      ultimoArquivoSalvoSessao = null;
       _sincronizarDataOperacaoComPedidos();
       renderPedidos();
       showTab('pedidos');
@@ -3924,7 +3912,6 @@ function limparTodosPedidos() {
   if (!confirm('Remover todos os ' + pedidos.length + ' pedido(s) carregados?')) return;
   pedidos = [];
   arquivoHistoricoAberto = null; // lista zerada = trabalho novo
-  ultimoArquivoSalvoSessao = null;
   renderPedidos();
 }
 function baixarModeloPedidos() {
@@ -6649,7 +6636,13 @@ function abrirTrocaPlaca(veiculoId, btn, event) {
   const vAtual  = veiculos.find(x => x.id === veiculoId);
   const termAtual = baseVeiculoLabel(vAtual);
   const outros = veiculos
-    .filter(vv => vv.id !== veiculoId)
+    // Só mostra veículos "utilizáveis": ativos no cadastro E disponíveis
+    // (ou em manutenção COM horário de retorno definido — v.disponibilidade
+    // já trata esse caso como "Disponível a partir de X", a mesma regra
+    // usada em Veículos & Turnos/sincronizarDisponibilidadeVeiculos). Isso
+    // exclui inativo, sem registro no painel, de folga, e manutenção SEM
+    // previsão de retorno — nenhum desses pode receber viagens de verdade.
+    .filter(vv => vv.id !== veiculoId && vv.disponibilidade !== 'Indisponível')
     .sort((a, b) => (baseVeiculoLabel(a) === termAtual ? 0 : 1) - (baseVeiculoLabel(b) === termAtual ? 0 : 1));
   menu.innerHTML = `
     <div style="padding:7px 12px;font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-2);border-bottom:1px solid var(--border);">
@@ -8368,18 +8361,20 @@ async function salvarNoHistorico(silencioso = false) {
     });
   });
   const datasEntrega = [...new Set(pedidos.map(p => p.dataEntregaLogistica).filter(Boolean))];
-  // Trava de segurança: "arquivoHistoricoAberto" só é esquecido quando o
-  // usuário importa uma planilha nova ou limpa todos os pedidos — mas nada
-  // impede alguém de abrir uma roteirização antiga, remover boa parte dos
-  // pedidos (deixando só uma cidade/terminal, por exemplo) e salvar. Sem
-  // essa checagem, isso vinculava a nova roteirização como "revisão" da
-  // antiga por engano — escondendo uma programação legítima de outras
-  // cidades/terminais como se fosse uma simples correção. Só considera
-  // revisão de verdade se, ALÉM de pelo menos uma data de entrega bater
-  // entre as duas, pelo menos uma cidade/terminal usado também bater — uma
-  // roteirização de 1 cidade não pode "substituir" (e esconder) uma de 4
-  // cidades só porque a data de entrega coincide.
-  let revisaoDeValida = arquivoHistoricoAberto || ultimoArquivoSalvoSessao || null;
+  // Vincula como revisão SOMENTE quando o usuário explicitamente abriu uma
+  // entrada específica do histórico (via "Abrir" ou pelo seletor de
+  // roteirização) — nunca por suposição de "foi o último salvo nesta
+  // sessão". Essa suposição (mesmo com a trava de data+cidade abaixo) já
+  // vinculou por engano duas programações genuinamente independentes só
+  // porque coincidiam em data de entrega E cidade-base — bem comum quando
+  // se roteiriza mais de um lote pra mesma cidade no mesmo dia. O resultado
+  // era grave: uma programação real ficava escondida atrás de "Ver
+  // revisões anteriores" sem AVISO NENHUM — só quem já sabe que esse
+  // vínculo automático existe (e sabe procurar) percebe e desvincula na
+  // mão. Vínculo automático por "achismo" não vale o risco; só a ação
+  // explícita do usuário (abrir UM arquivo específico pra corrigir) cria
+  // uma revisão agora.
+  let revisaoDeValida = arquivoHistoricoAberto || null;
   if (revisaoDeValida) {
     try {
       const fhAberto = await dirHandleHistorico.getFileHandle(revisaoDeValida);
@@ -8477,7 +8472,6 @@ async function salvarNoHistorico(silencioso = false) {
       }
     }
     arquivoHistoricoAberto = null; // ciclo de correção concluído — próxima ligação só via "Abrir" explícito
-    ultimoArquivoSalvoSessao = filename; // próximo salvamento desta sessão pode vincular a este, se data+cidade baterem
     _invalidarCacheJornadaHistorico(); // a jornada recém-salva precisa entrar na conta do card na próxima renderização
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
