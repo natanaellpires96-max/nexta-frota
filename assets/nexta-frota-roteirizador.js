@@ -10283,6 +10283,68 @@ function _montarTextoPassagemTurnoWhatsApp(linhas, datasEntregaSelecionadas) {
 }
 
 // Ponto de entrada único pros 3 botões — formato: 'pdf' | 'png' | 'whatsapp'
+// ── Versão para E-mail ──────────────────────────────────────────────────────
+// Visual neutro/profissional (fundo branco, cores sóbrias) — o resto do
+// relatório usa o tema escuro do app, que não faz sentido colado num corpo
+// de e-mail. Copia como HTML de verdade (não texto com asterisco) pra
+// manter negrito e a tabela ao colar no Outlook/Gmail.
+function _montarHtmlPassagemTurnoEmail(linhas, datasEntregaSelecionadas) {
+  const dataStr = _tituloDataPassagemTurno(datasEntregaSelecionadas);
+  const grupos = _agruparLinhasPorOperacao(linhas);
+  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  const F = "font-family:Arial,Helvetica,sans-serif;";
+  const th = `${F}background:#F3F4F6;border:1px solid #D1D5DB;padding:6px 8px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:#4B5563;`;
+  const td = `${F}border:1px solid #D1D5DB;padding:6px 8px;vertical-align:top;font-size:12.5px;color:#111827;`;
+  const gruposHtml = grupos.length
+    ? grupos.map(g => `
+      <h3 style="${F}font-size:15px;color:#111827;margin:22px 0 6px;">📍 ${g.base} — ${g.itens.length} ${_pl(g.itens.length, 'viagem', 'viagens')}</h3>
+      <table style="${F}border-collapse:collapse;width:100%;">
+        <tr>
+          <th style="${th}">Base(s) de Carregamento</th><th style="${th}">Clientes (Destinos)</th><th style="${th}">Nº Viagem</th><th style="${th}">Placa</th>
+          <th style="${th}">Motorista</th><th style="${th}">Transportador</th><th style="${th}">Horário Estimado de Carregamento</th><th style="${th}">Horário Estimado de Entrega</th><th style="${th}">Observação</th>
+        </tr>
+        ${g.itens.map(l => `
+        <tr>
+          <td style="${td}">${l.bases}</td>
+          <td style="${td}">${l.clientes}</td>
+          <td style="${td}font-weight:bold;white-space:nowrap;">${l.numeroViagem}</td>
+          <td style="${td}font-weight:bold;white-space:nowrap;">${l.placa}</td>
+          <td style="${td}">${l.motorista}</td>
+          <td style="${td}">${l.transportador}</td>
+          <td style="${td}text-align:center;font-weight:bold;white-space:nowrap;">${l.horarioCarregamento}</td>
+          <td style="${td}text-align:center;font-weight:bold;white-space:nowrap;">${l.horarioEntrega}</td>
+          <td style="${td}color:#B45309;">${(l.observacoesArr && l.observacoesArr.length) ? l.observacoesArr.map(o => `⚠ ${o}`).join('<br>') : '<span style="color:#9CA3AF;">—</span>'}</td>
+        </tr>`).join('')}
+      </table>`).join('')
+    : `<p style="${F}color:#6B7280;">Nenhuma viagem encontrada para a(s) data(s) selecionada(s).</p>`;
+  return `
+    <div style="${F}color:#111827;max-width:1100px;">
+      <h2 style="${F}margin:0 0 2px;font-size:19px;">Relatório de Passagem de Turno</h2>
+      <div style="${F}font-size:13px;color:#374151;margin-bottom:2px;"><b>Entrega:</b> ${dataStr}</div>
+      <div style="${F}font-size:11.5px;color:#6B7280;margin-bottom:6px;">${linhas.length} ${_pl(linhas.length, 'viagem', 'viagens')} em ${grupos.length} ${_pl(grupos.length, 'operação', 'operações')} — gerado em ${geradoEm}</div>
+      ${gruposHtml}
+    </div>`;
+}
+
+// Copia HTML de verdade pra área de transferência (text/html + text/plain
+// como fallback) — assim colar num editor rico (corpo de e-mail) preserva
+// negrito/tabela, em vez de colar as tags cruas como texto.
+async function _copiarHtmlParaClipboard(html, textoFallback) {
+  try {
+    if (navigator.clipboard && window.ClipboardItem) {
+      const item = new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([textoFallback], { type: 'text/plain' }),
+      });
+      await navigator.clipboard.write([item]);
+      return true;
+    }
+  } catch(e) {
+    console.warn('[passagem-turno] cópia rica falhou, tentando texto puro:', e);
+  }
+  try { await navigator.clipboard.writeText(textoFallback); return true; } catch(e2) { return false; }
+}
+
 async function gerarPassagemTurno(formato) {
   showToast('Coletando viagens…', true);
   const reunido = await _reunirSnapsPassagemTurno();
@@ -10306,6 +10368,19 @@ async function gerarPassagemTurno(formato) {
     return;
   }
 
+  if (formato === 'email') {
+    const html = _montarHtmlPassagemTurnoEmail(linhas, datasEntregaSelecionadas);
+    // Fallback em texto puro pra clientes de e-mail que não aceitam colar
+    // HTML — reaproveita o texto do WhatsApp só tirando o markdown (* e ▬),
+    // que não significam nada fora do WhatsApp.
+    const textoFallback = _montarTextoPassagemTurnoWhatsApp(linhas, datasEntregaSelecionadas)
+      .replace(/\*/g, '')
+      .replace(/▬+/g, '─'.repeat(40));
+    const ok = await _copiarHtmlParaClipboard(html, textoFallback);
+    showToast(ok ? '✅ Passagem de turno copiada! Cole no corpo do e-mail.' : 'Não foi possível copiar — tente novamente.', ok);
+    return;
+  }
+
   // pdf / png: monta o bloco fora da tela, exporta com as funções genéricas
   // já existentes (exportarBlocoPDF/PNG), depois remove.
   const html = _montarHtmlPassagemTurno(linhas, datasEntregaSelecionadas);
@@ -10324,6 +10399,19 @@ async function gerarPassagemTurno(formato) {
   }
 }
 window.gerarPassagemTurno = gerarPassagemTurno;
+function turnoToggleMenu() {
+  const menu = document.getElementById('turno-menu');
+  if (!menu) return;
+  menu.style.display = menu.style.display !== 'none' ? 'none' : 'block';
+}
+document.addEventListener('click', function(e) {
+  const menu = document.getElementById('turno-menu');
+  const btn  = document.getElementById('turno-menu-btn');
+  if (menu && menu.style.display !== 'none' && !menu.contains(e.target) && !btn?.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
+window.turnoToggleMenu = turnoToggleMenu;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CALCULADORA DE FRETE
