@@ -2024,6 +2024,8 @@ let _dashUltimoAgregado = null;       // último retorno de dashAgregar() — re
 let _dashHistVeiculoDados = [];       // última tabela renderizada do Histórico por Veículo — usada pelo botão de exportar CSV
 let _dashHistVeiculoPlacaAtual = '';  // placa selecionada no momento (pra re-renderizar quando o filtro do Dashboard mudar)
 let _dashTodosClientes   = [];        // lista completa de clientes do período
+let _dashUltimosProdutos = [];        // último resultado de dashAgregarProdutos() — reaproveitado ao clicar num produto
+let _dashProdutoSelecionado = null;   // nome do produto com o painel de ciclo de compra aberto
 
 function dashToggleFiltroClientes() {
   const panel = document.getElementById('dash-cli-panel');
@@ -2469,6 +2471,14 @@ function dashRender(snapshots) {
   // direto (já veio filtrado por cidade dentro de dashAgregar); não é afetado
   // pelo filtro de CLIENTE de propósito, é uma visão por operação.
   dashOcupVolPorOperacaoChart('dash-chart-op-ocup-vol', d.operacoes_ocup);
+  // Volume por Produto — mesma fonte crua (_dashSnapshotsAtivos) e mesmos
+  // filtros de cidade/cliente/segmento do resto do Dashboard.
+  _dashUltimosProdutos = dashAgregarProdutos(_dashSnapshotsAtivos, _dashCidadesSelecionadas, _efetivos);
+  if (_dashProdutoSelecionado && !_dashUltimosProdutos.some(p => p.nome === _dashProdutoSelecionado)) {
+    _dashProdutoSelecionado = null; // produto selecionado não existe mais neste filtro/período
+  }
+  dashProdutosChart('dash-chart-produtos', _dashUltimosProdutos);
+  dashRenderCicloProduto();
   // Mapa — antes não respeitava NENHUM filtro de cliente (nem o do picker
   // de Clientes, que já existia). d.rotasMap é montado direto em
   // dashAgregar() só com o filtro de cidade aplicado; filtra aqui em cima,
@@ -2640,6 +2650,139 @@ function dashOcupVolPorOperacaoChart(containerId, operacoes) {
       </div>
     </div>`;
   }).join('');
+}
+// ── Volume por Produto + Ciclo de Compra ────────────────────────────────────
+// Soma o volume de TODOS os produtos com registro de entrega, respeitando os
+// mesmos filtros do resto do Dashboard (período, cidade da operação,
+// clientes, segmento — os dois últimos via clientesEfetivos, o mesmo
+// conjunto que já filtra os outros gráficos). Guarda também, por produto,
+// o volume e as datas de entrega de CADA cliente que comprou aquele
+// produto — é essa informação por trás do painel de "ciclo de compra" que
+// aparece ao clicar numa barra: quantos dias em média o cliente demora
+// entre um pedido e outro daquele produto, e quanto ele pede em média por
+// vez.
+function dashAgregarProdutos(snapshots, cidadesFiltro, clientesEfetivos) {
+  const produtos = {}; // nome do produto -> { volume, porCliente: { nomeCliente: { volume, datas:Set } } }
+  (snapshots || []).forEach(snap => {
+    const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
+    vecs.forEach(v => {
+      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      viagens.forEach(vi => {
+        if (cidadesFiltro && !cidadesFiltro.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
+        (vi.paradas || []).forEach(p => {
+          const nomeCliente = (p.pedido || {}).cliente || (p.pedido || {}).nomeCliente || p.nome || '?';
+          if (clientesEfetivos && !clientesEfetivos.has(nomeCliente)) return;
+          const dataEntrega = p.pedido?.dataEntregaLogistica || '';
+          (p.itens || []).forEach(it => {
+            // Remove só o código SAP do início ("2000031 - ") — mantém o
+            // resto do nome (inclusive "PETRONAS") intacto, pra bater com o
+            // que aparece em Envio Transportadora/Herrlog, evitando
+            // confusão entre as telas.
+            const nomeProd = (it.produto || '').toString().replace(/^\d+\s*-\s*/, '').trim() || 'Produto não identificado';
+            const vol = it.volume || 0;
+            if (vol <= 0) return;
+            if (!produtos[nomeProd]) produtos[nomeProd] = { volume: 0, porCliente: {} };
+            produtos[nomeProd].volume += vol;
+            if (!produtos[nomeProd].porCliente[nomeCliente]) produtos[nomeProd].porCliente[nomeCliente] = { volume: 0, datas: new Set() };
+            produtos[nomeProd].porCliente[nomeCliente].volume += vol;
+            if (dataEntrega) produtos[nomeProd].porCliente[nomeCliente].datas.add(dataEntrega);
+          });
+        });
+      });
+    });
+  });
+  return Object.entries(produtos)
+    .map(([nome, info]) => ({ nome, volume: info.volume, porCliente: info.porCliente }))
+    .sort((a, b) => b.volume - a.volume);
+}
+
+// Intervalo médio (em dias) entre entregas consecutivas — recebe um Set/array
+// de datas "DD/MM/YYYY", devolve null se não há pelo menos 2 datas distintas
+// (não dá pra falar de "ciclo" com um pedido só).
+function _dashCicloMedioDias(datasIter) {
+  const tempos = [...datasIter].map(d => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d || '');
+    return m ? new Date(+m[3], +m[2] - 1, +m[1]).getTime() : null;
+  }).filter(t => t !== null).sort((a, b) => a - b);
+  if (tempos.length < 2) return null;
+  let somaDias = 0;
+  for (let i = 1; i < tempos.length; i++) somaDias += (tempos[i] - tempos[i - 1]) / 86400000;
+  return somaDias / (tempos.length - 1);
+}
+
+function dashProdutosChart(containerId, produtos) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!produtos.length) { el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:12px">Sem dados de produto para este período/filtro.</div>'; return; }
+  const maxV = Math.max(...produtos.map(p => p.volume), 1);
+  el.innerHTML = produtos.map(p => {
+    const pct = Math.round((p.volume / maxV) * 100);
+    const ativo = p.nome === _dashProdutoSelecionado;
+    const nomeSafe = p.nome.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    return `<div onclick="dashSelecionarProduto('${nomeSafe}')"
+        style="margin-bottom:10px;cursor:pointer;padding:7px 9px;border-radius:8px;background:${ativo ? 'rgba(139,92,246,0.14)' : 'transparent'};border:1px solid ${ativo ? '#8B5CF6' : 'transparent'};transition:background .15s;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;">
+        <span style="font-size:12px;font-weight:700;color:var(--text,#000);" title="${p.nome}">${ativo ? '▶ ' : ''}${p.nome}</span>
+        <span style="font-size:13px;font-weight:700;color:var(--text,#000);white-space:nowrap;margin-left:10px;">${p.volume.toFixed(1)} m³</span>
+      </div>
+      <div style="height:10px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:#8B5CF6;border-radius:99px;"></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function dashSelecionarProduto(nome) {
+  _dashProdutoSelecionado = (_dashProdutoSelecionado === nome) ? null : nome;
+  dashProdutosChart('dash-chart-produtos', _dashUltimosProdutos);
+  dashRenderCicloProduto();
+}
+window.dashSelecionarProduto = dashSelecionarProduto;
+
+// Painel de ciclo de compra: uma linha por cliente que comprou o produto
+// selecionado (dentro do filtro atual) — volume total, nº de pedidos,
+// intervalo médio entre pedidos, e volume médio por pedido (a "legenda"
+// pedida: quanto ele costuma pedir de cada vez). Se o filtro de Clientes
+// já estiver reduzido a um só, a tabela naturalmente sai com uma linha só.
+function dashRenderCicloProduto() {
+  const el = document.getElementById('dash-ciclo-produto');
+  if (!el) return;
+  if (!_dashProdutoSelecionado) {
+    el.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:12px;">Clique em um produto acima pra ver o ciclo de compra por cliente.</div>';
+    return;
+  }
+  const prod = _dashUltimosProdutos.find(p => p.nome === _dashProdutoSelecionado);
+  if (!prod) { el.innerHTML = ''; return; }
+  const linhas = Object.entries(prod.porCliente).map(([nomeCliente, info]) => {
+    const nPedidos = info.datas.size || 1;
+    const cicloMedio = _dashCicloMedioDias(info.datas);
+    return { nomeCliente, volume: info.volume, nPedidos, cicloMedio, volMedio: info.volume / nPedidos };
+  }).sort((a, b) => b.volume - a.volume);
+  el.innerHTML = `
+    <div style="font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:2px;">📦 ${_dashProdutoSelecionado}</div>
+    <div style="font-size:10.5px;color:var(--text-3);margin-bottom:10px;">Ciclo de compra por cliente — intervalo médio entre pedidos e volume médio pedido de cada vez</div>
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead>
+        <tr style="text-align:left;color:var(--text-3);font-size:10px;text-transform:uppercase;letter-spacing:.03em;">
+          <th style="padding:6px 8px;">Cliente</th>
+          <th style="padding:6px 8px;">Volume Total</th>
+          <th style="padding:6px 8px;">Nº de Pedidos</th>
+          <th style="padding:6px 8px;">Ciclo Médio de Compra</th>
+          <th style="padding:6px 8px;">Volume Médio por Pedido</th>
+        </tr>
+      </thead>
+      <tbody>${linhas.map(l => `
+        <tr style="border-top:1px solid var(--border-dk);">
+          <td style="padding:7px 8px;font-weight:600;color:var(--text);">${l.nomeCliente}</td>
+          <td style="padding:7px 8px;color:var(--text);">${l.volume.toFixed(1)} m³</td>
+          <td style="padding:7px 8px;color:var(--text);">${l.nPedidos}</td>
+          <td style="padding:7px 8px;color:var(--text);">${l.cicloMedio != null ? `a cada ${l.cicloMedio.toFixed(1).replace('.0','')} dia${Math.round(l.cicloMedio)===1?'':'s'}` : '— (só 1 pedido no período)'}</td>
+          <td style="padding:7px 8px;color:var(--text);font-weight:600;">${l.volMedio.toFixed(1)} m³/pedido</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>`;
 }
 // ── Gráfico de ocupação por cliente (barras horizontais HTML) ──────────────
 function dashOcupClienteChart(containerId, itens) {
