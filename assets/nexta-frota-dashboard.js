@@ -2756,11 +2756,16 @@ function dashRenderCicloProduto() {
   const linhas = Object.entries(prod.porCliente).map(([nomeCliente, info]) => {
     const nPedidos = info.datas.size || 1;
     const cicloMedio = _dashCicloMedioDias(info.datas);
-    return { nomeCliente, volume: info.volume, nPedidos, cicloMedio, volMedio: info.volume / nPedidos };
+    const volMedio = info.volume / nPedidos;
+    // Consumo/dia = quanto pede de cada vez ÷ de quantos em quantos dias
+    // pede — só dá pra calcular com pelo menos 2 pedidos (senão não há
+    // ciclo nenhum pra dividir).
+    const consumoDia = cicloMedio ? volMedio / cicloMedio : null;
+    return { nomeCliente, volume: info.volume, nPedidos, cicloMedio, volMedio, consumoDia };
   }).sort((a, b) => b.volume - a.volume);
   el.innerHTML = `
     <div style="font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:2px;">📦 ${_dashProdutoSelecionado}</div>
-    <div style="font-size:10.5px;color:var(--text-3);margin-bottom:10px;">Ciclo de compra por cliente — intervalo médio entre pedidos e volume médio pedido de cada vez</div>
+    <div style="font-size:10.5px;color:var(--text-3);margin-bottom:10px;">Ciclo de compra por cliente — intervalo médio entre pedidos, volume médio pedido de cada vez, e consumo médio por dia</div>
     <div style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <thead>
@@ -2770,6 +2775,7 @@ function dashRenderCicloProduto() {
           <th style="padding:6px 8px;">Nº de Pedidos</th>
           <th style="padding:6px 8px;">Ciclo Médio de Compra</th>
           <th style="padding:6px 8px;">Volume Médio por Pedido</th>
+          <th style="padding:6px 8px;">Consumo Médio por Dia</th>
         </tr>
       </thead>
       <tbody>${linhas.map(l => `
@@ -2779,6 +2785,7 @@ function dashRenderCicloProduto() {
           <td style="padding:7px 8px;color:var(--text);">${l.nPedidos}</td>
           <td style="padding:7px 8px;color:var(--text);">${l.cicloMedio != null ? `a cada ${l.cicloMedio.toFixed(1).replace('.0','')} dia${Math.round(l.cicloMedio)===1?'':'s'}` : '— (só 1 pedido no período)'}</td>
           <td style="padding:7px 8px;color:var(--text);font-weight:600;">${l.volMedio.toFixed(1)} m³/pedido</td>
+          <td style="padding:7px 8px;color:var(--text);font-weight:600;">${l.consumoDia != null ? `${l.consumoDia.toFixed(2)} m³/dia` : '—'}</td>
         </tr>`).join('')}
       </tbody>
     </table>
