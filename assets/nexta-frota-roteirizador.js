@@ -2797,9 +2797,16 @@ function _mesclarClientesDuplicadosSilencioso() {
   // mesmo id da cópia extra — resultado: o cliente inteiro desaparecia,
   // tanto localmente quanto no Firestore. Bug real já causado por isso e
   // corrigido aqui.
+  // Normaliza só o suficiente pra "Moraes & Moraes" e "Moraes E Moraes"
+  // (mesma empresa, duas grafias — achado real no Dashboard) baterem como o
+  // MESMO nome aqui. Não faz uma limpeza agressiva (sem tirar acento/sufixo
+  // jurídico) de propósito: a trava de segurança contra fundir clientes
+  // diferentes continua sendo exigir também o MESMO SAP e as MESMAS
+  // coordenadas — só a comparação de nome fica um pouco mais tolerante.
+  const _normalizarNomeIdentidade = (nome) => (nome || '').trim().toUpperCase().replace(/\s*&\s*/g, ' E ').replace(/\s+/g, ' ');
   const chaveIdentidade = (c) => [
     (c.codigoSAP || '').trim().toUpperCase(),
-    (c.nome || '').trim().toUpperCase(),
+    _normalizarNomeIdentidade(c.nome),
     Number.isFinite(c.lat) ? c.lat.toFixed(4) : '',
     Number.isFinite(c.lon) ? c.lon.toFixed(4) : '',
   ].join('|');
@@ -2821,7 +2828,18 @@ function _mesclarClientesDuplicadosSilencioso() {
       Object.entries(clientes[i]).forEach(([k, v]) => {
         if (k === 'id') return; // mantém o id do principal — os demais campos, o preenchido vence
         const vazio = v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
-        if (!vazio) mesclado[k] = v;
+        if (vazio) return;
+        // "nome": prefere a grafia com "E" por extenso sobre "&" (mesma
+        // empresa, duas grafias — ver comentário acima), em vez de só
+        // pegar o valor da última cópia extra encontrada no loop.
+        if (k === 'nome' && typeof v === 'string' && typeof mesclado.nome === 'string') {
+          const mescladoTemAmp = mesclado.nome.includes('&');
+          const vTemAmp = v.includes('&');
+          if (mescladoTemAmp && !vTemAmp) mesclado.nome = v;
+          // senão mantém o nome atual do mesclado (já sem "&", ou os dois têm "&")
+          return;
+        }
+        mesclado[k] = v;
       });
     });
     clientes[idxPrincipal] = mesclado;

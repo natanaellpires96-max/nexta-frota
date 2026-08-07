@@ -668,10 +668,33 @@ function dashNormalizarNomeCliente(nome) {
   return (nome || '?').toString()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
     .toUpperCase()
+    // "&" e "E" isolado significam a MESMA coisa em razão social brasileira
+    // ("Moraes & Moraes" == "Moraes E Moraes") — sem unificar os dois ANTES
+    // do resto da limpeza, o "&" sumia (removido como pontuação) enquanto o
+    // "E" ficava, fazendo as duas grafias do MESMO cliente virarem chaves
+    // diferentes ("MORAES MORAES" vs "MORAES E MORAES") — o cliente
+    // aparecia duplicado no filtro, e selecionar uma grafia excluía os
+    // pedidos gravados com a outra.
+    .replace(/\s*&\s*/g, ' E ')
     .replace(/\b(LTDA|EIRELI|ME|EPP|SA|S\.A\.|COMERCIO|COMERCIAL|INDUSTRIA|IND|COM)\b\.?/g, '')
     .replace(/[^A-Z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+// Compara um nome CRU de pedido (que pode estar gravado com qualquer
+// grafia — "& " ou " E ", acento ou sem, sufixo jurídico ou não) contra o
+// conjunto de clientes filtrados (que contém os nomes CANÔNICOS, já
+// mesclados por dashAgregar/dashChaveCliente). Usa nomes normalizados dos
+// dois lados — sem isso, um pedido gravado como "MORAES & MORAES" nunca
+// batia com o filtro aplicado em "MORAES E MORAES" (ou vice-versa), mesmo
+// depois do KPI principal já ter mesclado os dois como 1 cliente só.
+function _dashNormalizarSetClientes(efetivos) {
+  if (!efetivos) return null;
+  return new Set([...efetivos].map(dashNormalizarNomeCliente));
+}
+function _dashNomeBateFiltro(nomeRaw, efetivosNorm) {
+  if (!efetivosNorm) return true; // sem filtro ativo
+  return efetivosNorm.has(dashNormalizarNomeCliente(nomeRaw));
 }
 function dashChaveCliente(ped) {
   const sap = (ped.codigoSAP || ped.codSAP || ped.sap || '').toString().trim();
@@ -683,7 +706,15 @@ function dashChaveCliente(ped) {
 // ── Nome canônico preferido (mais curto = menos abreviado) ─────────────────
 function dashNomeCanônico(atual, novo) {
   if (!atual) return novo;
-  // Prefere o nome mais longo (mais completo), sem truncamentos
+  // "& " vs " E " é a mesma coisa em razão social brasileira (dois nomes já
+  // se fundem em UM cliente via dashChaveCliente/dashNormalizarNomeCliente
+  // antes de chegar aqui) — entre as duas grafias, prefere sempre "E" por
+  // extenso como nome de exibição.
+  const temAmpAtual = atual.includes('&');
+  const temAmpNovo  = novo.includes('&');
+  if (temAmpAtual && !temAmpNovo) return novo;
+  if (temAmpNovo && !temAmpAtual) return atual;
+  // Sem diferença de "&"/"E": prefere o nome mais longo (mais completo), sem truncamentos
   return novo.length > atual.length ? novo : atual;
 }
 // Retorna a cidade da operação (terminal) de uma viagem — usa terminalOrigem
@@ -1070,6 +1101,7 @@ function _dashCompletarDiasParados(entradas, contratos) {
   return entradas.concat(extras);
 }
 function dashAgregarTransportadoras(entradasTransportadora, clientesEfetivos = null) {
+  const _efetivosNormRanking = _dashNormalizarSetClientes(clientesEfetivos);
   const contratos = (typeof freteCarregarContratos === 'function') ? freteCarregarContratos() : [];
   const spots     = (typeof freteCarregarSpot === 'function') ? freteCarregarSpot() : [];
   const normPlaca = (typeof _freteNormPlaca === 'function') ? _freteNormPlaca : (p => (p||'').toString().trim().toUpperCase());
@@ -1109,7 +1141,7 @@ function dashAgregarTransportadoras(entradasTransportadora, clientesEfetivos = n
     // operação inteira do veículo (não dá pra ratear jornada/custo fixo por
     // cliente dentro de uma viagem com várias paradas).
     const volumeConsiderado = clientesEfetivos
-      ? Object.entries(e.volumePorCliente || {}).reduce((s, [nome, vol]) => s + (clientesEfetivos.has(nome) ? vol : 0), 0)
+      ? Object.entries(e.volumePorCliente || {}).reduce((s, [nome, vol]) => s + (_dashNomeBateFiltro(nome, _efetivosNormRanking) ? vol : 0), 0)
       : e.volume;
     porTransportadora[key].volume += volumeConsiderado;
     porTransportadora[key].km += _dashKmEfetivoRanking(e, contrato || { kmModo: 'ida_volta' });
@@ -1131,6 +1163,7 @@ function dashAgregarTransportadoras(entradasTransportadora, clientesEfetivos = n
 // viagens daquele veículo naquele dia (essa sim soma normalmente, porque
 // cada viagem realmente consome tempo adicional da jornada do dia).
 function dashAgregarJornada(entradasTransportadora, clientesEfetivos = null) {
+  const _efetivosNormJornada = _dashNormalizarSetClientes(clientesEfetivos);
   const porVeiculoDia = new Map(); // chave: placa+data
   (entradasTransportadora || []).forEach(e => {
     if (e._semViagem) return; // dia parado sintético (só diária, do Frete) — sem jornada real pra contar
@@ -1142,7 +1175,7 @@ function dashAgregarJornada(entradasTransportadora, clientesEfetivos = null) {
     // Jornada por Transportadora" mostrarem números cheios mesmo quando o
     // resto da tela já estava filtrado e zerado.
     if (clientesEfetivos) {
-      const atendeFiltrado = Object.keys(e.volumePorCliente || {}).some(nome => clientesEfetivos.has(nome));
+      const atendeFiltrado = Object.keys(e.volumePorCliente || {}).some(nome => _dashNomeBateFiltro(nome, _efetivosNormJornada));
       if (!atendeFiltrado) return;
     }
     const key = e.placa + '__' + e.data;
@@ -2307,6 +2340,11 @@ function dashRender(snapshots) {
   // Conjunto efetivo (picker de Clientes ∩ filtro de Segmento) — ver
   // dashClientesEfetivos(). null = nenhum dos dois filtros ativo.
   const _efetivos = dashClientesEfetivos(_novaListaClientes.length ? _novaListaClientes : _dashTodosClientes);
+  // Versão normalizada de _efetivos (acentos/maiúsculas/"&" vs "E"/sufixo
+  // jurídico) — usada em toda comparação abaixo que testa um nome CRU de
+  // pedido (que pode estar gravado com grafia diferente da canônica que
+  // aparece no filtro) contra o filtro de Clientes.
+  const _efetivosNorm = _dashNormalizarSetClientes(_efetivos);
   // Aplica filtro se ativo
   const clientesFiltrados = _efetivos
     ? d.clientes.filter(c => _efetivos.has(c.nome))
@@ -2340,7 +2378,7 @@ function dashRender(snapshots) {
           // Verifica se esta viagem atende ao menos um cliente filtrado
           const atendeCliente = vi.paradas.some(par => {
             const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
-            return _nomesF.has(n);
+            return _dashNomeBateFiltro(n, _efetivosNorm);
           });
           if (!atendeCliente) return;
           // Capacidade: soma capV desta viagem (veículo de 35m³ × 2 viagens = 70m³)
@@ -2348,7 +2386,7 @@ function dashRender(snapshots) {
           // Volume: apenas paradas dos clientes filtrados nesta viagem
           vi.paradas.forEach(par => {
             const n = (par.pedido||{}).cliente||(par.pedido||{}).nomeCliente||par.nome||'';
-            if (_nomesF.has(n)) _filtVol += par.volumeTotal || 0;
+            if (_dashNomeBateFiltro(n, _efetivosNorm)) _filtVol += par.volumeTotal || 0;
           });
         });
       });
@@ -2374,7 +2412,7 @@ function dashRender(snapshots) {
           if (_dashCidadesSelecionadas && !_dashCidadesSelecionadas.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
           const temCliente = vi.paradas.some(par => {
             const nome = (par.pedido||{}).cliente || (par.pedido||{}).nomeCliente || par.nome || '';
-            return _nomesFilter.has(nome);
+            return _dashNomeBateFiltro(nome, _efetivosNorm);
           });
           if (temCliente) {
             _kpiViagens++;
@@ -2510,7 +2548,7 @@ function dashRender(snapshots) {
   // por parada, mantendo a rota (terminal) mesmo que fique sem nenhuma
   // parada visível após o filtro.
   const _rotasMapFiltradas = _efetivos
-    ? d.rotasMap.map(r => ({ ...r, paradas: (r.paradas || []).filter(p => _efetivos.has(p.nome)) }))
+    ? d.rotasMap.map(r => ({ ...r, paradas: (r.paradas || []).filter(p => _dashNomeBateFiltro(p.nome, _efetivosNorm)) }))
     : d.rotasMap;
   dashRenderMapa(_rotasMapFiltradas);
   // Ranking de Transportadoras — já vem filtrado por cidade (d.entradasTransportadora
@@ -2688,7 +2726,8 @@ function dashOcupVolPorOperacaoChart(containerId, operacoes) {
 // entre um pedido e outro daquele produto, e quanto ele pede em média por
 // vez.
 function dashAgregarProdutos(snapshots, cidadesFiltro, clientesEfetivos) {
-  const produtos = {}; // nome do produto -> { volume, porCliente: { nomeCliente: { volume, datas:Set } } }
+  const produtos = {}; // nome do produto -> { volume, porCliente: { chaveNormalizada: { nomeExibido, volume, datas:Set } } }
+  const _efetivosNormProdutos = _dashNormalizarSetClientes(clientesEfetivos);
   (snapshots || []).forEach(snap => {
     const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
     vecs.forEach(v => {
@@ -2697,7 +2736,14 @@ function dashAgregarProdutos(snapshots, cidadesFiltro, clientesEfetivos) {
         if (cidadesFiltro && !cidadesFiltro.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
         (vi.paradas || []).forEach(p => {
           const nomeCliente = (p.pedido || {}).cliente || (p.pedido || {}).nomeCliente || p.nome || '?';
-          if (clientesEfetivos && !clientesEfetivos.has(nomeCliente)) return;
+          if (clientesEfetivos && !_dashNomeBateFiltro(nomeCliente, _efetivosNormProdutos)) return;
+          // Agrupa por CLIENTE NORMALIZADO (não pelo texto cru) — assim
+          // "AUTO POSTO MORAES & MORAES LTDA" e "AUTO POSTO MORAES E
+          // MORAES LTDA" (mesmo cliente, grafias diferentes) viram UMA
+          // linha só na tabela de ciclo de compra, em vez de duas linhas
+          // com metade do volume real cada — exatamente o que fazia o
+          // volume desse cliente parecer bem menor do que realmente é.
+          const chaveCliente = dashNormalizarNomeCliente(nomeCliente);
           const dataEntrega = p.pedido?.dataEntregaLogistica || '';
           (p.itens || []).forEach(it => {
             // Remove o código SAP do início ("2000031 - ") e normaliza
@@ -2716,9 +2762,14 @@ function dashAgregarProdutos(snapshots, cidadesFiltro, clientesEfetivos) {
             if (vol <= 0) return;
             if (!produtos[nomeProd]) produtos[nomeProd] = { volume: 0, porCliente: {} };
             produtos[nomeProd].volume += vol;
-            if (!produtos[nomeProd].porCliente[nomeCliente]) produtos[nomeProd].porCliente[nomeCliente] = { volume: 0, datas: new Set() };
-            produtos[nomeProd].porCliente[nomeCliente].volume += vol;
-            if (dataEntrega) produtos[nomeProd].porCliente[nomeCliente].datas.add(dataEntrega);
+            if (!produtos[nomeProd].porCliente[chaveCliente]) produtos[nomeProd].porCliente[chaveCliente] = { nomeExibido: nomeCliente, volume: 0, datas: new Set() };
+            // Mesmo critério de dashNomeCanônico (prefere "E" por extenso
+            // sobre "&", depois o nome mais completo) — consistência com o
+            // nome que aparece nos KPIs/filtro pro mesmo cliente.
+            produtos[nomeProd].porCliente[chaveCliente].nomeExibido =
+              dashNomeCanônico(produtos[nomeProd].porCliente[chaveCliente].nomeExibido, nomeCliente);
+            produtos[nomeProd].porCliente[chaveCliente].volume += vol;
+            if (dataEntrega) produtos[nomeProd].porCliente[chaveCliente].datas.add(dataEntrega);
           });
         });
       });
@@ -2786,7 +2837,7 @@ function dashRenderCicloProduto() {
   }
   const prod = _dashUltimosProdutos.find(p => p.nome === _dashProdutoSelecionado);
   if (!prod) { el.innerHTML = ''; return; }
-  const linhas = Object.entries(prod.porCliente).map(([nomeCliente, info]) => {
+  const linhas = Object.entries(prod.porCliente).map(([, info]) => {
     const nPedidos = info.datas.size || 1;
     const cicloMedio = _dashCicloMedioDias(info.datas);
     const volMedio = info.volume / nPedidos;
@@ -2794,7 +2845,7 @@ function dashRenderCicloProduto() {
     // pede — só dá pra calcular com pelo menos 2 pedidos (senão não há
     // ciclo nenhum pra dividir).
     const consumoDia = cicloMedio ? volMedio / cicloMedio : null;
-    return { nomeCliente, volume: info.volume, nPedidos, cicloMedio, volMedio, consumoDia };
+    return { nomeCliente: info.nomeExibido, volume: info.volume, nPedidos, cicloMedio, volMedio, consumoDia };
   }).sort((a, b) => b.volume - a.volume);
   el.innerHTML = `
     <div style="font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:2px;">📦 ${_dashProdutoSelecionado}</div>
