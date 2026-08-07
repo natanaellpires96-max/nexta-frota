@@ -802,6 +802,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           ? [{ lat: parseFloat(tLat), lon: parseFloat(tLon) }]
           : [];
         let volViagem = 0;
+        const volumePorClienteViagem = {}; // nome do cliente -> volume nesta viagem (pra filtrar o Ranking de Transportadoras por Clientes sem excluir/incluir a viagem inteira numa tacada só)
         let kmIdaViagem = 0; // soma do km "base" (sem duplicar ida+volta) — usado no Ranking de Transportadoras
         // Km real da viagem — fonte única: NextaKm.obterKmViagem() (ver
         // assets/km-utils.js). Se o usuário ajustou a rota manualmente no
@@ -852,6 +853,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           clientes[chave].km = clientes[chave].kmTotal / clientes[chave].entregas; // km médio por entrega
           totalVol += vol;
           volViagem += vol;
+          volumePorClienteViagem[nome] = (volumePorClienteViagem[nome] || 0) + vol;
           totalKm += km;
           kmIdaViagem += km;
           rotaPontos.paradas.push({ lat, lon, nome, vol });
@@ -896,6 +898,7 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           destinos: Array.from(new Set(vi.paradas.map(p => (p.pedido?.cidade || p.pedido?.cliente || '')))).join(', '),
           kmIda: kmIdaViagem,
           volume: volViagem,
+          volumePorCliente: volumePorClienteViagem,
           jornadaDispMin: Number(v.jornadaMin) || (typeof duracaoJornadaMin === 'function' ? duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') : 720) || 720,
           jornadaUsadaMin: Number(vi.tempoConsumidoMin) || vi.paradas.reduce((s,p,idx) =>
             s + (idx === 0 ? (p.tempoCarregamentoMin || 0) : 0)
@@ -1066,7 +1069,7 @@ function _dashCompletarDiasParados(entradas, contratos) {
   });
   return entradas.concat(extras);
 }
-function dashAgregarTransportadoras(entradasTransportadora) {
+function dashAgregarTransportadoras(entradasTransportadora, clientesEfetivos = null) {
   const contratos = (typeof freteCarregarContratos === 'function') ? freteCarregarContratos() : [];
   const spots     = (typeof freteCarregarSpot === 'function') ? freteCarregarSpot() : [];
   const normPlaca = (typeof _freteNormPlaca === 'function') ? _freteNormPlaca : (p => (p||'').toString().trim().toUpperCase());
@@ -1098,13 +1101,24 @@ function dashAgregarTransportadoras(entradasTransportadora) {
     const custo = contrato ? _dashCustoViagemRanking(e, contrato, nMes, spots) : 0;
     const key = e.transportadora;
     if (!porTransportadora[key]) porTransportadora[key] = { transportadora: key, volume: 0, km: 0, viagens: 0, custo: 0, temContrato: false, placas: new Set() };
-    porTransportadora[key].volume += e.volume;
+    // Volume: com filtro de Clientes ativo, conta só a fatia dessa viagem que
+    // pertence a cliente(s) filtrado(s) — sem isso, filtrar por 1 cliente
+    // específico deixava os KPIs do topo em 0 mas o Ranking continuava
+    // mostrando o volume TOTAL da transportadora (de todos os clientes),
+    // parecendo contraditório/quebrado. Viagens/km/custo continuam sobre a
+    // operação inteira do veículo (não dá pra ratear jornada/custo fixo por
+    // cliente dentro de uma viagem com várias paradas).
+    const volumeConsiderado = clientesEfetivos
+      ? Object.entries(e.volumePorCliente || {}).reduce((s, [nome, vol]) => s + (clientesEfetivos.has(nome) ? vol : 0), 0)
+      : e.volume;
+    porTransportadora[key].volume += volumeConsiderado;
     porTransportadora[key].km += _dashKmEfetivoRanking(e, contrato || { kmModo: 'ida_volta' });
     if (!e._semViagem) porTransportadora[key].viagens += 1; // dia parado (diária) não conta como viagem
     porTransportadora[key].placas.add(e.placa);
     if (contrato) { porTransportadora[key].custo += custo; porTransportadora[key].temContrato = true; }
   });
   return Object.values(porTransportadora)
+    .filter(t => !clientesEfetivos || t.volume > 0)
     .map(t => ({ ...t, nPlacas: t.placas.size, placas: undefined }))
     .sort((a, b) => b.volume - a.volume);
 }
@@ -2490,10 +2504,11 @@ function dashRender(snapshots) {
   dashRenderMapa(_rotasMapFiltradas);
   // Ranking de Transportadoras — já vem filtrado por cidade (d.entradasTransportadora
   // é derivado de dashAgregar, que já aplicou o filtro de cidade na fonte).
-  // NÃO é filtrado por cliente de propósito: o ranking é sobre quem prestou o
-  // serviço, faz sentido continuar mostrando a transportadora inteira mesmo
-  // filtrando por um cliente específico na tabela abaixo.
-  dashRenderRankingTransportadoras(dashAgregarTransportadoras(d.entradasTransportadora));
+  // Volume respeita o filtro de Clientes também agora (via _efetivos) —
+  // viagens/km/custo continuam sobre a operação inteira do veículo, só o
+  // Volume é recortado pra fatia do(s) cliente(s) filtrado(s), senão ficava
+  // inconsistente com os KPIs do topo (que já respeitavam o filtro).
+  dashRenderRankingTransportadoras(dashAgregarTransportadoras(d.entradasTransportadora, _efetivos));
   // Tabela
   const tbody = document.getElementById('dash-tabela-cli-body');
   if (tbody) {
@@ -2674,11 +2689,18 @@ function dashAgregarProdutos(snapshots, cidadesFiltro, clientesEfetivos) {
           if (clientesEfetivos && !clientesEfetivos.has(nomeCliente)) return;
           const dataEntrega = p.pedido?.dataEntregaLogistica || '';
           (p.itens || []).forEach(it => {
-            // Remove só o código SAP do início ("2000031 - ") — mantém o
-            // resto do nome (inclusive "PETRONAS") intacto, pra bater com o
-            // que aparece em Envio Transportadora/Herrlog, evitando
-            // confusão entre as telas.
-            const nomeProd = (it.produto || '').toString().replace(/^\d+\s*-\s*/, '').trim() || 'Produto não identificado';
+            // Remove o código SAP do início ("2000031 - ") e normaliza
+            // maiúsculas/espaços — mantém o resto do nome (inclusive
+            // "PETRONAS") intacto. A normalização existe porque a MESMA
+            // descrição de produto pode vir com capitalização ou espaços
+            // levemente diferentes entre lotes de importação diferentes
+            // (ex.: um Excel com "Petronas Primax Gasolina" e outro com
+            // "PETRONAS PRIMAX GASOLINA") — sem normalizar, isso fragmentava
+            // o volume de UM produto em várias barras pequenas no gráfico,
+            // cada uma parecendo um produto raro/pouco comprado quando na
+            // verdade era tudo a mesma coisa.
+            const nomeProdBruto = (it.produto || '').toString().replace(/^\d+\s*-\s*/, '').trim();
+            const nomeProd = nomeProdBruto ? nomeProdBruto.toUpperCase().replace(/\s+/g, ' ') : 'PRODUTO NÃO IDENTIFICADO';
             const vol = it.volume || 0;
             if (vol <= 0) return;
             if (!produtos[nomeProd]) produtos[nomeProd] = { volume: 0, porCliente: {} };
