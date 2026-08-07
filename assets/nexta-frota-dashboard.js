@@ -1130,10 +1130,21 @@ function dashAgregarTransportadoras(entradasTransportadora, clientesEfetivos = n
 // disponível UMA VEZ por essa chave, e soma a jornada USADA de todas as
 // viagens daquele veículo naquele dia (essa sim soma normalmente, porque
 // cada viagem realmente consome tempo adicional da jornada do dia).
-function dashAgregarJornada(entradasTransportadora) {
+function dashAgregarJornada(entradasTransportadora, clientesEfetivos = null) {
   const porVeiculoDia = new Map(); // chave: placa+data
   (entradasTransportadora || []).forEach(e => {
     if (e._semViagem) return; // dia parado sintético (só diária, do Frete) — sem jornada real pra contar
+    // Com filtro de Clientes ativo: só conta esse veículo/dia se ele
+    // realmente atendeu pelo menos um dos clientes filtrados nesse dia —
+    // sem essa checagem, filtrar por 1 cliente específico continuava
+    // somando a jornada de TODAS as viagens do veículo (de qualquer
+    // cliente), fazendo o KPI "Consumo Jornada" e o gráfico "Consumo de
+    // Jornada por Transportadora" mostrarem números cheios mesmo quando o
+    // resto da tela já estava filtrado e zerado.
+    if (clientesEfetivos) {
+      const atendeFiltrado = Object.keys(e.volumePorCliente || {}).some(nome => clientesEfetivos.has(nome));
+      if (!atendeFiltrado) return;
+    }
     const key = e.placa + '__' + e.data;
     if (!porVeiculoDia.has(key)) {
       porVeiculoDia.set(key, { placa: e.placa, data: e.data, transportadora: e.transportadora, dispMin: e.jornadaDispMin || 0, usadoMin: 0 });
@@ -2342,7 +2353,7 @@ function dashRender(snapshots) {
         });
       });
     });
-    _kpiOcup = _filtCap > 0 ? Math.round((_filtVol / _filtCap) * 100) : d.totalOcup;
+    _kpiOcup = _filtCap > 0 ? Math.round((_filtVol / _filtCap) * 100) : 0;
   }
   // Viagens: conta apenas viagens que atendem ao menos um cliente filtrado
   const _nomesFilter = _efetivos;
@@ -2431,7 +2442,7 @@ function dashRender(snapshots) {
   // Transportadoras logo abaixo). Não é afetado pelo filtro de CLIENTE de
   // propósito: jornada é sobre o veículo/motorista, não sobre quem ele
   // atendeu naquele dia.
-  const _dashJornada = dashAgregarJornada(d.entradasTransportadora);
+  const _dashJornada = dashAgregarJornada(d.entradasTransportadora, _efetivos);
   set('dk-jornada', _dashJornada.totalPct + '%');
   const _elJornadaHoras = document.getElementById('dk-jornada-horas');
   if (_elJornadaHoras) _elJornadaHoras.textContent = `${_dashFmtHoras(_dashJornada.totalUsadoMin)} / ${_dashFmtHoras(_dashJornada.totalDispMin)}`;
