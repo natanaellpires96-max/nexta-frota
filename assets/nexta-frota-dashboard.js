@@ -4471,35 +4471,44 @@ function _dashBaixarComoWord(htmlConteudo, nomeArquivo) {
 }
 
 async function dashGerarResumoOperacao(formato) {
-  if (!_dashUltimosKPIs || _dashUltimosKPIs.viagens == null) {
-    showToast('Carregue um período no Dashboard primeiro.', false);
-    return;
-  }
-  const agora = new Date();
-  const p2 = n => String(n).padStart(2, '0');
-  const nomeArq = `Resumo_Operacao_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
-
-  if (formato === 'word') {
-    _dashBaixarComoWord(_dashMontarHtmlResumoOperacaoWord(), nomeArq);
-    return;
-  }
-
-  // pdf / png: usa as mesmas funções genéricas de exportação já existentes
-  // (definidas em nexta-frota-roteirizador.js, mas globais na página).
-  if (typeof window.exportarBlocoPDF !== 'function' || typeof window.exportarBlocoPNG !== 'function') {
-    showToast('Exportação indisponível — recarregue a página.', false);
-    return;
-  }
-  const html = _dashMontarHtmlResumoOperacao();
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
-  wrap.innerHTML = html;
-  document.body.appendChild(wrap);
   try {
-    if (formato === 'pdf') await window.exportarBlocoPDF('resumo-operacao', nomeArq, null, 1300);
-    else await window.exportarBlocoPNG('resumo-operacao', nomeArq, null, 1300);
-  } finally {
-    document.body.removeChild(wrap);
+    if (!_dashUltimosKPIs || _dashUltimosKPIs.viagens == null) {
+      showToast('Carregue um período no Dashboard primeiro.', false);
+      return;
+    }
+    const agora = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const nomeArq = `Resumo_Operacao_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+
+    if (formato === 'word') {
+      _dashBaixarComoWord(_dashMontarHtmlResumoOperacaoWord(), nomeArq);
+      return;
+    }
+
+    // pdf / png: usa as mesmas funções genéricas de exportação já existentes
+    // (definidas em nexta-frota-roteirizador.js, mas globais na página).
+    if (typeof window.exportarBlocoPDF !== 'function' || typeof window.exportarBlocoPNG !== 'function') {
+      showToast('Exportação indisponível — recarregue a página.', false);
+      return;
+    }
+    const html = _dashMontarHtmlResumoOperacao();
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap);
+    try {
+      if (formato === 'pdf') await window.exportarBlocoPDF('resumo-operacao', nomeArq, null, 1300);
+      else await window.exportarBlocoPNG('resumo-operacao', nomeArq, null, 1300);
+    } finally {
+      document.body.removeChild(wrap);
+    }
+  } catch (e) {
+    // Antes, qualquer erro aqui dentro (função async, sem .catch() de quem
+    // chama) falhava em silêncio total — o clique não fazia nada visível.
+    // Agora aparece um toast com o motivo real, e o erro completo vai pro
+    // Console (F12) pra eu conseguir diagnosticar.
+    console.error('[dashGerarResumoOperacao] falha ao gerar relatório:', e);
+    showToast('Erro ao gerar relatório: ' + (e.message || 'falha desconhecida'), false);
   }
 }
 window.dashGerarResumoOperacao = dashGerarResumoOperacao;
