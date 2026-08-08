@@ -650,6 +650,29 @@
           <button onclick="dashExportarExcel()" id="dash-export-btn" onmouseover="this.style.filter='brightness(.97)'" onmouseout="this.style.filter='none'"
             style="display:flex;align-items:center;gap:6px;border:1px solid #BBF7D0;border-radius:8px;background:#F0FDF4;padding:7px 13px;font-size:11px;font-weight:700;color:#14532D;cursor:pointer;white-space:nowrap;font-family:inherit;">📊 Exportar Excel</button>
 
+          <!-- Relatórios — visível pra todo mundo (diferente de Ferramentas, que é só admin) -->
+          <div style="position:relative;">
+            <button id="dash-relatorios-btn" onclick="dashToggleMenuRelatorios()" onmouseover="this.style.background='#F9FAFB'" onmouseout="this.style.background='#fff'"
+              style="display:flex;align-items:center;gap:5px;border:1px solid #D1D5DB;border-radius:8px;background:#fff;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;">
+              📊 Relatórios <span style="font-size:8px;">▾</span>
+            </button>
+            <div id="dash-relatorios-menu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;z-index:500;background:#fff;border:1px solid #D1D5DB;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.16);min-width:220px;overflow:hidden;padding:5px;">
+              <div style="padding:8px 10px 4px;font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:.04em;">Resumo Operação</div>
+              <button onclick="dashGerarResumoOperacao('pdf'); dashToggleMenuRelatorios();" onmouseover="this.style.background='rgba(239,68,68,0.1)'" onmouseout="this.style.background='none'"
+                style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:#374151;background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+                📄 PDF
+              </button>
+              <button onclick="dashGerarResumoOperacao('png'); dashToggleMenuRelatorios();" onmouseover="this.style.background='rgba(79,70,229,0.1)'" onmouseout="this.style.background='none'"
+                style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:#374151;background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+                🖼 PNG
+              </button>
+              <button onclick="dashGerarResumoOperacao('word'); dashToggleMenuRelatorios();" onmouseover="this.style.background='rgba(37,99,235,0.1)'" onmouseout="this.style.background='none'"
+                style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:#374151;background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+                📝 Word
+              </button>
+            </div>
+          </div>
+
           <!-- Ferramentas avançadas (só admin) — antes 3 botões coloridos soltos
                na barra, agora escondidos atrás de um menu, igual sistemas
                grandes fazem com ações administrativas pouco usadas. -->
