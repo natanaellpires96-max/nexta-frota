@@ -2083,7 +2083,8 @@ let _dashHistVeiculoDados = [];       // última tabela renderizada do Históric
 let _dashHistVeiculoPlacaAtual = '';  // placa selecionada no momento (pra re-renderizar quando o filtro do Dashboard mudar)
 let _dashTodosClientes   = [];        // lista completa de clientes do período
 let _dashUltimosProdutos = [];        // último resultado de dashAgregarProdutos() — reaproveitado ao clicar num produto
-let _dashUltimosKPIs = {};            // valores BRUTOS (não formatados) dos KPIs do topo — usado pelo Relatório de Resumo da Operação
+window._dashUltimosKPIs = {};         // valores BRUTOS (não formatados) dos KPIs do topo — usado pelo Relatório de Resumo da Operação. Preso em `window` de propósito (não só `let`) pra nunca dar "is not defined" na função de relatório, não importa em que ordem/contexto o script rodar.
+let _dashUltimosKPIs = window._dashUltimosKPIs; // alias local, pros vários "_dashUltimosKPIs.campo = valor" já escritos dentro de dashRender continuarem funcionando sem precisar reescrever cada um
 let _dashPeriodoAtualDescricao = '';  // texto do período atualmente carregado ("Ago/2026", "Todos os períodos", "Hoje (04/08/2026)") — sempre em sincronia com o que REALMENTE está carregado, ao contrário do rótulo do dropdown sozinho
 let _dashProdutoSelecionado = null;   // nome do produto com o painel de ciclo de compra aberto
 
@@ -4314,7 +4315,7 @@ const _DASH_OPINIAO_ICONE = { positivo: '✅', atencao: '⚠️', neutro: 'ℹ�
 // Monta as linhas do card de KPI, reaproveitando os mesmos valores já
 // calculados por dashRender (_dashUltimosKPIs) — sem refazer nenhuma conta.
 function _dashKpisParaRelatorio() {
-  const k = _dashUltimosKPIs;
+  const k = window._dashUltimosKPIs;
   const fmtNum = (n, casas = 0) => (n == null ? '-' : n.toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas }));
   return [
     { label: 'Viagens', valor: fmtNum(k.viagens) },
@@ -4335,7 +4336,7 @@ function _dashKpisParaRelatorio() {
 // ── HTML pro PDF/PNG (tema escuro, reaproveita .op-bloco/.op-table) ────────
 function _dashMontarHtmlResumoOperacao() {
   const kpis = _dashKpisParaRelatorio();
-  const opiniao = _dashGerarOpiniaoOperacao(_dashUltimosKPIs);
+  const opiniao = _dashGerarOpiniaoOperacao(window._dashUltimosKPIs);
   const filtroStr = _dashDescricaoFiltroAtual();
   const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
   const kpisHtml = kpis.map(kp => `
@@ -4403,7 +4404,7 @@ function _dashMontarHtmlResumoOperacao() {
 // ── HTML pro Word (visual neutro/profissional, igual ao e-mail da Passagem de Turno) ──
 function _dashMontarHtmlResumoOperacaoWord() {
   const kpis = _dashKpisParaRelatorio();
-  const opiniao = _dashGerarOpiniaoOperacao(_dashUltimosKPIs);
+  const opiniao = _dashGerarOpiniaoOperacao(window._dashUltimosKPIs);
   const filtroStr = _dashDescricaoFiltroAtual();
   const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
   const F = "font-family:Arial,Helvetica,sans-serif;";
@@ -4472,7 +4473,7 @@ function _dashBaixarComoWord(htmlConteudo, nomeArquivo) {
 
 async function dashGerarResumoOperacao(formato) {
   try {
-    if (!_dashUltimosKPIs || _dashUltimosKPIs.viagens == null) {
+    if (!window._dashUltimosKPIs || window._dashUltimosKPIs.viagens == null) {
       showToast('Carregue um período no Dashboard primeiro.', false);
       return;
     }
