@@ -3880,6 +3880,33 @@ function _dashExtrairUF(cidadeStr) {
 // texto da cidade do próprio pedido, 3) campo .uf/cidade do cliente no
 // CADASTRO AO VIVO (pode estar mais completo/atualizado que a cópia
 // congelada no histórico), casando por Código SAP (mais confiável) ou nome.
+// Última linha de defesa quando NENHUM dado (pedido, cadastro ao vivo) tem
+// UF registrado em lugar nenhum — capitais + municípios grandes/conhecidos,
+// priorizando os que já aparecem na operação real (região SP/MG/RJ/GO/DF).
+// É um "melhor esforço": cobre os casos mais comuns, não pretende ser uma
+// lista completa dos +5.000 municípios do Brasil (arriscado demais manter
+// uma lista dessas na mão sem gerar erro).
+const _DASH_UF_POR_CIDADE = {
+  'OSASCO':'SP','SAO PAULO':'SP','SÃO PAULO':'SP','SAO BERNARDO DO CAMPO':'SP','SANTOS':'SP','CUBATAO':'SP','CUBATÃO':'SP',
+  'PINDAMONHANGABA':'SP','MOGI DAS CRUZES':'SP','ARACARIGUAMA':'SP','ARAÇARIGUAMA':'SP','SAO CAETANO DO SUL':'SP','SÃO CAETANO DO SUL':'SP',
+  'SAO CAETANO':'SP','SÃO CAETANO':'SP','PAULINIA':'SP','PAULÍNIA':'SP','RIBEIRAO PRETO':'SP','RIBEIRÃO PRETO':'SP','CAMPINAS':'SP',
+  'JUNDIAI':'SP','JUNDIAÍ':'SP','ITU':'SP','SOROCABA':'SP','PIRACICABA':'SP','RIO CLARO':'SP','SAO MANUEL':'SP','SÃO MANUEL':'SP',
+  'DESCALVADO':'SP','AMERICANA':'SP','DIADEMA':'SP','GOIANIA':'SP','ANGRA DOS REIS':'RJ','CABREUVA':'SP','CABREÚVA':'SP',
+  'BELO HORIZONTE':'MG','CONTAGEM':'MG','BETIM':'MG','VESPASIANO':'MG','RIBEIRAO DAS NEVES':'MG','RIBEIRÃO DAS NEVES':'MG',
+  'JABOTICATUBAS':'MG','MATOZINHOS':'MG','ITABIRITO':'MG','LAGOA DA PRATA':'MG','GUARACIABA':'MG','UBERLANDIA':'MG','UBERLÂNDIA':'MG',
+  'PATOS DE MINAS':'MG','PRATA':'MG','CONCEICAO DO PARA':'MG','CONCEIÇÃO DO PARÁ':'MG','JUIZ DE FORA':'MG',
+  'DUQUE DE CAXIAS':'RJ','RIO DE JANEIRO':'RJ','NITEROI':'RJ','NITERÓI':'RJ',
+  'BRASILIA':'DF','BRASÍLIA':'DF',
+  'CURITIBA':'PR','FLORIANOPOLIS':'SC','FLORIANÓPOLIS':'SC','PORTO ALEGRE':'RS','SALVADOR':'BA','RECIFE':'PE','FORTALEZA':'CE',
+  'MANAUS':'AM','BELEM':'PA','BELÉM':'PA','VITORIA':'ES','VITÓRIA':'ES','CUIABA':'MT','CUIABÁ':'MT','CAMPO GRANDE':'MS',
+  'NATAL':'RN','JOAO PESSOA':'PB','JOÃO PESSOA':'PB','MACEIO':'AL','MACEIÓ':'AL','ARACAJU':'SE','TERESINA':'PI','SAO LUIS':'MA','SÃO LUÍS':'MA',
+  'PALMAS':'TO','BOA VISTA':'RR','MACAPA':'AP','MACAPÁ':'AP','PORTO VELHO':'RO','RIO BRANCO':'AC','GOIÂNIA':'GO','GOIANIA ':'GO',
+  'FLORESTAL':'MG','SANTOS ':'SP',
+};
+function _dashUfPorNomeCidade(cidade) {
+  return _DASH_UF_POR_CIDADE[(cidade || '').toString().trim().toUpperCase()] || '';
+}
+
 function _dashResolverCidadeUF(pedido) {
   const cidadeBruta = (pedido?.cidade || '').toString();
   const { cidade, uf: ufEmbutido } = _dashExtrairUF(cidadeBruta);
@@ -3896,6 +3923,9 @@ function _dashResolverCidadeUF(pedido) {
       if (extra.uf) return { cidade: cidade || extra.cidade, uf: extra.uf };
     }
   }
+  // Última tentativa: tabela de cidades conhecidas.
+  const ufTabela = _dashUfPorNomeCidade(cidade);
+  if (ufTabela) return { cidade, uf: ufTabela };
   return { cidade, uf: '' };
 }
 
@@ -3938,7 +3968,7 @@ async function _dashColetarRotas() {
         const paradas = vi.paradas.map(p => {
           const { cidade, uf } = _dashResolverCidadeUF(p.pedido);
           // "OSASCO/SP", ou só "OSASCO" quando não há UF em lugar nenhum.
-          const cidadeExibicao = uf ? `${cidade}/${uf}` : (cidade || '-');
+          const cidadeExibicao = uf ? `${cidade} - ${uf}` : (cidade || '-');
           let km = Math.round(p.distanciaKm || 0);
           const { lat: latP, lon: lonP } = _dashResolverCoordPedido(p.pedido, p);
           // Km 0 (ou ausente) geralmente é rota antiga salva antes do
@@ -4022,7 +4052,17 @@ function _dashRotasParaLinhas(rotasBrutas) {
   cabecalho.push('KM TOTAL');
   const linhas = rotas.map(r => {
     const linha = [r.baseOrigem];
-    for (let i = 0; i < maxCidades; i++) linha.push(r.cidades[i] || '');
+    // Quando a mesma cidade se repete em colunas seguidas na MESMA rota
+    // (ex.: 3 entregas seguidas dentro de Osasco), mostra o nome só na
+    // primeira aparição e deixa as repetições em branco — menos poluição
+    // visual. O KM TOTAL continua somando TODOS os trechos reais,
+    // incluindo os das colunas que ficaram em branco (nada muda ali).
+    let anterior = null;
+    for (let i = 0; i < maxCidades; i++) {
+      const atual = r.cidades[i] || '';
+      linha.push(atual && atual === anterior ? '' : atual);
+      if (atual) anterior = atual;
+    }
     linha.push(r.kmTotal == null ? '-' : r.kmTotal);
     return linha;
   });
