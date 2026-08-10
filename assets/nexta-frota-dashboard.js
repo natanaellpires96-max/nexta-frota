@@ -3851,6 +3851,111 @@ document.addEventListener('click', function(e) {
 });
 window.dashToggleMenuRelatorios = dashToggleMenuRelatorios;
 
+// ══════════════════════════════════════════════════════════════════════════════
+// RELATÓRIO: ROTAS
+// ══════════════════════════════════════════════════════════════════════════════
+// "Relatórios" → "Rotas" → PDF / XLSX. Uma linha por VIAGEM de TODO o
+// histórico (não respeita o filtro de período do Dashboard de propósito —
+// é um catálogo de rotas já percorridas, não um recorte operacional de um
+// mês específico), com a base de origem e, pra cada parada da viagem, a
+// cidade, o estado (UF) e o km daquele trecho (da parada anterior até ali —
+// mesmo dado já usado no resto do sistema, p.distanciaKm). Colunas
+// "Cidade Entrega N / Estado N / KM N" se repetem dinamicamente até o
+// número de paradas da viagem com MAIS paradas encontrada no histórico —
+// uma viagem com só 1 entrega usa só o primeiro grupo de colunas, uma com
+// 3 usa os três, sem linha extra pra cada parada.
+async function _dashColetarRotas() {
+  const store = await dashGetStoreMerged();
+  const snaps = Object.values(store).flat();
+  const rotas = [];
+  snaps.forEach(snap => {
+    const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
+    vecs.forEach(v => {
+      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      viagens.forEach(vi => {
+        const nomeBase = vi.terminalOrigem || v.terminal || '';
+        const terminal = (terms || []).find(t => t.nome === nomeBase);
+        const baseOrigem = terminal?.cidade || nomeBase || '-';
+        const paradas = vi.paradas.map(p => ({
+          cidade: p.pedido?.cidade || '-',
+          estado: p.pedido?.uf || '-',
+          km: Math.round(p.distanciaKm || 0),
+        }));
+        if (paradas.length) rotas.push({ baseOrigem, paradas });
+      });
+    });
+  });
+  return rotas;
+}
+
+function _dashRotasParaLinhas(rotas) {
+  const maxParadas = rotas.reduce((m, r) => Math.max(m, r.paradas.length), 1);
+  const cabecalho = ['Base Origem'];
+  for (let i = 1; i <= maxParadas; i++) cabecalho.push(`Cidade Entrega ${i}`, `Estado ${i}`, `KM ${i}`);
+  const linhas = rotas.map(r => {
+    const linha = [r.baseOrigem];
+    for (let i = 0; i < maxParadas; i++) {
+      const p = r.paradas[i];
+      linha.push(p ? p.cidade : '', p ? p.estado : '', p ? p.km : '');
+    }
+    return linha;
+  });
+  return { cabecalho, linhas, maxParadas };
+}
+
+async function dashGerarRelatorioRotas(formato) {
+  try {
+    showToast('Coletando rotas do histórico…', true);
+    const rotas = await _dashColetarRotas();
+    if (!rotas.length) { showToast('Nenhuma rota encontrada no histórico.', false); return; }
+    const { cabecalho, linhas } = _dashRotasParaLinhas(rotas);
+    const agora = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const nomeArq = `Rotas_Nexta_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+
+    if (formato === 'xlsx') {
+      if (typeof XLSX === 'undefined') { showToast('SheetJS não carregado.', false); return; }
+      const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...linhas]);
+      ws['!cols'] = cabecalho.map((h, i) => ({ wch: i === 0 ? 22 : (h.startsWith('Cidade') ? 24 : h.startsWith('Estado') ? 8 : 8) }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Rotas');
+      XLSX.writeFile(wb, `${nomeArq}.xlsx`);
+      showToast(`✅ ${linhas.length} rota(s) exportada(s).`, true);
+      return;
+    }
+
+    if (formato === 'pdf') {
+      const { jsPDF } = window.jspdf || {};
+      if (!jsPDF || !window.jspdf) { showToast('jsPDF não carregado.', false); return; }
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('NEXTA — Relatório de Rotas', 10, 12);
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${linhas.length} rota(s) · gerado em ${agora.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, 10, 18);
+      if (typeof doc.autoTable !== 'function') { showToast('jspdf-autotable não carregado.', false); return; }
+      doc.autoTable({
+        head: [cabecalho],
+        body: linhas,
+        startY: 23,
+        styles: { fontSize: 7, cellPadding: 1.5 },
+        headStyles: { fillColor: [40, 60, 30], textColor: [255, 255, 255], fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [245, 247, 240] },
+        margin: { left: 8, right: 8 },
+        theme: 'grid',
+      });
+      doc.save(`${nomeArq}.pdf`);
+      showToast(`✅ ${linhas.length} rota(s) exportada(s).`, true);
+      return;
+    }
+  } catch (e) {
+    console.error('[dashGerarRelatorioRotas] falha:', e);
+    showToast('Erro ao gerar relatório de rotas: ' + (e.message || 'falha desconhecida'), false);
+  }
+}
+window.dashGerarRelatorioRotas = dashGerarRelatorioRotas;
+
 })(); // fim IIFE dashboard
 // A chave da OpenRouteService NÃO fica mais aqui — antes ficava exposta
 // literalmente no código-fonte (qualquer um com DevTools conseguia copiar
