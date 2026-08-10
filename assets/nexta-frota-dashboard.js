@@ -3907,9 +3907,31 @@ function _dashUfPorNomeCidade(cidade) {
   return _DASH_UF_POR_CIDADE[(cidade || '').toString().trim().toUpperCase()] || '';
 }
 
+// Restaura acento correto — chave é o nome SEM acento (pra bater com
+// qualquer grafia que apareça no histórico), valor é a grafia certa. Ao
+// contrário da preferência "usa acento se algum registro já tiver" (que só
+// ajudava quando PELO MENOS uma ocorrência já vinha acentuada), essa
+// tabela corrige mesmo quando NENHUMA ocorrência no histórico tem o acento
+// — cobre os casos mais comuns da região onde a operação atua; mesmo
+// critério de "melhor esforço" da tabela de UF acima.
+const _DASH_ACENTO_POR_CIDADE = {
+  'SAO PAULO':'SÃO PAULO','SAO BERNARDO DO CAMPO':'SÃO BERNARDO DO CAMPO','SAO CAETANO':'SÃO CAETANO',
+  'SAO CAETANO DO SUL':'SÃO CAETANO DO SUL','SAO MANUEL':'SÃO MANUEL','SAO LUIS':'SÃO LUÍS','SAO JOSE':'SÃO JOSÉ',
+  'ARACARIGUAMA':'ARAÇARIGUAMA','CUBATAO':'CUBATÃO','PAULINIA':'PAULÍNIA','RIBEIRAO PRETO':'RIBEIRÃO PRETO',
+  'RIBEIRAO DAS NEVES':'RIBEIRÃO DAS NEVES','JUNDIAI':'JUNDIAÍ','CABREUVA':'CABREÚVA','UBERLANDIA':'UBERLÂNDIA',
+  'CONCEICAO DO PARA':'CONCEIÇÃO DO PARÁ','NITEROI':'NITERÓI','BRASILIA':'BRASÍLIA','FLORIANOPOLIS':'FLORIANÓPOLIS',
+  'BELEM':'BELÉM','VITORIA':'VITÓRIA','CUIABA':'CUIABÁ','JOAO PESSOA':'JOÃO PESSOA','MACEIO':'MACEIÓ',
+  'MACAPA':'MACAPÁ','GOIANIA':'GOIÂNIA','ARAXA':'ARAXÁ','PARACATU':'PARACATU','ITAJUBA':'ITAJUBÁ','POCOS DE CALDAS':'POÇOS DE CALDAS',
+  'PORTO SEGURO':'PORTO SEGURO','SAO JOAO DEL REI':'SÃO JOÃO DEL-REI','ARAGUARI':'ARAGUARI','PATROCINIO':'PATROCÍNIO',
+};
+function _dashRestaurarAcento(cidade) {
+  return _DASH_ACENTO_POR_CIDADE[_dashSemAcento(cidade)] || cidade;
+}
+
 function _dashResolverCidadeUF(pedido) {
   const cidadeBruta = (pedido?.cidade || '').toString();
-  const { cidade, uf: ufEmbutido } = _dashExtrairUF(cidadeBruta);
+  let { cidade, uf: ufEmbutido } = _dashExtrairUF(cidadeBruta);
+  cidade = _dashRestaurarAcento(cidade);
   if (pedido?.uf) return { cidade, uf: pedido.uf.toString().toUpperCase() };
   if (ufEmbutido) return { cidade, uf: ufEmbutido };
   // Cai pro cadastro ao vivo de clientes (roteirizador.js, window.clientes)
@@ -3920,7 +3942,7 @@ function _dashResolverCidadeUF(pedido) {
     );
     if (cliCad?.cidade) {
       const extra = _dashExtrairUF(cliCad.cidade);
-      if (extra.uf) return { cidade: cidade || extra.cidade, uf: extra.uf };
+      if (extra.uf) return { cidade: cidade || _dashRestaurarAcento(extra.cidade), uf: extra.uf };
     }
   }
   // Última tentativa: tabela de cidades conhecidas.
@@ -3970,7 +3992,11 @@ async function _dashColetarRotas() {
       viagens.forEach(vi => {
         const nomeBase = vi.terminalOrigem || v.terminal || '';
         const terminal = (terms || []).find(t => t.nome === nomeBase);
-        const baseOrigem = (terminal?.cidade || nomeBase || '-').toString().toUpperCase();
+        const baseOrigemBruta = (terminal?.cidade || nomeBase || '-').toString().toUpperCase();
+        const _baseExtraida = _dashExtrairUF(baseOrigemBruta);
+        const baseOrigem = _baseExtraida.uf
+          ? `${_dashRestaurarAcento(_baseExtraida.cidade)} - ${_baseExtraida.uf}`
+          : _dashRestaurarAcento(baseOrigemBruta);
         // Ponto anterior pra calcular distância em linha reta quando falta o
         // km real da rota — começa no terminal, depois vira a parada anterior.
         let latAnterior = parseFloat(terminal?.lat);
@@ -4042,20 +4068,12 @@ function _dashAgruparRotasUnicas(rotas) {
     const kmTotal = r.kmTotal; // já calculado em _dashColetarRotas, sobre TODOS os trechos reais (antes de colapsar cidade repetida)
     if (!grupos.has(chave)) {
       grupos.set(chave, {
-        baseOrigemExibicao: r.baseOrigem,
-        cidadesExibicao: r.paradas.map(p => p.cidadeExibicao),
+        baseOrigem: r.baseOrigemChave,           // sem acento, letra de forma — é isso que aparece no relatório
+        cidades: cidadesChave,                    // idem, já é a chave normalizada
         kmContagem: new Map(),
       });
     }
     const g = grupos.get(chave);
-    // Prefere sempre a versão COM acento pra exibição, não importa qual
-    // ocorrência do grupo chegou primeiro — "CONCEICAO DO PARA - MG" e
-    // "CONCEIÇÃO DO PARÁ - MG" caem no mesmo grupo (mesma chave sem
-    // acento); a versão acentuada "ganha" e é a que aparece no relatório.
-    if (_dashTemAcento(r.baseOrigem) && !_dashTemAcento(g.baseOrigemExibicao)) g.baseOrigemExibicao = r.baseOrigem;
-    r.paradas.forEach((p, i) => {
-      if (_dashTemAcento(p.cidadeExibicao) && !_dashTemAcento(g.cidadesExibicao[i])) g.cidadesExibicao[i] = p.cidadeExibicao;
-    });
     g.kmContagem.set(kmTotal, (g.kmContagem.get(kmTotal) || 0) + 1);
   });
   return [...grupos.values()].map(g => {
@@ -4063,8 +4081,8 @@ function _dashAgruparRotasUnicas(rotas) {
     let kmModa = null, maiorContagem = 0;
     g.kmContagem.forEach((contagem, km) => { if (contagem > maiorContagem) { maiorContagem = contagem; kmModa = km; } });
     return {
-      baseOrigem: g.baseOrigemExibicao,
-      cidades: g.cidadesExibicao,
+      baseOrigem: g.baseOrigem,
+      cidades: g.cidades,
       kmTotal: kmModa,
       // Chaves normalizadas SÓ pra ordenar — garantem que "BETIM - MG"
       // fique sempre contíguo mesmo que, por algum motivo (acento/espaço
