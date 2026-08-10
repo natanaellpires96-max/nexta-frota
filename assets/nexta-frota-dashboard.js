@@ -3953,7 +3953,7 @@ function _dashResolverCoordPedido(pedido, parada) {
 // como a mesma cidade) — usado só como CHAVE de comparação, nunca como
 // texto exibido (a exibição sempre mantém o acento original de quem tiver).
 function _dashSemAcento(s) {
-  return (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+  return (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
 }
 function _dashTemAcento(s) {
   return /[áàâãéèêíìîóòôõúùûçÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ]/.test(s || '');
@@ -4062,25 +4062,37 @@ function _dashAgruparRotasUnicas(rotas) {
     // Km mais frequente (moda) — empate resolvido pelo primeiro valor visto na ordem de inserção do Map.
     let kmModa = null, maiorContagem = 0;
     g.kmContagem.forEach((contagem, km) => { if (contagem > maiorContagem) { maiorContagem = contagem; kmModa = km; } });
-    return { baseOrigem: g.baseOrigemExibicao, cidades: g.cidadesExibicao, kmTotal: kmModa };
+    return {
+      baseOrigem: g.baseOrigemExibicao,
+      cidades: g.cidadesExibicao,
+      kmTotal: kmModa,
+      // Chaves normalizadas SÓ pra ordenar — garantem que "BETIM - MG"
+      // fique sempre contíguo mesmo que, por algum motivo (acento/espaço
+      // duplo divergente entre snapshots antigos), o texto de EXIBIÇÃO de
+      // dois grupos que são a mesma base/cidade não seja byte-a-byte
+      // idêntico. Ordenar pelo texto de exibição direto foi exatamente o
+      // que fez "BETIM - MG" aparecer em dois blocos separados antes.
+      _baseOrdKey: _dashSemAcento(g.baseOrigemExibicao),
+      _cidadesOrdKey: g.cidadesExibicao.map(_dashSemAcento),
+    };
   }).sort((a, b) => {
     // 1) Base Origem, alfabética
-    if (a.baseOrigem !== b.baseOrigem) return a.baseOrigem.localeCompare(b.baseOrigem);
+    if (a._baseOrdKey !== b._baseOrdKey) return a._baseOrdKey.localeCompare(b._baseOrdKey, 'pt-BR');
     // 2) Cidade Entrega 1 em diante — mas a partir da 2ª, rota "em branco"
     // (ou seja, rota de cidade única, que já acabou ali) vem ANTES de uma
     // rota que continua com mais uma cidade — assim as rotas de destino
     // único ficam agrupadas logo no topo de cada base, antes das rotas
     // multi-cidade que começam com a mesma 1ª cidade.
-    const maxLen = Math.max(a.cidades.length, b.cidades.length);
+    const maxLen = Math.max(a._cidadesOrdKey.length, b._cidadesOrdKey.length);
     for (let i = 0; i < maxLen; i++) {
-      const ca = a.cidades[i] || '';
-      const cb = b.cidades[i] || '';
+      const ca = a._cidadesOrdKey[i] || '';
+      const cb = b._cidadesOrdKey[i] || '';
       if (ca === cb) continue;
       if (i > 0 && (ca === '' || cb === '')) return ca === '' ? -1 : 1;
-      return ca.localeCompare(cb);
+      return ca.localeCompare(cb, 'pt-BR');
     }
     return 0;
-  });
+  }).map(({ _baseOrdKey, _cidadesOrdKey, ...r }) => r); // remove as chaves auxiliares antes de devolver
 }
 
 function _dashRotasParaLinhas(rotasBrutas) {
