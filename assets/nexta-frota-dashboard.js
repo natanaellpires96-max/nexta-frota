@@ -3981,6 +3981,173 @@ function _dashTemAcento(s) {
   return /[áàâãéèêíìîóòôõúùûçÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ]/.test(s || '');
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// RELATÓRIO: ROTAS - FRETES (destino único, km direto via rota real)
+// ══════════════════════════════════════════════════════════════════════════════
+// Mesma fonte de dados que "Rotas - Roteirização", mas cada parada de uma
+// viagem multi-cidade vira sua PRÓPRIA linha independente: uma rota
+// "Betim → Belo Horizonte → Matozinhos → Vespasiano" gera 3 linhas —
+// Betim×Belo Horizonte, Betim×Matozinhos, Betim×Vespasiano — cada uma com
+// o km calculado como trajeto DIRETO da base até aquele destino específico
+// (não a soma sequencial da rota real percorrida, que é o que
+// "Roteirização" mostra). AO CONTRÁRIO de "Rotas - Roteirização" (que
+// varre todo o histórico de propósito), este relatório RESPEITA os
+// filtros ativos do Dashboard (período, Clientes, Operação, Segmento) —
+// usa a mesma fonte (_dashSnapshotsAtivos) e os mesmos filtros que os
+// outros gráficos do Dashboard já aplicam.
+async function _dashColetarDestinosUnicos() {
+  const cidadesFiltro = _dashCidadesSelecionadas;
+  const clientesEfetivos = dashClientesEfetivos(_dashTodosClientes);
+  const clientesEfetivosNorm = _dashNormalizarSetClientes(clientesEfetivos);
+  const pares = [];
+  (_dashSnapshotsAtivos || []).forEach(snap => {
+    const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
+    vecs.forEach(v => {
+      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      viagens.forEach(vi => {
+        if (cidadesFiltro && !cidadesFiltro.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
+        const nomeBase = vi.terminalOrigem || v.terminal || '';
+        const terminal = (terms || []).find(t => t.nome === nomeBase);
+        const baseOrigemBruta = (terminal?.cidade || nomeBase || '-').toString().toUpperCase();
+        const _baseExtraida = _dashExtrairUF(baseOrigemBruta);
+        const baseOrigem = _baseExtraida.uf
+          ? `${_dashRestaurarAcento(_baseExtraida.cidade)} - ${_baseExtraida.uf}`
+          : _dashRestaurarAcento(baseOrigemBruta);
+        const baseLat = parseFloat(terminal?.lat), baseLon = parseFloat(terminal?.lon);
+        (Array.isArray(vi.paradas) ? vi.paradas : []).forEach(p => {
+          const nomeCliente = (p.pedido || {}).cliente || (p.pedido || {}).nomeCliente || p.nome || '?';
+          if (clientesEfetivos && !_dashNomeBateFiltro(nomeCliente, clientesEfetivosNorm)) return;
+          const { cidade, uf } = _dashResolverCidadeUF(p.pedido);
+          const destino = uf ? `${cidade} - ${uf}` : (cidade || '-');
+          const { lat: destinoLat, lon: destinoLon } = _dashResolverCoordPedido(p.pedido, p);
+          pares.push({
+            baseOrigem, baseOrigemChave: _dashSemAcento(baseOrigem), baseLat, baseLon,
+            destino, destinoChave: _dashSemAcento(destino), destinoLat, destinoLon,
+          });
+        });
+      });
+    });
+  });
+  return pares;
+}
+
+// Deduplica por par ÚNICO (base + destino) — 40 entregas em Belo Horizonte
+// saindo de Betim viram UMA linha só.
+function _dashAgruparDestinosUnicos(pares) {
+  const grupos = new Map();
+  pares.forEach(p => {
+    const chave = p.baseOrigemChave + '>' + p.destinoChave;
+    if (!grupos.has(chave)) {
+      grupos.set(chave, {
+        baseOrigem: p.baseOrigem, baseLat: p.baseLat, baseLon: p.baseLon,
+        destino: p.destino, destinoLat: p.destinoLat, destinoLon: p.destinoLon,
+        kmTotal: null,
+      });
+    }
+    const g = grupos.get(chave);
+    if ((g.baseLat == null || isNaN(g.baseLat)) && !isNaN(p.baseLat)) { g.baseLat = p.baseLat; g.baseLon = p.baseLon; }
+    if ((g.destinoLat == null || isNaN(g.destinoLat)) && !isNaN(p.destinoLat)) { g.destinoLat = p.destinoLat; g.destinoLon = p.destinoLon; }
+  });
+  return [...grupos.values()].sort((a, b) => {
+    const ka = _dashSemAcento(a.baseOrigem), kb = _dashSemAcento(b.baseOrigem);
+    if (ka !== kb) return ka.localeCompare(kb, 'pt-BR');
+    return _dashSemAcento(a.destino).localeCompare(_dashSemAcento(b.destino), 'pt-BR');
+  });
+}
+
+// Km TOTAL aqui é sempre o trajeto DIRETO base→destino (1 chamada por par),
+// não uma soma de vários trechos — diferente de "Rotas - Roteirização".
+async function _dashCalcularKmRealDestinos(pares, onProgresso) {
+  let feitas = 0;
+  const total = pares.length;
+  const BATCH = 4;
+  for (let start = 0; start < pares.length; start += BATCH) {
+    const lote = pares.slice(start, start + BATCH);
+    await Promise.all(lote.map(async p => {
+      const a = { lat: p.baseLat, lon: p.baseLon };
+      const b = { lat: p.destinoLat, lon: p.destinoLon };
+      const validas = [a, b].every(pt => pt && !isNaN(pt.lat) && !isNaN(pt.lon) && (Math.abs(pt.lat) > 0.001 || Math.abs(pt.lon) > 0.001));
+      if (validas) {
+        try {
+          const seg = await osrmFetchSegmento(a, b);
+          p.kmTotal = Math.round(seg.distKm);
+        } catch (e) {
+          console.warn('[_dashCalcularKmRealDestinos] falha num par, deixando sem km:', e);
+        }
+      }
+      feitas++;
+      if (onProgresso) onProgresso(feitas, total);
+    }));
+  }
+}
+
+function _dashDestinosParaLinhas(pares) {
+  const cabecalho = ['BASE ORIGEM', 'DESTINO', 'KM TOTAL'];
+  const linhas = pares.map(p => [p.baseOrigem, p.destino, p.kmTotal == null ? '-' : p.kmTotal]);
+  return { cabecalho, linhas };
+}
+
+async function dashGerarRelatorioRotasFretes(formato) {
+  try {
+    showToast('Coletando destinos únicos (respeitando os filtros ativos)…', true);
+    const paresBrutos = await _dashColetarDestinosUnicos();
+    if (!paresBrutos.length) { showToast('Nenhum destino encontrado no período/filtro selecionado.', false); return; }
+    const pares = _dashAgruparDestinosUnicos(paresBrutos);
+
+    showToast(`Calculando km real (rota direta) de ${pares.length} destino(s)… isso pode levar alguns minutos.`, true);
+    await _dashCalcularKmRealDestinos(pares, (feitas, total) => {
+      if (feitas % 10 === 0 || feitas === total) showToast(`Calculando rota real… ${feitas}/${total}`, true);
+    });
+
+    const { cabecalho, linhas } = _dashDestinosParaLinhas(pares);
+    const agora = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const filtroStr = _dashDescricaoFiltroAtual();
+    const nomeArq = `Rotas_Fretes_Nexta_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+
+    if (formato === 'xlsx') {
+      if (typeof XLSX === 'undefined') { showToast('SheetJS não carregado.', false); return; }
+      const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...linhas]);
+      ws['!cols'] = [{ wch: 22 }, { wch: 26 }, { wch: 10 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Rotas - Fretes');
+      XLSX.writeFile(wb, `${nomeArq}.xlsx`);
+      showToast(`✅ ${linhas.length} destino(s) exportado(s).`, true);
+      return;
+    }
+
+    if (formato === 'pdf') {
+      const { jsPDF } = window.jspdf || {};
+      if (!jsPDF || !window.jspdf) { showToast('jsPDF não carregado.', false); return; }
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('NEXTA — RELATÓRIO DE ROTAS - FRETES', 10, 12);
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${linhas.length} destino(s) · filtro: ${filtroStr} · gerado em ${agora.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, 10, 18);
+      if (typeof doc.autoTable !== 'function') { showToast('jspdf-autotable não carregado.', false); return; }
+      doc.autoTable({
+        head: [cabecalho],
+        body: linhas,
+        startY: 23,
+        styles: { fontSize: 8, cellPadding: 2 },
+        headStyles: { fillColor: [40, 60, 30], textColor: [255, 255, 255], fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [245, 247, 240] },
+        margin: { left: 8, right: 8 },
+        theme: 'grid',
+      });
+      doc.save(`${nomeArq}.pdf`);
+      showToast(`✅ ${linhas.length} destino(s) exportado(s).`, true);
+      return;
+    }
+  } catch (e) {
+    console.error('[dashGerarRelatorioRotasFretes] falha:', e);
+    showToast('Erro ao gerar relatório de rotas - fretes: ' + (e.message || 'falha desconhecida'), false);
+  }
+}
+window.dashGerarRelatorioRotasFretes = dashGerarRelatorioRotasFretes;
+
 async function _dashColetarRotas() {
   const store = await dashGetStoreMerged();
   const snaps = Object.values(store).flat();
@@ -4208,7 +4375,7 @@ async function dashGerarRelatorioRotas(formato) {
     const { cabecalho, linhas } = _dashRotasAgrupadasParaLinhas(rotasAgrupadas);
     const agora = new Date();
     const p2 = n => String(n).padStart(2, '0');
-    const nomeArq = `Rotas_Nexta_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+    const nomeArq = `Rotas_Roteirizacao_Nexta_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
 
     if (formato === 'xlsx') {
       if (typeof XLSX === 'undefined') { showToast('SheetJS não carregado.', false); return; }
@@ -4227,7 +4394,7 @@ async function dashGerarRelatorioRotas(formato) {
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       doc.setFontSize(14);
       doc.setFont('helvetica', 'bold');
-      doc.text('NEXTA — RELATÓRIO DE ROTAS', 10, 12);
+      doc.text('NEXTA — RELATÓRIO DE ROTAS - ROTEIRIZAÇÃO', 10, 12);
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.text(`${linhas.length} rota(s) · gerado em ${agora.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, 10, 18);
