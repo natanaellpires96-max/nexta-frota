@@ -3949,6 +3949,16 @@ function _dashResolverCoordPedido(pedido, parada) {
   return { lat: NaN, lon: NaN };
 }
 
+// Remove acento pra comparar/agrupar ("CONCEIÇÃO" e "CONCEICAO" bateriam
+// como a mesma cidade) — usado só como CHAVE de comparação, nunca como
+// texto exibido (a exibição sempre mantém o acento original de quem tiver).
+function _dashSemAcento(s) {
+  return (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+}
+function _dashTemAcento(s) {
+  return /[áàâãéèêíìîóòôõúùûçÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ]/.test(s || '');
+}
+
 async function _dashColetarRotas() {
   const store = await dashGetStoreMerged();
   const snaps = Object.values(store).flat();
@@ -3967,8 +3977,8 @@ async function _dashColetarRotas() {
         let lonAnterior = parseFloat(terminal?.lon);
         const paradas = vi.paradas.map(p => {
           const { cidade, uf } = _dashResolverCidadeUF(p.pedido);
-          // "OSASCO/SP", ou só "OSASCO" quando não há UF em lugar nenhum.
           const cidadeExibicao = uf ? `${cidade} - ${uf}` : (cidade || '-');
+          const cidadeChave = _dashSemAcento(cidadeExibicao);
           let km = Math.round(p.distanciaKm || 0);
           const { lat: latP, lon: lonP } = _dashResolverCoordPedido(p.pedido, p);
           // Km 0 (ou ausente) geralmente é rota antiga salva antes do
@@ -3987,9 +3997,9 @@ async function _dashColetarRotas() {
             }
           }
           if (!isNaN(latP) && !isNaN(lonP)) { latAnterior = latP; lonAnterior = lonP; }
-          return { cidadeExibicao, km };
+          return { cidadeExibicao, cidadeChave, km };
         });
-        if (paradas.length) rotas.push({ baseOrigem, paradas });
+        if (paradas.length) rotas.push({ baseOrigem, baseOrigemChave: _dashSemAcento(baseOrigem), paradas });
       });
     });
   });
@@ -4007,23 +4017,37 @@ async function _dashColetarRotas() {
 function _dashAgruparRotasUnicas(rotas) {
   const grupos = new Map();
   rotas.forEach(r => {
-    const cidades = r.paradas.map(p => p.cidadeExibicao);
-    const chave = r.baseOrigem + '>' + cidades.join('>');
+    const cidadesChave = r.paradas.map(p => p.cidadeChave);
+    const chave = r.baseOrigemChave + '>' + cidadesChave.join('>');
     // Se TODO trecho da rota ficou sem km (null — nem o real nem o
     // estimado por coordenada deram certo), o total fica null (mostrado
     // como "-"), em vez de 0 — 0km "de verdade" só quando pelo menos um
     // trecho tem valor conhecido e os outros genuinamente não somam nada.
     const todosNulos = r.paradas.every(p => p.km === null);
     const kmTotal = todosNulos ? null : r.paradas.reduce((s, p) => s + (p.km || 0), 0);
-    if (!grupos.has(chave)) grupos.set(chave, { baseOrigem: r.baseOrigem, cidades, kmContagem: new Map() });
+    if (!grupos.has(chave)) {
+      grupos.set(chave, {
+        baseOrigemExibicao: r.baseOrigem,
+        cidadesExibicao: r.paradas.map(p => p.cidadeExibicao),
+        kmContagem: new Map(),
+      });
+    }
     const g = grupos.get(chave);
+    // Prefere sempre a versão COM acento pra exibição, não importa qual
+    // ocorrência do grupo chegou primeiro — "CONCEICAO DO PARA - MG" e
+    // "CONCEIÇÃO DO PARÁ - MG" caem no mesmo grupo (mesma chave sem
+    // acento); a versão acentuada "ganha" e é a que aparece no relatório.
+    if (_dashTemAcento(r.baseOrigem) && !_dashTemAcento(g.baseOrigemExibicao)) g.baseOrigemExibicao = r.baseOrigem;
+    r.paradas.forEach((p, i) => {
+      if (_dashTemAcento(p.cidadeExibicao) && !_dashTemAcento(g.cidadesExibicao[i])) g.cidadesExibicao[i] = p.cidadeExibicao;
+    });
     g.kmContagem.set(kmTotal, (g.kmContagem.get(kmTotal) || 0) + 1);
   });
   return [...grupos.values()].map(g => {
     // Km mais frequente (moda) — empate resolvido pelo primeiro valor visto na ordem de inserção do Map.
     let kmModa = null, maiorContagem = 0;
     g.kmContagem.forEach((contagem, km) => { if (contagem > maiorContagem) { maiorContagem = contagem; kmModa = km; } });
-    return { baseOrigem: g.baseOrigem, cidades: g.cidades, kmTotal: kmModa };
+    return { baseOrigem: g.baseOrigemExibicao, cidades: g.cidadesExibicao, kmTotal: kmModa };
   }).sort((a, b) => {
     // 1) Base Origem, alfabética
     if (a.baseOrigem !== b.baseOrigem) return a.baseOrigem.localeCompare(b.baseOrigem);
