@@ -4011,7 +4011,8 @@ async function _dashColetarRotas() {
           // que não temos o dado: km fica null (mostrado como "-"), nunca
           // um palpite disfarçado de valor exato.
           const km = p.distanciaKm ? Math.round(p.distanciaKm) : null;
-          return { cidadeExibicao, cidadeChave, km };
+          const { lat, lon } = _dashResolverCoordPedido(p.pedido, p);
+          return { cidadeExibicao, cidadeChave, km, lat, lon };
         });
         if (paradas.length) {
           // Colapsa cidades repetidas CONSECUTIVAS (mesma cidade duas+
@@ -4032,7 +4033,11 @@ async function _dashColetarRotas() {
           });
           const todosNulos = paradas.every(p => p.km === null);
           const kmTotal = todosNulos ? null : paradas.reduce((s, p) => s + (p.km || 0), 0);
-          rotas.push({ baseOrigem, baseOrigemChave: _dashSemAcento(baseOrigem), paradas: cidadesColapsadas, kmTotal });
+          rotas.push({
+            baseOrigem, baseOrigemChave: _dashSemAcento(baseOrigem),
+            baseLat: parseFloat(terminal?.lat), baseLon: parseFloat(terminal?.lon),
+            paradas: cidadesColapsadas, kmTotal,
+          });
         }
       });
     });
@@ -4063,11 +4068,22 @@ function _dashAgruparRotasUnicas(rotas) {
       // deveriam estar consistentes).
       grupos.set(chave, {
         baseOrigemExibicao: r.baseOrigem,
+        baseLat: r.baseLat, baseLon: r.baseLon,
         cidadesExibicao: paradasSeguras.map(p => p.cidadeExibicao),
+        cidadesCoord: paradasSeguras.map(p => ({ lat: p.lat, lon: p.lon })),
         kmContagem: new Map(),
       });
     }
     const g = grupos.get(chave);
+    // Preenche coordenada só se ainda estiver faltando — primeira ocorrência
+    // válida do grupo "ganha" (a rota é a mesma, o ponto geográfico
+    // representativo dela pode vir de qualquer ocorrência).
+    if ((g.baseLat == null || isNaN(g.baseLat)) && !isNaN(r.baseLat)) { g.baseLat = r.baseLat; g.baseLon = r.baseLon; }
+    paradasSeguras.forEach((p, i) => {
+      if (g.cidadesCoord[i] && (g.cidadesCoord[i].lat == null || isNaN(g.cidadesCoord[i].lat)) && !isNaN(p.lat)) {
+        g.cidadesCoord[i] = { lat: p.lat, lon: p.lon };
+      }
+    });
     g.kmContagem.set(kmTotal, (g.kmContagem.get(kmTotal) || 0) + 1);
   });
   return [...grupos.values()].map(g => {
@@ -4076,8 +4092,11 @@ function _dashAgruparRotasUnicas(rotas) {
     g.kmContagem.forEach((contagem, km) => { if (contagem > maiorContagem) { maiorContagem = contagem; kmModa = km; } });
     return {
       baseOrigem: g.baseOrigemExibicao,
+      baseLat: g.baseLat, baseLon: g.baseLon,
       cidades: g.cidadesExibicao,
+      cidadesCoord: g.cidadesCoord,
       kmTotal: kmModa,
+      kmHistorico: kmModa, // guarda o valor original (baseado no histórico), caso o cálculo real via ORS não role
       // Chaves normalizadas SÓ pra ordenar — garantem que "BETIM - MG"
       // fique sempre contíguo mesmo que, por algum motivo (acento/espaço
       // duplo divergente entre snapshots antigos), o texto de EXIBIÇÃO de
@@ -4107,8 +4126,7 @@ function _dashAgruparRotasUnicas(rotas) {
   }).map(({ _baseOrdKey, _cidadesOrdKey, ...r }) => r); // remove as chaves auxiliares antes de devolver
 }
 
-function _dashRotasParaLinhas(rotasBrutas) {
-  const rotas = _dashAgruparRotasUnicas(rotasBrutas);
+function _dashRotasAgrupadasParaLinhas(rotas) {
   const maxCidades = rotas.reduce((m, r) => Math.max(m, r.cidades.length), 1);
   const cabecalho = ['BASE ORIGEM'];
   for (let i = 1; i <= maxCidades; i++) cabecalho.push(`CIDADE ENTREGA ${i}`);
@@ -4123,13 +4141,71 @@ function _dashRotasParaLinhas(rotasBrutas) {
   });
   return { cabecalho, linhas, maxParadas: maxCidades };
 }
+function _dashRotasParaLinhas(rotasBrutas) {
+  return _dashRotasAgrupadasParaLinhas(_dashAgruparRotasUnicas(rotasBrutas));
+}
+
+// Calcula o KM TOTAL de verdade (rota real via OpenRouteService — mesmo
+// serviço já usado no "Mapa da Viagem" e no "Km Real" em lote, INCLUSIVE o
+// mesmo perfil de caminhão/hazmat) pra cada rota única, em vez de confiar no
+// km salvo no histórico (que podia estar zerado, desatualizado, ou —
+// depois de uma correção anterior — vir de uma estimativa em linha reta que
+// não reflete rodovia de verdade). Sobrescreve r.kmTotal quando a consulta
+// dá certo; mantém r.kmHistorico como estava se a consulta falhar ou faltar
+// coordenada (nunca finge que tem um km real que não tem).
+async function _dashCalcularKmRealRotas(rotasAgrupadas, onProgresso) {
+  let feitas = 0;
+  const total = rotasAgrupadas.length;
+  // BATCH pequeno — cada chamada individual já espera sua vez no limitador
+  // de 30/min compartilhado com todo o resto do sistema (osrmFetchSegmento);
+  // isso só controla quantas promessas ficam "em voo" ao mesmo tempo.
+  const BATCH = 4;
+  for (let start = 0; start < rotasAgrupadas.length; start += BATCH) {
+    const lote = rotasAgrupadas.slice(start, start + BATCH);
+    await Promise.all(lote.map(async r => {
+      const pontos = [{ lat: r.baseLat, lon: r.baseLon }, ...r.cidadesCoord];
+      // Só calcula se TODOS os pontos da rota têm coordenada válida — uma
+      // rota com um trecho sem coordenada não dá pra rotear de verdade;
+      // mantém o km do histórico (ou "-") pra essa em vez de inventar.
+      const todasValidas = pontos.every(p => p && !isNaN(p.lat) && !isNaN(p.lon) && (Math.abs(p.lat) > 0.001 || Math.abs(p.lon) > 0.001));
+      if (!todasValidas) { feitas++; return; }
+      try {
+        let somaKm = 0;
+        for (let i = 0; i < pontos.length - 1; i++) {
+          const seg = await osrmFetchSegmento(pontos[i], pontos[i + 1]);
+          somaKm += seg.distKm;
+        }
+        r.kmTotal = Math.round(somaKm);
+      } catch (e) {
+        console.warn('[_dashCalcularKmRealRotas] falha numa rota, mantendo km do histórico:', e);
+      }
+      feitas++;
+      if (onProgresso) onProgresso(feitas, total);
+    }));
+  }
+}
 
 async function dashGerarRelatorioRotas(formato) {
   try {
     showToast('Coletando rotas do histórico…', true);
-    const rotas = await _dashColetarRotas();
-    if (!rotas.length) { showToast('Nenhuma rota encontrada no histórico.', false); return; }
-    const { cabecalho, linhas } = _dashRotasParaLinhas(rotas);
+    const rotasBrutas = await _dashColetarRotas();
+    if (!rotasBrutas.length) { showToast('Nenhuma rota encontrada no histórico.', false); return; }
+    const rotasAgrupadas = _dashAgruparRotasUnicas(rotasBrutas);
+
+    const usarKmReal = confirm(
+      `Calcular o KM TOTAL consultando rota real (OpenRouteService, mesmo serviço usado no resto do sistema) em vez de usar só o km salvo no histórico?\n\n` +
+      `${rotasAgrupadas.length} rota(s) única(s) — pode levar alguns minutos (respeita o limite de requisições por minuto, compartilhado com o resto do sistema; trechos repetidos entre rotas usam cache e não recalculam).\n\n` +
+      `OK = calcular km real agora (mais exato, mais demorado)\n` +
+      `Cancelar = usar o km do histórico (mais rápido, pode estar incompleto)`
+    );
+    if (usarKmReal) {
+      showToast(`Calculando rota real de ${rotasAgrupadas.length} rota(s)… isso pode levar alguns minutos.`, true);
+      await _dashCalcularKmRealRotas(rotasAgrupadas, (feitas, total) => {
+        if (feitas % 10 === 0 || feitas === total) showToast(`Calculando rota real… ${feitas}/${total}`, true);
+      });
+    }
+
+    const { cabecalho, linhas } = _dashRotasAgrupadasParaLinhas(rotasAgrupadas);
     const agora = new Date();
     const p2 = n => String(n).padStart(2, '0');
     const nomeArq = `Rotas_Nexta_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
