@@ -3999,7 +3999,27 @@ async function _dashColetarRotas() {
           if (!isNaN(latP) && !isNaN(lonP)) { latAnterior = latP; lonAnterior = lonP; }
           return { cidadeExibicao, cidadeChave, km };
         });
-        if (paradas.length) rotas.push({ baseOrigem, baseOrigemChave: _dashSemAcento(baseOrigem), paradas });
+        if (paradas.length) {
+          // Colapsa cidades repetidas CONSECUTIVAS (mesma cidade duas+
+          // vezes seguidas na sequência) ANTES de devolver a rota — não só
+          // na exibição. Antes, uma viagem "AMERICANA → AMERICANA →
+          // PIRACICABA" virava uma rota de 3 posições (com a 2ª apagada só
+          // visualmente), o que a deixava com uma CHAVE diferente da rota
+          // "limpa" AMERICANA → PIRACICABA — as duas nunca se juntavam no
+          // agrupamento, e apareciam como duas linhas com KM TOTAL
+          // diferente (uma incluindo o trecho redundante, outra não).
+          // Colapsando aqui, as duas caem na MESMA chave — e a escolha por
+          // "km mais frequente" (ver _dashAgruparRotasUnicas) decide
+          // sozinha qual km é o de verdade.
+          const cidadesColapsadas = [];
+          paradas.forEach(p => {
+            const anterior = cidadesColapsadas[cidadesColapsadas.length - 1];
+            if (!anterior || anterior.cidadeChave !== p.cidadeChave) cidadesColapsadas.push(p);
+          });
+          const todosNulos = paradas.every(p => p.km === null);
+          const kmTotal = todosNulos ? null : paradas.reduce((s, p) => s + (p.km || 0), 0);
+          rotas.push({ baseOrigem, baseOrigemChave: _dashSemAcento(baseOrigem), paradas: cidadesColapsadas, kmTotal });
+        }
       });
     });
   });
@@ -4019,12 +4039,7 @@ function _dashAgruparRotasUnicas(rotas) {
   rotas.forEach(r => {
     const cidadesChave = r.paradas.map(p => p.cidadeChave);
     const chave = r.baseOrigemChave + '>' + cidadesChave.join('>');
-    // Se TODO trecho da rota ficou sem km (null — nem o real nem o
-    // estimado por coordenada deram certo), o total fica null (mostrado
-    // como "-"), em vez de 0 — 0km "de verdade" só quando pelo menos um
-    // trecho tem valor conhecido e os outros genuinamente não somam nada.
-    const todosNulos = r.paradas.every(p => p.km === null);
-    const kmTotal = todosNulos ? null : r.paradas.reduce((s, p) => s + (p.km || 0), 0);
+    const kmTotal = r.kmTotal; // já calculado em _dashColetarRotas, sobre TODOS os trechos reais (antes de colapsar cidade repetida)
     if (!grupos.has(chave)) {
       grupos.set(chave, {
         baseOrigemExibicao: r.baseOrigem,
@@ -4076,17 +4091,9 @@ function _dashRotasParaLinhas(rotasBrutas) {
   cabecalho.push('KM TOTAL');
   const linhas = rotas.map(r => {
     const linha = [r.baseOrigem];
-    // Quando a mesma cidade se repete em colunas seguidas na MESMA rota
-    // (ex.: 3 entregas seguidas dentro de Osasco), mostra o nome só na
-    // primeira aparição e deixa as repetições em branco — menos poluição
-    // visual. O KM TOTAL continua somando TODOS os trechos reais,
-    // incluindo os das colunas que ficaram em branco (nada muda ali).
-    let anterior = null;
-    for (let i = 0; i < maxCidades; i++) {
-      const atual = r.cidades[i] || '';
-      linha.push(atual && atual === anterior ? '' : atual);
-      if (atual) anterior = atual;
-    }
+    // Cidades repetidas consecutivas já vêm colapsadas desde a coleta (ver
+    // _dashColetarRotas) — aqui é só listar na ordem, sem buraco no meio.
+    for (let i = 0; i < maxCidades; i++) linha.push(r.cidades[i] || '');
     linha.push(r.kmTotal == null ? '-' : r.kmTotal);
     return linha;
   });
