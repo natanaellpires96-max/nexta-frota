@@ -3549,6 +3549,308 @@ window.dashExportarExcel = async function dashExportarExcel() {
 };
 
 })();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RELATÓRIO: RESUMO DA OPERAÇÃO
+// ══════════════════════════════════════════════════════════════════════════════
+// Botão "📊 Relatórios" (mesmo padrão do "⚙️ Ferramentas") → "Resumo Operação"
+// → PDF / PNG / Word. Traz todos os KPIs do topo do Dashboard, o Ranking de
+// Transportadoras e o Volume por Produto, respeitando os MESMOS filtros
+// ativos (período, Clientes, Operação/Cidade, Segmento) — reaproveita
+// _dashUltimosKPIs/_dashUltimoRanking/_dashUltimosProdutos, já calculados
+// pelo render normal do Dashboard, em vez de reprocessar os snapshots do
+// zero. Inclui também uma análise automática (heurística, baseada em faixas
+// típicas do setor) comentando os números — deixado claro no relatório que é
+// uma leitura automática, não uma auditoria.
+
+// Descreve os filtros atualmente ativos, pro cabeçalho do relatório —
+// usa _dashPeriodoAtualDescricao (sempre em sincronia com o que está
+// carregado de verdade, diferente do rótulo do dropdown sozinho).
+function _dashDescricaoFiltroAtual() {
+  const partes = [];
+  partes.push(_dashPeriodoAtualDescricao || 'Período não identificado');
+  if (_dashClientesSelecionados) partes.push(`${_dashClientesSelecionados.size} cliente${_dashClientesSelecionados.size === 1 ? '' : 's'} selecionado${_dashClientesSelecionados.size === 1 ? '' : 's'}`);
+  if (_dashCidadesSelecionadas) partes.push(`${_dashCidadesSelecionadas.size} operação(ões) selecionada(s)`);
+  if (_dashSegmentosSelecionados) partes.push(`Segmento: ${[..._dashSegmentosSelecionados].join(', ')}`);
+  return partes.join(' · ');
+}
+
+// Gera a análise automática — cada item tem {tipo: 'positivo'|'atencao'|'neutro', texto}.
+// Faixas usadas são heurísticas típicas de operação de distribuição de
+// combustível/frota dedicada — servem como ponto de partida pra discussão,
+// não como diagnóstico definitivo (deixado explícito no relatório).
+function _dashGerarOpiniaoOperacao(k) {
+  const itens = [];
+  // Ocupação Média
+  if (k.ocupMedia != null) {
+    if (k.ocupMedia < 60) {
+      itens.push({ tipo: 'atencao', texto: `Ocupação média de ${k.ocupMedia}% está abaixo da faixa saudável (60–90%) — a frota está rodando com bastante espaço livre nos veículos. Vale avaliar consolidar viagens ou repensar o dimensionamento da frota alocada.` });
+    } else if (k.ocupMedia > 90) {
+      itens.push({ tipo: 'atencao', texto: `Ocupação média de ${k.ocupMedia}% está muito próxima do limite — pouca margem pra absorver pedidos de última hora ou imprevistos (avaria, atraso). Risco de gargalo se a demanda crescer um pouco mais.` });
+    } else {
+      itens.push({ tipo: 'positivo', texto: `Ocupação média de ${k.ocupMedia}% está numa faixa saudável, equilibrando bom aproveitamento de carga com folga pra imprevistos.` });
+    }
+  }
+  // Ociosidade da Frota
+  if (k.ociosidadePct != null) {
+    if (k.ociosidadePct > 50) {
+      itens.push({ tipo: 'atencao', texto: `Ociosidade da frota em ${k.ociosidadePct}% é alta — mais da metade da capacidade disponibilizada pelas transportadoras não foi usada no período. Oportunidade de renegociar disponibilização ou aumentar o volume roteirizado.` });
+    } else if (k.ociosidadePct > 25) {
+      itens.push({ tipo: 'neutro', texto: `Ociosidade da frota em ${k.ociosidadePct}% é moderada — alguma folga na frota, o que é esperado pra absorver picos de demanda, mas vale acompanhar se a tendência é de alta.` });
+    } else {
+      itens.push({ tipo: 'positivo', texto: `Ociosidade da frota baixa (${k.ociosidadePct}%) — a capacidade disponibilizada está sendo bem aproveitada.` });
+    }
+  }
+  // Consumo de Jornada
+  if (k.jornadaPct != null) {
+    if (k.jornadaPct > 90) {
+      itens.push({ tipo: 'atencao', texto: `Consumo de jornada em ${k.jornadaPct}% está no limite — risco real de estouro de jornada dos motoristas e possíveis atrasos em cascata. Vale revisar a distribuição de viagens por veículo/motorista.` });
+    } else if (k.jornadaPct < 50) {
+      itens.push({ tipo: 'neutro', texto: `Consumo de jornada relativamente baixo (${k.jornadaPct}%) — os motoristas têm bastante margem de horário disponível no período.` });
+    } else {
+      itens.push({ tipo: 'positivo', texto: `Consumo de jornada em ${k.jornadaPct}% está numa faixa confortável, sem sinal de pressão sobre o horário dos motoristas.` });
+    }
+  }
+  // % Rotas Pedagiadas + tempo de lançamento
+  if (k.percPedagiadas != null) {
+    const pct = Math.round(k.percPedagiadas);
+    if (pct > 70) {
+      itens.push({ tipo: 'neutro', texto: `${pct}% das viagens passam por pedágio (estimativa) — exposição alta a esse custo variável; vale conferir se todas as rotas realmente precisam desse trajeto.` });
+    }
+  }
+  // Drop médio (eficiência de viagem)
+  if (k.dropEntregas != null) {
+    if (k.dropEntregas < 1.5) {
+      itens.push({ tipo: 'neutro', texto: `Média de ${k.dropEntregas.toFixed(1)} entregas por viagem é baixa — muitas viagens estão sendo feitas pra pouca entrega. Pode valer revisar a lógica de agrupamento de pedidos na roteirização.` });
+    } else if (k.dropEntregas >= 2.5) {
+      itens.push({ tipo: 'positivo', texto: `Média de ${k.dropEntregas.toFixed(1)} entregas por viagem indica boa consolidação de pedidos — poucas viagens "desperdiçadas" com carga pequena.` });
+    }
+  }
+  if (!itens.length) {
+    itens.push({ tipo: 'neutro', texto: 'Não há dados suficientes no período/filtro selecionado pra gerar uma análise automática.' });
+  }
+  return itens;
+}
+
+const _DASH_OPINIAO_COR = { positivo: '#15803D', atencao: '#B45309', neutro: '#4B5563' };
+const _DASH_OPINIAO_ICONE = { positivo: '✅', atencao: '⚠️', neutro: 'ℹ️' };
+
+// Monta as linhas do card de KPI, reaproveitando os mesmos valores já
+// calculados por dashRender (_dashUltimosKPIs) — sem refazer nenhuma conta.
+function _dashKpisParaRelatorio() {
+  const k = window._dashUltimosKPIs;
+  const fmtNum = (n, casas = 0) => (n == null ? '-' : n.toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas }));
+  return [
+    { label: 'Viagens', valor: fmtNum(k.viagens) },
+    { label: 'Entregas', valor: fmtNum(k.entregas) },
+    { label: 'Volume', valor: k.volume != null ? `${fmtNum(k.volume, 1)} m³` : '-' },
+    { label: 'Ocupação Média', valor: k.ocupMedia != null ? `${k.ocupMedia}%` : '-' },
+    { label: 'Km Total', valor: k.km != null ? `${fmtNum(Math.round(k.km))} km` : '-' },
+    { label: 'Clientes Atendidos', valor: fmtNum(k.clientes) },
+    { label: 'Consumo de Jornada', valor: k.jornadaPct != null ? `${k.jornadaPct}% (${_dashFmtHoras(k.jornadaUsadaMin || 0)} / ${_dashFmtHoras(k.jornadaDispMin || 0)})` : '-' },
+    { label: 'Ociosidade da Frota', valor: k.ociosidadePct != null ? `${k.ociosidadePct}% (${fmtNum(k.ociosidadeUsados)} usados / ${fmtNum(k.ociosidadeDisponibilizados)} disponibilizados)` : '-' },
+    { label: 'Drop Médio (Entregas/Viagem)', valor: k.dropEntregas != null ? fmtNum(k.dropEntregas, 1) : '-' },
+    { label: 'Drop Médio (Volume/Entrega)', valor: k.dropVolume != null ? `${fmtNum(k.dropVolume, 1)} m³` : '-' },
+    { label: '% Rotas Pedagiadas (est.)', valor: k.percPedagiadas != null ? `${Math.round(k.percPedagiadas)}%` : '-' },
+    { label: 'Tempo c/ Lançamento Pedágio', valor: k.tempoPedagioMin != null && k.tempoPedagioMin > 0 ? _dashFmtHoras(k.tempoPedagioMin) : '0h' },
+  ];
+}
+
+// ── HTML pro PDF/PNG (tema escuro, reaproveita .op-bloco/.op-table) ────────
+function _dashMontarHtmlResumoOperacao() {
+  const kpis = _dashKpisParaRelatorio();
+  const opiniao = _dashGerarOpiniaoOperacao(window._dashUltimosKPIs);
+  const filtroStr = _dashDescricaoFiltroAtual();
+  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  const kpisHtml = kpis.map(kp => `
+    <div style="background:var(--bg);border:1px solid var(--border-dk);border-radius:10px;padding:12px 14px;">
+      <div style="font-size:9.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">${kp.label}</div>
+      <div style="font-size:17px;font-weight:800;color:var(--text);">${kp.valor}</div>
+    </div>`).join('');
+  const rankingHtml = (_dashUltimoRanking || []).slice(0, 5).map((t, i) => `
+    <tr>
+      <td style="padding:6px 8px;font-weight:700;">#${i + 1}</td>
+      <td style="padding:6px 8px;">${t.transportadora}</td>
+      <td style="padding:6px 8px;text-align:right;font-weight:700;">${t.volume.toFixed(1)} m³</td>
+      <td style="padding:6px 8px;text-align:right;">${Math.round(t.km || 0).toLocaleString('pt-BR')} km</td>
+      <td style="padding:6px 8px;text-align:right;">${t.viagens} viag.</td>
+    </tr>`).join('') || `<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--text-3);">Sem dados no filtro atual.</td></tr>`;
+  const produtosHtml = (_dashUltimosProdutos || []).slice(0, 5).map((p, i) => `
+    <tr>
+      <td style="padding:6px 8px;font-weight:700;">#${i + 1}</td>
+      <td style="padding:6px 8px;">${p.nome}</td>
+      <td style="padding:6px 8px;text-align:right;font-weight:700;">${p.volume.toFixed(1)} m³</td>
+    </tr>`).join('') || `<tr><td colspan="3" style="padding:12px;text-align:center;color:var(--text-3);">Sem dados no filtro atual.</td></tr>`;
+  const opiniaoHtml = opiniao.map(o => `
+    <div style="display:flex;gap:8px;padding:9px 0;border-bottom:1px solid var(--border-dk);">
+      <div style="font-size:14px;">${_DASH_OPINIAO_ICONE[o.tipo]}</div>
+      <div style="font-size:12.5px;color:${_DASH_OPINIAO_COR[o.tipo]};line-height:1.5;">${o.texto}</div>
+    </div>`).join('');
+  return `
+    <div class="op-bloco" data-bloco-id="resumo-operacao" style="max-width:100%;">
+      <div class="op-head">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div style="display:flex;align-items:baseline;gap:10px;">
+            <span style="font-family:var(--font-cond);font-weight:800;font-size:20px;color:var(--pet-green);letter-spacing:.02em;">NEXTA</span>
+            <span style="font-size:10px;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;">Resumo da Operação</span>
+          </div>
+          <div style="text-align:right;font-size:11px;color:var(--text-3);">
+            <div>Gerado em ${geradoEm}</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:4px;"><b style="color:var(--text);">Filtro:</b> ${filtroStr}</div>
+      </div>
+      <div style="padding:0 16px 16px;">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 20px;">${kpisHtml}</div>
+
+        <div style="font-family:var(--font-cond);font-weight:700;font-size:14px;color:var(--text);margin-bottom:8px;">🏆 Ranking de Transportadoras (top 5 por volume)</div>
+        <table class="op-table" style="margin-bottom:20px;">
+          <colgroup><col style="width:40px"/><col style="width:*"/><col style="width:110px"/><col style="width:100px"/><col style="width:90px"/></colgroup>
+          <thead><tr><th>#</th><th>Transportadora</th><th style="text-align:right;">Volume</th><th style="text-align:right;">Km</th><th style="text-align:right;">Viagens</th></tr></thead>
+          <tbody>${rankingHtml}</tbody>
+        </table>
+
+        <div style="font-family:var(--font-cond);font-weight:700;font-size:14px;color:var(--text);margin-bottom:8px;">📦 Volume por Produto (top 5)</div>
+        <table class="op-table" style="margin-bottom:20px;">
+          <colgroup><col style="width:40px"/><col style="width:*"/><col style="width:120px"/></colgroup>
+          <thead><tr><th>#</th><th>Produto</th><th style="text-align:right;">Volume</th></tr></thead>
+          <tbody>${produtosHtml}</tbody>
+        </table>
+
+        <div style="font-family:var(--font-cond);font-weight:700;font-size:14px;color:var(--text);margin-bottom:2px;">🔍 Análise Automática da Operação</div>
+        <div style="font-size:10px;color:var(--text-3);margin-bottom:8px;">Leitura automática baseada em faixas típicas do setor — serve como ponto de partida, não substitui a análise de quem conhece a operação de perto.</div>
+        ${opiniaoHtml}
+      </div>
+    </div>`;
+}
+
+// ── HTML pro Word (visual neutro/profissional, igual ao e-mail da Passagem de Turno) ──
+function _dashMontarHtmlResumoOperacaoWord() {
+  const kpis = _dashKpisParaRelatorio();
+  const opiniao = _dashGerarOpiniaoOperacao(window._dashUltimosKPIs);
+  const filtroStr = _dashDescricaoFiltroAtual();
+  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  const F = "font-family:Arial,Helvetica,sans-serif;";
+  const th = `${F}background:#F3F4F6;border:1px solid #D1D5DB;padding:6px 8px;text-align:left;font-size:11px;text-transform:uppercase;color:#4B5563;`;
+  const td = `${F}border:1px solid #D1D5DB;padding:6px 8px;font-size:12.5px;color:#111827;`;
+  const kpisHtml = kpis.map(kp => `
+    <tr>
+      <td style="${td}font-weight:bold;width:60%;">${kp.label}</td>
+      <td style="${td}text-align:right;">${kp.valor}</td>
+    </tr>`).join('');
+  const rankingHtml = (_dashUltimoRanking || []).slice(0, 5).map((t, i) => `
+    <tr><td style="${td}">#${i + 1}</td><td style="${td}">${t.transportadora}</td><td style="${td}text-align:right;">${t.volume.toFixed(1)} m³</td><td style="${td}text-align:right;">${Math.round(t.km || 0).toLocaleString('pt-BR')} km</td><td style="${td}text-align:right;">${t.viagens}</td></tr>`).join('')
+    || `<tr><td colspan="5" style="${td}text-align:center;color:#6B7280;">Sem dados no filtro atual.</td></tr>`;
+  const produtosHtml = (_dashUltimosProdutos || []).slice(0, 5).map((p, i) => `
+    <tr><td style="${td}">#${i + 1}</td><td style="${td}">${p.nome}</td><td style="${td}text-align:right;">${p.volume.toFixed(1)} m³</td></tr>`).join('')
+    || `<tr><td colspan="3" style="${td}text-align:center;color:#6B7280;">Sem dados no filtro atual.</td></tr>`;
+  const opiniaoCorWord = { positivo: '#15803D', atencao: '#B45309', neutro: '#4B5563' };
+  const opiniaoHtml = opiniao.map(o => `<li style="${F}color:${opiniaoCorWord[o.tipo]};margin-bottom:8px;line-height:1.5;">${_DASH_OPINIAO_ICONE[o.tipo]} ${o.texto}</li>`).join('');
+  return `
+    <div style="${F}color:#111827;max-width:1000px;">
+      <h1 style="${F}font-size:22px;margin:0 0 2px;">NEXTA — Resumo da Operação</h1>
+      <div style="${F}font-size:12.5px;color:#374151;margin-bottom:2px;"><b>Filtro:</b> ${filtroStr}</div>
+      <div style="${F}font-size:11px;color:#6B7280;margin-bottom:16px;">Gerado em ${geradoEm}</div>
+
+      <h2 style="${F}font-size:16px;margin:18px 0 8px;">Indicadores</h2>
+      <table style="${F}border-collapse:collapse;width:100%;margin-bottom:18px;"><tbody>${kpisHtml}</tbody></table>
+
+      <h2 style="${F}font-size:16px;margin:18px 0 8px;">Ranking de Transportadoras (top 5 por volume)</h2>
+      <table style="${F}border-collapse:collapse;width:100%;margin-bottom:18px;">
+        <tr><th style="${th}">#</th><th style="${th}">Transportadora</th><th style="${th}">Volume</th><th style="${th}">Km</th><th style="${th}">Viagens</th></tr>
+        ${rankingHtml}
+      </table>
+
+      <h2 style="${F}font-size:16px;margin:18px 0 8px;">Volume por Produto (top 5)</h2>
+      <table style="${F}border-collapse:collapse;width:100%;margin-bottom:18px;">
+        <tr><th style="${th}">#</th><th style="${th}">Produto</th><th style="${th}">Volume</th></tr>
+        ${produtosHtml}
+      </table>
+
+      <h2 style="${F}font-size:16px;margin:18px 0 8px;">Análise Automática da Operação</h2>
+      <p style="${F}font-size:10.5px;color:#6B7280;margin:0 0 8px;">Leitura automática baseada em faixas típicas do setor — serve como ponto de partida, não substitui a análise de quem conhece a operação de perto.</p>
+      <ul style="${F}padding-left:18px;margin:0;">${opiniaoHtml}</ul>
+    </div>`;
+}
+
+// Gera o arquivo .doc (HTML com namespace do Word — abre nativamente no
+// Word, sem precisar de biblioteca externa nenhuma pra montar um .docx de
+// verdade).
+function _dashBaixarComoWord(htmlConteudo, nomeArquivo) {
+  const htmlCompleto = `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8"><title>${nomeArquivo}</title>
+<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
+</head>
+<body>${htmlConteudo}</body></html>`;
+  const blob = new Blob(['\ufeff', htmlCompleto], { type: 'application/msword' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${nomeArquivo}.doc`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function dashGerarResumoOperacao(formato) {
+  try {
+    if (!window._dashUltimosKPIs || window._dashUltimosKPIs.viagens == null) {
+      showToast('Carregue um período no Dashboard primeiro.', false);
+      return;
+    }
+    const agora = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const nomeArq = `Resumo_Operacao_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+
+    if (formato === 'word') {
+      _dashBaixarComoWord(_dashMontarHtmlResumoOperacaoWord(), nomeArq);
+      return;
+    }
+
+    // pdf / png: usa as mesmas funções genéricas de exportação já existentes
+    // (definidas em nexta-frota-roteirizador.js, mas globais na página).
+    if (typeof window.exportarBlocoPDF !== 'function' || typeof window.exportarBlocoPNG !== 'function') {
+      showToast('Exportação indisponível — recarregue a página.', false);
+      return;
+    }
+    const html = _dashMontarHtmlResumoOperacao();
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap);
+    try {
+      if (formato === 'pdf') await window.exportarBlocoPDF('resumo-operacao', nomeArq, null, 1300);
+      else await window.exportarBlocoPNG('resumo-operacao', nomeArq, null, 1300);
+    } finally {
+      document.body.removeChild(wrap);
+    }
+  } catch (e) {
+    // Antes, qualquer erro aqui dentro (função async, sem .catch() de quem
+    // chama) falhava em silêncio total — o clique não fazia nada visível.
+    // Agora aparece um toast com o motivo real, e o erro completo vai pro
+    // Console (F12) pra eu conseguir diagnosticar.
+    console.error('[dashGerarResumoOperacao] falha ao gerar relatório:', e);
+    showToast('Erro ao gerar relatório: ' + (e.message || 'falha desconhecida'), false);
+  }
+}
+window.dashGerarResumoOperacao = dashGerarResumoOperacao;
+
+function dashToggleMenuRelatorios() {
+  const menu = document.getElementById('dash-relatorios-menu');
+  if (!menu) return;
+  menu.style.display = menu.style.display !== 'none' ? 'none' : 'block';
+}
+document.addEventListener('click', function(e) {
+  const menu = document.getElementById('dash-relatorios-menu');
+  const btn  = document.getElementById('dash-relatorios-btn');
+  if (menu && menu.style.display !== 'none' && !menu.contains(e.target) && !btn?.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
+window.dashToggleMenuRelatorios = dashToggleMenuRelatorios;
+
 })(); // fim IIFE dashboard
 // A chave da OpenRouteService NÃO fica mais aqui — antes ficava exposta
 // literalmente no código-fonte (qualquer um com DevTools conseguia copiar
@@ -4223,307 +4525,3 @@ window.dashDesfazerKmRealAuto = async function() {
   alert(`Desfeito: ${viagensRevertidas} viagem(ns) revertida(s) em ${arquivosAlterados} arquivo(s). Km Total volta pra estimativa por linha reta.`);
   if (typeof window.dashSincronizar === 'function') window.dashSincronizar();
 };
-
-
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// RELATÓRIO: RESUMO DA OPERAÇÃO
-// ══════════════════════════════════════════════════════════════════════════════
-// Botão "📊 Relatórios" (mesmo padrão do "⚙️ Ferramentas") → "Resumo Operação"
-// → PDF / PNG / Word. Traz todos os KPIs do topo do Dashboard, o Ranking de
-// Transportadoras e o Volume por Produto, respeitando os MESMOS filtros
-// ativos (período, Clientes, Operação/Cidade, Segmento) — reaproveita
-// _dashUltimosKPIs/_dashUltimoRanking/_dashUltimosProdutos, já calculados
-// pelo render normal do Dashboard, em vez de reprocessar os snapshots do
-// zero. Inclui também uma análise automática (heurística, baseada em faixas
-// típicas do setor) comentando os números — deixado claro no relatório que é
-// uma leitura automática, não uma auditoria.
-
-// Descreve os filtros atualmente ativos, pro cabeçalho do relatório —
-// usa _dashPeriodoAtualDescricao (sempre em sincronia com o que está
-// carregado de verdade, diferente do rótulo do dropdown sozinho).
-function _dashDescricaoFiltroAtual() {
-  const partes = [];
-  partes.push(_dashPeriodoAtualDescricao || 'Período não identificado');
-  if (_dashClientesSelecionados) partes.push(`${_dashClientesSelecionados.size} cliente${_dashClientesSelecionados.size === 1 ? '' : 's'} selecionado${_dashClientesSelecionados.size === 1 ? '' : 's'}`);
-  if (_dashCidadesSelecionadas) partes.push(`${_dashCidadesSelecionadas.size} operação(ões) selecionada(s)`);
-  if (_dashSegmentosSelecionados) partes.push(`Segmento: ${[..._dashSegmentosSelecionados].join(', ')}`);
-  return partes.join(' · ');
-}
-
-// Gera a análise automática — cada item tem {tipo: 'positivo'|'atencao'|'neutro', texto}.
-// Faixas usadas são heurísticas típicas de operação de distribuição de
-// combustível/frota dedicada — servem como ponto de partida pra discussão,
-// não como diagnóstico definitivo (deixado explícito no relatório).
-function _dashGerarOpiniaoOperacao(k) {
-  const itens = [];
-  // Ocupação Média
-  if (k.ocupMedia != null) {
-    if (k.ocupMedia < 60) {
-      itens.push({ tipo: 'atencao', texto: `Ocupação média de ${k.ocupMedia}% está abaixo da faixa saudável (60–90%) — a frota está rodando com bastante espaço livre nos veículos. Vale avaliar consolidar viagens ou repensar o dimensionamento da frota alocada.` });
-    } else if (k.ocupMedia > 90) {
-      itens.push({ tipo: 'atencao', texto: `Ocupação média de ${k.ocupMedia}% está muito próxima do limite — pouca margem pra absorver pedidos de última hora ou imprevistos (avaria, atraso). Risco de gargalo se a demanda crescer um pouco mais.` });
-    } else {
-      itens.push({ tipo: 'positivo', texto: `Ocupação média de ${k.ocupMedia}% está numa faixa saudável, equilibrando bom aproveitamento de carga com folga pra imprevistos.` });
-    }
-  }
-  // Ociosidade da Frota
-  if (k.ociosidadePct != null) {
-    if (k.ociosidadePct > 50) {
-      itens.push({ tipo: 'atencao', texto: `Ociosidade da frota em ${k.ociosidadePct}% é alta — mais da metade da capacidade disponibilizada pelas transportadoras não foi usada no período. Oportunidade de renegociar disponibilização ou aumentar o volume roteirizado.` });
-    } else if (k.ociosidadePct > 25) {
-      itens.push({ tipo: 'neutro', texto: `Ociosidade da frota em ${k.ociosidadePct}% é moderada — alguma folga na frota, o que é esperado pra absorver picos de demanda, mas vale acompanhar se a tendência é de alta.` });
-    } else {
-      itens.push({ tipo: 'positivo', texto: `Ociosidade da frota baixa (${k.ociosidadePct}%) — a capacidade disponibilizada está sendo bem aproveitada.` });
-    }
-  }
-  // Consumo de Jornada
-  if (k.jornadaPct != null) {
-    if (k.jornadaPct > 90) {
-      itens.push({ tipo: 'atencao', texto: `Consumo de jornada em ${k.jornadaPct}% está no limite — risco real de estouro de jornada dos motoristas e possíveis atrasos em cascata. Vale revisar a distribuição de viagens por veículo/motorista.` });
-    } else if (k.jornadaPct < 50) {
-      itens.push({ tipo: 'neutro', texto: `Consumo de jornada relativamente baixo (${k.jornadaPct}%) — os motoristas têm bastante margem de horário disponível no período.` });
-    } else {
-      itens.push({ tipo: 'positivo', texto: `Consumo de jornada em ${k.jornadaPct}% está numa faixa confortável, sem sinal de pressão sobre o horário dos motoristas.` });
-    }
-  }
-  // % Rotas Pedagiadas + tempo de lançamento
-  if (k.percPedagiadas != null) {
-    const pct = Math.round(k.percPedagiadas);
-    if (pct > 70) {
-      itens.push({ tipo: 'neutro', texto: `${pct}% das viagens passam por pedágio (estimativa) — exposição alta a esse custo variável; vale conferir se todas as rotas realmente precisam desse trajeto.` });
-    }
-  }
-  // Drop médio (eficiência de viagem)
-  if (k.dropEntregas != null) {
-    if (k.dropEntregas < 1.5) {
-      itens.push({ tipo: 'neutro', texto: `Média de ${k.dropEntregas.toFixed(1)} entregas por viagem é baixa — muitas viagens estão sendo feitas pra pouca entrega. Pode valer revisar a lógica de agrupamento de pedidos na roteirização.` });
-    } else if (k.dropEntregas >= 2.5) {
-      itens.push({ tipo: 'positivo', texto: `Média de ${k.dropEntregas.toFixed(1)} entregas por viagem indica boa consolidação de pedidos — poucas viagens "desperdiçadas" com carga pequena.` });
-    }
-  }
-  if (!itens.length) {
-    itens.push({ tipo: 'neutro', texto: 'Não há dados suficientes no período/filtro selecionado pra gerar uma análise automática.' });
-  }
-  return itens;
-}
-
-const _DASH_OPINIAO_COR = { positivo: '#15803D', atencao: '#B45309', neutro: '#4B5563' };
-const _DASH_OPINIAO_ICONE = { positivo: '✅', atencao: '⚠️', neutro: 'ℹ️' };
-
-// Monta as linhas do card de KPI, reaproveitando os mesmos valores já
-// calculados por dashRender (_dashUltimosKPIs) — sem refazer nenhuma conta.
-function _dashKpisParaRelatorio() {
-  const k = window._dashUltimosKPIs;
-  const fmtNum = (n, casas = 0) => (n == null ? '-' : n.toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas }));
-  return [
-    { label: 'Viagens', valor: fmtNum(k.viagens) },
-    { label: 'Entregas', valor: fmtNum(k.entregas) },
-    { label: 'Volume', valor: k.volume != null ? `${fmtNum(k.volume, 1)} m³` : '-' },
-    { label: 'Ocupação Média', valor: k.ocupMedia != null ? `${k.ocupMedia}%` : '-' },
-    { label: 'Km Total', valor: k.km != null ? `${fmtNum(Math.round(k.km))} km` : '-' },
-    { label: 'Clientes Atendidos', valor: fmtNum(k.clientes) },
-    { label: 'Consumo de Jornada', valor: k.jornadaPct != null ? `${k.jornadaPct}% (${_dashFmtHoras(k.jornadaUsadaMin || 0)} / ${_dashFmtHoras(k.jornadaDispMin || 0)})` : '-' },
-    { label: 'Ociosidade da Frota', valor: k.ociosidadePct != null ? `${k.ociosidadePct}% (${fmtNum(k.ociosidadeUsados)} usados / ${fmtNum(k.ociosidadeDisponibilizados)} disponibilizados)` : '-' },
-    { label: 'Drop Médio (Entregas/Viagem)', valor: k.dropEntregas != null ? fmtNum(k.dropEntregas, 1) : '-' },
-    { label: 'Drop Médio (Volume/Entrega)', valor: k.dropVolume != null ? `${fmtNum(k.dropVolume, 1)} m³` : '-' },
-    { label: '% Rotas Pedagiadas (est.)', valor: k.percPedagiadas != null ? `${Math.round(k.percPedagiadas)}%` : '-' },
-    { label: 'Tempo c/ Lançamento Pedágio', valor: k.tempoPedagioMin != null && k.tempoPedagioMin > 0 ? _dashFmtHoras(k.tempoPedagioMin) : '0h' },
-  ];
-}
-
-// ── HTML pro PDF/PNG (tema escuro, reaproveita .op-bloco/.op-table) ────────
-function _dashMontarHtmlResumoOperacao() {
-  const kpis = _dashKpisParaRelatorio();
-  const opiniao = _dashGerarOpiniaoOperacao(window._dashUltimosKPIs);
-  const filtroStr = _dashDescricaoFiltroAtual();
-  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
-  const kpisHtml = kpis.map(kp => `
-    <div style="background:var(--bg);border:1px solid var(--border-dk);border-radius:10px;padding:12px 14px;">
-      <div style="font-size:9.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">${kp.label}</div>
-      <div style="font-size:17px;font-weight:800;color:var(--text);">${kp.valor}</div>
-    </div>`).join('');
-  const rankingHtml = (_dashUltimoRanking || []).slice(0, 5).map((t, i) => `
-    <tr>
-      <td style="padding:6px 8px;font-weight:700;">#${i + 1}</td>
-      <td style="padding:6px 8px;">${t.transportadora}</td>
-      <td style="padding:6px 8px;text-align:right;font-weight:700;">${t.volume.toFixed(1)} m³</td>
-      <td style="padding:6px 8px;text-align:right;">${Math.round(t.km || 0).toLocaleString('pt-BR')} km</td>
-      <td style="padding:6px 8px;text-align:right;">${t.viagens} viag.</td>
-    </tr>`).join('') || `<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--text-3);">Sem dados no filtro atual.</td></tr>`;
-  const produtosHtml = (_dashUltimosProdutos || []).slice(0, 5).map((p, i) => `
-    <tr>
-      <td style="padding:6px 8px;font-weight:700;">#${i + 1}</td>
-      <td style="padding:6px 8px;">${p.nome}</td>
-      <td style="padding:6px 8px;text-align:right;font-weight:700;">${p.volume.toFixed(1)} m³</td>
-    </tr>`).join('') || `<tr><td colspan="3" style="padding:12px;text-align:center;color:var(--text-3);">Sem dados no filtro atual.</td></tr>`;
-  const opiniaoHtml = opiniao.map(o => `
-    <div style="display:flex;gap:8px;padding:9px 0;border-bottom:1px solid var(--border-dk);">
-      <div style="font-size:14px;">${_DASH_OPINIAO_ICONE[o.tipo]}</div>
-      <div style="font-size:12.5px;color:${_DASH_OPINIAO_COR[o.tipo]};line-height:1.5;">${o.texto}</div>
-    </div>`).join('');
-  return `
-    <div class="op-bloco" data-bloco-id="resumo-operacao" style="max-width:100%;">
-      <div class="op-head">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <div style="display:flex;align-items:baseline;gap:10px;">
-            <span style="font-family:var(--font-cond);font-weight:800;font-size:20px;color:var(--pet-green);letter-spacing:.02em;">NEXTA</span>
-            <span style="font-size:10px;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;">Resumo da Operação</span>
-          </div>
-          <div style="text-align:right;font-size:11px;color:var(--text-3);">
-            <div>Gerado em ${geradoEm}</div>
-          </div>
-        </div>
-        <div style="font-size:11px;color:var(--text-3);margin-top:4px;"><b style="color:var(--text);">Filtro:</b> ${filtroStr}</div>
-      </div>
-      <div style="padding:0 16px 16px;">
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 20px;">${kpisHtml}</div>
-
-        <div style="font-family:var(--font-cond);font-weight:700;font-size:14px;color:var(--text);margin-bottom:8px;">🏆 Ranking de Transportadoras (top 5 por volume)</div>
-        <table class="op-table" style="margin-bottom:20px;">
-          <colgroup><col style="width:40px"/><col style="width:*"/><col style="width:110px"/><col style="width:100px"/><col style="width:90px"/></colgroup>
-          <thead><tr><th>#</th><th>Transportadora</th><th style="text-align:right;">Volume</th><th style="text-align:right;">Km</th><th style="text-align:right;">Viagens</th></tr></thead>
-          <tbody>${rankingHtml}</tbody>
-        </table>
-
-        <div style="font-family:var(--font-cond);font-weight:700;font-size:14px;color:var(--text);margin-bottom:8px;">📦 Volume por Produto (top 5)</div>
-        <table class="op-table" style="margin-bottom:20px;">
-          <colgroup><col style="width:40px"/><col style="width:*"/><col style="width:120px"/></colgroup>
-          <thead><tr><th>#</th><th>Produto</th><th style="text-align:right;">Volume</th></tr></thead>
-          <tbody>${produtosHtml}</tbody>
-        </table>
-
-        <div style="font-family:var(--font-cond);font-weight:700;font-size:14px;color:var(--text);margin-bottom:2px;">🔍 Análise Automática da Operação</div>
-        <div style="font-size:10px;color:var(--text-3);margin-bottom:8px;">Leitura automática baseada em faixas típicas do setor — serve como ponto de partida, não substitui a análise de quem conhece a operação de perto.</div>
-        ${opiniaoHtml}
-      </div>
-    </div>`;
-}
-
-// ── HTML pro Word (visual neutro/profissional, igual ao e-mail da Passagem de Turno) ──
-function _dashMontarHtmlResumoOperacaoWord() {
-  const kpis = _dashKpisParaRelatorio();
-  const opiniao = _dashGerarOpiniaoOperacao(window._dashUltimosKPIs);
-  const filtroStr = _dashDescricaoFiltroAtual();
-  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
-  const F = "font-family:Arial,Helvetica,sans-serif;";
-  const th = `${F}background:#F3F4F6;border:1px solid #D1D5DB;padding:6px 8px;text-align:left;font-size:11px;text-transform:uppercase;color:#4B5563;`;
-  const td = `${F}border:1px solid #D1D5DB;padding:6px 8px;font-size:12.5px;color:#111827;`;
-  const kpisHtml = kpis.map(kp => `
-    <tr>
-      <td style="${td}font-weight:bold;width:60%;">${kp.label}</td>
-      <td style="${td}text-align:right;">${kp.valor}</td>
-    </tr>`).join('');
-  const rankingHtml = (_dashUltimoRanking || []).slice(0, 5).map((t, i) => `
-    <tr><td style="${td}">#${i + 1}</td><td style="${td}">${t.transportadora}</td><td style="${td}text-align:right;">${t.volume.toFixed(1)} m³</td><td style="${td}text-align:right;">${Math.round(t.km || 0).toLocaleString('pt-BR')} km</td><td style="${td}text-align:right;">${t.viagens}</td></tr>`).join('')
-    || `<tr><td colspan="5" style="${td}text-align:center;color:#6B7280;">Sem dados no filtro atual.</td></tr>`;
-  const produtosHtml = (_dashUltimosProdutos || []).slice(0, 5).map((p, i) => `
-    <tr><td style="${td}">#${i + 1}</td><td style="${td}">${p.nome}</td><td style="${td}text-align:right;">${p.volume.toFixed(1)} m³</td></tr>`).join('')
-    || `<tr><td colspan="3" style="${td}text-align:center;color:#6B7280;">Sem dados no filtro atual.</td></tr>`;
-  const opiniaoCorWord = { positivo: '#15803D', atencao: '#B45309', neutro: '#4B5563' };
-  const opiniaoHtml = opiniao.map(o => `<li style="${F}color:${opiniaoCorWord[o.tipo]};margin-bottom:8px;line-height:1.5;">${_DASH_OPINIAO_ICONE[o.tipo]} ${o.texto}</li>`).join('');
-  return `
-    <div style="${F}color:#111827;max-width:1000px;">
-      <h1 style="${F}font-size:22px;margin:0 0 2px;">NEXTA — Resumo da Operação</h1>
-      <div style="${F}font-size:12.5px;color:#374151;margin-bottom:2px;"><b>Filtro:</b> ${filtroStr}</div>
-      <div style="${F}font-size:11px;color:#6B7280;margin-bottom:16px;">Gerado em ${geradoEm}</div>
-
-      <h2 style="${F}font-size:16px;margin:18px 0 8px;">Indicadores</h2>
-      <table style="${F}border-collapse:collapse;width:100%;margin-bottom:18px;"><tbody>${kpisHtml}</tbody></table>
-
-      <h2 style="${F}font-size:16px;margin:18px 0 8px;">Ranking de Transportadoras (top 5 por volume)</h2>
-      <table style="${F}border-collapse:collapse;width:100%;margin-bottom:18px;">
-        <tr><th style="${th}">#</th><th style="${th}">Transportadora</th><th style="${th}">Volume</th><th style="${th}">Km</th><th style="${th}">Viagens</th></tr>
-        ${rankingHtml}
-      </table>
-
-      <h2 style="${F}font-size:16px;margin:18px 0 8px;">Volume por Produto (top 5)</h2>
-      <table style="${F}border-collapse:collapse;width:100%;margin-bottom:18px;">
-        <tr><th style="${th}">#</th><th style="${th}">Produto</th><th style="${th}">Volume</th></tr>
-        ${produtosHtml}
-      </table>
-
-      <h2 style="${F}font-size:16px;margin:18px 0 8px;">Análise Automática da Operação</h2>
-      <p style="${F}font-size:10.5px;color:#6B7280;margin:0 0 8px;">Leitura automática baseada em faixas típicas do setor — serve como ponto de partida, não substitui a análise de quem conhece a operação de perto.</p>
-      <ul style="${F}padding-left:18px;margin:0;">${opiniaoHtml}</ul>
-    </div>`;
-}
-
-// Gera o arquivo .doc (HTML com namespace do Word — abre nativamente no
-// Word, sem precisar de biblioteca externa nenhuma pra montar um .docx de
-// verdade).
-function _dashBaixarComoWord(htmlConteudo, nomeArquivo) {
-  const htmlCompleto = `<!DOCTYPE html>
-<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-<head><meta charset="utf-8"><title>${nomeArquivo}</title>
-<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
-</head>
-<body>${htmlConteudo}</body></html>`;
-  const blob = new Blob(['\ufeff', htmlCompleto], { type: 'application/msword' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${nomeArquivo}.doc`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-async function dashGerarResumoOperacao(formato) {
-  try {
-    if (!window._dashUltimosKPIs || window._dashUltimosKPIs.viagens == null) {
-      showToast('Carregue um período no Dashboard primeiro.', false);
-      return;
-    }
-    const agora = new Date();
-    const p2 = n => String(n).padStart(2, '0');
-    const nomeArq = `Resumo_Operacao_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
-
-    if (formato === 'word') {
-      _dashBaixarComoWord(_dashMontarHtmlResumoOperacaoWord(), nomeArq);
-      return;
-    }
-
-    // pdf / png: usa as mesmas funções genéricas de exportação já existentes
-    // (definidas em nexta-frota-roteirizador.js, mas globais na página).
-    if (typeof window.exportarBlocoPDF !== 'function' || typeof window.exportarBlocoPNG !== 'function') {
-      showToast('Exportação indisponível — recarregue a página.', false);
-      return;
-    }
-    const html = _dashMontarHtmlResumoOperacao();
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
-    wrap.innerHTML = html;
-    document.body.appendChild(wrap);
-    try {
-      if (formato === 'pdf') await window.exportarBlocoPDF('resumo-operacao', nomeArq, null, 1300);
-      else await window.exportarBlocoPNG('resumo-operacao', nomeArq, null, 1300);
-    } finally {
-      document.body.removeChild(wrap);
-    }
-  } catch (e) {
-    // Antes, qualquer erro aqui dentro (função async, sem .catch() de quem
-    // chama) falhava em silêncio total — o clique não fazia nada visível.
-    // Agora aparece um toast com o motivo real, e o erro completo vai pro
-    // Console (F12) pra eu conseguir diagnosticar.
-    console.error('[dashGerarResumoOperacao] falha ao gerar relatório:', e);
-    showToast('Erro ao gerar relatório: ' + (e.message || 'falha desconhecida'), false);
-  }
-}
-window.dashGerarResumoOperacao = dashGerarResumoOperacao;
-
-function dashToggleMenuRelatorios() {
-  const menu = document.getElementById('dash-relatorios-menu');
-  if (!menu) return;
-  menu.style.display = menu.style.display !== 'none' ? 'none' : 'block';
-}
-document.addEventListener('click', function(e) {
-  const menu = document.getElementById('dash-relatorios-menu');
-  const btn  = document.getElementById('dash-relatorios-btn');
-  if (menu && menu.style.display !== 'none' && !menu.contains(e.target) && !btn?.contains(e.target)) {
-    menu.style.display = 'none';
-  }
-});
-window.dashToggleMenuRelatorios = dashToggleMenuRelatorios;
