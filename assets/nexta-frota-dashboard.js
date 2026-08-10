@@ -3876,11 +3876,33 @@ async function _dashColetarRotas() {
         const nomeBase = vi.terminalOrigem || v.terminal || '';
         const terminal = (terms || []).find(t => t.nome === nomeBase);
         const baseOrigem = (terminal?.cidade || nomeBase || '-').toString().toUpperCase();
-        const paradas = vi.paradas.map(p => ({
-          cidade: (p.pedido?.cidade || '-').toString().toUpperCase(),
-          estado: (p.pedido?.uf || '-').toString().toUpperCase(),
-          km: Math.round(p.distanciaKm || 0),
-        }));
+        // Ponto anterior pra calcular distância em linha reta quando falta o
+        // km real da rota — começa no terminal, depois vira a parada anterior.
+        let latAnterior = parseFloat(terminal?.lat);
+        let lonAnterior = parseFloat(terminal?.lon);
+        const paradas = vi.paradas.map(p => {
+          const cidade = (p.pedido?.cidade || '-').toString().toUpperCase();
+          const estado = (p.pedido?.uf || '').toString().toUpperCase();
+          // "OSASCO/SP", ou só "OSASCO" quando não há UF cadastrado.
+          const cidadeExibicao = estado ? `${cidade}/${estado}` : cidade;
+          let km = Math.round(p.distanciaKm || 0);
+          // Km 0 (ou ausente) geralmente é rota antiga salva antes do
+          // cálculo de km real, ou um trecho que nunca teve rota calculada
+          // de verdade — estima em linha reta (Haversine) a partir das
+          // coordenadas cadastradas, em vez de deixar 0 (que faz a rota
+          // parecer "grátis"/errada no relatório).
+          if (!km) {
+            const latP = parseFloat(p.pedido?.lat ?? p.lat);
+            const lonP = parseFloat(p.pedido?.lon ?? p.lon);
+            if (typeof NextaKm !== 'undefined' && !isNaN(latAnterior) && !isNaN(lonAnterior) && NextaKm.coordenadaValida(latP, lonP) && NextaKm.coordenadaValida(latAnterior, lonAnterior)) {
+              km = Math.round(NextaKm.haversineKm(latAnterior, lonAnterior, latP, lonP));
+            }
+          }
+          const latPFinal = parseFloat(p.pedido?.lat ?? p.lat);
+          const lonPFinal = parseFloat(p.pedido?.lon ?? p.lon);
+          if (!isNaN(latPFinal) && !isNaN(lonPFinal)) { latAnterior = latPFinal; lonAnterior = lonPFinal; }
+          return { cidadeExibicao, km };
+        });
         if (paradas.length) rotas.push({ baseOrigem, paradas });
       });
     });
@@ -3899,11 +3921,10 @@ async function _dashColetarRotas() {
 function _dashAgruparRotasUnicas(rotas) {
   const grupos = new Map();
   rotas.forEach(r => {
-    const cidades = r.paradas.map(p => p.cidade);
+    const cidades = r.paradas.map(p => p.cidadeExibicao);
     const chave = r.baseOrigem + '>' + cidades.join('>');
-    const estados = [...new Set(r.paradas.map(p => p.estado))].join('/');
     const kmTotal = r.paradas.reduce((s, p) => s + (p.km || 0), 0);
-    if (!grupos.has(chave)) grupos.set(chave, { baseOrigem: r.baseOrigem, cidades, estados, kmContagem: new Map() });
+    if (!grupos.has(chave)) grupos.set(chave, { baseOrigem: r.baseOrigem, cidades, kmContagem: new Map() });
     const g = grupos.get(chave);
     g.kmContagem.set(kmTotal, (g.kmContagem.get(kmTotal) || 0) + 1);
   });
@@ -3911,8 +3932,25 @@ function _dashAgruparRotasUnicas(rotas) {
     // Km mais frequente (moda) — empate resolvido pelo primeiro valor visto na ordem de inserção do Map.
     let kmModa = 0, maiorContagem = 0;
     g.kmContagem.forEach((contagem, km) => { if (contagem > maiorContagem) { maiorContagem = contagem; kmModa = km; } });
-    return { baseOrigem: g.baseOrigem, cidades: g.cidades, estados: g.estados, kmTotal: kmModa };
-  }).sort((a, b) => a.baseOrigem.localeCompare(b.baseOrigem) || a.cidades.join('>').localeCompare(b.cidades.join('>')));
+    return { baseOrigem: g.baseOrigem, cidades: g.cidades, kmTotal: kmModa };
+  }).sort((a, b) => {
+    // 1) Base Origem, alfabética
+    if (a.baseOrigem !== b.baseOrigem) return a.baseOrigem.localeCompare(b.baseOrigem);
+    // 2) Cidade Entrega 1 em diante — mas a partir da 2ª, rota "em branco"
+    // (ou seja, rota de cidade única, que já acabou ali) vem ANTES de uma
+    // rota que continua com mais uma cidade — assim as rotas de destino
+    // único ficam agrupadas logo no topo de cada base, antes das rotas
+    // multi-cidade que começam com a mesma 1ª cidade.
+    const maxLen = Math.max(a.cidades.length, b.cidades.length);
+    for (let i = 0; i < maxLen; i++) {
+      const ca = a.cidades[i] || '';
+      const cb = b.cidades[i] || '';
+      if (ca === cb) continue;
+      if (i > 0 && (ca === '' || cb === '')) return ca === '' ? -1 : 1;
+      return ca.localeCompare(cb);
+    }
+    return 0;
+  });
 }
 
 function _dashRotasParaLinhas(rotasBrutas) {
@@ -3920,11 +3958,11 @@ function _dashRotasParaLinhas(rotasBrutas) {
   const maxCidades = rotas.reduce((m, r) => Math.max(m, r.cidades.length), 1);
   const cabecalho = ['BASE ORIGEM'];
   for (let i = 1; i <= maxCidades; i++) cabecalho.push(`CIDADE ENTREGA ${i}`);
-  cabecalho.push('ESTADO', 'KM TOTAL');
+  cabecalho.push('KM TOTAL');
   const linhas = rotas.map(r => {
     const linha = [r.baseOrigem];
     for (let i = 0; i < maxCidades; i++) linha.push(r.cidades[i] || '');
-    linha.push(r.estados, r.kmTotal);
+    linha.push(r.kmTotal);
     return linha;
   });
   return { cabecalho, linhas, maxParadas: maxCidades };
