@@ -4082,8 +4082,9 @@ async function _dashCalcularKmRealDestinos(pares, onProgresso) {
 }
 
 function _dashDestinosParaLinhas(pares) {
-  const cabecalho = ['BASE ORIGEM', 'DESTINO', 'KM TOTAL'];
-  const linhas = pares.map(p => [p.baseOrigem, p.destino, p.kmTotal == null ? '-' : p.kmTotal]);
+  const cabecalho = ['BASE ORIGEM', 'DESTINO', 'KM TOTAL (IDA E VOLTA)'];
+  // Km dobrado — operação é sempre ida e volta (carrega no terminal, entrega, volta pra base).
+  const linhas = pares.map(p => [p.baseOrigem, p.destino, p.kmTotal == null ? '-' : p.kmTotal * 2]);
   return { cabecalho, linhas };
 }
 
@@ -4108,7 +4109,7 @@ async function dashGerarRelatorioRotasFretes(formato) {
     if (formato === 'xlsx') {
       if (typeof XLSX === 'undefined') { showToast('SheetJS não carregado.', false); return; }
       const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...linhas]);
-      ws['!cols'] = [{ wch: 22 }, { wch: 26 }, { wch: 10 }];
+      ws['!cols'] = [{ wch: 22 }, { wch: 26 }, { wch: 20 }];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Rotas - Fretes');
       XLSX.writeFile(wb, `${nomeArq}.xlsx`);
@@ -4297,13 +4298,16 @@ function _dashRotasAgrupadasParaLinhas(rotas) {
   const maxCidades = rotas.reduce((m, r) => Math.max(m, r.cidades.length), 1);
   const cabecalho = ['BASE ORIGEM'];
   for (let i = 1; i <= maxCidades; i++) cabecalho.push(`CIDADE ENTREGA ${i}`);
-  cabecalho.push('KM TOTAL');
+  cabecalho.push('KM TOTAL (IDA E VOLTA)');
   const linhas = rotas.map(r => {
     const linha = [r.baseOrigem];
     // Cidades repetidas consecutivas já vêm colapsadas desde a coleta (ver
     // _dashColetarRotas) — aqui é só listar na ordem, sem buraco no meio.
     for (let i = 0; i < maxCidades; i++) linha.push(r.cidades[i] || '');
-    linha.push(r.kmTotal == null ? '-' : r.kmTotal);
+    // Km TOTAL dobrado — a operação é sempre ida e volta (o veículo carrega
+    // no terminal, entrega, e volta pra base), então o km relevante pra
+    // gestão é o ciclo completo, não só o trecho de ida.
+    linha.push(r.kmTotal == null ? '-' : r.kmTotal * 2);
     return linha;
   });
   return { cabecalho, linhas, maxParadas: maxCidades };
@@ -4380,7 +4384,7 @@ async function dashGerarRelatorioRotas(formato) {
     if (formato === 'xlsx') {
       if (typeof XLSX === 'undefined') { showToast('SheetJS não carregado.', false); return; }
       const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...linhas]);
-      ws['!cols'] = cabecalho.map((h, i) => ({ wch: i === 0 ? 22 : (h.startsWith('Cidade') ? 24 : h.startsWith('Estado') ? 8 : 8) }));
+      ws['!cols'] = cabecalho.map((h, i) => ({ wch: i === 0 ? 22 : (h.startsWith('Cidade') ? 24 : h.startsWith('KM') ? 20 : 8) }));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Rotas');
       XLSX.writeFile(wb, `${nomeArq}.xlsx`);
