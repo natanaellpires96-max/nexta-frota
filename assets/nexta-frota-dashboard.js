@@ -3864,6 +3864,61 @@ window.dashToggleMenuRelatorios = dashToggleMenuRelatorios;
 // número de paradas da viagem com MAIS paradas encontrada no histórico —
 // uma viagem com só 1 entrega usa só o primeiro grupo de colunas, uma com
 // 3 usa os três, sem linha extra pra cada parada.
+// Tenta achar um UF de 2 letras "grudado" no fim de uma string de cidade,
+// em qualquer um dos formatos que o cadastro (campo de texto livre, sem
+// formato fixo) pode ter usado: "Belo Horizonte - MG", "Belo Horizonte/MG",
+// "Belo Horizonte, MG", ou só "Belo Horizonte MG". Devolve a cidade já sem
+// o UF (pra não duplicar) e o UF encontrado (ou '' se não achou nada).
+function _dashExtrairUF(cidadeStr) {
+  const s = (cidadeStr || '').toString().trim();
+  const m = /^(.*?)[\s\-\/,]+([A-Z]{2})$/i.exec(s);
+  if (m && m[1].trim()) return { cidade: m[1].trim().toUpperCase(), uf: m[2].toUpperCase() };
+  return { cidade: s.toUpperCase(), uf: '' };
+}
+
+// Acha o UF de um pedido: 1) campo .uf do próprio pedido, 2) embutido no
+// texto da cidade do próprio pedido, 3) campo .uf/cidade do cliente no
+// CADASTRO AO VIVO (pode estar mais completo/atualizado que a cópia
+// congelada no histórico), casando por Código SAP (mais confiável) ou nome.
+function _dashResolverCidadeUF(pedido) {
+  const cidadeBruta = (pedido?.cidade || '').toString();
+  const { cidade, uf: ufEmbutido } = _dashExtrairUF(cidadeBruta);
+  if (pedido?.uf) return { cidade, uf: pedido.uf.toString().toUpperCase() };
+  if (ufEmbutido) return { cidade, uf: ufEmbutido };
+  // Cai pro cadastro ao vivo de clientes (roteirizador.js, window.clientes)
+  if (typeof window.clientes !== 'undefined' && Array.isArray(window.clientes)) {
+    const cliCad = window.clientes.find(c =>
+      (pedido?.codigoSAP && c.codigoSAP && c.codigoSAP === pedido.codigoSAP) ||
+      (pedido?.cliente && c.nome && c.nome.toUpperCase() === pedido.cliente.toString().toUpperCase())
+    );
+    if (cliCad?.cidade) {
+      const extra = _dashExtrairUF(cliCad.cidade);
+      if (extra.uf) return { cidade: cidade || extra.cidade, uf: extra.uf };
+    }
+  }
+  return { cidade, uf: '' };
+}
+
+// Coordenadas de um pedido: primeiro a cópia congelada no próprio
+// histórico, senão cai pro cadastro ao vivo (mais provável de ter sido
+// corrigido/completado depois que essa entrega foi salva).
+function _dashResolverCoordPedido(pedido, parada) {
+  let lat = parseFloat(pedido?.lat ?? parada?.lat);
+  let lon = parseFloat(pedido?.lon ?? parada?.lon);
+  if (typeof NextaKm !== 'undefined' && NextaKm.coordenadaValida(lat, lon)) return { lat, lon };
+  if (typeof window.clientes !== 'undefined' && Array.isArray(window.clientes)) {
+    const cliCad = window.clientes.find(c =>
+      (pedido?.codigoSAP && c.codigoSAP && c.codigoSAP === pedido.codigoSAP) ||
+      (pedido?.cliente && c.nome && c.nome.toUpperCase() === pedido.cliente.toString().toUpperCase())
+    );
+    if (cliCad) {
+      lat = parseFloat(cliCad.lat); lon = parseFloat(cliCad.lon);
+      if (typeof NextaKm !== 'undefined' && NextaKm.coordenadaValida(lat, lon)) return { lat, lon };
+    }
+  }
+  return { lat: NaN, lon: NaN };
+}
+
 async function _dashColetarRotas() {
   const store = await dashGetStoreMerged();
   const snaps = Object.values(store).flat();
@@ -3881,26 +3936,27 @@ async function _dashColetarRotas() {
         let latAnterior = parseFloat(terminal?.lat);
         let lonAnterior = parseFloat(terminal?.lon);
         const paradas = vi.paradas.map(p => {
-          const cidade = (p.pedido?.cidade || '-').toString().toUpperCase();
-          const estado = (p.pedido?.uf || '').toString().toUpperCase();
-          // "OSASCO/SP", ou só "OSASCO" quando não há UF cadastrado.
-          const cidadeExibicao = estado ? `${cidade}/${estado}` : cidade;
+          const { cidade, uf } = _dashResolverCidadeUF(p.pedido);
+          // "OSASCO/SP", ou só "OSASCO" quando não há UF em lugar nenhum.
+          const cidadeExibicao = uf ? `${cidade}/${uf}` : (cidade || '-');
           let km = Math.round(p.distanciaKm || 0);
+          const { lat: latP, lon: lonP } = _dashResolverCoordPedido(p.pedido, p);
           // Km 0 (ou ausente) geralmente é rota antiga salva antes do
           // cálculo de km real, ou um trecho que nunca teve rota calculada
           // de verdade — estima em linha reta (Haversine) a partir das
-          // coordenadas cadastradas, em vez de deixar 0 (que faz a rota
-          // parecer "grátis"/errada no relatório).
+          // coordenadas cadastradas (histórico ou, na falta, o cadastro ao
+          // vivo), em vez de deixar 0 (que faz a rota parecer "grátis"/
+          // errada no relatório). Quando nem isso dá pra calcular (falta
+          // coordenada em qualquer lugar), km fica null — mostrado como
+          // "-" no relatório, mais honesto que fingir que é 0km de verdade.
           if (!km) {
-            const latP = parseFloat(p.pedido?.lat ?? p.lat);
-            const lonP = parseFloat(p.pedido?.lon ?? p.lon);
             if (typeof NextaKm !== 'undefined' && !isNaN(latAnterior) && !isNaN(lonAnterior) && NextaKm.coordenadaValida(latP, lonP) && NextaKm.coordenadaValida(latAnterior, lonAnterior)) {
               km = Math.round(NextaKm.haversineKm(latAnterior, lonAnterior, latP, lonP));
+            } else {
+              km = null;
             }
           }
-          const latPFinal = parseFloat(p.pedido?.lat ?? p.lat);
-          const lonPFinal = parseFloat(p.pedido?.lon ?? p.lon);
-          if (!isNaN(latPFinal) && !isNaN(lonPFinal)) { latAnterior = latPFinal; lonAnterior = lonPFinal; }
+          if (!isNaN(latP) && !isNaN(lonP)) { latAnterior = latP; lonAnterior = lonP; }
           return { cidadeExibicao, km };
         });
         if (paradas.length) rotas.push({ baseOrigem, paradas });
@@ -3923,14 +3979,19 @@ function _dashAgruparRotasUnicas(rotas) {
   rotas.forEach(r => {
     const cidades = r.paradas.map(p => p.cidadeExibicao);
     const chave = r.baseOrigem + '>' + cidades.join('>');
-    const kmTotal = r.paradas.reduce((s, p) => s + (p.km || 0), 0);
+    // Se TODO trecho da rota ficou sem km (null — nem o real nem o
+    // estimado por coordenada deram certo), o total fica null (mostrado
+    // como "-"), em vez de 0 — 0km "de verdade" só quando pelo menos um
+    // trecho tem valor conhecido e os outros genuinamente não somam nada.
+    const todosNulos = r.paradas.every(p => p.km === null);
+    const kmTotal = todosNulos ? null : r.paradas.reduce((s, p) => s + (p.km || 0), 0);
     if (!grupos.has(chave)) grupos.set(chave, { baseOrigem: r.baseOrigem, cidades, kmContagem: new Map() });
     const g = grupos.get(chave);
     g.kmContagem.set(kmTotal, (g.kmContagem.get(kmTotal) || 0) + 1);
   });
   return [...grupos.values()].map(g => {
     // Km mais frequente (moda) — empate resolvido pelo primeiro valor visto na ordem de inserção do Map.
-    let kmModa = 0, maiorContagem = 0;
+    let kmModa = null, maiorContagem = 0;
     g.kmContagem.forEach((contagem, km) => { if (contagem > maiorContagem) { maiorContagem = contagem; kmModa = km; } });
     return { baseOrigem: g.baseOrigem, cidades: g.cidades, kmTotal: kmModa };
   }).sort((a, b) => {
@@ -3962,7 +4023,7 @@ function _dashRotasParaLinhas(rotasBrutas) {
   const linhas = rotas.map(r => {
     const linha = [r.baseOrigem];
     for (let i = 0; i < maxCidades; i++) linha.push(r.cidades[i] || '');
-    linha.push(r.kmTotal);
+    linha.push(r.kmTotal == null ? '-' : r.kmTotal);
     return linha;
   });
   return { cabecalho, linhas, maxParadas: maxCidades };
