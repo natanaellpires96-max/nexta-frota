@@ -3875,10 +3875,10 @@ async function _dashColetarRotas() {
       viagens.forEach(vi => {
         const nomeBase = vi.terminalOrigem || v.terminal || '';
         const terminal = (terms || []).find(t => t.nome === nomeBase);
-        const baseOrigem = terminal?.cidade || nomeBase || '-';
+        const baseOrigem = (terminal?.cidade || nomeBase || '-').toString().toUpperCase();
         const paradas = vi.paradas.map(p => ({
-          cidade: p.pedido?.cidade || '-',
-          estado: p.pedido?.uf || '-',
+          cidade: (p.pedido?.cidade || '-').toString().toUpperCase(),
+          estado: (p.pedido?.uf || '-').toString().toUpperCase(),
           km: Math.round(p.distanciaKm || 0),
         }));
         if (paradas.length) rotas.push({ baseOrigem, paradas });
@@ -3888,19 +3888,46 @@ async function _dashColetarRotas() {
   return rotas;
 }
 
-function _dashRotasParaLinhas(rotas) {
-  const maxParadas = rotas.reduce((m, r) => Math.max(m, r.paradas.length), 1);
-  const cabecalho = ['Base Origem'];
-  for (let i = 1; i <= maxParadas; i++) cabecalho.push(`Cidade Entrega ${i}`, `Estado ${i}`, `KM ${i}`);
+// Agrupa por rota ÚNICA (base + sequência exata de cidades de entrega, na
+// mesma ordem) — 20 viagens idênticas de São Caetano → Osasco viram UMA
+// linha só. Dentro de cada grupo, usa o valor de KM TOTAL que aparece com
+// mais frequência entre as ocorrências (a "moda"), não a média nem a
+// primeira que aparecer — é o km que mais se repetiu de verdade pra aquela
+// rota. Estado sai como coluna única (todos os estados distintos das
+// cidades da rota, sem numerar por parada) e KM sai só como total no fim
+// (soma dos trechos), sem separar km por cidade de entrega.
+function _dashAgruparRotasUnicas(rotas) {
+  const grupos = new Map();
+  rotas.forEach(r => {
+    const cidades = r.paradas.map(p => p.cidade);
+    const chave = r.baseOrigem + '>' + cidades.join('>');
+    const estados = [...new Set(r.paradas.map(p => p.estado))].join('/');
+    const kmTotal = r.paradas.reduce((s, p) => s + (p.km || 0), 0);
+    if (!grupos.has(chave)) grupos.set(chave, { baseOrigem: r.baseOrigem, cidades, estados, kmContagem: new Map() });
+    const g = grupos.get(chave);
+    g.kmContagem.set(kmTotal, (g.kmContagem.get(kmTotal) || 0) + 1);
+  });
+  return [...grupos.values()].map(g => {
+    // Km mais frequente (moda) — empate resolvido pelo primeiro valor visto na ordem de inserção do Map.
+    let kmModa = 0, maiorContagem = 0;
+    g.kmContagem.forEach((contagem, km) => { if (contagem > maiorContagem) { maiorContagem = contagem; kmModa = km; } });
+    return { baseOrigem: g.baseOrigem, cidades: g.cidades, estados: g.estados, kmTotal: kmModa };
+  }).sort((a, b) => a.baseOrigem.localeCompare(b.baseOrigem) || a.cidades.join('>').localeCompare(b.cidades.join('>')));
+}
+
+function _dashRotasParaLinhas(rotasBrutas) {
+  const rotas = _dashAgruparRotasUnicas(rotasBrutas);
+  const maxCidades = rotas.reduce((m, r) => Math.max(m, r.cidades.length), 1);
+  const cabecalho = ['BASE ORIGEM'];
+  for (let i = 1; i <= maxCidades; i++) cabecalho.push(`CIDADE ENTREGA ${i}`);
+  cabecalho.push('ESTADO', 'KM TOTAL');
   const linhas = rotas.map(r => {
     const linha = [r.baseOrigem];
-    for (let i = 0; i < maxParadas; i++) {
-      const p = r.paradas[i];
-      linha.push(p ? p.cidade : '', p ? p.estado : '', p ? p.km : '');
-    }
+    for (let i = 0; i < maxCidades; i++) linha.push(r.cidades[i] || '');
+    linha.push(r.estados, r.kmTotal);
     return linha;
   });
-  return { cabecalho, linhas, maxParadas };
+  return { cabecalho, linhas, maxParadas: maxCidades };
 }
 
 async function dashGerarRelatorioRotas(formato) {
@@ -3930,7 +3957,7 @@ async function dashGerarRelatorioRotas(formato) {
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       doc.setFontSize(14);
       doc.setFont('helvetica', 'bold');
-      doc.text('NEXTA — Relatório de Rotas', 10, 12);
+      doc.text('NEXTA — RELATÓRIO DE ROTAS', 10, 12);
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.text(`${linhas.length} rota(s) · gerado em ${agora.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, 10, 18);
