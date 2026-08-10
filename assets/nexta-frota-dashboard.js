@@ -3997,32 +3997,20 @@ async function _dashColetarRotas() {
         const baseOrigem = _baseExtraida.uf
           ? `${_dashRestaurarAcento(_baseExtraida.cidade)} - ${_baseExtraida.uf}`
           : _dashRestaurarAcento(baseOrigemBruta);
-        // Ponto anterior pra calcular distância em linha reta quando falta o
-        // km real da rota — começa no terminal, depois vira a parada anterior.
-        let latAnterior = parseFloat(terminal?.lat);
-        let lonAnterior = parseFloat(terminal?.lon);
         const paradas = (Array.isArray(vi.paradas) ? vi.paradas : []).map(p => {
           const { cidade, uf } = _dashResolverCidadeUF(p.pedido);
           const cidadeExibicao = uf ? `${cidade} - ${uf}` : (cidade || '-');
           const cidadeChave = _dashSemAcento(cidadeExibicao);
-          let km = Math.round(p.distanciaKm || 0);
-          const { lat: latP, lon: lonP } = _dashResolverCoordPedido(p.pedido, p);
-          // Km 0 (ou ausente) geralmente é rota antiga salva antes do
-          // cálculo de km real, ou um trecho que nunca teve rota calculada
-          // de verdade — estima em linha reta (Haversine) a partir das
-          // coordenadas cadastradas (histórico ou, na falta, o cadastro ao
-          // vivo), em vez de deixar 0 (que faz a rota parecer "grátis"/
-          // errada no relatório). Quando nem isso dá pra calcular (falta
-          // coordenada em qualquer lugar), km fica null — mostrado como
-          // "-" no relatório, mais honesto que fingir que é 0km de verdade.
-          if (!km) {
-            if (typeof NextaKm !== 'undefined' && !isNaN(latAnterior) && !isNaN(lonAnterior) && NextaKm.coordenadaValida(latP, lonP) && NextaKm.coordenadaValida(latAnterior, lonAnterior)) {
-              km = Math.round(NextaKm.haversineKm(latAnterior, lonAnterior, latP, lonP));
-            } else {
-              km = null;
-            }
-          }
-          if (!isNaN(latP) && !isNaN(lonP)) { latAnterior = latP; lonAnterior = lonP; }
+          // Usa SÓ o km real da rota já calculado (o mesmo valor usado em
+          // Envio Transportadora/Herrlog/Frete) — nunca estima. Uma
+          // estimativa em linha reta (Haversine) é sempre mais curta que a
+          // distância real de rodovia, às vezes MUITO mais curta em
+          // trajetos com serra/curva (Paulínia→Angra dos Reis cruza a
+          // Serra do Mar, por exemplo) — pra um relatório que vai pra
+          // gestão, um número errado por "só" 30-40% é pior que admitir
+          // que não temos o dado: km fica null (mostrado como "-"), nunca
+          // um palpite disfarçado de valor exato.
+          const km = p.distanciaKm ? Math.round(p.distanciaKm) : null;
           return { cidadeExibicao, cidadeChave, km };
         });
         if (paradas.length) {
