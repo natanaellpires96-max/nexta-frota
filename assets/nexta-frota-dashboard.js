@@ -4001,7 +4001,7 @@ async function _dashColetarRotas() {
         // km real da rota — começa no terminal, depois vira a parada anterior.
         let latAnterior = parseFloat(terminal?.lat);
         let lonAnterior = parseFloat(terminal?.lon);
-        const paradas = vi.paradas.map(p => {
+        const paradas = (Array.isArray(vi.paradas) ? vi.paradas : []).map(p => {
           const { cidade, uf } = _dashResolverCidadeUF(p.pedido);
           const cidadeExibicao = uf ? `${cidade} - ${uf}` : (cidade || '-');
           const cidadeChave = _dashSemAcento(cidadeExibicao);
@@ -4063,13 +4063,19 @@ async function _dashColetarRotas() {
 function _dashAgruparRotasUnicas(rotas) {
   const grupos = new Map();
   rotas.forEach(r => {
-    const cidadesChave = r.paradas.map(p => p.cidadeChave);
+    const paradasSeguras = Array.isArray(r.paradas) ? r.paradas : [];
+    const cidadesChave = paradasSeguras.map(p => p.cidadeChave);
     const chave = r.baseOrigemChave + '>' + cidadesChave.join('>');
     const kmTotal = r.kmTotal; // já calculado em _dashColetarRotas, sobre TODOS os trechos reais (antes de colapsar cidade repetida)
     if (!grupos.has(chave)) {
+      // Nome de exibição já sai corretamente acentuado desde a coleta (ver
+      // _dashRestaurarAcento em _dashColetarRotas/_dashResolverCidadeUF) —
+      // não precisa mais escolher entre ocorrências "com" ou "sem" acento
+      // aqui, só guarda a primeira (todas as ocorrências do mesmo grupo já
+      // deveriam estar consistentes).
       grupos.set(chave, {
-        baseOrigem: r.baseOrigemChave,           // sem acento, letra de forma — é isso que aparece no relatório
-        cidades: cidadesChave,                    // idem, já é a chave normalizada
+        baseOrigemExibicao: r.baseOrigem,
+        cidadesExibicao: paradasSeguras.map(p => p.cidadeExibicao),
         kmContagem: new Map(),
       });
     }
@@ -4081,8 +4087,8 @@ function _dashAgruparRotasUnicas(rotas) {
     let kmModa = null, maiorContagem = 0;
     g.kmContagem.forEach((contagem, km) => { if (contagem > maiorContagem) { maiorContagem = contagem; kmModa = km; } });
     return {
-      baseOrigem: g.baseOrigem,
-      cidades: g.cidades,
+      baseOrigem: g.baseOrigemExibicao,
+      cidades: g.cidadesExibicao,
       kmTotal: kmModa,
       // Chaves normalizadas SÓ pra ordenar — garantem que "BETIM - MG"
       // fique sempre contíguo mesmo que, por algum motivo (acento/espaço
