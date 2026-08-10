@@ -671,14 +671,26 @@
                 📝 Word
               </button>
               <div style="height:1px;background:#E5E7EB;margin:4px 2px;"></div>
-              <div style="padding:8px 10px 4px;font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:.04em;">Rotas</div>
+              <div style="padding:8px 10px 4px;font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:.04em;">Rotas - Roteirização</div>
               <button onclick="dashGerarRelatorioRotas('pdf'); dashToggleMenuRelatorios();" onmouseover="this.style.background='rgba(239,68,68,0.1)'" onmouseout="this.style.background='none'"
-                title="Base de origem, cidade/estado/km de cada entrega, de toda a viagem de todo o histórico — colunas extras aparecem sozinhas quando a viagem tem mais de uma entrega"
+                title="Sequência completa da rota (base + todas as paradas em ordem) e km real percorrido, de todo o histórico — não respeita os filtros ativos, é sempre o histórico inteiro. Colunas extras aparecem sozinhas quando a viagem tem mais de uma entrega"
                 style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:#374151;background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
                 📄 PDF
               </button>
               <button onclick="dashGerarRelatorioRotas('xlsx'); dashToggleMenuRelatorios();" onmouseover="this.style.background='rgba(21,128,61,0.1)'" onmouseout="this.style.background='none'"
-                title="Mesma coisa, em planilha — colunas de entrega/estado/km se repetem dinamicamente conforme o número de paradas de cada viagem"
+                title="Mesma coisa, em planilha — colunas de entrega se repetem dinamicamente conforme o número de paradas de cada viagem"
+                style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:#374151;background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+                📊 XLSX
+              </button>
+              <div style="height:1px;background:#E5E7EB;margin:4px 2px;"></div>
+              <div style="padding:8px 10px 4px;font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:.04em;">Rotas - Fretes</div>
+              <button onclick="dashGerarRelatorioRotasFretes('pdf'); dashToggleMenuRelatorios();" onmouseover="this.style.background='rgba(239,68,68,0.1)'" onmouseout="this.style.background='none'"
+                title="Base × Destino único (cada parada de uma rota multi-cidade vira sua própria linha), com o km calculado como trajeto direto até aquele destino — respeita os filtros ativos do Dashboard (período, Clientes, Operação, Segmento)"
+                style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:#374151;background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+                📄 PDF
+              </button>
+              <button onclick="dashGerarRelatorioRotasFretes('xlsx'); dashToggleMenuRelatorios();" onmouseover="this.style.background='rgba(21,128,61,0.1)'" onmouseout="this.style.background='none'"
+                title="Mesma coisa, em planilha — respeita os filtros ativos do Dashboard"
                 style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:#374151;background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
                 📊 XLSX
               </button>
