@@ -3120,37 +3120,44 @@ async function _calcularFrequenciaEntregaClientes(listaClientes) {
 function _montarHtmlExportClientes(listaClientes, freqPorCliente, paginaInfo, totalGeral) {
   const filtroStr = _descricaoFiltroClientesAtual();
   const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  // Cores fixas (não usa var(--text-3) etc.) — mais escuras de propósito,
+  // o cinza claro da variável ficava difícil de ler depois de exportado
+  // pra PDF/PNG (a compressão da imagem "lava" ainda mais um cinza já claro).
+  const corTextoPrincipal = '#111827'; // quase preto
+  const corTextoSecundario = '#374151'; // cinza escuro, bem mais legível que o cinza claro de antes
   const cardsHtml = listaClientes.length ? listaClientes.map(c => {
     const freq = freqPorCliente.get(c.id) || _classificarFrequencia(null);
     return `
-    <div style="border:1px solid var(--border-dk);border-radius:8px;padding:10px 12px;margin-bottom:8px;break-inside:avoid;">
+    <div style="border:1px solid #D1D5DB;border-radius:8px;padding:10px 12px;margin-bottom:8px;break-inside:avoid;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:4px;">
-        <div style="font-weight:700;font-size:13px;color:var(--text);">${c.nome || ''}</div>
-        <div style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);white-space:nowrap;">SAP ${c.codigoSAP || '-'}</div>
+        <div style="font-weight:700;font-size:13px;color:${corTextoPrincipal};">${c.nome || ''}</div>
+        <div style="font-family:var(--font-mono);font-size:10.5px;color:${corTextoSecundario};font-weight:600;white-space:nowrap;">SAP ${c.codigoSAP || '-'}</div>
       </div>
-      <div style="font-size:11px;color:var(--text-3);margin-bottom:2px;">📍 ${c.cidade || '-'} · ${Number.isFinite(c.lat) ? c.lat.toFixed(4) : '-'}, ${Number.isFinite(c.lon) ? c.lon.toFixed(4) : '-'}</div>
-      ${c.endereco ? `<div style="font-size:11px;color:var(--text-3);margin-bottom:4px;">🏠 ${c.endereco}</div>` : ''}
+      <div style="font-size:11px;color:${corTextoSecundario};margin-bottom:2px;">📍 ${c.cidade || '-'} · ${Number.isFinite(c.lat) ? c.lat.toFixed(4) : '-'}, ${Number.isFinite(c.lon) ? c.lon.toFixed(4) : '-'}</div>
+      ${c.endereco ? `<div style="font-size:11px;color:${corTextoSecundario};margin-bottom:4px;">🏠 ${c.endereco}</div>` : ''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px;">
-        <span class="tag tag-blue" style="font-size:9px;">${c.segmento || 'Sem segmento'}</span>
+        <span class="tag tag-blue" style="font-size:9px;font-weight:700;">${c.segmento || 'Sem segmento'}</span>
         <span style="font-size:9px;font-weight:700;color:#fff;background:${freq.cor};padding:2px 8px;border-radius:99px;">${freq.label}</span>
-        ${c.restricaoHorario ? `<span style="font-size:10px;color:#B45309;font-weight:600;">⚠ ${c.restricaoHorario}</span>` : ''}
+        ${c.restricaoHorario ? `<span style="font-size:10px;color:#92400E;font-weight:700;">⚠ ${c.restricaoHorario}</span>` : ''}
       </div>
     </div>`;
-  }).join('') : `<div style="text-align:center;color:var(--text-3);padding:24px;">Nenhum cliente encontrado para os filtros atuais.</div>`;
+  }).join('') : `<div style="text-align:center;color:${corTextoSecundario};padding:24px;">Nenhum cliente encontrado para os filtros atuais.</div>`;
   const paginaStr = paginaInfo && paginaInfo.total > 1 ? ` · Página ${paginaInfo.atual} de ${paginaInfo.total}` : '';
   return `
-    <div class="op-bloco" data-bloco-id="export-clientes" style="max-width:760px;">
+    <div style="display:flex;justify-content:center;">
+    <div class="op-bloco" data-bloco-id="export-clientes" style="max-width:760px;width:760px;margin:0 auto;">
       <div class="op-head">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div style="display:flex;align-items:baseline;gap:10px;">
             <span style="font-family:var(--font-cond);font-weight:800;font-size:20px;color:var(--pet-green);letter-spacing:.02em;">NEXTA</span>
-            <span style="font-size:10px;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;">Cadastro de Clientes</span>
+            <span style="font-size:10px;color:${corTextoSecundario};font-weight:700;letter-spacing:.08em;text-transform:uppercase;">Cadastro de Clientes</span>
           </div>
         </div>
-        <div style="font-size:11px;color:var(--text-3);margin-top:4px;"><b style="color:var(--text);">Filtro:</b> ${filtroStr} · ${totalGeral ?? listaClientes.length} cliente${(totalGeral ?? listaClientes.length) === 1 ? '' : 's'}${paginaStr}</div>
-        <div style="font-size:10px;color:var(--text-3);">Gerado em ${geradoEm}</div>
+        <div style="font-size:11px;color:${corTextoSecundario};margin-top:4px;font-weight:500;"><b style="color:${corTextoPrincipal};">Filtro:</b> ${filtroStr} · ${totalGeral ?? listaClientes.length} cliente${(totalGeral ?? listaClientes.length) === 1 ? '' : 's'}${paginaStr}</div>
+        <div style="font-size:10px;color:${corTextoSecundario};">Gerado em ${geradoEm}</div>
       </div>
       <div style="padding:12px 16px 16px;">${cardsHtml}</div>
+    </div>
     </div>`;
 }
 
@@ -3250,9 +3257,13 @@ async function _exportarClientesPdfPaginado(paginas, freqPorCliente, totalGeral,
     // limita tanto pela largura quanto pela altura disponível.
     const ratio = Math.min(maxW / canvas.width, maxH / canvas.height);
     const imgW = canvas.width * ratio, imgH = canvas.height * ratio;
+    // Quando a altura é o fator limitante, a imagem sai mais estreita que
+    // a página — centraliza horizontalmente em vez de deixar colada na
+    // margem esquerda com um vão vazio do lado direito.
+    const xPos = margin + (maxW - imgW) / 2;
     if (!pdf) pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: [pdfW, pdfH] });
     else pdf.addPage([pdfW, pdfH], 'p');
-    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, imgW, imgH);
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', xPos, margin, imgW, imgH);
   }
   pdf.save(`${nomeArq}.pdf`);
   showToast(`✅ PDF exportado — ${paginas.length} página(s).`, true);
@@ -3262,19 +3273,36 @@ async function _exportarClientesPdfPaginado(paginas, freqPorCliente, totalGeral,
 // sequência com um pequeno intervalo (evita o navegador bloquear downloads
 // múltiplos disparados juntos).
 async function _exportarClientesPngPaginado(paginas, freqPorCliente, totalGeral, nomeArq) {
+  const canvasPorPagina = [];
   for (let i = 0; i < paginas.length; i++) {
     showToast(`Gerando PNG… página ${i + 1}/${paginas.length}`, true);
-    const canvas = await _capturarCanvasPaginaClientes(paginas[i], freqPorCliente, { atual: i + 1, total: paginas.length }, totalGeral);
-    const sufixo = paginas.length > 1 ? `_pagina${i + 1}de${paginas.length}` : '';
-    const a = document.createElement('a');
-    a.href = canvas.toDataURL('image/png');
-    a.download = `${nomeArq}${sufixo}.png`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    if (i < paginas.length - 1) await new Promise(r => setTimeout(r, 400));
+    canvasPorPagina.push(await _capturarCanvasPaginaClientes(paginas[i], freqPorCliente, { atual: i + 1, total: paginas.length }, totalGeral));
   }
-  showToast(`✅ PNG exportado — ${paginas.length} arquivo(s).`, true);
+  // Empilha todas as páginas numa imagem SÓ (uma embaixo da outra), em vez
+  // de vários arquivos separados — mesma ideia do PDF de várias páginas,
+  // só que como uma imagem única e alta.
+  const GAP = 24; // respiro visual entre uma página e a próxima
+  const larguraFinal = Math.max(...canvasPorPagina.map(c => c.width));
+  const alturaFinal = canvasPorPagina.reduce((s, c) => s + c.height, 0) + GAP * (canvasPorPagina.length - 1);
+  const canvasFinal = document.createElement('canvas');
+  canvasFinal.width = larguraFinal;
+  canvasFinal.height = alturaFinal;
+  const ctx = canvasFinal.getContext('2d');
+  ctx.fillStyle = '#FFFFFF'; // fundo branco sólido (evita transparência entre as páginas)
+  ctx.fillRect(0, 0, larguraFinal, alturaFinal);
+  let yAtual = 0;
+  canvasPorPagina.forEach(c => {
+    const xCentralizado = (larguraFinal - c.width) / 2; // centraliza cada página caso alguma saia mais estreita que as outras
+    ctx.drawImage(c, xCentralizado, yAtual);
+    yAtual += c.height + GAP;
+  });
+  const a = document.createElement('a');
+  a.href = canvasFinal.toDataURL('image/png');
+  a.download = `${nomeArq}.png`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast(`✅ PNG exportado — ${paginas.length} página(s) num arquivo só.`, true);
 }
 // Popula um <select> de "Operação" com os nomes dos terminais cadastrados
 // (a mesma lista de Terminais & Bases) — usado tanto no filtro da lista de
