@@ -3010,8 +3010,19 @@ function renderClientes() {
 }
 function toggleMenuExportarClientes() {
   const menu = document.getElementById('menu-exportar-clientes');
+  const btn  = document.getElementById('btn-exportar-clientes');
   if (!menu) return;
-  menu.style.display = menu.style.display !== 'none' ? 'none' : 'block';
+  const abrindo = menu.style.display === 'none';
+  if (abrindo && btn) {
+    // position:fixed escapa do overflow-x:auto da .filter-bar (que cortava
+    // o menu, obrigando a rolar a barra pra ver as opções) — calcula a
+    // posição na tela a partir do botão, já que fixed não "gruda" sozinho
+    // como absolute fazia.
+    const r = btn.getBoundingClientRect();
+    menu.style.top = `${r.bottom + 6}px`;
+    menu.style.left = `${Math.max(8, r.right - 170)}px`; // alinha pela direita do botão, sem estourar a tela pela esquerda
+  }
+  menu.style.display = abrindo ? 'block' : 'none';
 }
 document.addEventListener('click', function(e) {
   const menu = document.getElementById('menu-exportar-clientes');
@@ -3043,95 +3054,141 @@ function _descricaoFiltroClientesAtual() {
   const fo = valId('f-cli-operacao'); if (fo) partes.push(`Operação: ${fo}`);
   return partes.length ? partes.join(' · ') : 'Todos os clientes cadastrados';
 }
-function _montarHtmlExportClientes(listaClientes) {
+
+// ── Frequência de Entrega (só pro relatório — NUNCA salva no cadastro) ─────
+// Calcula, pra cada cliente, o intervalo médio (em dias) entre entregas
+// distintas em TODO o histórico vigente (não é um recorte de período — é
+// sobre o padrão histórico completo do cliente). ≤5 dias = Frequente,
+// 6–10 = Moderado, >10 = Baixo, sem pelo menos 2 datas distintas = Sem dados.
+function _classificarFrequencia(diasMedio) {
+  if (diasMedio == null) return { label: 'Sem dados', ordem: 3, cor: '#9CA3AF' };
+  if (diasMedio <= 5) return { label: 'Frequente', ordem: 0, cor: '#15803D' };
+  if (diasMedio <= 10) return { label: 'Moderado', ordem: 1, cor: '#B45309' };
+  return { label: 'Baixo', ordem: 2, cor: '#B91C1C' };
+}
+function _cicloMedioDiasSimples(datasSet) {
+  const tempos = [...datasSet].map(d => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(d || '');
+    return m ? new Date(+m[3], +m[2] - 1, +m[1]).getTime() : null;
+  }).filter(t => t !== null).sort((a, b) => a - b);
+  if (tempos.length < 2) return null;
+  let soma = 0;
+  for (let i = 1; i < tempos.length; i++) soma += (tempos[i] - tempos[i - 1]) / 86400000;
+  return soma / (tempos.length - 1);
+}
+async function _calcularFrequenciaEntregaClientes(listaClientes) {
+  const datasPorSAP = new Map();
+  const datasPorNome = new Map();
+  if (window.dirHandleHistorico && await _histGarantirPermissao()) {
+    try {
+      for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+        if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+        try {
+          const file = await handle.getFile();
+          const data = JSON.parse(await file.text());
+          if (!data.versao || !data.savedAt || !data.resumo) continue;
+          if (data.substituidoPor) continue; // só vigentes — mesma regra do resto do sistema
+          const res = data.resultado || {}, vecs = data.veiculos || [];
+          vecs.forEach(v => {
+            (res[v.id] || []).forEach(vi => {
+              if (vi._vazio || !Array.isArray(vi.paradas)) return;
+              vi.paradas.forEach(p => {
+                const dataEntrega = p.pedido?.dataEntregaLogistica;
+                if (!dataEntrega) return;
+                const sap = (p.pedido?.codigoSAP || '').trim();
+                const nome = (p.pedido?.cliente || '').trim().toUpperCase();
+                if (sap) { if (!datasPorSAP.has(sap)) datasPorSAP.set(sap, new Set()); datasPorSAP.get(sap).add(dataEntrega); }
+                if (nome) { if (!datasPorNome.has(nome)) datasPorNome.set(nome, new Set()); datasPorNome.get(nome).add(dataEntrega); }
+              });
+            });
+          });
+        } catch (e) { /* arquivo malformado — pula */ }
+      }
+    } catch (e) { console.warn('[_calcularFrequenciaEntregaClientes] falha ao ler histórico:', e); }
+  }
+  const resultado = new Map();
+  listaClientes.forEach(c => {
+    const sap = (c.codigoSAP || '').trim();
+    const nome = (c.nome || '').trim().toUpperCase();
+    const datas = (sap && datasPorSAP.get(sap)) || datasPorNome.get(nome);
+    const diasMedio = datas ? _cicloMedioDiasSimples(datas) : null;
+    resultado.set(c.id, { diasMedio, ..._classificarFrequencia(diasMedio) });
+  });
+  return resultado;
+}
+
+function _montarHtmlExportClientes(listaClientes, freqPorCliente) {
   const filtroStr = _descricaoFiltroClientesAtual();
   const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
-  const linhasHtml = listaClientes.length ? listaClientes.map(c => `
-    <tr>
-      <td style="font-weight:700;">${c.nome || ''}</td>
-      <td style="font-family:var(--font-mono);white-space:nowrap;">${c.codigoSAP || '-'}</td>
-      <td>${c.cidade || '-'}</td>
-      <td style="white-space:nowrap;">${Number.isFinite(c.lat) ? c.lat.toFixed(4) : '-'}</td>
-      <td style="white-space:nowrap;">${Number.isFinite(c.lon) ? c.lon.toFixed(4) : '-'}</td>
-      <td>${c.segmento || '-'}</td>
-      <td>${c.restricaoHorario ? `<span style="color:#B45309;font-weight:600;">⚠ ${c.restricaoHorario}</span>` : '<span style="color:var(--text-3);">—</span>'}</td>
-    </tr>`).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--text-3);padding:16px;">Nenhum cliente encontrado para os filtros atuais.</td></tr>`;
+  const cardsHtml = listaClientes.length ? listaClientes.map(c => {
+    const freq = freqPorCliente.get(c.id) || _classificarFrequencia(null);
+    return `
+    <div style="border:1px solid var(--border-dk);border-radius:8px;padding:10px 12px;margin-bottom:8px;break-inside:avoid;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:4px;">
+        <div style="font-weight:700;font-size:13px;color:var(--text);">${c.nome || ''}</div>
+        <div style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);white-space:nowrap;">SAP ${c.codigoSAP || '-'}</div>
+      </div>
+      <div style="font-size:11px;color:var(--text-3);margin-bottom:2px;">📍 ${c.cidade || '-'} · ${Number.isFinite(c.lat) ? c.lat.toFixed(4) : '-'}, ${Number.isFinite(c.lon) ? c.lon.toFixed(4) : '-'}</div>
+      ${c.endereco ? `<div style="font-size:11px;color:var(--text-3);margin-bottom:4px;">🏠 ${c.endereco}</div>` : ''}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px;">
+        <span class="tag tag-blue" style="font-size:9px;">${c.segmento || 'Sem segmento'}</span>
+        <span style="font-size:9px;font-weight:700;color:#fff;background:${freq.cor};padding:2px 8px;border-radius:99px;">${freq.label}</span>
+        ${c.restricaoHorario ? `<span style="font-size:10px;color:#B45309;font-weight:600;">⚠ ${c.restricaoHorario}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('') : `<div style="text-align:center;color:var(--text-3);padding:24px;">Nenhum cliente encontrado para os filtros atuais.</div>`;
   return `
-    <div class="op-bloco" data-bloco-id="export-clientes" style="max-width:100%;">
+    <div class="op-bloco" data-bloco-id="export-clientes" style="max-width:760px;">
       <div class="op-head">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div style="display:flex;align-items:baseline;gap:10px;">
             <span style="font-family:var(--font-cond);font-weight:800;font-size:20px;color:var(--pet-green);letter-spacing:.02em;">NEXTA</span>
             <span style="font-size:10px;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;">Cadastro de Clientes</span>
           </div>
-          <div style="text-align:right;font-size:11px;color:var(--text-3);">Gerado em ${geradoEm}</div>
         </div>
         <div style="font-size:11px;color:var(--text-3);margin-top:4px;"><b style="color:var(--text);">Filtro:</b> ${filtroStr} · ${listaClientes.length} cliente${listaClientes.length === 1 ? '' : 's'}</div>
+        <div style="font-size:10px;color:var(--text-3);">Gerado em ${geradoEm}</div>
       </div>
-      <table class="op-table">
-        <colgroup>
-          <col style="width:220px"/><col style="width:100px"/><col style="width:160px"/><col style="width:90px"/><col style="width:90px"/><col style="width:80px"/><col style="width:260px"/>
-        </colgroup>
-        <thead>
-          <tr><th>Nome</th><th>Código SAP</th><th>Cidade</th><th>Latitude</th><th>Longitude</th><th>Segmento</th><th>Restrições</th></tr>
-        </thead>
-        <tbody>${linhasHtml}</tbody>
-      </table>
+      <div style="padding:12px 16px 16px;">${cardsHtml}</div>
     </div>`;
 }
-function _montarHtmlExportClientesWord(listaClientes) {
-  const filtroStr = _descricaoFiltroClientesAtual();
-  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
-  const F = "font-family:Arial,Helvetica,sans-serif;";
-  const th = `${F}background:#F3F4F6;border:1px solid #D1D5DB;padding:6px 8px;text-align:left;font-size:11px;text-transform:uppercase;color:#4B5563;`;
-  const td = `${F}border:1px solid #D1D5DB;padding:6px 8px;font-size:12.5px;color:#111827;`;
-  const linhasHtml = listaClientes.length ? listaClientes.map(c => `
-    <tr>
-      <td style="${td}font-weight:bold;">${c.nome || ''}</td>
-      <td style="${td}">${c.codigoSAP || '-'}</td>
-      <td style="${td}">${c.cidade || '-'}</td>
-      <td style="${td}">${Number.isFinite(c.lat) ? c.lat.toFixed(4) : '-'}</td>
-      <td style="${td}">${Number.isFinite(c.lon) ? c.lon.toFixed(4) : '-'}</td>
-      <td style="${td}">${c.segmento || '-'}</td>
-      <td style="${td}color:#B45309;">${c.restricaoHorario || '—'}</td>
-    </tr>`).join('') : `<tr><td colspan="7" style="${td}text-align:center;color:#6B7280;">Nenhum cliente encontrado para os filtros atuais.</td></tr>`;
-  return `
-    <div style="${F}color:#111827;max-width:1100px;">
-      <h2 style="${F}margin:0 0 2px;font-size:19px;">NEXTA — Cadastro de Clientes</h2>
-      <div style="${F}font-size:13px;color:#374151;margin-bottom:2px;"><b>Filtro:</b> ${filtroStr}</div>
-      <div style="${F}font-size:11.5px;color:#6B7280;margin-bottom:12px;">${listaClientes.length} cliente${listaClientes.length === 1 ? '' : 's'} — gerado em ${geradoEm}</div>
-      <table style="${F}border-collapse:collapse;width:100%;">
-        <tr><th style="${th}">Nome</th><th style="${th}">Código SAP</th><th style="${th}">Cidade</th><th style="${th}">Latitude</th><th style="${th}">Longitude</th><th style="${th}">Segmento</th><th style="${th}">Restrições</th></tr>
-        ${linhasHtml}
-      </table>
-    </div>`;
-}
-function _baixarComoWord(htmlConteudo, nomeArquivo) {
-  const htmlCompleto = `<!DOCTYPE html>
-<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-<head><meta charset="utf-8"><title>${nomeArquivo}</title>
-<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
-</head>
-<body>${htmlConteudo}</body></html>`;
-  const blob = new Blob(['\ufeff', htmlCompleto], { type: 'application/msword' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${nomeArquivo}.doc`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
+
 async function exportarClientesFiltrados(formato) {
   try {
     const lista = _clientesFiltradosAtualmente();
+    showToast('Calculando frequência de entrega (histórico completo)…', true);
+    const freqPorCliente = await _calcularFrequenciaEntregaClientes(lista);
+    // Ordena por frequência (Frequente → Moderado → Baixo → Sem dados) e,
+    // dentro de cada faixa, por nome — nunca altera a ordem/dados do
+    // cadastro em si, é só pra montar o relatório.
+    const listaOrdenada = [...lista].sort((a, b) => {
+      const fa = freqPorCliente.get(a.id) || _classificarFrequencia(null);
+      const fb = freqPorCliente.get(b.id) || _classificarFrequencia(null);
+      if (fa.ordem !== fb.ordem) return fa.ordem - fb.ordem;
+      return (a.nome || '').localeCompare(b.nome || '', 'pt-BR');
+    });
+
     const agora = new Date();
     const p2 = n => String(n).padStart(2, '0');
     const nomeArq = `Clientes_Nexta_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
 
-    if (formato === 'word') {
-      _baixarComoWord(_montarHtmlExportClientesWord(lista), nomeArq);
+    if (formato === 'xlsx') {
+      if (typeof XLSX === 'undefined') { showToast('SheetJS não carregado.', false); return; }
+      const cabecalho = ['Nome', 'Código SAP', 'Cidade', 'Latitude', 'Longitude', 'Endereço', 'Segmento', 'Restrições', 'Frequência de Entrega'];
+      const linhas = listaOrdenada.map(c => {
+        const freq = freqPorCliente.get(c.id) || _classificarFrequencia(null);
+        return [
+          c.nome || '', c.codigoSAP || '-', c.cidade || '-',
+          Number.isFinite(c.lat) ? c.lat : '', Number.isFinite(c.lon) ? c.lon : '',
+          c.endereco || '-', c.segmento || '-', c.restricaoHorario || '—', freq.label,
+        ];
+      });
+      const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...linhas]);
+      ws['!cols'] = [{wch:28},{wch:12},{wch:18},{wch:10},{wch:10},{wch:40},{wch:10},{wch:16},{wch:18}];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Clientes');
+      XLSX.writeFile(wb, `${nomeArq}.xlsx`);
+      showToast(`✅ ${linhas.length} cliente(s) exportado(s).`, true);
       return;
     }
 
@@ -3139,14 +3196,16 @@ async function exportarClientesFiltrados(formato) {
       showToast('Exportação indisponível — recarregue a página.', false);
       return;
     }
-    const html = _montarHtmlExportClientes(lista);
+    const html = _montarHtmlExportClientes(listaOrdenada, freqPorCliente);
     const wrap = document.createElement('div');
     wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
     wrap.innerHTML = html;
     document.body.appendChild(wrap);
     try {
-      if (formato === 'pdf') await exportarBlocoPDF('export-clientes', nomeArq, null, 1300);
-      else await exportarBlocoPNG('export-clientes', nomeArq, null, 1300);
+      // Largura mais estreita (760px) + orientação retrato — o cadastro
+      // sai como cards empilhados verticalmente, não uma tabela larga.
+      if (formato === 'pdf') await exportarBlocoPDF('export-clientes', nomeArq, null, 760, 'p');
+      else await exportarBlocoPNG('export-clientes', nomeArq, null, 760);
     } finally {
       document.body.removeChild(wrap);
     }
@@ -10088,7 +10147,7 @@ async function _capturarCanvas(el, escala = 2) {
  * @param {string} nomeArq  - nome base do arquivo (sem extensão)
  * @param {Event}  ev       - evento click (para stopPropagation)
  */
-async function exportarBlocoPDF(blocoId, nomeArq, ev, larguraPx = 1050) {
+async function exportarBlocoPDF(blocoId, nomeArq, ev, larguraPx = 1050, orientacao = 'l') {
   if (ev) ev.stopPropagation();
   const blocoEl = document.querySelector(`[data-bloco-id="${blocoId}"]`);
   if (!blocoEl) { showToast('Card não encontrado.', false); return; }
@@ -10102,15 +10161,18 @@ async function exportarBlocoPDF(blocoId, nomeArq, ev, larguraPx = 1050) {
     document.body.removeChild(iframe);
 
     const { jsPDF } = window.jspdf;
-    // A4 paisagem para cards horizontais do Resumo Transportadora
-    const pdfW  = 841.89;
-    const pdfHMin = 595.28;
+    // A4 paisagem (padrão) ou retrato, conforme pedido pelo chamador —
+    // retrato faz mais sentido pra relatórios em formato de lista/cards
+    // empilhados (ex.: cadastro de clientes), onde o conteúdo já é
+    // naturalmente mais alto do que largo.
+    const pdfW  = orientacao === 'p' ? 595.28 : 841.89;
+    const pdfHMin = orientacao === 'p' ? 841.89 : 595.28;
     const margin = 20;
     const maxW  = pdfW - margin * 2;
     const ratio = maxW / canvas.width;
     const imgH  = canvas.height * ratio;
     const pageH = Math.max(imgH + margin * 2, pdfHMin);
-    const pdf = new jsPDF({ orientation: 'l', unit: 'pt', format: [pdfW, pageH] });
+    const pdf = new jsPDF({ orientation: orientacao, unit: 'pt', format: [pdfW, pageH] });
     pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, maxW, imgH);
     pdf.save(`${nomeArq}.pdf`);
     showToast('PDF exportado ✅', true);
