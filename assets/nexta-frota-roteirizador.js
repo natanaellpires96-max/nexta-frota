@@ -1134,7 +1134,7 @@ document.addEventListener('click', (e) => {
 function limparFiltros(aba) {
   const mapa = {
     terminais: ['f-term-terminal','f-term-cidade'],
-    clientes: ['f-cli-cliente','f-cli-cidade','f-cli-segmento'],
+    clientes: ['f-cli-cliente','f-cli-cidade','f-cli-segmento','f-cli-operacao'],
     pedidos: ['f-ped-cliente','f-ped-cidade','f-ped-terminal'],
     veiculos: ['f-vei-placa','f-vei-transp','f-vei-terminal','f-vei-cidade','f-vei-tipo'],
     resultado: ['f-res-cliente','f-res-cidade','f-res-terminal','f-res-placa','f-res-transp'],
@@ -2690,6 +2690,7 @@ function carregarExemplosTerminais() {
 // ═══════════════════════════════════════════════════════════════════════════
 function abrirFormCliente(id) {
   editandoClienteId = id;
+  _popularSelectOperacaoCliente('cl-operacao');
   if (id !== null) {
     const c = clientes.find(x => x.id === id);
     if (!c) return;
@@ -2704,6 +2705,7 @@ function abrirFormCliente(id) {
     document.getElementById('cl-obs').value      = c.observacoes || '';
     document.getElementById('cl-identidade-petronas').checked = !!c.identidadePetronas;
     document.getElementById('cl-segmento').value = c.segmento || '';
+    document.getElementById('cl-operacao').value = c.operacao || '';
     renderTipoBtns('cl-tipos-btns', c.tiposCaminhao || []);
   } else {
     document.getElementById('form-cliente-title').textContent = 'Novo cliente';
@@ -2713,6 +2715,7 @@ function abrirFormCliente(id) {
     document.getElementById('cl-descarga').value = 45;
     document.getElementById('cl-identidade-petronas').checked = false;
     document.getElementById('cl-segmento').value = '';
+    document.getElementById('cl-operacao').value = '';
     if (document.getElementById('cl-tipos-btns')) renderTipoBtns('cl-tipos-btns', []);
   }
   document.getElementById('form-cliente').classList.remove('hidden');
@@ -2741,6 +2744,7 @@ function salvarCliente() {
     tiposCaminhao:   lerTiposSelecionados('cl-tipos-btns'),
     identidadePetronas: document.getElementById('cl-identidade-petronas').checked,
     segmento:        document.getElementById('cl-segmento').value,
+    operacao:        document.getElementById('cl-operacao').value,
   };
   if (editandoClienteId !== null) {
     const idx = clientes.findIndex(c => c.id === editandoClienteId);
@@ -2884,13 +2888,16 @@ function renderClientes() {
     el.innerHTML = '<div class="empty">Nenhum cliente cadastrado.<br>Clique em "+ Cliente" para começar.</div>';
     return;
   }
+  _popularSelectOperacaoCliente('f-cli-operacao');
   const filtroCliente = valId('f-cli-cliente');
   const filtroCidade = valId('f-cli-cidade');
   const filtroSegmento = valId('f-cli-segmento');
+  const filtroOperacao = valId('f-cli-operacao');
   const lista = clientes.filter(c =>
     containsFiltro(c.nome, filtroCliente) &&
     containsFiltro(c.cidade, filtroCidade) &&
-    containsFiltro(c.segmento, filtroSegmento)
+    containsFiltro(c.segmento, filtroSegmento) &&
+    (!filtroOperacao || c.operacao === filtroOperacao)
   );
   if (!lista.length) {
     el.innerHTML = '<div class="empty">Nenhum cliente encontrado para os filtros.</div>';
@@ -2909,6 +2916,7 @@ function renderClientes() {
             ${c.cidade ? `<span style="font-size:12px;color:#4A6535;">${c.cidade}</span>` : ''}
             ${c.restricaoHorario ? `<span class="tag tag-yellow">${c.restricaoHorario}</span>` : ''}
             ${c.segmento ? `<span class="tag tag-blue" style="font-size:9px;">${c.segmento}</span>` : ''}
+            ${c.operacao ? `<span class="tag tag-lime" style="font-size:9px;">🏭 ${c.operacao}</span>` : ''}
             ${c.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             <span class="tag tag-lime" style="font-size:9px;">Descarga média: ${(c.tempoDescargaMediaMin||45).toFixed(0)} min</span>
           </div>
@@ -2927,9 +2935,170 @@ function renderClientes() {
     </div>`;
   }).join('');
 }
+function toggleMenuExportarClientes() {
+  const menu = document.getElementById('menu-exportar-clientes');
+  if (!menu) return;
+  menu.style.display = menu.style.display !== 'none' ? 'none' : 'block';
+}
+document.addEventListener('click', function(e) {
+  const menu = document.getElementById('menu-exportar-clientes');
+  const btn  = document.getElementById('btn-exportar-clientes');
+  if (menu && menu.style.display !== 'none' && !menu.contains(e.target) && !btn?.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
+// Reaplica exatamente o mesmo filtro que renderClientes() usa — a
+// exportação sempre reflete o que está na tela naquele momento (Cliente,
+// Cidade, Segmento, Operação), nunca a lista inteira sem filtro nenhum.
+function _clientesFiltradosAtualmente() {
+  const filtroCliente = valId('f-cli-cliente');
+  const filtroCidade = valId('f-cli-cidade');
+  const filtroSegmento = valId('f-cli-segmento');
+  const filtroOperacao = valId('f-cli-operacao');
+  return clientes.filter(c =>
+    containsFiltro(c.nome, filtroCliente) &&
+    containsFiltro(c.cidade, filtroCidade) &&
+    containsFiltro(c.segmento, filtroSegmento) &&
+    (!filtroOperacao || c.operacao === filtroOperacao)
+  );
+}
+function _descricaoFiltroClientesAtual() {
+  const partes = [];
+  const fc = valId('f-cli-cliente'); if (fc) partes.push(`Cliente: "${fc}"`);
+  const fd = valId('f-cli-cidade'); if (fd) partes.push(`Cidade: "${fd}"`);
+  const fs = valId('f-cli-segmento'); if (fs) partes.push(`Segmento: "${fs}"`);
+  const fo = valId('f-cli-operacao'); if (fo) partes.push(`Operação: ${fo}`);
+  return partes.length ? partes.join(' · ') : 'Todos os clientes cadastrados';
+}
+function _montarHtmlExportClientes(listaClientes) {
+  const filtroStr = _descricaoFiltroClientesAtual();
+  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  const linhasHtml = listaClientes.length ? listaClientes.map(c => `
+    <tr>
+      <td style="font-weight:700;">${c.nome || ''}</td>
+      <td style="font-family:var(--font-mono);white-space:nowrap;">${c.codigoSAP || '-'}</td>
+      <td>${c.cidade || '-'}</td>
+      <td style="white-space:nowrap;">${Number.isFinite(c.lat) ? c.lat.toFixed(4) : '-'}</td>
+      <td style="white-space:nowrap;">${Number.isFinite(c.lon) ? c.lon.toFixed(4) : '-'}</td>
+      <td>${c.segmento || '-'}</td>
+      <td>${c.restricaoHorario ? `<span style="color:#B45309;font-weight:600;">⚠ ${c.restricaoHorario}</span>` : '<span style="color:var(--text-3);">—</span>'}</td>
+    </tr>`).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--text-3);padding:16px;">Nenhum cliente encontrado para os filtros atuais.</td></tr>`;
+  return `
+    <div class="op-bloco" data-bloco-id="export-clientes" style="max-width:100%;">
+      <div class="op-head">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div style="display:flex;align-items:baseline;gap:10px;">
+            <span style="font-family:var(--font-cond);font-weight:800;font-size:20px;color:var(--pet-green);letter-spacing:.02em;">NEXTA</span>
+            <span style="font-size:10px;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;">Cadastro de Clientes</span>
+          </div>
+          <div style="text-align:right;font-size:11px;color:var(--text-3);">Gerado em ${geradoEm}</div>
+        </div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:4px;"><b style="color:var(--text);">Filtro:</b> ${filtroStr} · ${listaClientes.length} cliente${listaClientes.length === 1 ? '' : 's'}</div>
+      </div>
+      <table class="op-table">
+        <colgroup>
+          <col style="width:220px"/><col style="width:100px"/><col style="width:160px"/><col style="width:90px"/><col style="width:90px"/><col style="width:80px"/><col style="width:260px"/>
+        </colgroup>
+        <thead>
+          <tr><th>Nome</th><th>Código SAP</th><th>Cidade</th><th>Latitude</th><th>Longitude</th><th>Segmento</th><th>Restrições</th></tr>
+        </thead>
+        <tbody>${linhasHtml}</tbody>
+      </table>
+    </div>`;
+}
+function _montarHtmlExportClientesWord(listaClientes) {
+  const filtroStr = _descricaoFiltroClientesAtual();
+  const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  const F = "font-family:Arial,Helvetica,sans-serif;";
+  const th = `${F}background:#F3F4F6;border:1px solid #D1D5DB;padding:6px 8px;text-align:left;font-size:11px;text-transform:uppercase;color:#4B5563;`;
+  const td = `${F}border:1px solid #D1D5DB;padding:6px 8px;font-size:12.5px;color:#111827;`;
+  const linhasHtml = listaClientes.length ? listaClientes.map(c => `
+    <tr>
+      <td style="${td}font-weight:bold;">${c.nome || ''}</td>
+      <td style="${td}">${c.codigoSAP || '-'}</td>
+      <td style="${td}">${c.cidade || '-'}</td>
+      <td style="${td}">${Number.isFinite(c.lat) ? c.lat.toFixed(4) : '-'}</td>
+      <td style="${td}">${Number.isFinite(c.lon) ? c.lon.toFixed(4) : '-'}</td>
+      <td style="${td}">${c.segmento || '-'}</td>
+      <td style="${td}color:#B45309;">${c.restricaoHorario || '—'}</td>
+    </tr>`).join('') : `<tr><td colspan="7" style="${td}text-align:center;color:#6B7280;">Nenhum cliente encontrado para os filtros atuais.</td></tr>`;
+  return `
+    <div style="${F}color:#111827;max-width:1100px;">
+      <h2 style="${F}margin:0 0 2px;font-size:19px;">NEXTA — Cadastro de Clientes</h2>
+      <div style="${F}font-size:13px;color:#374151;margin-bottom:2px;"><b>Filtro:</b> ${filtroStr}</div>
+      <div style="${F}font-size:11.5px;color:#6B7280;margin-bottom:12px;">${listaClientes.length} cliente${listaClientes.length === 1 ? '' : 's'} — gerado em ${geradoEm}</div>
+      <table style="${F}border-collapse:collapse;width:100%;">
+        <tr><th style="${th}">Nome</th><th style="${th}">Código SAP</th><th style="${th}">Cidade</th><th style="${th}">Latitude</th><th style="${th}">Longitude</th><th style="${th}">Segmento</th><th style="${th}">Restrições</th></tr>
+        ${linhasHtml}
+      </table>
+    </div>`;
+}
+function _baixarComoWord(htmlConteudo, nomeArquivo) {
+  const htmlCompleto = `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8"><title>${nomeArquivo}</title>
+<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
+</head>
+<body>${htmlConteudo}</body></html>`;
+  const blob = new Blob(['\ufeff', htmlCompleto], { type: 'application/msword' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${nomeArquivo}.doc`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+async function exportarClientesFiltrados(formato) {
+  try {
+    const lista = _clientesFiltradosAtualmente();
+    const agora = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const nomeArq = `Clientes_Nexta_${agora.getFullYear()}${p2(agora.getMonth()+1)}${p2(agora.getDate())}_${p2(agora.getHours())}${p2(agora.getMinutes())}`;
+
+    if (formato === 'word') {
+      _baixarComoWord(_montarHtmlExportClientesWord(lista), nomeArq);
+      return;
+    }
+
+    if (typeof exportarBlocoPDF !== 'function' || typeof exportarBlocoPNG !== 'function') {
+      showToast('Exportação indisponível — recarregue a página.', false);
+      return;
+    }
+    const html = _montarHtmlExportClientes(lista);
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap);
+    try {
+      if (formato === 'pdf') await exportarBlocoPDF('export-clientes', nomeArq, null, 1300);
+      else await exportarBlocoPNG('export-clientes', nomeArq, null, 1300);
+    } finally {
+      document.body.removeChild(wrap);
+    }
+  } catch (e) {
+    console.error('[exportarClientesFiltrados] falha:', e);
+    showToast('Erro ao exportar clientes: ' + (e.message || 'falha desconhecida'), false);
+  }
+}
+// Popula um <select> de "Operação" com os nomes dos terminais cadastrados
+// (a mesma lista de Terminais & Bases) — usado tanto no filtro da lista de
+// clientes quanto no campo do formulário de cadastro. Preserva o valor
+// selecionado atual, se ainda existir na lista nova.
+function _popularSelectOperacaoCliente(selectId) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const atual = sel.value;
+  const nomes = [...new Set((terminaisCad || []).map(t => t.nome).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const opcaoPadrao = selectId === 'f-cli-operacao' ? '<option value="">Todas as operações</option>' : '<option value="">— não informado —</option>';
+  sel.innerHTML = opcaoPadrao + nomes.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('');
+  if (nomes.includes(atual)) sel.value = atual;
+}
 function atualizarDropdownsClientes() {
   const sel = document.getElementById('p-importar-cliente');
   if (sel) { const cur = parseInt(sel.value); sel.innerHTML = optsClientes(cur); refreshCombobox(sel); }
+  _popularSelectOperacaoCliente('f-cli-operacao');
 }
 function preencherPedidoDeCliente(clienteId) {
   const id = parseInt(clienteId);
