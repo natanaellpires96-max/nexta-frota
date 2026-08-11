@@ -2706,10 +2706,11 @@ function abrirFormCliente(id) {
     document.getElementById('cl-identidade-petronas').checked = !!c.identidadePetronas;
     document.getElementById('cl-segmento').value = c.segmento || '';
     document.getElementById('cl-operacao').value = c.operacao || '';
+    document.getElementById('cl-endereco').value = c.endereco || '';
     renderTipoBtns('cl-tipos-btns', c.tiposCaminhao || []);
   } else {
     document.getElementById('form-cliente-title').textContent = 'Novo cliente';
-    ['cl-sap','cl-nome','cl-cidade','cl-lat','cl-lon','cl-restricao','cl-obs'].forEach(fid => {
+    ['cl-sap','cl-nome','cl-cidade','cl-lat','cl-lon','cl-restricao','cl-obs','cl-endereco'].forEach(fid => {
       const e = document.getElementById(fid); if (e) e.value = '';
     });
     document.getElementById('cl-descarga').value = 45;
@@ -2745,6 +2746,7 @@ function salvarCliente() {
     identidadePetronas: document.getElementById('cl-identidade-petronas').checked,
     segmento:        document.getElementById('cl-segmento').value,
     operacao:        document.getElementById('cl-operacao').value,
+    endereco:        document.getElementById('cl-endereco').value.trim(),
   };
   if (editandoClienteId !== null) {
     const idx = clientes.findIndex(c => c.id === editandoClienteId);
@@ -2761,6 +2763,76 @@ function salvarCliente() {
   _mesclarClientesDuplicadosSilencioso();
   renderClientes();
   atualizarDropdownsClientes();
+}
+// ── Geocodificação reversa (coordenada → endereço) via Nominatim/OpenStreetMap ──
+// Gratuito, sem precisar de chave de API (diferente do OpenRouteService, que
+// já usa chave). Política de uso do Nominatim pede no máximo 1
+// requisição/segundo em uso automatizado — respeitada em _dashDelay abaixo
+// na função de preenchimento em massa (o botão individual é 1 clique de
+// cada vez, não precisa de limite).
+async function _buscarEnderecoPorCoordenadaRaw(lat, lon) {
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&addressdetails=1&accept-language=pt-BR`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Nominatim respondeu ${resp.status}`);
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  return data.display_name || '';
+}
+// Botão "📍 Buscar" dentro do formulário — usa a lat/lon que estão
+// preenchidas NA TELA naquele momento (não precisa ter salvo o cliente
+// ainda), pra funcionar tanto num cliente novo quanto numa edição.
+async function buscarEnderecoPorCoordenada(btnEl) {
+  const lat = parseFloat(document.getElementById('cl-lat').value);
+  const lon = parseFloat(document.getElementById('cl-lon').value);
+  if (isNaN(lat) || isNaN(lon)) { alert('Preencha latitude e longitude primeiro.'); return; }
+  const btn = btnEl;
+  if (btn) { btn.disabled = true; btn.textContent = 'Buscando...'; }
+  try {
+    const endereco = await _buscarEnderecoPorCoordenadaRaw(lat, lon);
+    if (endereco) document.getElementById('cl-endereco').value = endereco;
+    else showToast('Nenhum endereço encontrado pra essa coordenada.', false);
+  } catch (e) {
+    console.error('[buscarEnderecoPorCoordenada] falha:', e);
+    showToast('Erro ao buscar endereço: ' + (e.message || 'falha desconhecida'), false);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📍 Buscar'; }
+  }
+}
+// Preenche o endereço de TODOS os clientes que têm latitude/longitude
+// válidas e ainda não têm endereço preenchido — não sobrescreve um endereço
+// que já foi preenchido (manual ou por busca anterior), pra não perder uma
+// correção manual que alguém já tenha feito. 1 requisição por segundo
+// (política de uso do Nominatim/OpenStreetMap pra uso automatizado, serviço
+// gratuito e sem chave — precisa ser usado com moderação).
+async function preencherEnderecosTodosClientes() {
+  const pendentes = clientes.filter(c => !c.endereco && Number.isFinite(c.lat) && Number.isFinite(c.lon) && (Math.abs(c.lat) > 0.001 || Math.abs(c.lon) > 0.001));
+  if (!pendentes.length) { showToast('Todos os clientes com coordenada já têm endereço preenchido.', true); return; }
+  if (!confirm(`Buscar o endereço de ${pendentes.length} cliente(s) sem endereço preenchido, usando OpenStreetMap?\n\nRespeitando o limite de 1 requisição por segundo (uso gratuito), isso deve levar aproximadamente ${Math.ceil(pendentes.length)} segundo(s). Continuar?`)) return;
+  const btn = document.getElementById('btn-preencher-enderecos');
+  if (btn) { btn.disabled = true; }
+  let feitos = 0, falhas = 0;
+  for (const c of pendentes) {
+    try {
+      const endereco = await _buscarEnderecoPorCoordenadaRaw(c.lat, c.lon);
+      if (endereco) {
+        const antigo = { ...c };
+        c.endereco = endereco;
+        _persistirCadastroManual('clientes', c, antigo);
+        feitos++;
+      } else {
+        falhas++;
+      }
+    } catch (e) {
+      console.warn(`[preencherEnderecosTodosClientes] falha em "${c.nome}":`, e);
+      falhas++;
+    }
+    if (btn) btn.textContent = `📍 Buscando... ${feitos + falhas}/${pendentes.length}`;
+    // Respeita 1 requisição/segundo — aguarda antes da próxima, exceto na última.
+    if (feitos + falhas < pendentes.length) await new Promise(r => setTimeout(r, 1000));
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '📍 Preencher endereços'; }
+  renderClientes();
+  showToast(`✅ ${feitos} endereço(s) preenchido(s)${falhas ? `, ${falhas} não encontrado(s)/falharam` : ''}.`, feitos > 0);
 }
 function removerCliente(id) {
   if (!confirm('Remover este cliente?')) return;
@@ -2921,6 +2993,7 @@ function renderClientes() {
             <span class="tag tag-lime" style="font-size:9px;">Descarga média: ${(c.tempoDescargaMediaMin||45).toFixed(0)} min</span>
           </div>
           <div style="font-size:11px;color:#4A6535;margin-bottom:6px;">📍 ${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}</div>
+          ${c.endereco ? `<div style="font-size:11px;color:#4A6535;margin-bottom:6px;">🏠 ${c.endereco}</div>` : ''}
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">
             <span style="font-size:10px;color:#4A6535;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;">Caminhões:</span>
             ${tipos}
@@ -3090,10 +3163,14 @@ function _popularSelectOperacaoCliente(selectId) {
   const sel = document.getElementById(selectId);
   if (!sel) return;
   const atual = sel.value;
-  const nomes = [...new Set((terminaisCad || []).map(t => t.nome).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  // Cidade do terminal, não o nome específico — "Paulínia TORRÃO Nexta" e
+  // outro terminal também em Paulínia contam como a MESMA operação. Usar o
+  // nome do terminal direto excluía clientes atendidos pelo OUTRO terminal
+  // da mesma cidade quando só um deles era selecionado no filtro.
+  const cidades = [...new Set((terminaisCad || []).map(t => (t.cidade || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   const opcaoPadrao = selectId === 'f-cli-operacao' ? '<option value="">Todas as operações</option>' : '<option value="">— não informado —</option>';
-  sel.innerHTML = opcaoPadrao + nomes.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('');
-  if (nomes.includes(atual)) sel.value = atual;
+  sel.innerHTML = opcaoPadrao + cidades.map(c => `<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
+  if (cidades.includes(atual)) sel.value = atual;
 }
 function atualizarDropdownsClientes() {
   const sel = document.getElementById('p-importar-cliente');
