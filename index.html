@@ -185,6 +185,7 @@
           </button>
         </div>
       </div>
+      <button class="btn btn-sm" onclick="preencherEnderecosTodosClientes()" id="btn-preencher-enderecos" title="Busca o endereço de cada cliente a partir da latitude/longitude cadastrada, usando OpenStreetMap">📍 Preencher endereços</button>
     </div>
     <div id="clientes-list">
       <div class="empty">Nenhum cliente cadastrado.<br>Clique em "+ Cliente" para começar.</div>
@@ -211,6 +212,15 @@
         </div>
       </div>
       <div class="row">
+        <div class="field" style="flex:3;">
+          <label>Endereço</label>
+          <div style="display:flex;gap:6px;">
+            <input id="cl-endereco" placeholder="Rua, número, bairro..." style="flex:1;"/>
+            <button type="button" class="btn btn-sm" onclick="buscarEnderecoPorCoordenada(this)" title="Busca o endereço a partir da latitude/longitude preenchidas, usando OpenStreetMap">📍 Buscar</button>
+          </div>
+        </div>
+      </div>
+      <div class="row">
         <div class="field" style="max-width:200px;">
           <label>Restrição de horário de recebimento</label>
           <input id="cl-restricao" placeholder="Ex: 07:00–17:00"/>
@@ -231,7 +241,7 @@
           </select>
         </div>
         <div class="field" style="max-width:220px;">
-          <label>Operação (base que atende)</label>
+          <label>Operação (cidade que atende)</label>
           <select id="cl-operacao">
             <option value="">— não informado —</option>
           </select>
