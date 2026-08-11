@@ -161,7 +161,30 @@
       <div class="field"><label>Cliente</label><input id="f-cli-cliente" placeholder="Filtrar cliente..." oninput="renderClientes()"/></div>
       <div class="field"><label>Cidade</label><input id="f-cli-cidade" placeholder="Filtrar cidade..." oninput="renderClientes()"/></div>
       <div class="field"><label>Segmento</label><input id="f-cli-segmento" placeholder="Filtrar segmento..." oninput="renderClientes()"/></div>
+      <div class="field" style="max-width:200px;">
+        <label>Operação</label>
+        <select id="f-cli-operacao" onchange="renderClientes()">
+          <option value="">Todas as operações</option>
+        </select>
+      </div>
       <button class="btn btn-sm" onclick="limparFiltros('clientes')">Limpar</button>
+      <div style="position:relative;">
+        <button class="btn btn-sm" onclick="toggleMenuExportarClientes()" id="btn-exportar-clientes">📤 Exportar</button>
+        <div id="menu-exportar-clientes" style="display:none;position:absolute;top:calc(100% + 6px);right:0;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.16);min-width:170px;overflow:hidden;padding:5px;">
+          <button onclick="exportarClientesFiltrados('pdf'); toggleMenuExportarClientes();" onmouseover="this.style.background='rgba(239,68,68,0.1)'" onmouseout="this.style.background='none'"
+            style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:var(--text);background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+            📄 PDF
+          </button>
+          <button onclick="exportarClientesFiltrados('png'); toggleMenuExportarClientes();" onmouseover="this.style.background='rgba(79,70,229,0.1)'" onmouseout="this.style.background='none'"
+            style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:var(--text);background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+            🖼 PNG
+          </button>
+          <button onclick="exportarClientesFiltrados('word'); toggleMenuExportarClientes();" onmouseover="this.style.background='rgba(37,99,235,0.1)'" onmouseout="this.style.background='none'"
+            style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:500;color:var(--text);background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+            📝 Word
+          </button>
+        </div>
+      </div>
     </div>
     <div id="clientes-list">
       <div class="empty">Nenhum cliente cadastrado.<br>Clique em "+ Cliente" para começar.</div>
@@ -205,6 +228,12 @@
             <option value="B2B">B2B</option>
             <option value="B2C">B2C</option>
             <option value="TRR">TRR</option>
+          </select>
+        </div>
+        <div class="field" style="max-width:220px;">
+          <label>Operação (base que atende)</label>
+          <select id="cl-operacao">
+            <option value="">— não informado —</option>
           </select>
         </div>
       </div>
