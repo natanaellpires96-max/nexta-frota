@@ -3117,7 +3117,7 @@ async function _calcularFrequenciaEntregaClientes(listaClientes) {
   return resultado;
 }
 
-function _montarHtmlExportClientes(listaClientes, freqPorCliente) {
+function _montarHtmlExportClientes(listaClientes, freqPorCliente, paginaInfo, totalGeral) {
   const filtroStr = _descricaoFiltroClientesAtual();
   const geradoEm = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
   const cardsHtml = listaClientes.length ? listaClientes.map(c => {
@@ -3137,6 +3137,7 @@ function _montarHtmlExportClientes(listaClientes, freqPorCliente) {
       </div>
     </div>`;
   }).join('') : `<div style="text-align:center;color:var(--text-3);padding:24px;">Nenhum cliente encontrado para os filtros atuais.</div>`;
+  const paginaStr = paginaInfo && paginaInfo.total > 1 ? ` · Página ${paginaInfo.atual} de ${paginaInfo.total}` : '';
   return `
     <div class="op-bloco" data-bloco-id="export-clientes" style="max-width:760px;">
       <div class="op-head">
@@ -3146,7 +3147,7 @@ function _montarHtmlExportClientes(listaClientes, freqPorCliente) {
             <span style="font-size:10px;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;">Cadastro de Clientes</span>
           </div>
         </div>
-        <div style="font-size:11px;color:var(--text-3);margin-top:4px;"><b style="color:var(--text);">Filtro:</b> ${filtroStr} · ${listaClientes.length} cliente${listaClientes.length === 1 ? '' : 's'}</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:4px;"><b style="color:var(--text);">Filtro:</b> ${filtroStr} · ${totalGeral ?? listaClientes.length} cliente${(totalGeral ?? listaClientes.length) === 1 ? '' : 's'}${paginaStr}</div>
         <div style="font-size:10px;color:var(--text-3);">Gerado em ${geradoEm}</div>
       </div>
       <div style="padding:12px 16px 16px;">${cardsHtml}</div>
@@ -3196,23 +3197,84 @@ async function exportarClientesFiltrados(formato) {
       showToast('Exportação indisponível — recarregue a página.', false);
       return;
     }
-    const html = _montarHtmlExportClientes(listaOrdenada, freqPorCliente);
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
-    wrap.innerHTML = html;
-    document.body.appendChild(wrap);
-    try {
-      // Largura mais estreita (760px) + orientação retrato — o cadastro
-      // sai como cards empilhados verticalmente, não uma tabela larga.
-      if (formato === 'pdf') await exportarBlocoPDF('export-clientes', nomeArq, null, 760, 'p');
-      else await exportarBlocoPNG('export-clientes', nomeArq, null, 760);
-    } finally {
-      document.body.removeChild(wrap);
+    // Quebra em páginas de tamanho fixo — sem isso, o card ia crescendo pra
+    // caber TODOS os clientes numa página só (PDF) ou numa imagem só (PNG),
+    // ficando enorme e impraticável com listas grandes.
+    const CLIENTES_POR_PAGINA = 10;
+    const paginas = [];
+    for (let i = 0; i < listaOrdenada.length; i += CLIENTES_POR_PAGINA) paginas.push(listaOrdenada.slice(i, i + CLIENTES_POR_PAGINA));
+    if (!paginas.length) paginas.push([]); // lista vazia ainda gera 1 página "sem resultados"
+
+    if (formato === 'pdf') {
+      await _exportarClientesPdfPaginado(paginas, freqPorCliente, listaOrdenada.length, nomeArq);
+    } else {
+      await _exportarClientesPngPaginado(paginas, freqPorCliente, listaOrdenada.length, nomeArq);
     }
   } catch (e) {
     console.error('[exportarClientesFiltrados] falha:', e);
     showToast('Erro ao exportar clientes: ' + (e.message || 'falha desconhecida'), false);
   }
+}
+// Monta o bloco de UMA página (fora da tela), tira o canvas, remove o
+// bloco — devolve só o canvas, pronto pra virar página de PDF ou arquivo PNG.
+async function _capturarCanvasPaginaClientes(paginaClientes, freqPorCliente, paginaInfo, totalGeral) {
+  const html = _montarHtmlExportClientes(paginaClientes, freqPorCliente, paginaInfo, totalGeral);
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap);
+  try {
+    const iframe = _clonarBlocoParaExport(wrap.querySelector('.op-bloco'), 760);
+    await new Promise(r => setTimeout(r, 500)); // aguarda fontes carregarem
+    const clone = iframe.contentDocument.querySelector('.op-bloco');
+    const canvas = await _capturarCanvas(clone);
+    document.body.removeChild(iframe);
+    return canvas;
+  } finally {
+    document.body.removeChild(wrap);
+  }
+}
+// PDF com paginação de verdade: 1 página de A4 retrato por bloco de 10
+// clientes, todas no MESMO arquivo (pdf.addPage() a partir da 2ª).
+async function _exportarClientesPdfPaginado(paginas, freqPorCliente, totalGeral, nomeArq) {
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { showToast('jsPDF não carregado.', false); return; }
+  const pdfW = 595.28, pdfH = 841.89, margin = 20; // A4 retrato fixo — nunca cresce além disso
+  const maxW = pdfW - margin * 2;
+  const maxH = pdfH - margin * 2;
+  let pdf = null;
+  for (let i = 0; i < paginas.length; i++) {
+    showToast(`Gerando PDF… página ${i + 1}/${paginas.length}`, true);
+    const canvas = await _capturarCanvasPaginaClientes(paginas[i], freqPorCliente, { atual: i + 1, total: paginas.length }, totalGeral);
+    // Encaixa a imagem dentro da página A4 (nunca estica além dela) —
+    // limita tanto pela largura quanto pela altura disponível.
+    const ratio = Math.min(maxW / canvas.width, maxH / canvas.height);
+    const imgW = canvas.width * ratio, imgH = canvas.height * ratio;
+    if (!pdf) pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: [pdfW, pdfH] });
+    else pdf.addPage([pdfW, pdfH], 'p');
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, imgW, imgH);
+  }
+  pdf.save(`${nomeArq}.pdf`);
+  showToast(`✅ PDF exportado — ${paginas.length} página(s).`, true);
+}
+// PNG não tem conceito de "página" (é uma imagem só) — a paginação aqui
+// vira VÁRIOS arquivos PNG, um por bloco de 10 clientes, baixados em
+// sequência com um pequeno intervalo (evita o navegador bloquear downloads
+// múltiplos disparados juntos).
+async function _exportarClientesPngPaginado(paginas, freqPorCliente, totalGeral, nomeArq) {
+  for (let i = 0; i < paginas.length; i++) {
+    showToast(`Gerando PNG… página ${i + 1}/${paginas.length}`, true);
+    const canvas = await _capturarCanvasPaginaClientes(paginas[i], freqPorCliente, { atual: i + 1, total: paginas.length }, totalGeral);
+    const sufixo = paginas.length > 1 ? `_pagina${i + 1}de${paginas.length}` : '';
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `${nomeArq}${sufixo}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    if (i < paginas.length - 1) await new Promise(r => setTimeout(r, 400));
+  }
+  showToast(`✅ PNG exportado — ${paginas.length} arquivo(s).`, true);
 }
 // Popula um <select> de "Operação" com os nomes dos terminais cadastrados
 // (a mesma lista de Terminais & Bases) — usado tanto no filtro da lista de
