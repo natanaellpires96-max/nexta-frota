@@ -1134,7 +1134,7 @@ document.addEventListener('click', (e) => {
 function limparFiltros(aba) {
   const mapa = {
     terminais: ['f-term-terminal','f-term-cidade'],
-    clientes: ['f-cli-cliente','f-cli-cidade','f-cli-segmento','f-cli-operacao'],
+    clientes: ['f-cli-cliente','f-cli-cidade','f-cli-segmento','f-cli-operacao','f-cli-bandeira','f-cli-contrato'],
     pedidos: ['f-ped-cliente','f-ped-cidade','f-ped-terminal'],
     veiculos: ['f-vei-placa','f-vei-transp','f-vei-terminal','f-vei-cidade','f-vei-tipo'],
     resultado: ['f-res-cliente','f-res-cidade','f-res-terminal','f-res-placa','f-res-transp'],
@@ -3082,11 +3082,15 @@ function renderClientes() {
   const filtroCidade = valId('f-cli-cidade');
   const filtroSegmento = valId('f-cli-segmento');
   const filtroOperacao = valId('f-cli-operacao');
+  const filtroBandeira = valId('f-cli-bandeira');
+  const filtroContrato = valId('f-cli-contrato');
   const lista = clientes.filter(c =>
     containsFiltro(c.nome, filtroCliente) &&
     containsFiltro(c.cidade, filtroCidade) &&
     containsFiltro(c.segmento, filtroSegmento) &&
-    (!filtroOperacao || c.operacao === filtroOperacao)
+    (!filtroOperacao || c.operacao === filtroOperacao) &&
+    _bateFiltroExato(c.bandeira, filtroBandeira) &&
+    _bateFiltroExato(c.tipoContrato, filtroContrato)
   );
   if (!lista.length) {
     el.innerHTML = '<div class="empty">Nenhum cliente encontrado para os filtros.</div>';
@@ -3153,17 +3157,27 @@ document.addEventListener('click', function(e) {
 });
 // Reaplica exatamente o mesmo filtro que renderClientes() usa — a
 // exportação sempre reflete o que está na tela naquele momento (Cliente,
-// Cidade, Segmento, Operação), nunca a lista inteira sem filtro nenhum.
+// Cidade, Segmento, Operação, Bandeira, Tipo de Contrato), nunca a lista inteira sem filtro nenhum.
+// "" no filtro = sem filtro (todos); "__vazio__" = só quem NÃO tem esse campo preenchido; senão, valor exato.
+function _bateFiltroExato(valorCampo, valorFiltro) {
+  if (!valorFiltro) return true;
+  if (valorFiltro === '__vazio__') return !valorCampo;
+  return valorCampo === valorFiltro;
+}
 function _clientesFiltradosAtualmente() {
   const filtroCliente = valId('f-cli-cliente');
   const filtroCidade = valId('f-cli-cidade');
   const filtroSegmento = valId('f-cli-segmento');
   const filtroOperacao = valId('f-cli-operacao');
+  const filtroBandeira = valId('f-cli-bandeira');
+  const filtroContrato = valId('f-cli-contrato');
   return clientes.filter(c =>
     containsFiltro(c.nome, filtroCliente) &&
     containsFiltro(c.cidade, filtroCidade) &&
     containsFiltro(c.segmento, filtroSegmento) &&
-    (!filtroOperacao || c.operacao === filtroOperacao)
+    (!filtroOperacao || c.operacao === filtroOperacao) &&
+    _bateFiltroExato(c.bandeira, filtroBandeira) &&
+    _bateFiltroExato(c.tipoContrato, filtroContrato)
   );
 }
 function _descricaoFiltroClientesAtual() {
@@ -3172,6 +3186,8 @@ function _descricaoFiltroClientesAtual() {
   const fd = valId('f-cli-cidade'); if (fd) partes.push(`Cidade: "${fd}"`);
   const fs = valId('f-cli-segmento'); if (fs) partes.push(`Segmento: "${fs}"`);
   const fo = valId('f-cli-operacao'); if (fo) partes.push(`Operação: ${fo}`);
+  const fb = valId('f-cli-bandeira'); if (fb) partes.push(`Bandeira: ${fb === '__vazio__' ? 'Não informado' : fb}`);
+  const ft = valId('f-cli-contrato'); if (ft) partes.push(`Contrato: ${ft === '__vazio__' ? 'Não informado' : ft}`);
   return partes.length ? partes.join(' · ') : 'Todos os clientes cadastrados';
 }
 
