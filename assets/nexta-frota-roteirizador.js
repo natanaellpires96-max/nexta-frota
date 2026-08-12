@@ -2707,6 +2707,8 @@ function abrirFormCliente(id) {
     document.getElementById('cl-segmento').value = c.segmento || '';
     document.getElementById('cl-operacao').value = c.operacao || '';
     document.getElementById('cl-endereco').value = c.endereco || '';
+    document.getElementById('cl-bandeira').value = c.bandeira || '';
+    document.getElementById('cl-contrato').value = c.tipoContrato || '';
     renderTipoBtns('cl-tipos-btns', c.tiposCaminhao || []);
   } else {
     document.getElementById('form-cliente-title').textContent = 'Novo cliente';
@@ -2717,6 +2719,8 @@ function abrirFormCliente(id) {
     document.getElementById('cl-identidade-petronas').checked = false;
     document.getElementById('cl-segmento').value = '';
     document.getElementById('cl-operacao').value = '';
+    document.getElementById('cl-bandeira').value = '';
+    document.getElementById('cl-contrato').value = '';
     if (document.getElementById('cl-tipos-btns')) renderTipoBtns('cl-tipos-btns', []);
   }
   document.getElementById('form-cliente').classList.remove('hidden');
@@ -2747,6 +2751,8 @@ function salvarCliente() {
     segmento:        document.getElementById('cl-segmento').value,
     operacao:        document.getElementById('cl-operacao').value,
     endereco:        document.getElementById('cl-endereco').value.trim(),
+    bandeira:        document.getElementById('cl-bandeira').value,
+    tipoContrato:    document.getElementById('cl-contrato').value,
     cadastroIncompleto: false, // qualquer salvamento pelo formulário conta como revisado — some do alerta de "cadastro incompleto"
   };
   if (editandoClienteId !== null) {
@@ -3100,6 +3106,8 @@ function renderClientes() {
             ${c.restricaoHorario ? `<span class="tag tag-yellow">${c.restricaoHorario}</span>` : ''}
             ${c.segmento ? `<span class="tag tag-blue" style="font-size:9px;">${c.segmento}</span>` : ''}
             ${c.operacao ? `<span class="tag tag-lime" style="font-size:9px;">🏭 ${c.operacao}</span>` : ''}
+            ${c.bandeira ? `<span class="tag" style="font-size:9px;background:rgba(139,92,246,0.12);color:#6D28D9;">🚩 ${c.bandeira}</span>` : ''}
+            ${c.tipoContrato ? `<span class="tag" style="font-size:9px;background:rgba(8,145,178,0.12);color:#0E7490;">📄 ${c.tipoContrato}</span>` : ''}
             ${c.cadastroIncompleto ? `<span style="font-size:9px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #F59E0B;padding:2px 8px;border-radius:99px;">⚠️ Cadastro incompleto</span>` : ''}
             ${c.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             <span class="tag tag-lime" style="font-size:9px;">Descarga média: ${(c.tempoDescargaMediaMin||45).toFixed(0)} min</span>
@@ -3250,6 +3258,8 @@ function _montarHtmlExportClientes(listaClientes, freqPorCliente, paginaInfo, to
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px;">
         <span class="tag tag-blue" style="font-size:9px;font-weight:700;">${c.segmento || 'Sem segmento'}</span>
         <span style="font-size:9px;font-weight:700;color:#fff;background:${freq.cor};padding:2px 8px;border-radius:99px;">${freq.label}</span>
+        ${c.bandeira ? `<span style="font-size:9px;font-weight:700;color:#5B21B6;background:#EDE9FE;padding:2px 8px;border-radius:99px;">🚩 ${c.bandeira}</span>` : ''}
+        ${c.tipoContrato ? `<span style="font-size:9px;font-weight:700;color:#155E63;background:#CFFAFE;padding:2px 8px;border-radius:99px;">📄 ${c.tipoContrato}</span>` : ''}
         ${c.restricaoHorario ? `<span style="font-size:10px;color:#92400E;font-weight:700;">⚠ ${c.restricaoHorario}</span>` : ''}
       </div>
     </div>`;
@@ -3294,17 +3304,18 @@ async function exportarClientesFiltrados(formato) {
 
     if (formato === 'xlsx') {
       if (typeof XLSX === 'undefined') { showToast('SheetJS não carregado.', false); return; }
-      const cabecalho = ['Nome', 'Código SAP', 'Cidade', 'Latitude', 'Longitude', 'Endereço', 'Segmento', 'Restrições', 'Frequência de Entrega'];
+      const cabecalho = ['Nome', 'Código SAP', 'Cidade', 'Latitude', 'Longitude', 'Endereço', 'Segmento', 'Bandeira', 'Tipo de Contrato', 'Restrições', 'Frequência de Entrega'];
       const linhas = listaOrdenada.map(c => {
         const freq = freqPorCliente.get(c.id) || _classificarFrequencia(null);
         return [
           c.nome || '', c.codigoSAP || '-', c.cidade || '-',
           Number.isFinite(c.lat) ? c.lat : '', Number.isFinite(c.lon) ? c.lon : '',
-          c.endereco || '-', c.segmento || '-', c.restricaoHorario || '—', freq.label,
+          c.endereco || '-', c.segmento || '-', c.bandeira || 'Não informado', c.tipoContrato || 'Não informado',
+          c.restricaoHorario || '—', freq.label,
         ];
       });
       const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...linhas]);
-      ws['!cols'] = [{wch:28},{wch:12},{wch:18},{wch:10},{wch:10},{wch:40},{wch:10},{wch:16},{wch:18}];
+      ws['!cols'] = [{wch:28},{wch:12},{wch:18},{wch:10},{wch:10},{wch:40},{wch:10},{wch:16},{wch:16},{wch:16},{wch:18}];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Clientes');
       XLSX.writeFile(wb, `${nomeArq}.xlsx`);
