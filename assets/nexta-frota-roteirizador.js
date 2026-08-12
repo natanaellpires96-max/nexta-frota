@@ -2747,6 +2747,7 @@ function salvarCliente() {
     segmento:        document.getElementById('cl-segmento').value,
     operacao:        document.getElementById('cl-operacao').value,
     endereco:        document.getElementById('cl-endereco').value.trim(),
+    cadastroIncompleto: false, // qualquer salvamento pelo formulário conta como revisado — some do alerta de "cadastro incompleto"
   };
   if (editandoClienteId !== null) {
     const idx = clientes.findIndex(c => c.id === editandoClienteId);
@@ -2949,12 +2950,122 @@ function _mesclarClientesDuplicadosSilencioso() {
   });
   return gruposDuplicados.length;
 }
+// ── Alerta de cadastro incompleto (clientes criados automaticamente ao
+// subir um pedido cujo cliente ainda não existia no cadastro) ─────────────
+// ── Varredura ÚNICA do histórico: clientes que apareceram em entregas
+// passadas mas nunca foram cadastrados (a situação que o cadastro
+// automático ao subir pedido resolve DAQUI PRA FRENTE — isso aqui é só
+// pra "arrumar o passado", uma vez só). Roda sozinha na primeira vez que a
+// aba Clientes é aberta, guardada por uma flag no localStorage pra nunca
+// rodar de novo (nem se recarregar a página, nem em outra sessão neste
+// navegador). Silenciosa quando não há permissão de pasta do histórico
+// ainda — só tenta de novo na próxima vez que a aba abrir (a flag só é
+// gravada quando a varredura REALMENTE roda até o fim).
+const _CHAVE_VARREDURA_HISTORICO_CLIENTES = 'nexta_varredura_clientes_historico_v1';
+async function _varrerHistoricoClientesNaoCadastrados() {
+  if (localStorage.getItem(_CHAVE_VARREDURA_HISTORICO_CLIENTES)) return; // já rodou antes — nunca de novo
+  if (!window.dirHandleHistorico) return; // sem pasta selecionada ainda — tenta de novo na próxima vez que a aba abrir
+  let permOk = false;
+  try { permOk = await _histGarantirPermissao(); } catch (e) {}
+  if (!permOk) return; // sem permissão concedida ainda — idem, tenta de novo depois
+
+  showToast('Varrendo histórico por clientes não cadastrados (só desta vez)…', true);
+  const vistosNestaVarredura = new Map(); // chave (SAP||nome) -> {nome, codigoSAP, cidade}
+  try {
+    for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+      if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+      try {
+        const file = await handle.getFile();
+        const data = JSON.parse(await file.text());
+        if (!data.versao || !data.savedAt || !data.resumo) continue;
+        if (data.substituidoPor) continue; // só vigentes
+        const res = data.resultado || {}, vecs = data.veiculos || [];
+        vecs.forEach(v => {
+          (res[v.id] || []).forEach(vi => {
+            if (vi._vazio || !Array.isArray(vi.paradas)) return;
+            vi.paradas.forEach(p => {
+              const ped = p.pedido;
+              const nomeCliente = (ped?.cliente || '').trim();
+              if (!nomeCliente) return;
+              const sap = (ped?.codigoSAP || '').trim();
+              const chave = sap ? `sap:${sap}` : `nome:${nomeCliente.toUpperCase()}`;
+              if (!vistosNestaVarredura.has(chave)) {
+                vistosNestaVarredura.set(chave, { nome: nomeCliente, codigoSAP: sap, cidade: (ped?.cidade || '').trim() });
+              }
+            });
+          });
+        });
+      } catch (e) { /* arquivo malformado — pula */ }
+    }
+  } catch (e) {
+    console.warn('[_varrerHistoricoClientesNaoCadastrados] falha ao ler histórico:', e);
+    return; // não grava a flag — pode tentar de novo numa próxima visita
+  }
+
+  // Compara com o cadastro atual (mesma regra de identidade usada em todo
+  // o resto do sistema: SAP primeiro, nome como reserva) e cadastra quem
+  // faltar — exatamente os mesmos campos/padrões do cadastro automático ao
+  // subir pedido.
+  let criados = 0;
+  vistosNestaVarredura.forEach(info => {
+    let jaExiste = info.codigoSAP && clientes.some(c => c.codigoSAP === info.codigoSAP);
+    if (!jaExiste) jaExiste = clientes.some(c => c.nome && c.nome.trim().toUpperCase() === info.nome.toUpperCase());
+    if (jaExiste) return;
+    const novo = {
+      id: Date.now() + criados,
+      codigoSAP: info.codigoSAP || '',
+      nome: info.nome,
+      cidade: info.cidade || '',
+      lat: 0, lon: 0,
+      tempoDescargaMediaMin: 45,
+      restricaoHorario: '',
+      observacoes: '',
+      tiposCaminhao: [],
+      identidadePetronas: false,
+      segmento: '',
+      operacao: '',
+      endereco: '',
+      cadastroIncompleto: true,
+    };
+    clientes.push(novo);
+    _persistirCadastroManual('clientes', novo);
+    criados++;
+  });
+
+  localStorage.setItem(_CHAVE_VARREDURA_HISTORICO_CLIENTES, new Date().toISOString());
+  if (criados > 0) {
+    showToast(`✅ Varredura concluída: ${criados} cliente(s) do histórico cadastrado(s) automaticamente (marcados como incompletos).`, true);
+    renderClientes();
+    atualizarDropdownsClientes();
+  } else {
+    showToast('Varredura concluída — todos os clientes do histórico já estavam cadastrados.', true);
+  }
+}
+function _atualizarBannerCadastroIncompleto() {
+  const banner = document.getElementById('banner-cadastro-incompleto');
+  const texto = document.getElementById('banner-cadastro-incompleto-texto');
+  if (!banner || !texto) return;
+  const incompletos = clientes.filter(c => c.cadastroIncompleto);
+  if (!incompletos.length) { banner.style.display = 'none'; return; }
+  texto.textContent = `${incompletos.length} cliente${incompletos.length === 1 ? '' : 's'} com cadastro incompleto (criado${incompletos.length === 1 ? '' : 's'} automaticamente ao subir um pedido) — falta revisar coordenada, tempo de descarga, segmento e/ou restrição.`;
+  banner.style.display = 'flex';
+}
+// Clique no alerta — lista os nomes. Um alert() simples resolve bem aqui:
+// é só informativo, e a pessoa já sabe ir em "Editar" pelo nome depois.
+function mostrarClientesIncompletos() {
+  const incompletos = clientes.filter(c => c.cadastroIncompleto);
+  if (!incompletos.length) return;
+  const nomes = incompletos.map(c => `• ${c.nome}${c.codigoSAP ? ` (SAP ${c.codigoSAP})` : ''}`).join('\n');
+  alert(`Clientes com cadastro incompleto (${incompletos.length}):\n\n${nomes}\n\nForam criados automaticamente a partir de um pedido, sem cadastro prévio. Revise coordenada, tempo de descarga, segmento e restrição de cada um em "Editar".`);
+}
 function renderClientes() {
   // Auto-mescla duplicados (ver _mesclarClientesDuplicadosSilencioso) toda
   // vez que a lista é desenhada — não só nos pontos que carregam do
   // Firestore/salvam — pra nunca depender de prever todo caminho que pode
   // popular `clientes` (import de planilha, exemplos de demonstração etc.).
   _mesclarClientesDuplicadosSilencioso();
+  _atualizarBannerCadastroIncompleto();
+  _varrerHistoricoClientesNaoCadastrados().catch(() => {}); // silenciosa — não trava a tela se a permissão da pasta ainda não foi concedida
   const el = document.getElementById('clientes-list');
   if (!clientes.length) {
     el.innerHTML = '<div class="empty">Nenhum cliente cadastrado.<br>Clique em "+ Cliente" para começar.</div>';
@@ -2989,6 +3100,7 @@ function renderClientes() {
             ${c.restricaoHorario ? `<span class="tag tag-yellow">${c.restricaoHorario}</span>` : ''}
             ${c.segmento ? `<span class="tag tag-blue" style="font-size:9px;">${c.segmento}</span>` : ''}
             ${c.operacao ? `<span class="tag tag-lime" style="font-size:9px;">🏭 ${c.operacao}</span>` : ''}
+            ${c.cadastroIncompleto ? `<span style="font-size:9px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #F59E0B;padding:2px 8px;border-radius:99px;">⚠️ Cadastro incompleto</span>` : ''}
             ${c.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             <span class="tag tag-lime" style="font-size:9px;">Descarga média: ${(c.tempoDescargaMediaMin||45).toFixed(0)} min</span>
           </div>
@@ -4238,7 +4350,39 @@ function xlsxMapPedidosLiberadosRows(rows) {
       : String(dataEntregaRaw).trim().replace(/^(\d{4})-(\d{2})-(\d{2}).*/, '$3/$2/$1');
     const key = erpId + '||' + terminal;
     if (!groups[key]) {
-      const cliCad = clientes.find(c => c.codigoSAP === erpId);
+      let cliCad = clientes.find(c => c.codigoSAP === erpId);
+      // Fallback por nome (SAP vazio na planilha, ou já cadastrado com
+      // outro SAP por engano) antes de considerar "não cadastrado".
+      if (!cliCad && cliente) {
+        cliCad = clientes.find(c => c.nome && c.nome.trim().toUpperCase() === cliente.trim().toUpperCase());
+      }
+      // Cliente do pedido não existe no cadastro — cadastra AUTOMATICAMENTE
+      // com o que dá pra saber pela planilha (nome, SAP, cidade), mas
+      // marca como incompleto: falta pelo menos coordenada (lat/lon fica
+      // 0,0 — sem isso a rota real não pode ser calculada) e uma revisão
+      // humana (tempo de descarga real, segmento, restrição etc. — aqui
+      // só usa um padrão de 45min pra não travar a roteirização). O alerta
+      // na aba Clientes avisa que existe pendência pra resolver.
+      if (!cliCad && cliente) {
+        cliCad = {
+          id: Date.now() + order.length,
+          codigoSAP: erpId || '',
+          nome: cliente,
+          cidade: cidade || '',
+          lat: 0, lon: 0,
+          tempoDescargaMediaMin: 45,
+          restricaoHorario: '',
+          observacoes: '',
+          tiposCaminhao: [],
+          identidadePetronas: false,
+          segmento: '',
+          operacao: '',
+          endereco: '',
+          cadastroIncompleto: true,
+        };
+        clientes.push(cliCad);
+        if (typeof _persistirCadastroManual === 'function') _persistirCadastroManual('clientes', cliCad);
+      }
       groups[key] = {
         codigoSAP: erpId,
         ordens: [],       // Nos. Ordem SAP acumulados por linha do Excel
