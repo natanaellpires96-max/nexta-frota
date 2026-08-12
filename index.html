@@ -170,6 +170,27 @@
           <option value="">Todas as operações</option>
         </select>
       </div>
+      <div class="field" style="max-width:170px;">
+        <label>Bandeira</label>
+        <select id="f-cli-bandeira" onchange="renderClientes()">
+          <option value="">Todas as bandeiras</option>
+          <option value="__vazio__">Não informado</option>
+          <option value="Bandeira branca">Bandeira branca</option>
+          <option value="Total Energies">Total Energies</option>
+          <option value="Charrua">Charrua</option>
+          <option value="Petronas">Petronas</option>
+        </select>
+      </div>
+      <div class="field" style="max-width:170px;">
+        <label>Tipo de Contrato</label>
+        <select id="f-cli-contrato" onchange="renderClientes()">
+          <option value="">Todos os contratos</option>
+          <option value="__vazio__">Não informado</option>
+          <option value="CIF">CIF</option>
+          <option value="FOB">FOB</option>
+          <option value="CIF/FOB">CIF/FOB</option>
+        </select>
+      </div>
       <button class="btn btn-sm" onclick="limparFiltros('clientes')">Limpar</button>
       <div style="position:relative;">
         <button class="btn btn-sm" onclick="toggleMenuExportarClientes()" id="btn-exportar-clientes">📤 Exportar</button>
