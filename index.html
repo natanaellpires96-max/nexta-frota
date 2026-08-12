@@ -157,6 +157,9 @@
         <button class="btn btn-green btn-sm" onclick="abrirFormCliente(null)">+ Cliente</button>
       </div>
     </div>
+    <div id="banner-cadastro-incompleto" onclick="mostrarClientesIncompletos()" style="display:none;cursor:pointer;background:#FEF3C7;border:1px solid #F59E0B;border-radius:8px;padding:9px 14px;margin-bottom:12px;font-size:12.5px;color:#92400E;font-weight:600;align-items:center;gap:8px;">
+      <span>⚠️</span><span id="banner-cadastro-incompleto-texto"></span><span style="margin-left:auto;font-weight:700;text-decoration:underline;">Ver clientes</span>
+    </div>
     <div class="filter-bar">
       <div class="field"><label>Cliente</label><input id="f-cli-cliente" placeholder="Filtrar cliente..." oninput="renderClientes()"/></div>
       <div class="field"><label>Cidade</label><input id="f-cli-cidade" placeholder="Filtrar cidade..." oninput="renderClientes()"/></div>
