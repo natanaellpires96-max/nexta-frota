@@ -108,6 +108,33 @@ async function dbSavePlates(plates) {
   await setDoc(doc(db, "config", "plates"), { data: plates });
   cacheSet("plates", plates); // atualiza cache imediatamente após salvar
 }
+// ── Gravação segura de placas (lê fresco + enfileira) ──────────────────────
+// dbSavePlates() acima sempre existiu como "sobrescreve tudo com o que eu
+// mandar" — funciona bem pra escrita isolada, mas TODO chamador seguia o
+// padrão "leio via dbGetPlates() (que pode vir do cache de 60s) → mutuo em
+// memória → dbSavePlates(tudo)". Duas edições próximas no tempo (2 pessoas,
+// 2 abas, ou só a rede atrasando) liam o MESMO estado desatualizado e a
+// segunda gravação apagava a primeira sem ninguém perceber — exatamente o
+// sintoma de "sumiram várias placas e depois voltou ao normal sozinho"
+// (a gravação seguinte, já com dado mais atual, "conserta" por acidente).
+// dbAtualizarPlates() resolve isso: lê o documento AGORA MESMO (nunca do
+// cache), aplica a mutação, grava, e enfileira — cada gravação só começa
+// depois que a anterior terminou de verdade. Mesmo remédio já usado pros
+// cadastros do Roteirizador via _dbCadastroFila/_dbCadastroEnfileirar.
+const _dbPlatesFila = { atual: Promise.resolve() };
+function dbAtualizarPlates(mutatorFn) {
+  const anterior = _dbPlatesFila.atual;
+  const atual = anterior.catch(() => {}).then(async () => {
+    const snap = await getDoc(doc(db, "config", "plates"));
+    const fresh = snap.exists() ? snap.data().data : {};
+    const resultado = mutatorFn(fresh) || fresh; // mutatorFn pode mutar "fresh" in-place OU devolver um objeto novo
+    await setDoc(doc(db, "config", "plates"), { data: resultado });
+    cacheSet("plates", resultado);
+    return resultado;
+  });
+  _dbPlatesFila.atual = atual.catch(() => {});
+  return atual;
+}
 // ═══════════════════════════════════════════════════════════
 // CADASTROS DO ROTEIRIZADOR (Terminais / Clientes / Veículos) — Firestore
 // ═══════════════════════════════════════════════════════════
@@ -1628,6 +1655,8 @@ function openHelpModal(role){
 // LOGIN
 // ═══════════════════════════════════════════════════════════
 function renderLogin(){
+  const msgInicial = S.loginErrMsg || '';
+  S.loginErrMsg = null; // mostra uma vez só — não fica preso em renders futuros
   return `
     <div class="login-wrap">
       <div class="login-card">
@@ -1636,7 +1665,7 @@ function renderLogin(){
         <p class="login-sub">Acesse com seu usuário e senha</p>
         <div class="field"><label>USUÁRIO</label><input type="text" id="user-input" placeholder="Digite seu usuário" onkeydown="if(event.key==='Enter')document.getElementById('pwd').focus()"></div>
         <div class="field"><label>SENHA</label><input type="password" id="pwd" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
-        <div class="login-err" id="login-err"></div>
+        <div class="login-err" id="login-err">${msgInicial ? esc(msgInicial) : ''}</div>
         <button class="btn btn-lime btn-full" onclick="doLogin()">Entrar</button>
       </div>
     </div>`;
@@ -3921,8 +3950,8 @@ async function renderRegister(body){
         ?`<span class="badge b-green" style="font-size:10px">Ativo</span>`
         :`<span class="badge b-red" style="font-size:10px">Inativo</span>`;
       const toggleBtn=ativo
-        ?`<button class="btn-toggle-off" onclick="togglePlate('${attr(jsArg(carrier))}',${idx},false)" title="Desativar">⏸</button>`
-        :`<button class="btn-toggle-on" onclick="togglePlate('${attr(jsArg(carrier))}',${idx},true)" title="Ativar">▶</button>`;
+        ?`<button class="btn-toggle-off" onclick="togglePlate('${attr(jsArg(carrier))}',${idx},false,'${attr(jsArg(p.placa))}')" title="Desativar">⏸</button>`
+        :`<button class="btn-toggle-on" onclick="togglePlate('${attr(jsArg(carrier))}',${idx},true,'${attr(jsArg(p.placa))}')" title="Ativar">▶</button>`;
       return `<tr id="row-${attr(carrier.replace(/ /g,'_'))}-${idx}" style="${ativo?'':'opacity:.55;background:rgba(240,96,96,.04)'}">
         <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(p.placa)}</td>
         <td style="font-size:12px">${esc(p.operacao)}</td>
@@ -3936,7 +3965,7 @@ async function renderRegister(body){
           <div style="display:inline-flex;gap:5px;align-items:center">
             ${toggleBtn}
             <button class="btn-edit" onclick="openEditModal('${attr(jsArg(carrier))}',${idx})" title="Editar">✏️</button>
-            <button class="btn-danger" onclick="delPlate('${attr(jsArg(carrier))}',${idx})" title="Remover">🗑</button>
+            <button class="btn-danger" onclick="delPlate('${attr(jsArg(carrier))}',${idx},'${attr(jsArg(p.placa))}')" title="Remover">🗑</button>
           </div>
         </td>
       </tr>`;
@@ -3990,25 +4019,31 @@ async function addPlate(){
   if(!placa){msg.textContent="Informe a placa.";msg.style.color="var(--red)";return;}
   if(!capacidade||isNaN(capacidade)||+capacidade<=0){msg.textContent="Informe a capacidade.";msg.style.color="var(--red)";return;}
   btn.disabled=true; btn.textContent="Salvando...";
-  try{
-  const allP=await dbGetPlates();
-  if(!allP[carrier]) allP[carrier]=[];
-  if(CARRIERS.some(c=>(allP[c]||[]).some(p=>p.placa===placa))){
-    msg.textContent="Placa já cadastrada.";msg.style.color="var(--red)";
-    btn.disabled=false;btn.textContent="+ Cadastrar placa";return;
-  }
   const motDiurno=document.getElementById('r-mot-d')?.value||'';
   const motNoturno=document.getElementById('r-mot-n')?.value||'';
-  allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade,motoristaDiurno:motDiurno,motoristaNoturno:motNoturno});
-  await dbSavePlates(allP);
-  await dbAddAudit("plate_add", { carrier, placa, operacao, tipo, contrato });
-  document.getElementById("r-placa").value="";
-  document.getElementById("r-cap").value="";
-  msg.textContent=`Placa ${placa} cadastrada!`;msg.style.color="var(--green)";
-  showToast(`Placa ${placa} cadastrada!`);
-  setTimeout(()=>{msg.textContent="";},3000);
-  btn.disabled=false;btn.textContent="+ Cadastrar placa";
-  await renderTabBody();
+  try{
+    // Checagem de duplicidade e inclusão acontecem DENTRO da mesma operação
+    // enfileirada, sobre o dado mais fresco possível — evita a corrida de
+    // duas pessoas cadastrando a mesma placa quase ao mesmo tempo e as duas
+    // passando pela checagem "ainda não existe" antes de qualquer uma gravar.
+    let duplicada = false;
+    await dbAtualizarPlates(allP => {
+      if(CARRIERS.some(c=>(allP[c]||[]).some(p=>p.placa===placa))){ duplicada = true; return; }
+      if(!allP[carrier]) allP[carrier]=[];
+      allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade,motoristaDiurno:motDiurno,motoristaNoturno:motNoturno});
+    });
+    if(duplicada){
+      msg.textContent="Placa já cadastrada.";msg.style.color="var(--red)";
+      btn.disabled=false;btn.textContent="+ Cadastrar placa";return;
+    }
+    await dbAddAudit("plate_add", { carrier, placa, operacao, tipo, contrato });
+    document.getElementById("r-placa").value="";
+    document.getElementById("r-cap").value="";
+    msg.textContent=`Placa ${placa} cadastrada!`;msg.style.color="var(--green)";
+    showToast(`Placa ${placa} cadastrada!`);
+    setTimeout(()=>{msg.textContent="";},3000);
+    btn.disabled=false;btn.textContent="+ Cadastrar placa";
+    await renderTabBody();
   } catch(e) {
     console.error("Erro ao cadastrar placa:", e);
     msg.textContent="Erro ao cadastrar placa. Tente novamente.";msg.style.color="var(--red)";
@@ -4016,14 +4051,23 @@ async function addPlate(){
     btn.disabled=false;btn.textContent="+ Cadastrar placa";
   }
 }
-async function delPlate(carrier,idx){
+async function delPlate(carrier,idx,placa){
   if(!confirm("Remover esta placa?")) return;
-  const allP=await dbGetPlates();
-  if(!allP[carrier]) return;
-  const removed=allP[carrier].splice(idx,1);
-  await dbSavePlates(allP);
-  await dbAddAudit("plate_remove", { carrier, placa: removed[0]?.placa || "" });
-  showToast(`Placa ${removed[0]?.placa} removida.`);
+  let removidaPlaca = placa || null;
+  await dbAtualizarPlates(allP => {
+    if(!allP[carrier]) return;
+    // Prefere achar pela PLACA (identidade de verdade) — só cai pro índice
+    // se a placa não foi passada por algum motivo. Sem isso, se a lista
+    // mudou entre a tela ser desenhada e o clique (alguém mais mexendo ao
+    // mesmo tempo), o índice podia já apontar pra OUTRA placa.
+    let i = placa ? allP[carrier].findIndex(p=>p.placa===placa) : idx;
+    if(i<0 || i==null || !allP[carrier][i]) i = idx;
+    if(!allP[carrier][i]) return;
+    removidaPlaca = allP[carrier][i].placa;
+    allP[carrier].splice(i,1);
+  });
+  await dbAddAudit("plate_remove", { carrier, placa: removidaPlaca || "" });
+  showToast(`Placa ${removidaPlaca} removida.`);
   await renderTabBody();
 }
 // ═══════════════════════════════════════════════════════════
@@ -4242,9 +4286,10 @@ async function renderUsers(body, subTabs=''){
   // Users section (exclude admin from edit/delete)
   const userRows = Object.entries(USERS_DB).map(([uid,u])=>{
     const ops = userOperacoes(u);
+    const inativo = u.ativo===false;
     return `
-    <tr>
-      <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(uid)}</td>
+    <tr style="${inativo?'opacity:.55':''}">
+      <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(uid)}${inativo?' <span class="badge b-red" style="margin-left:4px;">Inativo</span>':''}</td>
       <td style="font-size:12px">${esc(u.name)}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${esc(u.carrier||'—')}</td>
@@ -4254,6 +4299,7 @@ async function renderUsers(body, subTabs=''){
         <div style="display:inline-flex;gap:5px;align-items:center">
           <button class="btn-edit" onclick="openEditUser('${attr(jsArg(uid))}')" title="Editar">✏️</button>
           ${uid!==S.user?`<button class="btn-reset-pwd" onclick="openResetPwd('${attr(jsArg(uid))}')" title="Resetar senha">🔑</button>`:''}
+          ${uid!=='admin'&&uid!==S.user?`<button class="btn-edit" onclick="toggleUserAtivo('${attr(jsArg(uid))}')" title="${inativo?'Reativar acesso':'Inativar acesso'}">${inativo?'🔓':'🔒'}</button>`:''}
           ${uid!=='admin'?`<button class="btn-danger" onclick="deleteUser('${attr(jsArg(uid))}')" title="Remover">🗑</button>`:''}
         </div>
       </td>
@@ -4406,6 +4452,25 @@ async function deleteUser(uid){
   delete USERS_DB[uid];
   await dbSaveUsers(USERS_DB);
   showToast(`Usuário ${uid} removido. Lembrete: a conta de login continua no Firebase Auth.`);
+  await renderTabBody();
+}
+// Inativar/reativar acesso — diferente de excluir: o cadastro (nome, e-mail,
+// transportador, operações) continua intacto, só fica bloqueado de entrar
+// no sistema. onAuthStateChanged confere "ativo===false" logo após a
+// autenticação e desloga na hora, mesmo que a senha esteja certa — ver lá.
+// Tela só é alcançável por admin (mesma trava de acesso do resto de
+// "Usuários"), mas ainda assim não deixa inativar a própria conta logada
+// nem a "admin" fixa, pra ninguém se trancar pra fora sem querer.
+async function toggleUserAtivo(uid){
+  const u=USERS_DB[uid];
+  if(!u) return;
+  if(uid==='admin'||uid===S.user){ showToast('Não é possível inativar esta conta.', false); return; }
+  const vaiInativar = u.ativo!==false;
+  const acao = vaiInativar ? 'inativar' : 'reativar';
+  if(!confirm(`Deseja ${acao} o acesso de "${uid}"?${vaiInativar?'\n\nO usuário não vai mais conseguir entrar no sistema até ser reativado. O cadastro (nome, e-mail, transportador, operações) continua salvo, nada é apagado.':''}`)) return;
+  u.ativo = vaiInativar ? false : true;
+  await dbSaveUsers(USERS_DB);
+  showToast(`Acesso de ${uid} ${vaiInativar?'inativado':'reativado'}.`);
   await renderTabBody();
 }
 function openEditUser(uid){
@@ -4803,17 +4868,21 @@ async function saveEditOp(idx){
 // ═══════════════════════════════════════════════════════════
 // TOGGLE PLATE ACTIVE/INACTIVE
 // ═══════════════════════════════════════════════════════════
-async function togglePlate(carrier, idx, activate){
-  const allP=await dbGetPlates();
-  if(!allP[carrier]||!allP[carrier][idx]) return;
-  const plate=allP[carrier][idx];
+async function togglePlate(carrier, idx, activate, placa){
+  const allPAtual=await dbGetPlates(); // só pra achar a placa e montar a mensagem de confirmação — a gravação de verdade relê fresco dentro de dbAtualizarPlates
+  const plateAtual = (placa ? (allPAtual[carrier]||[]).find(p=>p.placa===placa) : allPAtual[carrier]?.[idx]);
+  if(!plateAtual) return;
   const action=activate?'ativar':'desativar';
-  if(!confirm(`Deseja ${action} a placa ${plate.placa}?`)) return;
-  allP[carrier][idx].ativo=activate;
-  // Record when deactivated/activated for reporting purposes
-  allP[carrier][idx].ativoUpdatedAt=localDateStr(new Date());
-  await dbSavePlates(allP);
-  showToast(`Placa ${plate.placa} ${activate?'ativada':'desativada'}!`);
+  if(!confirm(`Deseja ${action} a placa ${plateAtual.placa}?`)) return;
+  await dbAtualizarPlates(allP => {
+    if(!allP[carrier]) return;
+    let i = placa ? allP[carrier].findIndex(p=>p.placa===placa) : idx;
+    if(i<0 || i==null || !allP[carrier][i]) i = idx;
+    if(!allP[carrier][i]) return;
+    allP[carrier][i].ativo=activate;
+    allP[carrier][i].ativoUpdatedAt=localDateStr(new Date());
+  });
+  showToast(`Placa ${plateAtual.placa} ${activate?'ativada':'desativada'}!`);
   await renderTabBody();
 }
 // ═══════════════════════════════════════════════════════════
@@ -4826,7 +4895,7 @@ async function openEditModal(carrier, idx){
   const p = allP[carrier] && allP[carrier][idx];
   if(!p){ showToast('Placa não encontrada.', false); return; }
   // Store for saveEdit to reference
-  _editPending = { carrier, idx };
+  _editPending = { carrier, idx, placa: p.placa };
   const opOpts=OPERACOES.map(o=>optHtml(o, o===p.operacao)).join('');
   const tvOpts=TIPOS_VEIC.map(o=>optHtml(o, o===p.tipo)).join('');
   const idOpts=IDENTS.map(o=>optHtml(o, o===p.identificacao)).join('');
@@ -4908,10 +4977,15 @@ async function saveEdit(){
   const btn=document.querySelector('#edit-modal .btn-lime');
   if(btn){ btn.disabled=true; btn.textContent='Salvando...'; }
   try {
-    const allP=await dbGetPlates();
-    if(!allP[carrier]||!allP[carrier][idx]){ showToast('Placa não encontrada.',false); return; }
-    allP[carrier][idx]={...allP[carrier][idx], operacao, tipo, identificacao, contrato, capacidade:+capacidade, motoristaDiurno:motD, motoristaNoturno:motN};
-    await dbSavePlates(allP);
+    let naoEncontrada = false;
+    await dbAtualizarPlates(allP => {
+      if(!allP[carrier]){ naoEncontrada = true; return; }
+      let i = _editPending.placa ? allP[carrier].findIndex(p=>p.placa===_editPending.placa) : idx;
+      if(i<0 || i==null || !allP[carrier][i]) i = idx;
+      if(!allP[carrier][i]){ naoEncontrada = true; return; }
+      allP[carrier][i]={...allP[carrier][i], operacao, tipo, identificacao, contrato, capacidade:+capacidade, motoristaDiurno:motD, motoristaNoturno:motN};
+    });
+    if(naoEncontrada){ showToast('Placa não encontrada.',false); return; }
     const modal=document.getElementById('edit-modal');
     if(modal) modal.remove();
     _editPending={};
@@ -5377,6 +5451,18 @@ loadConfig().catch(e=>{ console.error(e); }).then(()=>{
         console.warn('[onAuthStateChanged] falha ao atualizar usuários, seguindo com a última cópia conhecida:', e);
       }
       if(USERS_DB[uid]){
+        if(USERS_DB[uid].ativo===false){
+          // Conta existe e a senha bateu, mas o admin inativou o acesso —
+          // desloga na hora. Roda em toda checagem de sessão (não só no
+          // login novo), então também pega quem já estava logado quando
+          // foi inativado.
+          await signOut(auth);
+          S.user = null;
+          clearSession();
+          S.loginErrMsg = 'Este usuário foi inativado. Fale com o administrador.';
+          render();
+          return;
+        }
         S.user = uid;
         saveSession(uid);
       } else {
