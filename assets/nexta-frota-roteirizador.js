@@ -5051,11 +5051,11 @@ function renderPainelJornadaVeiculos() {
     const _cheg = _chegadaVeiculoDia(v);
     const chegadaHtml = _cheg
       ? `<div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
-           <span>Chegada${_cheg.qtdProgramacoes > 1 ? ` <span title="${_cheg.qtdProgramacoes} programações hoje — mostrando a última">(${_cheg.qtdProgramacoes}ª)</span>` : ''}</span>
+           <span>Retorno à base${_cheg.qtdProgramacoes > 1 ? ` <span title="${_cheg.qtdProgramacoes} programações hoje — mostrando a última">(${_cheg.qtdProgramacoes}ª)</span>` : ''}</span>
            <span style="font-weight:700;color:#1D4ED8;">${_cheg.label}</span>
          </div>`
       : `<div style="display:flex;justify-content:space-between;font-size:10px;color:#9CA3AF;">
-           <span>Chegada</span><span>—</span>
+           <span>Retorno à base</span><span>—</span>
          </div>`;
     return `
       <div style="background:#fff;border:1px solid #D1D5DB;border-radius:7px;overflow:hidden;font-family:var(--font-cond,inherit);">
@@ -5082,7 +5082,7 @@ function renderPainelJornadaVeiculos() {
       ${headerHtml()}
       <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
         <div style="flex:1;">${filtrosHtml}</div>
-        <button class="btn btn-sm" onclick="event.stopPropagation();exportarJornadaVeiculosXLSX()" title="Exporta esta lista (respeitando os filtros acima) em Excel, com a chegada prevista de cada veículo" style="background:#EEF2FF;color:#3730A3;border-color:#C7D2FE;white-space:nowrap;">📊 Exportar Excel</button>
+        <button class="btn btn-sm" onclick="event.stopPropagation();exportarJornadaVeiculosXLSX()" title="Exporta esta lista (respeitando os filtros acima) em Excel, com o retorno à base previsto de cada veículo" style="background:#EEF2FF;color:#3730A3;border-color:#C7D2FE;white-space:nowrap;">📊 Exportar Excel</button>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;">${cards}</div>
     </div>`;
@@ -5128,7 +5128,7 @@ function exportarJornadaVeiculosXLSX() {
       'Jornada Total (h)': +(totalMin / 60).toFixed(1),
       'Jornada Usada (h)': +(usadoMin / 60).toFixed(1),
       '% Utilização': estourou ? `+${(((usadoMin - totalMin) / 60)).toFixed(1)}h excedido` : `${pct}%`,
-      'Chegada Prevista': cheg ? cheg.label : '—',
+      'Retorno à Base (Previsto)': cheg ? cheg.label : '—',
       'Nº Programações no Dia': cheg ? cheg.qtdProgramacoes : 0,
     };
   });
