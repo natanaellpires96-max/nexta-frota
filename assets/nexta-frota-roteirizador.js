@@ -5050,11 +5050,11 @@ function renderPainelJornadaVeiculos() {
     // Combina histórico salvo + sessão ao vivo, sempre pegando a mais tarde.
     const _cheg = _chegadaVeiculoDia(v);
     const chegadaHtml = _cheg
-      ? `<div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
-           <span>Retorno à base${_cheg.qtdProgramacoes > 1 ? ` <span title="${_cheg.qtdProgramacoes} programações hoje — mostrando a última">(${_cheg.qtdProgramacoes}ª)</span>` : ''}</span>
+      ? `<div style="display:flex;flex-direction:column;font-size:10px;color:#374151;margin-top:1px;">
+           <span style="color:#6B7280;">Retorno à base${_cheg.qtdProgramacoes > 1 ? ` <span title="${_cheg.qtdProgramacoes} programações hoje — mostrando a última">(${_cheg.qtdProgramacoes}ª)</span>` : ''}</span>
            <span style="font-weight:700;color:#1D4ED8;">${_cheg.label}</span>
          </div>`
-      : `<div style="display:flex;justify-content:space-between;font-size:10px;color:#9CA3AF;">
+      : `<div style="display:flex;flex-direction:column;font-size:10px;color:#9CA3AF;margin-top:1px;">
            <span>Retorno à base</span><span>—</span>
          </div>`;
     return `
@@ -5063,7 +5063,7 @@ function renderPainelJornadaVeiculos() {
           <div style="font-weight:800;font-size:11px;letter-spacing:.02em;">${v.placa}</div>
           <div style="font-size:9px;color:#6B7280;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${transp}">${transp}</div>
         </div>
-        <div style="padding:5px 7px;display:flex;flex-direction:column;gap:2px;">
+        <div style="padding:5px 7px 4px;display:flex;flex-direction:column;gap:2px;">
           <div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
             <span>Total</span><span style="font-weight:700;">${totalH.toFixed(totalH % 1 === 0 ? 0 : 1)}h</span>
           </div>
@@ -5072,7 +5072,7 @@ function renderPainelJornadaVeiculos() {
           </div>
           ${chegadaHtml}
         </div>
-        <div style="text-align:center;padding:3px 0 5px;font-size:12.5px;font-weight:800;color:${corPct};">
+        <div style="text-align:center;padding:4px 0 6px;margin-top:1px;border-top:1px solid #F3F4F6;font-size:12.5px;font-weight:800;color:${corPct};">
           ${estourou ? `+${(usadoH - totalH).toFixed(1)}h` : `${pct}%`}
         </div>
       </div>`;
