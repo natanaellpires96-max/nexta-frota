@@ -5050,12 +5050,12 @@ function renderPainelJornadaVeiculos() {
     // Combina histórico salvo + sessão ao vivo, sempre pegando a mais tarde.
     const _cheg = _chegadaVeiculoDia(v);
     const chegadaHtml = _cheg
-      ? `<div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
-           <span>Retorno à base${_cheg.qtdProgramacoes > 1 ? ` <span title="${_cheg.qtdProgramacoes} programações hoje — mostrando a última">(${_cheg.qtdProgramacoes}ª)</span>` : ''}</span>
-           <span style="font-weight:700;color:#1D4ED8;">${_cheg.label}</span>
+      ? `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px;font-size:10px;color:#374151;">
+           <span style="white-space:nowrap;">Retorno${_cheg.qtdProgramacoes > 1 ? ` <span title="${_cheg.qtdProgramacoes} programações hoje — mostrando a última">(${_cheg.qtdProgramacoes}ª)</span>` : ''}</span>
+           <span style="font-weight:700;color:#1D4ED8;white-space:nowrap;">${_cheg.label}</span>
          </div>`
       : `<div style="display:flex;justify-content:space-between;font-size:10px;color:#9CA3AF;">
-           <span>Retorno à base</span><span>—</span>
+           <span>Retorno</span><span>—</span>
          </div>`;
     return `
       <div style="background:#fff;border:1px solid #D1D5DB;border-radius:7px;overflow:hidden;font-family:var(--font-cond,inherit);">
