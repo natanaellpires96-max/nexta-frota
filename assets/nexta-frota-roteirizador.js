@@ -766,7 +766,18 @@ function showTab(name) {
   routeRoot.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   routeRoot.querySelector('#tab-' + name)?.classList.add('active');
   if (name === 'operacao') renderTemplateOperacao();
-  if (name === 'resultado') renderPainelJornadaVeiculos();
+  if (name === 'resultado') {
+    // Renderiza imediatamente com o que já estiver em cache (evita aba em
+    // branco), e em seguida força a releitura do histórico do dia — sem
+    // isso, quem abre direto na aba "Otimização Rotas" (sem passar antes
+    // pela aba Veículos) chamava renderPainelJornadaVeiculos() com o cache
+    // ainda vazio (_jornadaHistoricoCache = {data:null}), e o painel
+    // mostrava 0h/0% pra TODOS os veículos mesmo com programação salva
+    // pro dia — bug real reportado (painel sempre em 0%).
+    renderPainelJornadaVeiculos();
+    const _dsResultado = document.getElementById('rot-data-operacao')?.value || dateStr(S.dateOffset);
+    _carregarJornadaHistoricoDoDia(_dsResultado).catch(() => {}).then(renderPainelJornadaVeiculos);
+  }
   if (name === 'aprendizado') renderAprendizado();
   if (name === 'frete') {
     freteRenderContratos();
@@ -4768,14 +4779,89 @@ function _calcularJornadaUsadaViagem(vi) {
 // Exclui de propósito o arquivo "aberto" nesta sessão (arquivoHistoricoAberto)
 // — ele já está representado ao vivo em ultimoControleTempo, então somar os
 // dois contaria a mesma coisa 2x.
-let _jornadaHistoricoCache = { data: null, porPlaca: {} };
+let _jornadaHistoricoCache = { data: null, porPlaca: {}, chegadaPorPlaca: {}, qtdProgramacoesPorPlaca: {} };
 function _invalidarCacheJornadaHistorico() {
-  _jornadaHistoricoCache = { data: null, porPlaca: {} };
+  _jornadaHistoricoCache = { data: null, porPlaca: {}, chegadaPorPlaca: {}, qtdProgramacoesPorPlaca: {} };
+}
+// ── Data-base de um resultado salvo (mesma âncora usada no render da tela) ──
+// Determina a que dia do calendário o minuto-0 (relogioMin=0) desse resultado
+// corresponde, pra poder converter minutos absolutos em "DD/MM HH:MM" de
+// verdade. Prioridade: resultado._baseDataEntrega (gravado na otimização) >
+// dataEntregaLogistica da 1ª parada da 1ª viagem real do veículo.
+function _baseDateDeResultado(resultadoObj, viagensDoVeic) {
+  const _fp = (viagensDoVeic || []).find(vi => vi && (vi.paradas || []).length)?.paradas[0];
+  const _dl = _fp?.pedido?.dataEntregaLogistica;
+  let base = null;
+  if (resultadoObj && resultadoObj._baseDataEntrega) {
+    const _bd = new Date(resultadoObj._baseDataEntrega);
+    if (!isNaN(_bd.getTime())) base = _bd;
+  }
+  if (!base && _dl) {
+    const _pts = _dl.split('/');
+    if (_pts.length >= 3) {
+      const _dd = new Date(parseInt(_pts[2]), parseInt(_pts[1]) - 1, parseInt(_pts[0]));
+      if (_fp.overnight) _dd.setDate(_dd.getDate() - 1);
+      base = _dd;
+    }
+  }
+  return base;
+}
+// ── Reconstrói o horário (minuto absoluto) em que o veículo TERMINA sua
+// última viagem do dia (retorno ao terminal / fim da última descarga) ──
+// Mesma matemática usada pra desenhar os horários na tela (renderResultado,
+// ver "paradasComHorario"), extraída aqui de forma pura (sem tocar DOM) pra
+// poder rodar tanto sobre a sessão ao vivo (ultimoResultado) quanto sobre
+// qualquer arquivo do histórico já salvo em disco — sem depender de estado
+// do otimizador. Se o veículo teve mais de uma viagem no dia, o resultado já
+// é o horário da ÚLTIMA (relogioMin vai acumulando sequencialmente).
+function _reconstruirFimCicloVeiculo(viagensDoVeic, v) {
+  let relogioMin = parseHoraMin(v?.jornadaInicio || '06:00');
+  if (isNaN(relogioMin)) relogioMin = 6 * 60;
+  let processadas = 0;
+  let fim = null;
+  (viagensDoVeic || []).forEach(viagem => {
+    if (!viagem || viagem._vazio || !(viagem.paradas || []).length) return;
+    if (processadas >= 1) relogioMin += (v?.tempoPerdidoMin || 0); // pausa entre viagens
+    processadas++;
+    relogioMin += viagem.esperaTerminalMin || 0;
+    if (viagem.horarioCargaManualMin !== undefined && !isNaN(viagem.horarioCargaManualMin)) {
+      relogioMin = viagem.horarioCargaManualMin; // respeita override manual salvo
+    }
+    viagem.paradas.forEach((p, idxParada) => {
+      const esperaOriginalMin = p.tempoEsperaRestricaoMin || 0;
+      const waitAfterLoad = p.overnight ? (p.waitAfterLoadingMin || 0) : 0;
+      const atrasoCargaMin = (!p.overnight && idxParada === 0 && esperaOriginalMin > 0 && (p.tempoCarregamentoMin || 0) > 0)
+        ? esperaOriginalMin : 0;
+      const esperaVisivelMin = p.overnight ? 0 : (esperaOriginalMin - atrasoCargaMin);
+      const inicioCargaMin = relogioMin + atrasoCargaMin;
+      const tempoCarregaEfetivo = idxParada === 0 ? (p.tempoCarregamentoMin || 0) : 0;
+      const fimCargaMin = inicioCargaMin + tempoCarregaEfetivo;
+      const chegadaEntregaMin = fimCargaMin + waitAfterLoad + (p.deslocCarregadoMin || 0);
+      const inicioDescargaMin = chegadaEntregaMin + esperaVisivelMin;
+      const fimDescargaMin = inicioDescargaMin + (p.tempoDescargaMin || 0);
+      const retornoTerminalMin = fimDescargaMin + (p.deslocVazioMin || 0);
+      relogioMin = retornoTerminalMin;
+    });
+    fim = relogioMin;
+  });
+  return processadas > 0 ? { fimMin: fim, qtdViagens: processadas } : null;
+}
+// Formata um minuto absoluto (base + fim) em "{ms, label}" pra dar pra
+// comparar cronologicamente entre fontes diferentes (arquivos do histórico +
+// sessão ao vivo) e escolher sempre a MAIS RECENTE ("última programação").
+function _fmtChegadaAbs(baseDate, absMin) {
+  if (absMin == null || isNaN(absMin) || !baseDate) return null;
+  const ms = baseDate.getTime() + Math.round(absMin * 60000);
+  const d = new Date(baseDate.getTime() + Math.floor(absMin / 1440) * 86400000);
+  const label = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${fmtHora(absMin)}`;
+  return { ms, label };
 }
 async function _carregarJornadaHistoricoDoDia(dataStr) {
   if (_jornadaHistoricoCache.data === dataStr) return _jornadaHistoricoCache.porPlaca;
   const porPlaca = {};
-  if (!window.dirHandleHistorico) { _jornadaHistoricoCache = { data: dataStr, porPlaca }; return porPlaca; }
+  const chegadaPorPlaca = {};      // placa -> {ms, label} — sempre a MAIS TARDE encontrada
+  const qtdProgramacoesPorPlaca = {}; // placa -> nº de arquivos/sessões distintos que tiveram viagem real nesse dia
+  if (!window.dirHandleHistorico) { _jornadaHistoricoCache = { data: dataStr, porPlaca, chegadaPorPlaca, qtdProgramacoesPorPlaca }; return porPlaca; }
   // datasEntrega é gravado em formato DD/MM/AAAA (dataEntregaLogistica dos
   // pedidos), mas dataStr chega em AAAA-MM-DD (input type="date") — sem essa
   // conversão, a comparação nunca bate e o histórico nunca é encontrado.
@@ -4784,7 +4870,7 @@ async function _carregarJornadaHistoricoDoDia(dataStr) {
   try {
     let permOk = false;
     try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted'; } catch (e) {}
-    if (!permOk) { _jornadaHistoricoCache = { data: dataStr, porPlaca }; return porPlaca; }
+    if (!permOk) { _jornadaHistoricoCache = { data: dataStr, porPlaca, chegadaPorPlaca, qtdProgramacoesPorPlaca }; return porPlaca; }
     for await (const [name, handle] of window.dirHandleHistorico.entries()) {
       if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
       if (name === arquivoHistoricoAberto) continue; // já representado ao vivo — não soma de novo
@@ -4796,19 +4882,55 @@ async function _carregarJornadaHistoricoDoDia(dataStr) {
       data.veiculos.forEach(v => {
         const viagensDoVeic = data.resultado[v.id];
         if (!Array.isArray(viagensDoVeic)) return;
+        const chave = v.placa || '';
+        if (!chave) return;
         viagensDoVeic.forEach(vi => {
           if (!vi || vi._vazio || !(vi.paradas || []).length) return;
-          const chave = v.placa || '';
-          if (!chave) return;
           porPlaca[chave] = (porPlaca[chave] || 0) + _calcularJornadaUsadaViagem(vi);
         });
+        // Horário de chegada/retorno previsto — reconstrói a partir deste
+        // arquivo específico e mantém sempre o MAIS TARDE encontrado pra
+        // essa placa (equivalente a "teve 2 programações? traga a última").
+        const _rec = _reconstruirFimCicloVeiculo(viagensDoVeic, v);
+        if (_rec) {
+          qtdProgramacoesPorPlaca[chave] = (qtdProgramacoesPorPlaca[chave] || 0) + 1;
+          const _base = _baseDateDeResultado(data.resultado, viagensDoVeic);
+          const _ch = _fmtChegadaAbs(_base, _rec.fimMin);
+          if (_ch && (!chegadaPorPlaca[chave] || _ch.ms > chegadaPorPlaca[chave].ms)) {
+            chegadaPorPlaca[chave] = _ch;
+          }
+        }
       });
     }
   } catch (e) {
     console.warn('[_carregarJornadaHistoricoDoDia] falhou:', e);
   }
-  _jornadaHistoricoCache = { data: dataStr, porPlaca };
+  _jornadaHistoricoCache = { data: dataStr, porPlaca, chegadaPorPlaca, qtdProgramacoesPorPlaca };
   return porPlaca;
+}
+// ── Chegada prevista "oficial" de um veículo no dia — combina o histórico já
+// salvo (arquivos em disco) com a sessão ao vivo (ultimoResultado desta aba,
+// se houver viagens roteirizadas agora), sempre preferindo a MAIS TARDE das
+// duas (é a "última programação" do dia pra esse veículo). Retorna
+// {ms, label, qtdProgramacoes} ou null se não há nenhuma viagem programada.
+function _chegadaVeiculoDia(v) {
+  let melhor = null;
+  const _hist = _jornadaHistoricoCache.chegadaPorPlaca && _jornadaHistoricoCache.chegadaPorPlaca[v.placa];
+  let qtd = (_jornadaHistoricoCache.qtdProgramacoesPorPlaca && _jornadaHistoricoCache.qtdProgramacoesPorPlaca[v.placa]) || 0;
+  if (_hist) melhor = _hist;
+  try {
+    const viagensSessao = ultimoResultado && ultimoResultado[v.id];
+    if (Array.isArray(viagensSessao)) {
+      const _rec = _reconstruirFimCicloVeiculo(viagensSessao, v);
+      if (_rec) {
+        qtd += 1;
+        const _base = _baseDateDeResultado(ultimoResultado, viagensSessao);
+        const _ch = _fmtChegadaAbs(_base, _rec.fimMin);
+        if (_ch && (!melhor || _ch.ms > melhor.ms)) melhor = _ch;
+      }
+    }
+  } catch (e) {}
+  return melhor ? { ...melhor, qtdProgramacoes: qtd } : null;
 }
 // ── Painel "Jornada dos Veículos" — sempre visível, sem depender de roteirização ──
 // Diferente do badge dentro de cada card de viagem (que fica espremido no
@@ -4830,11 +4952,23 @@ function renderPainelJornadaVeiculos() {
   if (!box) return;
   const todosDisponiveis = (veiculos || []).filter(v => (v.disponibilidade || 'Disponível') !== 'Indisponível');
   const setaIcon = _pjvExpandido ? '▲' : '▼';
+  // Rótulo da data: o painel sempre mostrava "Hoje" fixo no título mesmo
+  // quando a data selecionada em "rot-data-operacao" era outro dia (o campo
+  // começa em "amanhã" por padrão) — deixava parecer que os dados eram de
+  // hoje quando na verdade eram de outra data (e podiam legitimamente estar
+  // zerados). Agora mostra a data real sendo exibida.
+  const _dsPainel = document.getElementById('rot-data-operacao')?.value || dateStr(S.dateOffset);
+  const _hojeIso = (() => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,'0')}-${String(h.getDate()).padStart(2,'0')}`; })();
+  const _rotuloData = _dsPainel === _hojeIso
+    ? 'Hoje'
+    : new Date(_dsPainel + 'T12:00:00').toLocaleDateString('pt-BR');
+  const _semPasta = !window.dirHandleHistorico;
   const headerHtml = (resumoExtra) => `
-    <div onclick="togglePainelJornadaVeiculos()" style="cursor:pointer;display:flex;align-items:center;gap:8px;user-select:none;">
-      <span style="font-size:11px;font-weight:700;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase;">⏱ Jornada dos Veículos — Hoje</span>
+    <div onclick="togglePainelJornadaVeiculos()" style="cursor:pointer;display:flex;align-items:center;gap:8px;user-select:none;flex-wrap:wrap;">
+      <span style="font-size:11px;font-weight:700;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase;">⏱ Jornada dos Veículos — ${_rotuloData}</span>
       <span style="font-size:10px;color:var(--text-3);">${setaIcon}</span>
       ${resumoExtra || ''}
+      ${_semPasta ? `<span style="font-size:10px;color:#B45309;background:#FEF3C7;border:1px solid #FCD34D;border-radius:4px;padding:1px 7px;" title="Sem pasta de histórico vinculada nesta sessão — a jornada usada e a chegada prevista só refletem o que estiver sendo montado agora nesta aba, não o que já foi salvo em outras sessões/dias. Vá em Histórico e vincule a pasta.">⚠ Pasta de histórico não vinculada</span>` : ''}
     </div>`;
   if (!_pjvExpandido) {
     // Recolhido: só um resumo de 1 linha — quantos veículos disponíveis e
@@ -4911,6 +5045,18 @@ function renderPainelJornadaVeiculos() {
     const estourou = usadoMin > totalMin;
     const corPct = estourou ? '#DC2626' : pct >= 85 ? '#DC2626' : pct >= 60 ? '#D97706' : '#16A34A';
     const transp = v.transportadora || '—';
+    // Chegada prevista — horário em que o veículo termina a ÚLTIMA
+    // programação do dia (retorno ao terminal / fim da última descarga).
+    // Combina histórico salvo + sessão ao vivo, sempre pegando a mais tarde.
+    const _cheg = _chegadaVeiculoDia(v);
+    const chegadaHtml = _cheg
+      ? `<div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
+           <span>Chegada${_cheg.qtdProgramacoes > 1 ? ` <span title="${_cheg.qtdProgramacoes} programações hoje — mostrando a última">(${_cheg.qtdProgramacoes}ª)</span>` : ''}</span>
+           <span style="font-weight:700;color:#1D4ED8;">${_cheg.label}</span>
+         </div>`
+      : `<div style="display:flex;justify-content:space-between;font-size:10px;color:#9CA3AF;">
+           <span>Chegada</span><span>—</span>
+         </div>`;
     return `
       <div style="background:#fff;border:1px solid #D1D5DB;border-radius:7px;overflow:hidden;font-family:var(--font-cond,inherit);">
         <div style="background:#F3F4F6;border-bottom:1px solid #D1D5DB;padding:4px 6px;text-align:center;">
@@ -4924,6 +5070,7 @@ function renderPainelJornadaVeiculos() {
           <div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
             <span>Usada</span><span style="font-weight:700;">${usadoH.toFixed(1)}h</span>
           </div>
+          ${chegadaHtml}
         </div>
         <div style="text-align:center;padding:3px 0 5px;font-size:12.5px;font-weight:800;color:${corPct};">
           ${estourou ? `+${(usadoH - totalH).toFixed(1)}h` : `${pct}%`}
@@ -4933,10 +5080,70 @@ function renderPainelJornadaVeiculos() {
   box.innerHTML = `
     <div style="background:#fff;border:1px solid #D1D5DB;border-radius:8px;padding:9px 12px 12px;">
       ${headerHtml()}
-      <div style="margin-top:8px;">${filtrosHtml}</div>
+      <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+        <div style="flex:1;">${filtrosHtml}</div>
+        <button class="btn btn-sm" onclick="event.stopPropagation();exportarJornadaVeiculosXLSX()" title="Exporta esta lista (respeitando os filtros acima) em Excel, com a chegada prevista de cada veículo" style="background:#EEF2FF;color:#3730A3;border-color:#C7D2FE;white-space:nowrap;">📊 Exportar Excel</button>
+      </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;">${cards}</div>
     </div>`;
 }
+// ── Exporta o Painel "Jornada dos Veículos" (o que está sendo mostrado na
+// tela agora, já com os filtros ativos aplicados) em Excel ──────────────────
+// Diferente do "📊 Relatório Excel" da aba Otimização Rotas
+// (exportarRelatorioRoteirizacao), que só existe DEPOIS de rodar a
+// roteirização nesta sessão e lista entregas — este cobre TODOS os veículos
+// disponíveis no dia (rodados agora ou não), com jornada e chegada prevista,
+// que é o que esse painel mostra.
+function exportarJornadaVeiculosXLSX() {
+  if (typeof XLSX === 'undefined') { showToast('Biblioteca de exportação não carregada.', false); return; }
+  const todosDisponiveis = (veiculos || []).filter(v => (v.disponibilidade || 'Disponível') !== 'Indisponível');
+  const filtroTransp = valId('pjv-transp');
+  const filtroContrato = valId('pjv-contrato');
+  const filtroTipo = valId('pjv-tipo');
+  const filtroIdent = valId('pjv-ident');
+  const filtroOp = valId('pjv-op');
+  const disponiveis = todosDisponiveis.filter(v =>
+    (!filtroTransp || v.transportadora === filtroTransp) &&
+    (!filtroContrato || (v.contrato || 'Dedicado') === filtroContrato) &&
+    (!filtroTipo || v.tipo === filtroTipo) &&
+    (!filtroIdent || (filtroIdent === 'sim' ? !!v.identidadePetronas : !v.identidadePetronas)) &&
+    (!filtroOp || cidadeBaseVeiculo(v) === filtroOp)
+  );
+  if (!disponiveis.length) { showToast('Nenhum veículo para exportar com os filtros selecionados.', false); return; }
+  const linhas = disponiveis.map(v => {
+    const totalMin = Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720;
+    const usadoSessaoMin = (ultimoControleTempo && ultimoControleTempo[v.id]?.usadoMin) || 0;
+    const usadoHistoricoMin = (_jornadaHistoricoCache.porPlaca && _jornadaHistoricoCache.porPlaca[v.placa]) || 0;
+    const usadoMin = usadoSessaoMin + usadoHistoricoMin;
+    const pct = totalMin > 0 ? Math.round((usadoMin / totalMin) * 100) : 0;
+    const estourou = usadoMin > totalMin;
+    const cheg = _chegadaVeiculoDia(v);
+    return {
+      'Placa': v.placa || '',
+      'Transportadora': v.transportadora || '',
+      'Operação': cidadeBaseVeiculo(v) || '',
+      'Tipo': v.tipo || '',
+      'Contrato': v.contrato || 'Dedicado',
+      'ID Petronas': v.identidadePetronas ? 'Sim' : 'Não',
+      'Jornada Total (h)': +(totalMin / 60).toFixed(1),
+      'Jornada Usada (h)': +(usadoMin / 60).toFixed(1),
+      '% Utilização': estourou ? `+${(((usadoMin - totalMin) / 60)).toFixed(1)}h excedido` : `${pct}%`,
+      'Chegada Prevista': cheg ? cheg.label : '—',
+      'Nº Programações no Dia': cheg ? cheg.qtdProgramacoes : 0,
+    };
+  });
+  const _dsExport = document.getElementById('rot-data-operacao')?.value || dateStr(S.dateOffset);
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(linhas);
+  ws['!cols'] = [
+    { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 10 }, { wch: 10 },
+    { wch: 11 }, { wch: 15 }, { wch: 15 }, { wch: 18 }, { wch: 16 }, { wch: 18 },
+  ];
+  XLSX.utils.book_append_sheet(wb, ws, 'Jornada dos Veículos');
+  XLSX.writeFile(wb, `jornada_veiculos_${_dsExport}.xlsx`);
+  showToast('Relatório de jornada exportado ✓', true);
+}
+window.exportarJornadaVeiculosXLSX = exportarJornadaVeiculosXLSX;
 // Diferente da tag azul ao lado (que só mostra o HORÁRIO cadastrado, ex.:
 // "06:00-18:00 (12h)" — a configuração, sempre igual), esta mostra o quanto
 // dessa jornada JÁ FOI CONSUMIDO pela programação de hoje (ultimoControleTempo,
