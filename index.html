@@ -164,6 +164,7 @@
       <div class="field"><label>Cliente</label><input id="f-cli-cliente" placeholder="Filtrar cliente..." oninput="renderClientes()"/></div>
       <div class="field"><label>Cidade</label><input id="f-cli-cidade" placeholder="Filtrar cidade..." oninput="renderClientes()"/></div>
       <div class="field"><label>Segmento</label><input id="f-cli-segmento" placeholder="Filtrar segmento..." oninput="renderClientes()"/></div>
+      <div class="field"><label>Assessor</label><input id="f-cli-assessor" placeholder="Filtrar assessor..." oninput="renderClientes()"/></div>
       <div class="field" style="max-width:200px;">
         <label>Operação</label>
         <select id="f-cli-operacao" onchange="renderClientes()">
@@ -272,6 +273,10 @@
             <option value="">— não informado —</option>
           </select>
         </div>
+        <div class="field" style="max-width:220px;">
+          <label>Assessor</label>
+          <input id="cl-assessor" placeholder="Nome do assessor responsável"/>
+        </div>
       </div>
       <div class="row">
         <div class="field" style="max-width:180px;">
@@ -294,6 +299,24 @@
             <option value="FOB">FOB</option>
             <option value="CIF/FOB">CIF/FOB</option>
           </select>
+        </div>
+      </div>
+      <hr class="divider"/>
+      <div style="font-size:9.5px;color:var(--text-2);font-weight:700;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:8px;">
+        Foto do posto
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">
+        <div id="cl-foto-thumb-wrap" onclick="abrirFotoClienteExpandida()" style="width:72px;height:72px;border-radius:8px;border:1px solid var(--border-dk);overflow:hidden;flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;background:var(--bg-2, #F3F4F6);">
+          <img id="cl-foto-thumb" src="" style="display:none;width:100%;height:100%;object-fit:cover;"/>
+          <span id="cl-foto-thumb-placeholder" style="font-size:22px;color:var(--text-3);">📷</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;gap:6px;">
+            <input type="file" id="cl-foto-input" accept="image/*" style="display:none;" onchange="selecionarFotoCliente(this)"/>
+            <button type="button" class="btn btn-sm" onclick="document.getElementById('cl-foto-input').click()">📤 Escolher foto</button>
+            <button type="button" class="btn btn-sm btn-danger" id="cl-foto-remover-btn" style="display:none;" onclick="removerFotoCliente()">Remover</button>
+          </div>
+          <div id="cl-foto-status" style="font-size:10.5px;color:var(--text-3);">Clique na miniatura para ver em tamanho maior.</div>
         </div>
       </div>
       <hr class="divider"/>
@@ -1248,6 +1271,13 @@
     </div>
   </div>
   <!-- ── MODAL RESTAURAR BACKUP DE FRETE ───────────────────────────────────── -->
+  <!-- ── MODAL FOTO DO CLIENTE (LIGHTBOX) ─────────────────────────────────── -->
+  <div id="modal-foto-cliente" class="modal-backdrop" onclick="fecharFotoClienteExpandida(event)">
+    <div onclick="event.stopPropagation()" style="max-width:92vw;max-height:88vh;display:flex;flex-direction:column;align-items:center;gap:10px;">
+      <img id="modal-foto-cliente-img" src="" style="max-width:92vw;max-height:80vh;border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.4);"/>
+      <button class="btn btn-sm btn-danger" onclick="fecharFotoClienteExpandida()">Fechar</button>
+    </div>
+  </div>
   <div id="modal-frete-restaurar" class="modal-backdrop" onclick="freteFecharRestaurarBackup(event)">
     <div class="modal-card" style="max-width:520px;" onclick="event.stopPropagation()">
       <div class="modal-head">
