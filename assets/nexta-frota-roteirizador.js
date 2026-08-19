@@ -256,6 +256,7 @@ async function uploadPedDrop(e) {
 var pedidos = [], veiculos = [], terminaisCad = [], clientes = [];
 var numComps = 0, numProdForm = 0;
 var editandoTerminalId = null, editandoPedidoId = null, editandoClienteId = null, editandoVeiculoId = null;
+var _clFotoUrlAtual = null; // URL (Cloudinary) da foto do posto sendo editado/criado no formulário de Clientes
 var ultimoResultado = null, ultimoControleTempo = null;
 var _sugestoesSplitDedicado = []; // sugestões de quebra manual pós-otimização modo dedicado
 var _motoristasOverride = {}; // { petId: nome } — override manual por viagem, ignora regra diurno/noturno
@@ -1145,7 +1146,7 @@ document.addEventListener('click', (e) => {
 function limparFiltros(aba) {
   const mapa = {
     terminais: ['f-term-terminal','f-term-cidade'],
-    clientes: ['f-cli-cliente','f-cli-cidade','f-cli-segmento','f-cli-operacao','f-cli-bandeira','f-cli-contrato'],
+    clientes: ['f-cli-cliente','f-cli-cidade','f-cli-segmento','f-cli-assessor','f-cli-operacao','f-cli-bandeira','f-cli-contrato'],
     pedidos: ['f-ped-cliente','f-ped-cidade','f-ped-terminal'],
     veiculos: ['f-vei-placa','f-vei-transp','f-vei-terminal','f-vei-cidade','f-vei-tipo'],
     resultado: ['f-res-cliente','f-res-cidade','f-res-terminal','f-res-placa','f-res-transp'],
@@ -2722,13 +2723,16 @@ function abrirFormCliente(id) {
     document.getElementById('cl-identidade-petronas').checked = !!c.identidadePetronas;
     document.getElementById('cl-segmento').value = c.segmento || '';
     document.getElementById('cl-operacao').value = c.operacao || '';
+    document.getElementById('cl-assessor').value = c.assessor || '';
     document.getElementById('cl-endereco').value = c.endereco || '';
     document.getElementById('cl-bandeira').value = c.bandeira || '';
     document.getElementById('cl-contrato').value = c.tipoContrato || '';
     renderTipoBtns('cl-tipos-btns', c.tiposCaminhao || []);
+    _clFotoUrlAtual = c.fotoUrl || null;
+    _atualizarThumbFotoCliente();
   } else {
     document.getElementById('form-cliente-title').textContent = 'Novo cliente';
-    ['cl-sap','cl-nome','cl-cidade','cl-lat','cl-lon','cl-restricao','cl-obs','cl-endereco'].forEach(fid => {
+    ['cl-sap','cl-nome','cl-cidade','cl-lat','cl-lon','cl-restricao','cl-obs','cl-endereco','cl-assessor'].forEach(fid => {
       const e = document.getElementById(fid); if (e) e.value = '';
     });
     document.getElementById('cl-descarga').value = 45;
@@ -2738,6 +2742,8 @@ function abrirFormCliente(id) {
     document.getElementById('cl-bandeira').value = '';
     document.getElementById('cl-contrato').value = '';
     if (document.getElementById('cl-tipos-btns')) renderTipoBtns('cl-tipos-btns', []);
+    _clFotoUrlAtual = null;
+    _atualizarThumbFotoCliente();
   }
   document.getElementById('form-cliente').classList.remove('hidden');
   document.getElementById('form-cliente').scrollIntoView({behavior:'smooth', block:'start'});
@@ -2766,6 +2772,8 @@ function salvarCliente() {
     identidadePetronas: document.getElementById('cl-identidade-petronas').checked,
     segmento:        document.getElementById('cl-segmento').value,
     operacao:        document.getElementById('cl-operacao').value,
+    assessor:        document.getElementById('cl-assessor').value.trim(),
+    fotoUrl:         _clFotoUrlAtual || null,
     endereco:        document.getElementById('cl-endereco').value.trim(),
     bandeira:        document.getElementById('cl-bandeira').value,
     tipoContrato:    document.getElementById('cl-contrato').value,
@@ -2787,7 +2795,81 @@ function salvarCliente() {
   renderClientes();
   atualizarDropdownsClientes();
 }
-// ── Geocodificação reversa (coordenada → endereço) via Nominatim/OpenStreetMap ──
+// ── Foto do posto (cliente) ────────────────────────────────────────────────
+// Sobe pro Cloudinary (mesma conta gratuita já usada pra foto do hodômetro —
+// ver uploadFotoGenerica em nexta-frota-main.js) assim que o arquivo é
+// escolhido, sem precisar esperar o "Salvar cliente". A miniatura mostra o
+// preview local na hora (instantâneo) e troca pela URL definitiva quando o
+// upload terminar — funciona tanto num cliente novo (ainda sem id salvo)
+// quanto numa edição.
+function _atualizarThumbFotoCliente() {
+  const img = document.getElementById('cl-foto-thumb');
+  const placeholder = document.getElementById('cl-foto-thumb-placeholder');
+  const btnRemover = document.getElementById('cl-foto-remover-btn');
+  if (!img) return;
+  if (_clFotoUrlAtual) {
+    img.src = _clFotoUrlAtual;
+    img.style.display = 'block';
+    if (placeholder) placeholder.style.display = 'none';
+    if (btnRemover) btnRemover.style.display = 'inline-flex';
+  } else {
+    img.removeAttribute('src');
+    img.style.display = 'none';
+    if (placeholder) placeholder.style.display = 'block';
+    if (btnRemover) btnRemover.style.display = 'none';
+  }
+}
+async function selecionarFotoCliente(inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  const status = document.getElementById('cl-foto-status');
+  // Preview local instantâneo (não espera o upload) — troca pela URL do
+  // Cloudinary assim que ela chegar, mais abaixo.
+  const previewUrl = URL.createObjectURL(file);
+  _clFotoUrlAtual = previewUrl;
+  _atualizarThumbFotoCliente();
+  if (status) status.textContent = '⏳ Enviando foto...';
+  try {
+    if (typeof window.uploadFotoGenerica !== 'function') throw new Error('Upload de foto indisponível — recarregue a página.');
+    const nomeBase = `cliente_${document.getElementById('cl-sap').value.trim() || 'novo'}_${(document.getElementById('cl-nome').value || '').trim().replace(/\s+/g,'_').slice(0,30)}`;
+    const url = await window.uploadFotoGenerica(file, nomeBase);
+    // Se o usuário trocou de cliente (fechou/abriu outro formulário) enquanto
+    // o upload rodava, não aplica mais o resultado — evita colar a foto de
+    // um cliente no cliente errado.
+    if (_clFotoUrlAtual !== previewUrl) return;
+    _clFotoUrlAtual = url;
+    _atualizarThumbFotoCliente();
+    if (status) status.textContent = '✅ Foto enviada. Clique na miniatura para ampliar.';
+  } catch (e) {
+    console.error('[selecionarFotoCliente] falha no upload:', e);
+    if (_clFotoUrlAtual === previewUrl) { _clFotoUrlAtual = null; _atualizarThumbFotoCliente(); }
+    if (status) status.textContent = '❌ ' + (e.message || 'Falha ao enviar a foto.');
+  } finally {
+    inputEl.value = '';
+  }
+}
+function removerFotoCliente() {
+  _clFotoUrlAtual = null;
+  _atualizarThumbFotoCliente();
+  const status = document.getElementById('cl-foto-status');
+  if (status) status.textContent = 'Clique na miniatura para ver em tamanho maior.';
+}
+function abrirFotoClienteExpandida() {
+  if (!_clFotoUrlAtual) return; // sem foto ainda — nada pra expandir
+  document.getElementById('modal-foto-cliente-img').src = _clFotoUrlAtual;
+  document.getElementById('modal-foto-cliente').classList.add('show');
+}
+function fecharFotoClienteExpandida(ev = null) {
+  if (ev && ev.target && ev.target.id !== 'modal-foto-cliente') return;
+  document.getElementById('modal-foto-cliente').classList.remove('show');
+}
+// Expande a foto de um cliente direto pelo card da listagem (fora do
+// formulário de edição) — usa a URL passada, não depende de _clFotoUrlAtual.
+function abrirFotoClienteExpandidaDireto(url) {
+  if (!url) return;
+  document.getElementById('modal-foto-cliente-img').src = url;
+  document.getElementById('modal-foto-cliente').classList.add('show');
+}
 // Gratuito, sem precisar de chave de API (diferente do OpenRouteService, que
 // já usa chave). Política de uso do Nominatim pede no máximo 1
 // requisição/segundo em uso automatizado — respeitada em _dashDelay abaixo
@@ -3097,6 +3179,7 @@ function renderClientes() {
   const filtroCliente = valId('f-cli-cliente');
   const filtroCidade = valId('f-cli-cidade');
   const filtroSegmento = valId('f-cli-segmento');
+  const filtroAssessor = valId('f-cli-assessor');
   const filtroOperacao = valId('f-cli-operacao');
   const filtroBandeira = valId('f-cli-bandeira');
   const filtroContrato = valId('f-cli-contrato');
@@ -3104,6 +3187,7 @@ function renderClientes() {
     containsFiltro(c.nome, filtroCliente) &&
     containsFiltro(c.cidade, filtroCidade) &&
     containsFiltro(c.segmento, filtroSegmento) &&
+    containsFiltro(c.assessor, filtroAssessor) &&
     (!filtroOperacao || c.operacao === filtroOperacao) &&
     _bateFiltroExato(c.bandeira, filtroBandeira) &&
     _bateFiltroExato(c.tipoContrato, filtroContrato)
@@ -3116,8 +3200,12 @@ function renderClientes() {
     const tipos = c.tiposCaminhao && c.tiposCaminhao.length
       ? c.tiposCaminhao.map(t => `<span class="tag tag-blue" style="font-size:9px;">${t}</span>`).join(' ')
       : '<span style="font-size:11px;color:#5E9A18;">Todos os tipos</span>';
+    const fotoThumb = c.fotoUrl
+      ? `<img src="${c.fotoUrl}" onclick="abrirFotoClienteExpandidaDireto('${String(c.fotoUrl).replace(/'/g,"\\'")}')" title="Ver foto do posto" style="width:44px;height:44px;border-radius:6px;object-fit:cover;border:1px solid var(--border-dk);cursor:pointer;flex-shrink:0;"/>`
+      : '';
     return `<div class="card">
       <div style="display:flex;align-items:flex-start;gap:10px;">
+        ${fotoThumb}
         <div style="flex:1;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;">
             ${c.codigoSAP ? `<span class="sap-code">SAP ${c.codigoSAP}</span>` : ''}
@@ -3126,6 +3214,7 @@ function renderClientes() {
             ${c.restricaoHorario ? `<span class="tag tag-yellow">${c.restricaoHorario}</span>` : ''}
             ${c.segmento ? `<span class="tag tag-blue" style="font-size:9px;">${c.segmento}</span>` : ''}
             ${c.operacao ? `<span class="tag tag-lime" style="font-size:9px;">🏭 ${c.operacao}</span>` : ''}
+            ${c.assessor ? `<span class="tag" style="font-size:9px;background:rgba(217,119,6,0.12);color:#B45309;">🧑‍💼 ${c.assessor}</span>` : ''}
             ${c.bandeira ? `<span class="tag" style="font-size:9px;background:rgba(139,92,246,0.12);color:#6D28D9;">🚩 ${c.bandeira}</span>` : ''}
             ${c.tipoContrato ? `<span class="tag" style="font-size:9px;background:rgba(8,145,178,0.12);color:#0E7490;">📄 ${c.tipoContrato}</span>` : ''}
             ${c.cadastroIncompleto ? `<span style="font-size:9px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #F59E0B;padding:2px 8px;border-radius:99px;">⚠️ Cadastro incompleto</span>` : ''}
@@ -3184,6 +3273,7 @@ function _clientesFiltradosAtualmente() {
   const filtroCliente = valId('f-cli-cliente');
   const filtroCidade = valId('f-cli-cidade');
   const filtroSegmento = valId('f-cli-segmento');
+  const filtroAssessor = valId('f-cli-assessor');
   const filtroOperacao = valId('f-cli-operacao');
   const filtroBandeira = valId('f-cli-bandeira');
   const filtroContrato = valId('f-cli-contrato');
@@ -3191,6 +3281,7 @@ function _clientesFiltradosAtualmente() {
     containsFiltro(c.nome, filtroCliente) &&
     containsFiltro(c.cidade, filtroCidade) &&
     containsFiltro(c.segmento, filtroSegmento) &&
+    containsFiltro(c.assessor, filtroAssessor) &&
     (!filtroOperacao || c.operacao === filtroOperacao) &&
     _bateFiltroExato(c.bandeira, filtroBandeira) &&
     _bateFiltroExato(c.tipoContrato, filtroContrato)
@@ -3201,6 +3292,7 @@ function _descricaoFiltroClientesAtual() {
   const fc = valId('f-cli-cliente'); if (fc) partes.push(`Cliente: "${fc}"`);
   const fd = valId('f-cli-cidade'); if (fd) partes.push(`Cidade: "${fd}"`);
   const fs = valId('f-cli-segmento'); if (fs) partes.push(`Segmento: "${fs}"`);
+  const fas = valId('f-cli-assessor'); if (fas) partes.push(`Assessor: "${fas}"`);
   const fo = valId('f-cli-operacao'); if (fo) partes.push(`Operação: ${fo}`);
   const fb = valId('f-cli-bandeira'); if (fb) partes.push(`Bandeira: ${fb === '__vazio__' ? 'Não informado' : fb}`);
   const ft = valId('f-cli-contrato'); if (ft) partes.push(`Contrato: ${ft === '__vazio__' ? 'Não informado' : ft}`);
@@ -3289,6 +3381,7 @@ function _montarHtmlExportClientes(listaClientes, freqPorCliente, paginaInfo, to
       ${c.endereco ? `<div style="font-size:11px;color:${corTextoSecundario};margin-bottom:4px;">🏠 ${c.endereco}</div>` : ''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px;">
         <span class="tag tag-blue" style="font-size:9px;font-weight:700;">${c.segmento || 'Sem segmento'}</span>
+        ${c.assessor ? `<span style="font-size:9px;font-weight:700;color:#B45309;background:#FEF3E2;padding:2px 8px;border-radius:99px;">🧑‍💼 ${c.assessor}</span>` : ''}
         <span style="font-size:9px;font-weight:700;color:#fff;background:${freq.cor};padding:2px 8px;border-radius:99px;">${freq.label}</span>
         ${c.bandeira ? `<span style="font-size:9px;font-weight:700;color:#5B21B6;background:#EDE9FE;padding:2px 8px;border-radius:99px;">🚩 ${c.bandeira}</span>` : ''}
         ${c.tipoContrato ? `<span style="font-size:9px;font-weight:700;color:#155E63;background:#CFFAFE;padding:2px 8px;border-radius:99px;">📄 ${c.tipoContrato}</span>` : ''}
@@ -3336,18 +3429,18 @@ async function exportarClientesFiltrados(formato) {
 
     if (formato === 'xlsx') {
       if (typeof XLSX === 'undefined') { showToast('SheetJS não carregado.', false); return; }
-      const cabecalho = ['Nome', 'Código SAP', 'Cidade', 'Latitude', 'Longitude', 'Endereço', 'Segmento', 'Bandeira', 'Tipo de Contrato', 'Restrições', 'Frequência de Entrega'];
+      const cabecalho = ['Nome', 'Código SAP', 'Cidade', 'Latitude', 'Longitude', 'Endereço', 'Segmento', 'Assessor', 'Bandeira', 'Tipo de Contrato', 'Restrições', 'Frequência de Entrega'];
       const linhas = listaOrdenada.map(c => {
         const freq = freqPorCliente.get(c.id) || _classificarFrequencia(null);
         return [
           c.nome || '', c.codigoSAP || '-', c.cidade || '-',
           Number.isFinite(c.lat) ? c.lat : '', Number.isFinite(c.lon) ? c.lon : '',
-          c.endereco || '-', c.segmento || '-', c.bandeira || 'Não informado', c.tipoContrato || 'Não informado',
+          c.endereco || '-', c.segmento || '-', c.assessor || '-', c.bandeira || 'Não informado', c.tipoContrato || 'Não informado',
           c.restricaoHorario || '—', freq.label,
         ];
       });
       const ws = XLSX.utils.aoa_to_sheet([cabecalho, ...linhas]);
-      ws['!cols'] = [{wch:28},{wch:12},{wch:18},{wch:10},{wch:10},{wch:40},{wch:10},{wch:16},{wch:16},{wch:16},{wch:18}];
+      ws['!cols'] = [{wch:28},{wch:12},{wch:18},{wch:10},{wch:10},{wch:40},{wch:10},{wch:18},{wch:16},{wch:16},{wch:16},{wch:18}];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Clientes');
       XLSX.writeFile(wb, `${nomeArq}.xlsx`);

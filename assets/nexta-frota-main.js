@@ -325,6 +325,37 @@ async function uploadHodometroFoto(carrier, plate, dateStr, file) {
     throw new Error(e.message || 'Falha ao enviar a foto do hodômetro.');
   }
 }
+// Upload genérico de foto pro Cloudinary (mesma conta/preset gratuito do
+// hodômetro acima) — usado por outras telas que precisam anexar uma foto,
+// como a foto do posto no Cadastro de Clientes do Roteirizador. Exposta em
+// window porque nexta-frota-roteirizador.js roda como script comum (não
+// type="module") e não enxerga os `const` deste módulo diretamente.
+async function uploadFotoGenerica(file, publicIdBase) {
+  const comTimeout = (promessa, ms, msgTimeout) => Promise.race([
+    promessa,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(msgTimeout)), ms)),
+  ]);
+  const form = new FormData();
+  form.append('file', file);
+  form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  form.append('public_id', `${publicIdBase}_${Date.now()}`.replace(/[^a-zA-Z0-9_.-]/g, '_'));
+  try {
+    const resp = await comTimeout(
+      fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, { method: 'POST', body: form }),
+      25000,
+      'Tempo esgotado enviando a foto (25s) — verifique sua conexão e tente de novo.'
+    );
+    const data = await resp.json();
+    if (!resp.ok || !data.secure_url) {
+      throw new Error(data?.error?.message || `Falha ao enviar a foto (status ${resp.status}).`);
+    }
+    return data.secure_url;
+  } catch (e) {
+    console.error('[uploadFotoGenerica] falha no upload:', e);
+    throw new Error(e.message || 'Falha ao enviar a foto.');
+  }
+}
+window.uploadFotoGenerica = uploadFotoGenerica;
 async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiurno, motoristaNoturno, hodometro, hodometroFotoUrl) {
   const id = `${carrier}__${plate}__${dateStr}`;
   const data = {
