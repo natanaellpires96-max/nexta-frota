@@ -1218,6 +1218,9 @@ function obterPontosRotaComCoords(v, viagem) {
 }
 function abrirModalViagem(veiculoId, idxViagem) {
   if (!ultimoResultado || !ultimoResultado[veiculoId]) return;
+  // Mesma garantia de auto-restauração de contratos de frete que
+  // abrirMapaVeiculo — cobre o caso de abrir uma viagem individual.
+  _freteAutoRestaurarSeVazio().then(restaurou => { if (restaurou) renderCustoMapaViagem(); });
   const v = veiculos.find(x => x.id === veiculoId);
   if (!v) return;
   const viagem = ultimoResultado[veiculoId][idxViagem];
@@ -5281,6 +5284,52 @@ function carregarExemplos() {
 // ═══════════════════════════════════════════════════════════════════════════
 // OTIMIZAÇÃO
 // ═══════════════════════════════════════════════════════════════════════════
+// ── Auto-restauração de contratos de frete quando localStorage está vazio ──
+// Contratos de frete vivem só no localStorage (não sincronizam entre
+// navegadores/computadores — ver freteAbrirRestaurarBackup). Isso fazia o
+// cálculo de frete "sumir" no Mapa toda vez que a roteirização era aberta
+// num navegador/perfil onde os contratos nunca tinham sido restaurados
+// manualmente — o usuário precisava lembrar de ir em Frete → Restaurar
+// Backup antes de tudo. Esta função tenta restaurar sozinha, do backup
+// mais recente encontrado na pasta do Histórico, sempre que o cálculo de
+// frete for precisar dos contratos (ao roteirizar e ao abrir o mapa) e o
+// localStorage estiver vazio — sem perguntar nada, só quando não há
+// NENHUM contrato aqui (nunca sobrescreve contratos já existentes).
+let _freteAutoRestaurarEmAndamento = false;
+let _freteAutoRestaurarJaTentouNestaSessao = false;
+async function _freteAutoRestaurarSeVazio() {
+  if (freteCarregarContratos().length > 0) return false; // já tem dado local — não mexe
+  if (_freteAutoRestaurarEmAndamento || _freteAutoRestaurarJaTentouNestaSessao) return false;
+  if (!window.dirHandleHistorico) return false; // sem pasta vinculada, nada a fazer
+  _freteAutoRestaurarEmAndamento = true;
+  try {
+    let permOk = false;
+    try { permOk = (await window.dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted'; } catch (e) {}
+    if (!permOk) return false;
+    let maisRecente = null;
+    for await (const [name, handle] of window.dirHandleHistorico.entries()) {
+      if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+      let data;
+      try { data = JSON.parse(await (await handle.getFile()).text()); } catch (e) { continue; }
+      if (!data.versao || !data.savedAt || !(data.freteContratos?.length || data.freteSpot?.length)) continue;
+      if (!maisRecente || data.savedAt > maisRecente.savedAt) maisRecente = data;
+    }
+    if (maisRecente) {
+      freteSalvarContratos(maisRecente.freteContratos || []);
+      freteSalvarSpot(maisRecente.freteSpot || []);
+      showToast(`Contratos de frete restaurados automaticamente (backup de ${new Date(maisRecente.savedAt).toLocaleString('pt-BR')}) ✅`, true);
+      if (document.getElementById('frete-contratos-body')) { freteRenderContratos(); freteRenderSpot(); }
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.warn('[_freteAutoRestaurarSeVazio] falhou:', e);
+    return false;
+  } finally {
+    _freteAutoRestaurarEmAndamento = false;
+    _freteAutoRestaurarJaTentouNestaSessao = true;
+  }
+}
 async function otimizar(modo = 'padrao', dataCarregamento = null) {
   // ══════════════════════════════════════════════════════════════════════════
   // MOTOR DE OTIMIZAÇÃO
@@ -5297,6 +5346,11 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   // ══════════════════════════════════════════════════════════════════════════
   if (!pedidos.length)  { showTab('pedidos');  alert('Adicione ao menos um pedido.'); return; }
   if (!veiculos.length) { showTab('veiculos'); alert('Adicione ao menos um veículo.'); return; }
+  // Dispara em paralelo (não trava a roteirização) — se os contratos de
+  // frete estiverem vazios neste navegador, tenta restaurar sozinho do
+  // backup mais recente, pra já estarem prontos quando o resultado/mapa
+  // for aberto logo em seguida.
+  _freteAutoRestaurarSeVazio();
   // Carrega os parâmetros aprendidos (Firestore) — se falhar ou não existir
   // ainda, usa os mesmos valores padrão de sempre (0 mudança de comportamento
   // pra quem nunca usou o painel 🧠 Aprendizado).
@@ -7847,6 +7901,10 @@ window.renderCustoMapaViagem = renderCustoMapaViagem;
 const CORES_VIAGEM = ['#7CB82B','#2255CC','#F97316','#7C3AED','#E11D48','#0EA5E9'];
 function abrirMapaVeiculo(veiculoId) {
   if (!ultimoResultado || !ultimoResultado[veiculoId]) return;
+  // Garante que o frete calcule mesmo se os contratos ainda não tiverem
+  // sido restaurados neste navegador — não bloqueia a abertura do mapa,
+  // só re-renderiza o box de custo assim que (e se) restaurar algo.
+  _freteAutoRestaurarSeVazio().then(restaurou => { if (restaurou) renderCustoMapaViagem(); });
   const v = veiculos.find(x => x.id === veiculoId);
   if (!v) return;
   const viagens = (ultimoResultado[veiculoId] || []).filter(vi => vi.paradas?.length);
