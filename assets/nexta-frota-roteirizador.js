@@ -1351,6 +1351,7 @@ function abrirModalViagem(veiculoId, idxViagem) {
         <div style="font-family:Inter,sans-serif;min-width:200px;">
           <div style="font-weight:700;font-size:13px;margin-bottom:4px;">🏭 ${p.nome}</div>
           <div style="font-size:11px;color:#6B7280;">Partida: <strong>${absMinToHora(clock)}</strong></div>
+          ${streetViewBotaoHtml(p.lat, p.lon)}
         </div>`;
     } else if (isRetorno) {
       const kmTotal = distAcum[idx] != null ? distAcum[idx].toFixed(1) : '-';
@@ -1359,6 +1360,7 @@ function abrirModalViagem(veiculoId, idxViagem) {
           <div style="font-weight:700;font-size:13px;margin-bottom:4px;">↩ ${p.nome}</div>
           <div style="font-size:11px;color:#6B7280;">Retorno estimado: <strong>${absMinToHora(clock)}</strong></div>
           <div style="font-size:11px;color:#2563EB;margin-top:4px;">📏 Percurso total: <strong>${kmTotal} km</strong></div>
+          ${streetViewBotaoHtml(p.lat, p.lon)}
         </div>`;
     } else {
       const par = viagem.paradas[idx - 1];

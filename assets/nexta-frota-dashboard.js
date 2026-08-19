@@ -34,8 +34,9 @@
 // ReferenceError, e o mapa de viagem nunca via os dados que abrirModalViagem
 // pensava ter preenchido — causa raiz de "traçado não aparece"/"km não atualiza".
 var _mvWaypoints = [];       // [{lat,lon,marker,tipo,nome}] pontos originais (origem, paradas, retorno)
-var _mvPolylines = [];       // polylines desenhadas (uma por segmento)
 var _mvUserWaypoints = [];   // waypoints intermediários inseridos pelo usuário arrastando a linha
+var _mvViaIdSeq = 1;         // gera ids estáveis pras vias, pra poder referenciar no popup (onclick)
+var _mvPolylines = [];       // polylines desenhadas (uma por segmento)
 var _mvDistSpan = null;
 var _mvDragMarker = null;    // marcador fantasma que aparece ao hover na linha
 var _mvRenderToken = 0;      // token incremental — evita que uma chamada antiga de mvDesenharRota
@@ -217,6 +218,7 @@ function _mvBindPolylineClick(pl, segIdx, sequencia) {
     const segFixo = _mvMapearSegmentoFixo(segIdx, sequencia);
     const ordem = _mvUserWaypoints.filter(uw => uw.segmento === segFixo).length;
     const via = {
+      id: _mvViaIdSeq++,
       lat: e.latlng.lat,
       lon: e.latlng.lng,
       segmento: segFixo,
@@ -249,7 +251,23 @@ function _mvDesenharMarcadorVia(via) {
   const icon = L.divIcon({ className: '', html: iconHtml, iconSize:[18,18], iconAnchor:[9,9] });
   const marker = L.marker([via.lat, via.lon], { icon, draggable: true, zIndexOffset: 1000 })
     .addTo(camadaViagem);
-  marker.bindTooltip('Arraste para ajustar · Clique para remover', { direction:'top', offset:[0,-12] });
+  // Antes o clique removia a via na hora. Trocado por um popup — dá acesso ao
+  // Street View do ponto (pedido do usuário) e mantém a remoção só um clique
+  // a mais de distância, no botão "Remover via" dentro do popup.
+  if (via.id == null) via.id = _mvViaIdSeq++; // vias restauradas de salvamentos antigos podem não ter id
+  const popupHtml = `<div style="font-family:Inter,sans-serif;min-width:170px;">
+    <div style="font-weight:700;font-size:12px;margin-bottom:2px;">📍 Via</div>
+    <div style="font-size:10px;color:#6B7280;margin-bottom:6px;">Arraste para ajustar a posição.</div>
+    ${streetViewBotaoHtml(via.lat, via.lon)}
+    <button type="button" onclick="mvRemoverViaPorId(${via.id})"
+      style="display:flex;align-items:center;gap:4px;margin-top:6px;padding:4px 8px;background:#FEF2F2;color:#B91C1C;border-radius:5px;font-size:11px;font-weight:600;border:1px solid #FECACA;cursor:pointer;width:100%;justify-content:center;">
+      🗑️ Remover via</button>
+  </div>`;
+  marker.bindPopup(popupHtml, { maxWidth: 220 });
+  marker.bindTooltip('Arraste para ajustar · Clique para ver opções', { direction:'top', offset:[0,-12] });
+  marker.on('click', (e) => {
+    L.DomEvent.stopPropagation(e); // não deixa o clique "vazar" pra polyline por baixo e criar outra via
+  });
   marker.on('drag', (e) => {
     via.lat = e.latlng.lat;
     via.lon = e.latlng.lng;
@@ -257,15 +275,18 @@ function _mvDesenharMarcadorVia(via) {
   marker.on('dragend', () => {
     mvDesenharRota();
   });
-  marker.on('click', (e) => {
-    L.DomEvent.stopPropagation(e);
-    _mvUserWaypoints = _mvUserWaypoints.filter(uw => uw !== via);
-    try { camadaViagem.removeLayer(marker); } catch(e2){}
-    _mvAtualizarBadgeVias();
-    mvDesenharRota();
-  });
   via.marker = marker;
 }
+// Remove uma via pelo id — chamado pelo botão dentro do popup da via.
+function mvRemoverViaPorId(id) {
+  const via = _mvUserWaypoints.find(uw => uw.id === id);
+  if (!via) return;
+  _mvUserWaypoints = _mvUserWaypoints.filter(uw => uw.id !== id);
+  if (via.marker) { try { via.marker.closePopup(); camadaViagem.removeLayer(via.marker); } catch(e){} }
+  _mvAtualizarBadgeVias();
+  mvDesenharRota();
+}
+window.mvRemoverViaPorId = mvRemoverViaPorId;
 // ─── Badge de vias ─────────────────────────────────────────────────────────
 function _mvAtualizarBadgeVias() {
   const badge = document.getElementById('mv-vias-badge');
