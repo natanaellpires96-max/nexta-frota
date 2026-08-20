@@ -1214,10 +1214,28 @@ function obterPontosRotaComCoords(v, viagem) {
     });
   });
   const ultimo = viagem.paradas[viagem.paradas.length - 1];
-  if (terminal && (ultimo?.deslocVazioMin || 0) > 0) {
+  if (terminal && _deveIncluirRetorno(ultimo, terminal)) {
     pontos.push({ nome: `Retorno: ${terminal.nome}`, lat: terminal.lat, lon: terminal.lon, tipo: 'retorno' });
   }
   return pontos.filter(p => !isNaN(parseFloat(p.lat)) && !isNaN(parseFloat(p.lon)));
+}
+// O retorno ao terminal deveria aparecer sempre que a última parada não
+// estiver literalmente em cima do terminal. Confiar cegamente no
+// deslocVazioMin já salvo na parada é frágil: se ele ficou 0 por qualquer
+// motivo (ex.: terminal não encontrado por nome na hora de otimizar — bug
+// já visto, resolvido com _terminalPorNomeFlex acima, mas rotas otimizadas
+// ANTES desse ajuste ficam com o valor errado gravado), o trajeto de volta
+// simplesmente sumia do mapa e do km, sem nenhum aviso. Aqui, se
+// deslocVazioMin não ajudar, cai pra uma checagem geográfica direta:
+// distância real entre a última parada e o terminal.
+function _deveIncluirRetorno(ultimaParada, terminal) {
+  if ((ultimaParada?.deslocVazioMin || 0) > 0) return true;
+  if (!terminal || !ultimaParada) return false;
+  const _c = latLonEfetivo(ultimaParada.pedido);
+  if (isNaN(_c.lat) || isNaN(_c.lon) || isNaN(parseFloat(terminal.lat)) || isNaN(parseFloat(terminal.lon))) return false;
+  // Mais de ~300m de distância entre a última entrega e o terminal já é
+  // sinal suficiente de que existe, sim, um trajeto de volta de verdade.
+  return haversine(_c.lat, _c.lon, parseFloat(terminal.lat), parseFloat(terminal.lon)) > 0.3;
 }
 function abrirModalViagem(veiculoId, idxViagem) {
   if (!ultimoResultado || !ultimoResultado[veiculoId]) return;
@@ -1256,7 +1274,7 @@ function abrirModalViagem(veiculoId, idxViagem) {
     });
   });
   const ultimo = viagem.paradas[viagem.paradas.length - 1];
-  if ((ultimo?.deslocVazioMin || 0) > 0) {
+  if (_deveIncluirRetorno(ultimo, terminal)) {
     pontos.push({
       nome: `Retorno: ${terminal.nome}`,
       lat: terminal.lat,
@@ -2264,9 +2282,21 @@ const FATOR_DISTANCIA = 1.3;
 function tempoDeslocamentoMin(distKm, velKmh) {
   return velKmh > 0 ? (distKm * FATOR_DISTANCIA / velKmh) * 60 : 0;
 }
+// Busca de terminal tolerante a espaço/maiúscula (trim + case-insensitive).
+// Usada especificamente onde o retorno ao terminal é CALCULADO (não onde é
+// só exibido) — um terminal não encontrado aqui zera silenciosamente o
+// retornoNovoMin/deslocVazioMin da última parada (o trajeto de volta some
+// do km e do mapa, sem erro nenhum na tela), então vale a pena essa folga:
+// nome gravado no pedido/veículo às vezes vem com espaço a mais ou
+// maiúscula diferente do cadastro do terminal.
+function _terminalPorNomeFlex(nome) {
+  const alvo = (nome || '').toString().trim().toUpperCase();
+  if (!alvo) return null;
+  return terminaisCad.find(t => (t.nome || '').toString().trim().toUpperCase() === alvo) || null;
+}
 function dadosCiclo(v, pedido, terminalOrigemNome=null) {
   const terminalNome = terminalOrigemNome || v.terminal || pedido?.terminal || '';
-  const terminal = terminaisCad.find(t => t.nome === terminalNome);
+  const terminal = _terminalPorNomeFlex(terminalNome);
   const cliente = encontrarClienteDoPedido(pedido);
   const tempoCarregamentoMin = terminal?.tempoCarregamentoMedioMin || 60;
   const tempoDescargaMin = cliente?.tempoDescargaMediaMin || 45;
@@ -2310,7 +2340,7 @@ function dadosIncrementoParada(viagem, v, pedido, terminalOrigemNome=null) {
     };
   }
   const ultima = viagem.paradas[viagem.paradas.length - 1];
-  const terminal = terminaisCad.find(t => t.nome === terminalNome);
+  const terminal = _terminalPorNomeFlex(terminalNome);
   const _coordUlt  = latLonEfetivo(ultima?.pedido);
   const _coordNova = latLonEfetivo(pedido);
   const latUlt  = _coordUlt.lat;  const lonUlt  = _coordUlt.lon;
