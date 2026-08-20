@@ -257,6 +257,7 @@ var pedidos = [], veiculos = [], terminaisCad = [], clientes = [];
 var numComps = 0, numProdForm = 0;
 var editandoTerminalId = null, editandoPedidoId = null, editandoClienteId = null, editandoVeiculoId = null;
 var _clFotoUrlAtual = null; // URL (Cloudinary) da foto do posto sendo editado/criado no formulário de Clientes
+var _clFotoUploadPromise = null; // upload em andamento (se houver) — salvarCliente() espera terminar antes de gravar, pra nunca persistir uma URL blob: (só válida nesta aba/sessão)
 var ultimoResultado = null, ultimoControleTempo = null;
 var _sugestoesSplitDedicado = []; // sugestões de quebra manual pós-otimização modo dedicado
 var _motoristasOverride = {}; // { petId: nome } — override manual por viagem, ignora regra diurno/noturno
@@ -711,6 +712,7 @@ async function carregarDadosFixos() {
         let id = 100;
         clientes = Object.values(fsCli).map(c => ({ ...c, id: c.id ?? id++ }));
         _mesclarClientesDuplicadosSilencioso();
+        _sanitizarFotosClientesQuebradas();
         renderClientes(); atualizarDropdownsClientes();
       }
       if (fsVei && Object.keys(fsVei).length) {
@@ -2707,6 +2709,7 @@ function carregarExemplosTerminais() {
 // ═══════════════════════════════════════════════════════════════════════════
 function abrirFormCliente(id) {
   editandoClienteId = id;
+  _clFotoUploadPromise = null; // qualquer upload pendente era de outro cliente — não trava mais o Salvar deste aqui
   _popularSelectOperacaoCliente('cl-operacao');
   if (id !== null) {
     const c = clientes.find(x => x.id === id);
@@ -2728,7 +2731,11 @@ function abrirFormCliente(id) {
     document.getElementById('cl-bandeira').value = c.bandeira || '';
     document.getElementById('cl-contrato').value = c.tipoContrato || '';
     renderTipoBtns('cl-tipos-btns', c.tiposCaminhao || []);
-    _clFotoUrlAtual = c.fotoUrl || null;
+    // Blindagem contra o bug antigo (URL "blob:" persistida por engano):
+    // uma URL blob: nunca sobrevive além da aba/sessão em que foi criada —
+    // se sobrou uma salva no cadastro, trata como "sem foto" em vez de
+    // tentar carregar um link já morto.
+    _clFotoUrlAtual = (c.fotoUrl && !c.fotoUrl.startsWith('blob:')) ? c.fotoUrl : null;
     _atualizarThumbFotoCliente();
   } else {
     document.getElementById('form-cliente-title').textContent = 'Novo cliente';
@@ -2752,7 +2759,7 @@ function cancelarFormCliente() {
   editandoClienteId = null;
   document.getElementById('form-cliente').classList.add('hidden');
 }
-function salvarCliente() {
+async function salvarCliente() {
   const nome   = document.getElementById('cl-nome').value.trim();
   const lat    = parseFloat(document.getElementById('cl-lat').value);
   const lon    = parseFloat(document.getElementById('cl-lon').value);
@@ -2760,6 +2767,26 @@ function salvarCliente() {
   if (!nome) { alert('Informe o nome do cliente.'); return; }
   if (isNaN(lat) || isNaN(lon)) { alert('Informe latitude e longitude válidas.'); return; }
   if (isNaN(tempoDescargaMediaMin) || tempoDescargaMediaMin <= 0) { alert('Informe o tempo médio de descarga do cliente.'); return; }
+  // Se a foto ainda estiver subindo pro Cloudinary, espera terminar antes de
+  // gravar — sem isso, _clFotoUrlAtual ainda estaria com a URL temporária
+  // "blob:" (só existe na memória desta aba) e essa URL quebrada ia parar
+  // salva no cadastro pra sempre. Essa era a causa real de "as fotos que
+  // anexei quebraram depois" — funcionava na hora (a aba ainda tinha o
+  // blob vivo) e quebrava ao recarregar a página ou abrir em outro
+  // dispositivo.
+  if (_clFotoUploadPromise) {
+    const btn = document.querySelector('#form-cliente .btn-green');
+    if (btn) { btn.disabled = true; btn.textContent = 'Aguardando envio da foto...'; }
+    try { await _clFotoUploadPromise; } catch (e) { /* selecionarFotoCliente já trata o erro e limpa _clFotoUrlAtual */ }
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar cliente'; }
+  }
+  // Trava de segurança: nunca grava uma URL blob: (temporária/local desta
+  // aba) — se por algum motivo ainda sobrou uma aqui, trata como "sem foto"
+  // em vez de persistir um link que vai quebrar.
+  if (typeof _clFotoUrlAtual === 'string' && _clFotoUrlAtual.startsWith('blob:')) {
+    console.warn('[salvarCliente] URL blob: detectada na hora de salvar — descartando pra não persistir link quebrado.');
+    _clFotoUrlAtual = null;
+  }
   const dados = {
     codigoSAP:       document.getElementById('cl-sap').value.trim(),
     nome,
@@ -2807,7 +2834,12 @@ function _atualizarThumbFotoCliente() {
   const placeholder = document.getElementById('cl-foto-thumb-placeholder');
   const btnRemover = document.getElementById('cl-foto-remover-btn');
   if (!img) return;
+  img.onerror = null; // evita empilhar handler a cada chamada
   if (_clFotoUrlAtual) {
+    img.onerror = () => { // link quebrado (ex.: expirou/foi apagado no Cloudinary) — cai pro placeholder em vez de mostrar ícone de imagem quebrada
+      img.style.display = 'none';
+      if (placeholder) placeholder.style.display = 'block';
+    };
     img.src = _clFotoUrlAtual;
     img.style.display = 'block';
     if (placeholder) placeholder.style.display = 'none';
@@ -2829,24 +2861,32 @@ async function selecionarFotoCliente(inputEl) {
   _clFotoUrlAtual = previewUrl;
   _atualizarThumbFotoCliente();
   if (status) status.textContent = '⏳ Enviando foto...';
-  try {
-    if (typeof window.uploadFotoGenerica !== 'function') throw new Error('Upload de foto indisponível — recarregue a página.');
-    const nomeBase = `cliente_${document.getElementById('cl-sap').value.trim() || 'novo'}_${(document.getElementById('cl-nome').value || '').trim().replace(/\s+/g,'_').slice(0,30)}`;
-    const url = await window.uploadFotoGenerica(file, nomeBase);
-    // Se o usuário trocou de cliente (fechou/abriu outro formulário) enquanto
-    // o upload rodava, não aplica mais o resultado — evita colar a foto de
-    // um cliente no cliente errado.
-    if (_clFotoUrlAtual !== previewUrl) return;
-    _clFotoUrlAtual = url;
-    _atualizarThumbFotoCliente();
-    if (status) status.textContent = '✅ Foto enviada. Clique na miniatura para ampliar.';
-  } catch (e) {
-    console.error('[selecionarFotoCliente] falha no upload:', e);
-    if (_clFotoUrlAtual === previewUrl) { _clFotoUrlAtual = null; _atualizarThumbFotoCliente(); }
-    if (status) status.textContent = '❌ ' + (e.message || 'Falha ao enviar a foto.');
-  } finally {
-    inputEl.value = '';
-  }
+  const uploadPromise = (async () => {
+    try {
+      if (typeof window.uploadFotoGenerica !== 'function') throw new Error('Upload de foto indisponível — recarregue a página.');
+      const nomeBase = `cliente_${document.getElementById('cl-sap').value.trim() || 'novo'}_${(document.getElementById('cl-nome').value || '').trim().replace(/\s+/g,'_').slice(0,30)}`;
+      const url = await window.uploadFotoGenerica(file, nomeBase);
+      // Se o usuário trocou de cliente (fechou/abriu outro formulário) enquanto
+      // o upload rodava, não aplica mais o resultado — evita colar a foto de
+      // um cliente no cliente errado.
+      if (_clFotoUrlAtual !== previewUrl) return;
+      _clFotoUrlAtual = url;
+      _atualizarThumbFotoCliente();
+      if (status) status.textContent = '✅ Foto enviada. Clique na miniatura para ampliar.';
+    } catch (e) {
+      console.error('[selecionarFotoCliente] falha no upload:', e);
+      if (_clFotoUrlAtual === previewUrl) { _clFotoUrlAtual = null; _atualizarThumbFotoCliente(); }
+      if (status) status.textContent = '❌ ' + (e.message || 'Falha ao enviar a foto.');
+    } finally {
+      inputEl.value = '';
+    }
+  })();
+  // salvarCliente() espera essa promise antes de gravar — garante que nunca
+  // sobra uma URL "blob:" (temporária, só válida nesta aba) salva no
+  // cadastro. Limpa a referência quando termina (com sucesso ou falha) pra
+  // um próximo "Salvar" não ficar esperando um upload que já acabou.
+  _clFotoUploadPromise = uploadPromise;
+  uploadPromise.finally(() => { if (_clFotoUploadPromise === uploadPromise) _clFotoUploadPromise = null; });
 }
 function removerFotoCliente() {
   _clFotoUrlAtual = null;
@@ -2866,7 +2906,7 @@ function fecharFotoClienteExpandida(ev = null) {
 // Expande a foto de um cliente direto pelo card da listagem (fora do
 // formulário de edição) — usa a URL passada, não depende de _clFotoUrlAtual.
 function abrirFotoClienteExpandidaDireto(url) {
-  if (!url) return;
+  if (!url || url.startsWith('blob:')) return; // blob: morta fora da aba original — nada pra abrir
   document.getElementById('modal-foto-cliente-img').src = url;
   document.getElementById('modal-foto-cliente').classList.add('show');
 }
@@ -2969,6 +3009,26 @@ function removerCliente(id) {
 // cópias extras — tanto pela chave nova (id) quanto pela chave antiga
 // (SAP/nome, a gaveta compartilhada que originou a duplicidade).
 // Retorna quantos grupos duplicados foram mesclados (0 = nada a fazer).
+// ── Limpeza silenciosa de fotos quebradas (bug antigo, já corrigido) ───────
+// Uma versão anterior podia salvar uma URL "blob:" (só válida na aba/sessão
+// em que a foto foi anexada) se "Salvar cliente" fosse clicado antes do
+// upload pro Cloudinary terminar — a foto sumia (ícone quebrado) assim que
+// a página era recarregada. Roda 1x a cada carregamento do cadastro: limpa
+// o ponteiro quebrado (não tem como recuperar o arquivo original a partir
+// de uma URL blob: morta) pra pelo menos parar de mostrar o ícone de
+// imagem quebrada, e persiste a limpeza.
+function _sanitizarFotosClientesQuebradas() {
+  let corrigidos = 0;
+  clientes.forEach(c => {
+    if (typeof c.fotoUrl === 'string' && c.fotoUrl.startsWith('blob:')) {
+      const antigo = { ...c };
+      c.fotoUrl = null;
+      _persistirCadastroManual('clientes', c, antigo);
+      corrigidos++;
+    }
+  });
+  return corrigidos;
+}
 function _mesclarClientesDuplicadosSilencioso() {
   // IMPORTANTE: a cópia "antiga" (chave por SAP) e a cópia "nova" (chave por
   // id) do MESMO cliente têm o `id` IDÊNTICO — é o cenário mais comum que
@@ -3200,8 +3260,11 @@ function renderClientes() {
     const tipos = c.tiposCaminhao && c.tiposCaminhao.length
       ? c.tiposCaminhao.map(t => `<span class="tag tag-blue" style="font-size:9px;">${t}</span>`).join(' ')
       : '<span style="font-size:11px;color:#5E9A18;">Todos os tipos</span>';
-    const fotoThumb = c.fotoUrl
-      ? `<img src="${c.fotoUrl}" onclick="abrirFotoClienteExpandidaDireto('${String(c.fotoUrl).replace(/'/g,"\\'")}')" title="Ver foto do posto" style="width:44px;height:44px;border-radius:6px;object-fit:cover;border:1px solid var(--border-dk);cursor:pointer;flex-shrink:0;"/>`
+    const fotoUrlValida = (c.fotoUrl && !String(c.fotoUrl).startsWith('blob:')) ? c.fotoUrl : null;
+    const fotoThumb = fotoUrlValida
+      ? `<div onclick="abrirFotoClienteExpandidaDireto('${String(fotoUrlValida).replace(/'/g,"\\'")}')" title="Ver foto do posto" style="width:44px;height:44px;border-radius:6px;border:1px solid var(--border-dk);overflow:hidden;flex-shrink:0;cursor:pointer;background:var(--bg-2,#F3F4F6);display:flex;align-items:center;justify-content:center;">
+          <img src="${fotoUrlValida}" alt="" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.parentElement.dataset.quebrou='1';this.parentElement.innerHTML='<span style=&quot;font-size:16px;color:var(--text-3);&quot;>📷</span>';"/>
+        </div>`
       : '';
     return `<div class="card">
       <div style="display:flex;align-items:flex-start;gap:10px;">
