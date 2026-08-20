@@ -4472,6 +4472,18 @@ let _dashAgendaSnapshotsCache = null;               // Object.values(dashGetStor
 let _dashAgendaTodos    = { operacao: [], produto: [], transp: [] }; // universo de opções pra cada filtro, calculado a partir do histórico carregado
 let _dashAgendaFiltros  = { operacao: null, produto: null, transp: null }; // null = todos; Set = filtro ativo
 let _dashAgendaExpandidos = new Set();              // chaves de cliente com o card "outros dias" aberto
+let _dashAgendaFreqMinima = 2;                      // nº mínimo de pedidos NESSE dia da semana pra o cliente entrar na agenda — a ideia é cliente habitual, não quem comprou grande uma vez só
+function dashAgendaSetFreqMinima(n) {
+  _dashAgendaFreqMinima = n;
+  document.querySelectorAll('.dash-agenda-freq-tab').forEach(el => {
+    const ativo = parseInt(el.dataset.freq, 10) === n;
+    el.classList.toggle('active-rank', ativo);
+    el.style.background = ativo ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    el.style.color = ativo ? '#000' : 'var(--text-2)';
+  });
+  dashRenderAgendaFechamento();
+}
+window.dashAgendaSetFreqMinima = dashAgendaSetFreqMinima;
 
 async function dashCarregarAgendaFechamento(forcarRecarga = false) {
   const grid = document.getElementById('dash-agenda-fechamento-grid');
@@ -4532,6 +4544,79 @@ function _dashAgendaPopularOpcoesFiltro() {
   });
 }
 
+// ── Fusão de clientes "quase iguais" (mesmo nome, mas com pequena diferença
+// de caracteres) ────────────────────────────────────────────────────────────
+// dashNormalizarNomeCliente já resolve maiúscula/minúscula, acento, "&" vs
+// "E" e pontuação — mas não pega um typo real no cadastro/planilha (uma
+// letra trocada, faltando, ou a mais), que faz o MESMO cliente virar duas
+// chaves normalizadas diferentes e aparecer duplicado na Agenda (às vezes
+// até em dois dias da semana diferentes, cada cópia com metade do volume).
+// Distância de Levenshtein clássica (só substituição/inserção/remoção de 1
+// caractere por vez) entre as chaves já normalizadas.
+function _dashLevenshtein(a, b) {
+  if (a === b) return 0;
+  const al = a.length, bl = b.length;
+  if (al === 0) return bl;
+  if (bl === 0) return al;
+  let prev = new Array(bl + 1);
+  let curr = new Array(bl + 1);
+  for (let j = 0; j <= bl; j++) prev[j] = j;
+  for (let i = 1; i <= al; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= bl; j++) {
+      const custo = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + custo);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[bl];
+}
+// Só considera "a mesma empresa com um typo" quando os nomes já são bem
+// parecidos (poucos caracteres de diferença) — nomes curtos não entram
+// (risco de juntar clientes realmente diferentes por coincidência) e nomes
+// bem diferentes em tamanho já são descartados antes de calcular a
+// distância de verdade (mais rápido).
+function _dashAgendaChaveSimilar(k1, k2) {
+  if (k1 === k2) return true;
+  const minLen = Math.min(k1.length, k2.length);
+  if (minLen < 8) return false;
+  // Se os dois têm números e eles NÃO são exatamente os mesmos, nunca
+  // mescla — "POSTO SILVA 2" vs "POSTO SILVA 3" é filial/unidade diferente
+  // (cliente de verdade diferente), não um typo, mesmo com o resto do nome
+  // idêntico e a distância de edição baixa.
+  const dig1 = k1.replace(/[^0-9]/g, ''), dig2 = k2.replace(/[^0-9]/g, '');
+  if (dig1 !== dig2) return false;
+  const maxDist = minLen >= 20 ? 3 : 2;
+  if (Math.abs(k1.length - k2.length) > maxDist) return false;
+  return _dashLevenshtein(k1, k2) <= maxDist;
+}
+// Segunda passada sobre o agregado por cliente: junta buckets cuja chave
+// normalizada é "quase igual" a outra já aceita — começando pelas chaves
+// mais longas (tendem a ser a grafia mais completa/correta), somando os
+// volumes por dia e preferindo o nome de exibição mais completo (mesmo
+// critério de dashNomeCanônico usado no resto do sistema).
+function _dashAgendaMesclarSimilares(clientesMap) {
+  const chaves = Object.keys(clientesMap).sort((a, b) => b.length - a.length);
+  const resultado = {};
+  chaves.forEach(chave => {
+    let canonica = null;
+    for (const c of Object.keys(resultado)) {
+      if (_dashAgendaChaveSimilar(chave, c)) { canonica = c; break; }
+    }
+    const origem = clientesMap[chave];
+    if (!canonica) {
+      resultado[chave] = { nomeExibido: origem.nomeExibido, porDia: origem.porDia.map(d => ({ volume: d.volume, datas: new Set(d.datas) })) };
+    } else {
+      resultado[canonica].nomeExibido = dashNomeCanônico(resultado[canonica].nomeExibido, origem.nomeExibido);
+      for (let d = 0; d < 7; d++) {
+        resultado[canonica].porDia[d].volume += origem.porDia[d].volume;
+        origem.porDia[d].datas.forEach(data => resultado[canonica].porDia[d].datas.add(data));
+      }
+    }
+  });
+  return resultado;
+}
+
 // Agrega volume por CLIENTE × DIA DA SEMANA (0=Dom..6=Sáb), aplicando os
 // filtros ativos de Operação/Produto/Transportadora na fonte — mesmo
 // princípio de dashAgregarProdutos (filtro entra ANTES de somar, não depois).
@@ -4561,15 +4646,18 @@ function _dashAgendaColetarClientes() {
             if (prodFiltro && !prodFiltro.has(nomeProd)) return;
             const vol = it.volume || 0;
             if (vol <= 0) return;
-            if (!clientesMap[chaveCliente]) clientesMap[chaveCliente] = { nomeExibido: nomeCliente, porDia: [0,0,0,0,0,0,0] };
+            if (!clientesMap[chaveCliente]) clientesMap[chaveCliente] = { nomeExibido: nomeCliente, porDia: Array.from({ length: 7 }, () => ({ volume: 0, datas: new Set() })) };
             clientesMap[chaveCliente].nomeExibido = dashNomeCanônico(clientesMap[chaveCliente].nomeExibido, nomeCliente);
-            clientesMap[chaveCliente].porDia[diaSemana] += vol;
+            clientesMap[chaveCliente].porDia[diaSemana].volume += vol;
+            if (dataEntrega) clientesMap[chaveCliente].porDia[diaSemana].datas.add(dataEntrega);
           });
         });
       });
     });
   });
-  return clientesMap;
+  // Junta chaves normalizadas "quase iguais" (typo/pequena diferença de
+  // caracteres) numa só entrada — ver _dashAgendaMesclarSimilares acima.
+  return _dashAgendaMesclarSimilares(clientesMap);
 }
 
 function dashRenderAgendaFechamento() {
@@ -4583,17 +4671,29 @@ function dashRenderAgendaFechamento() {
     // domingo fica de fora da coluna (a operação roda seg–sáb), mas ainda
     // aparece no detalhe expandido do card, se houver algum volume nele.
     let melhorDia = null, melhorVol = 0;
-    for (let d = 1; d <= 6; d++) { if (info.porDia[d] > melhorVol) { melhorVol = info.porDia[d]; melhorDia = d; } }
+    for (let d = 1; d <= 6; d++) { if (info.porDia[d].volume > melhorVol) { melhorVol = info.porDia[d].volume; melhorDia = d; } }
     if (!melhorDia) return; // nenhum volume de seg a sáb pra esse cliente (com os filtros atuais) — não entra na agenda
-    porColuna[melhorDia].push({ chave, nome: info.nomeExibido, volumePico: melhorVol, porDia: info.porDia });
+    const frequencia = info.porDia[melhorDia].datas.size;
+    // A Agenda é pra cliente HABITUAL nesse dia, não pra quem comprou um
+    // volume grande uma vez só — fora do limiar mínimo de pedidos, nem
+    // entra na coluna (ver seletor "Mín. de pedidos" acima da grade).
+    if (frequencia < _dashAgendaFreqMinima) return;
+    porColuna[melhorDia].push({ chave, nome: info.nomeExibido, volumePico: melhorVol, frequencia, porDia: info.porDia });
   });
-  Object.keys(porColuna).forEach(d => porColuna[d].sort((a, b) => b.volumePico - a.volumePico));
+  // Ordena considerando volume E frequência juntos (não só o maior volume) —
+  // um cliente que compra bastante E com regularidade nesse dia fica acima
+  // de quem só teve um pedido grande isolado.
+  Object.keys(porColuna).forEach(d => porColuna[d].sort((a, b) => {
+    const scoreA = a.frequencia * a.volumePico, scoreB = b.frequencia * b.volumePico;
+    if (scoreB !== scoreA) return scoreB - scoreA;
+    return b.volumePico - a.volumePico;
+  }));
   grid.innerHTML = _DASH_AGENDA_DIAS.map(dia => {
     const clientesDia = porColuna[dia.idx];
     const totalDia = clientesDia.reduce((s, c) => s + c.volumePico, 0);
     const cardsHtml = clientesDia.length
       ? clientesDia.map(c => _dashAgendaCardClienteHtml(c, dia.idx)).join('')
-      : '<div style="font-size:11px;color:var(--text-3);text-align:center;padding:14px 6px;">Nenhum cliente</div>';
+      : '<div style="font-size:11px;color:var(--text-3);text-align:center;padding:14px 6px;">Nenhum cliente frequente</div>';
     return `<div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-width:0;">
       <div style="background:rgba(0,0,0,.03);padding:9px 10px;border-bottom:1px solid var(--border-dk);">
         <div style="font-size:12px;font-weight:700;color:var(--text);">${dia.label}</div>
@@ -4611,9 +4711,11 @@ function _dashAgendaCardClienteHtml(c, diaIdxPico) {
     .filter(d => d.idx !== diaIdxPico)
     .sort((a, b) => (a.idx === 0 ? 7 : a.idx) - (b.idx === 0 ? 7 : b.idx)) // domingo por último na lista expandida
     .map(d => {
-      const v = c.porDia[d.idx] || 0;
+      const info = c.porDia[d.idx];
+      const v = info ? info.volume : 0;
+      const n = info ? info.datas.size : 0;
       return `<div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-3);padding:2px 0;">
-        <span>${d.abrev}</span><span style="font-weight:600;color:${v > 0 ? 'var(--text-2)' : 'var(--text-3)'};">${v > 0 ? v.toFixed(1) + ' m³' : '—'}</span>
+        <span>${d.abrev}</span><span style="font-weight:600;color:${v > 0 ? 'var(--text-2)' : 'var(--text-3)'};">${v > 0 ? `${v.toFixed(1)} m³ (${n}x)` : '—'}</span>
       </div>`;
     }).join('');
   return `<div style="border:1px solid var(--border-dk);border-radius:8px;padding:8px 9px;background:var(--bg,#fff);">
@@ -4621,7 +4723,10 @@ function _dashAgendaCardClienteHtml(c, diaIdxPico) {
       <span style="font-size:11.5px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${c.nome}">${c.nome}</span>
       <span style="font-size:9px;color:var(--text-3);flex-shrink:0;">${expandido ? '▲' : '▼'}</span>
     </div>
-    <div style="font-size:11px;font-weight:700;color:#4F46E5;margin-top:2px;">${c.volumePico.toFixed(1)} m³</div>
+    <div style="display:flex;align-items:baseline;gap:6px;margin-top:2px;">
+      <span style="font-size:11px;font-weight:700;color:#4F46E5;">${c.volumePico.toFixed(1)} m³</span>
+      <span style="font-size:10px;font-weight:600;color:var(--text-3);">· ${c.frequencia}x nesse dia</span>
+    </div>
     ${expandido ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border-dk);">
         <div style="font-size:9px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:3px;">Outros dias</div>
         ${outrosDiasHtml}
