@@ -3070,6 +3070,14 @@ window.dashSincronizar = async function() {
       await window.dashCarregarTodos();
     }
     dashAtualizarClientesInativos();
+    // Agenda de Fechamento lê o histórico completo à parte (não respeita o
+    // período selecionado, igual "Rotas - Roteirização") — não tem mais
+    // botão próprio de carregar, então sincroniza junto daqui. Não trava o
+    // "Dashboard sincronizado" principal por causa dela (roda em paralelo,
+    // com seu próprio tratamento de erro).
+    if (typeof dashCarregarAgendaFechamento === 'function') {
+      dashCarregarAgendaFechamento(true).catch(e => console.warn('[dashSincronizar] falha ao atualizar Agenda de Fechamento:', e));
+    }
     showToast('Dashboard sincronizado com o histórico ✅');
   } catch(e) {
     showToast('Erro ao sincronizar: ' + e.message, false);
@@ -4444,6 +4452,274 @@ async function dashGerarRelatorioRotas(formato) {
   }
 }
 window.dashGerarRelatorioRotas = dashGerarRelatorioRotas;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AGENDA DE FECHAMENTO — em qual dia da semana (seg–sáb) cada cliente costuma
+// comprar mais, olhando TODO o histórico (igual a "Rotas - Roteirização":
+// de propósito não respeita o filtro de período do topo do Dashboard — é um
+// padrão de comportamento do cliente ao longo do tempo, não um recorte de
+// um mês específico).
+// ══════════════════════════════════════════════════════════════════════════════
+const _DASH_AGENDA_DIAS = [
+  { idx: 1, label: 'Segunda', abrev: 'Seg' },
+  { idx: 2, label: 'Terça',   abrev: 'Ter' },
+  { idx: 3, label: 'Quarta',  abrev: 'Qua' },
+  { idx: 4, label: 'Quinta',  abrev: 'Qui' },
+  { idx: 5, label: 'Sexta',   abrev: 'Sex' },
+  { idx: 6, label: 'Sábado',  abrev: 'Sáb' },
+];
+let _dashAgendaSnapshotsCache = null;               // Object.values(dashGetStoreMerged()).flat(), carregado 1x e reaproveitado — "🔄 Carregar/Atualizar" força reler
+let _dashAgendaTodos    = { operacao: [], produto: [], transp: [] }; // universo de opções pra cada filtro, calculado a partir do histórico carregado
+let _dashAgendaFiltros  = { operacao: null, produto: null, transp: null }; // null = todos; Set = filtro ativo
+let _dashAgendaExpandidos = new Set();              // chaves de cliente com o card "outros dias" aberto
+
+async function dashCarregarAgendaFechamento(forcarRecarga = false) {
+  const grid = document.getElementById('dash-agenda-fechamento-grid');
+  if (!grid) return;
+  if (!_dashAgendaSnapshotsCache || forcarRecarga) {
+    grid.innerHTML = '<div style="grid-column:1/-1;color:var(--text-3);text-align:center;padding:32px;font-size:12px;font-weight:700;">Lendo todo o histórico… pode levar alguns segundos.</div>';
+    try {
+      const store = await dashGetStoreMerged();
+      _dashAgendaSnapshotsCache = Object.values(store || {}).flat();
+    } catch (e) {
+      console.error('[dashCarregarAgendaFechamento] falha ao ler histórico:', e);
+      grid.innerHTML = '<div style="grid-column:1/-1;color:#B91C1C;text-align:center;padding:32px;font-size:12px;font-weight:700;">Erro ao ler o histórico. Confira se a pasta do Histórico está vinculada (aba Histórico) e tente de novo.</div>';
+      return;
+    }
+    if (!_dashAgendaSnapshotsCache.length) {
+      grid.innerHTML = '<div style="grid-column:1/-1;color:var(--text-3);text-align:center;padding:32px;font-size:12px;font-weight:700;">Nenhum histórico encontrado — verifique se a pasta do Histórico está vinculada.</div>';
+      return;
+    }
+    _dashAgendaPopularOpcoesFiltro();
+  }
+  dashRenderAgendaFechamento();
+}
+window.dashCarregarAgendaFechamento = dashCarregarAgendaFechamento;
+
+// Varre o histórico carregado só pra descobrir o universo de valores
+// possíveis de cada filtro (não aplica nenhum filtro aqui) — usado pra
+// popular as listas de checkbox.
+function _dashAgendaPopularOpcoesFiltro() {
+  const snaps = _dashAgendaSnapshotsCache || [];
+  const ops = new Set(), transp = new Set(), prods = new Set();
+  snaps.forEach(snap => {
+    const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
+    vecs.forEach(v => {
+      if (v.transportadora) transp.add(v.transportadora);
+      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      viagens.forEach(vi => {
+        ops.add(dashCidadeOperacaoViagem(vi, v, terms));
+        (vi.paradas || []).forEach(p => {
+          (p.itens || []).forEach(it => {
+            const nomeProdBruto = (it.produto || '').toString().replace(/^\d+\s*-\s*/, '').trim();
+            prods.add(nomeProdBruto ? nomeProdBruto.toUpperCase().replace(/\s+/g, ' ') : 'PRODUTO NÃO IDENTIFICADO');
+          });
+        });
+      });
+    });
+  });
+  _dashAgendaTodos.operacao = [...ops].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  _dashAgendaTodos.transp   = [...transp].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  _dashAgendaTodos.produto  = [...prods].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  // Se um filtro já estava ativo e algum valor selecionado sumiu do universo
+  // atual (ex.: recarregou com histórico diferente), remove só o que sumiu —
+  // mesmo cuidado já usado no filtro de Cidades/Operação do topo do Dashboard.
+  ['operacao', 'transp', 'produto'].forEach(tipo => {
+    if (!_dashAgendaFiltros[tipo]) return;
+    const validos = new Set(_dashAgendaTodos[tipo]);
+    const atualizado = new Set([..._dashAgendaFiltros[tipo]].filter(v => validos.has(v)));
+    _dashAgendaFiltros[tipo] = atualizado.size === _dashAgendaTodos[tipo].length ? null : atualizado;
+  });
+}
+
+// Agrega volume por CLIENTE × DIA DA SEMANA (0=Dom..6=Sáb), aplicando os
+// filtros ativos de Operação/Produto/Transportadora na fonte — mesmo
+// princípio de dashAgregarProdutos (filtro entra ANTES de somar, não depois).
+function _dashAgendaColetarClientes() {
+  const snaps = _dashAgendaSnapshotsCache || [];
+  const { operacao: opFiltro, transp: transpFiltro, produto: prodFiltro } = _dashAgendaFiltros;
+  const clientesMap = {};
+  snaps.forEach(snap => {
+    const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
+    vecs.forEach(v => {
+      if (transpFiltro && !transpFiltro.has(v.transportadora || '')) return;
+      const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      viagens.forEach(vi => {
+        if (opFiltro && !opFiltro.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
+        (vi.paradas || []).forEach(p => {
+          const nomeCliente = (p.pedido || {}).cliente || (p.pedido || {}).nomeCliente || p.nome || '?';
+          const dataEntrega = p.pedido?.dataEntregaLogistica || '';
+          const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dataEntrega);
+          if (!m) return; // sem data válida, não dá pra saber o dia da semana
+          const dt = new Date(+m[3], +m[2] - 1, +m[1]);
+          if (isNaN(dt.getTime())) return;
+          const diaSemana = dt.getDay(); // 0=Dom..6=Sáb
+          const chaveCliente = dashNormalizarNomeCliente(nomeCliente);
+          (p.itens || []).forEach(it => {
+            const nomeProdBruto = (it.produto || '').toString().replace(/^\d+\s*-\s*/, '').trim();
+            const nomeProd = nomeProdBruto ? nomeProdBruto.toUpperCase().replace(/\s+/g, ' ') : 'PRODUTO NÃO IDENTIFICADO';
+            if (prodFiltro && !prodFiltro.has(nomeProd)) return;
+            const vol = it.volume || 0;
+            if (vol <= 0) return;
+            if (!clientesMap[chaveCliente]) clientesMap[chaveCliente] = { nomeExibido: nomeCliente, porDia: [0,0,0,0,0,0,0] };
+            clientesMap[chaveCliente].nomeExibido = dashNomeCanônico(clientesMap[chaveCliente].nomeExibido, nomeCliente);
+            clientesMap[chaveCliente].porDia[diaSemana] += vol;
+          });
+        });
+      });
+    });
+  });
+  return clientesMap;
+}
+
+function dashRenderAgendaFechamento() {
+  const grid = document.getElementById('dash-agenda-fechamento-grid');
+  if (!grid) return;
+  if (!_dashAgendaSnapshotsCache) return; // ainda não carregou nada — mantém a mensagem inicial
+  const clientesMap = _dashAgendaColetarClientes();
+  const porColuna = { 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+  Object.entries(clientesMap).forEach(([chave, info]) => {
+    // "Dia que compra mais" = maior volume entre segunda(1) e sábado(6) —
+    // domingo fica de fora da coluna (a operação roda seg–sáb), mas ainda
+    // aparece no detalhe expandido do card, se houver algum volume nele.
+    let melhorDia = null, melhorVol = 0;
+    for (let d = 1; d <= 6; d++) { if (info.porDia[d] > melhorVol) { melhorVol = info.porDia[d]; melhorDia = d; } }
+    if (!melhorDia) return; // nenhum volume de seg a sáb pra esse cliente (com os filtros atuais) — não entra na agenda
+    porColuna[melhorDia].push({ chave, nome: info.nomeExibido, volumePico: melhorVol, porDia: info.porDia });
+  });
+  Object.keys(porColuna).forEach(d => porColuna[d].sort((a, b) => b.volumePico - a.volumePico));
+  grid.innerHTML = _DASH_AGENDA_DIAS.map(dia => {
+    const clientesDia = porColuna[dia.idx];
+    const totalDia = clientesDia.reduce((s, c) => s + c.volumePico, 0);
+    const cardsHtml = clientesDia.length
+      ? clientesDia.map(c => _dashAgendaCardClienteHtml(c, dia.idx)).join('')
+      : '<div style="font-size:11px;color:var(--text-3);text-align:center;padding:14px 6px;">Nenhum cliente</div>';
+    return `<div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-width:0;">
+      <div style="background:rgba(0,0,0,.03);padding:9px 10px;border-bottom:1px solid var(--border-dk);">
+        <div style="font-size:12px;font-weight:700;color:var(--text);">${dia.label}</div>
+        <div style="font-size:10.5px;color:var(--text-3);">${clientesDia.length} cliente${clientesDia.length === 1 ? '' : 's'} · ${totalDia.toFixed(1)} m³</div>
+      </div>
+      <div style="padding:8px;display:flex;flex-direction:column;gap:6px;max-height:560px;overflow-y:auto;">${cardsHtml}</div>
+    </div>`;
+  }).join('');
+}
+
+function _dashAgendaCardClienteHtml(c, diaIdxPico) {
+  const expandido = _dashAgendaExpandidos.has(c.chave);
+  const chaveSafe = c.chave.replace(/'/g, "\\'");
+  const outrosDiasHtml = _DASH_AGENDA_DIAS.concat([{ idx: 0, label: 'Domingo', abrev: 'Dom' }])
+    .filter(d => d.idx !== diaIdxPico)
+    .sort((a, b) => (a.idx === 0 ? 7 : a.idx) - (b.idx === 0 ? 7 : b.idx)) // domingo por último na lista expandida
+    .map(d => {
+      const v = c.porDia[d.idx] || 0;
+      return `<div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--text-3);padding:2px 0;">
+        <span>${d.abrev}</span><span style="font-weight:600;color:${v > 0 ? 'var(--text-2)' : 'var(--text-3)'};">${v > 0 ? v.toFixed(1) + ' m³' : '—'}</span>
+      </div>`;
+    }).join('');
+  return `<div style="border:1px solid var(--border-dk);border-radius:8px;padding:8px 9px;background:var(--bg,#fff);">
+    <div onclick="dashToggleAgendaCliente('${chaveSafe}')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:6px;">
+      <span style="font-size:11.5px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${c.nome}">${c.nome}</span>
+      <span style="font-size:9px;color:var(--text-3);flex-shrink:0;">${expandido ? '▲' : '▼'}</span>
+    </div>
+    <div style="font-size:11px;font-weight:700;color:#4F46E5;margin-top:2px;">${c.volumePico.toFixed(1)} m³</div>
+    ${expandido ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border-dk);">
+        <div style="font-size:9px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:3px;">Outros dias</div>
+        ${outrosDiasHtml}
+      </div>` : ''}
+  </div>`;
+}
+function dashToggleAgendaCliente(chave) {
+  if (_dashAgendaExpandidos.has(chave)) _dashAgendaExpandidos.delete(chave); else _dashAgendaExpandidos.add(chave);
+  dashRenderAgendaFechamento();
+}
+window.dashToggleAgendaCliente = dashToggleAgendaCliente;
+
+// ── Filtros de Operação/Produto/Transportadora (multi-select em caixa) ─────
+// Componente genérico parametrizado por "tipo" ('operacao'|'produto'|'transp')
+// — reaproveita o mesmo padrão visual/interativo do filtro de Cidades do
+// topo do Dashboard (busca + checkbox + Todos/Limpar/Aplicar).
+function dashAgendaTogglePainel(tipo) {
+  const panel = document.getElementById(`dash-agenda-${tipo}-panel`);
+  if (!panel) return;
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : 'flex';
+  if (!visible) {
+    const searchEl = panel.querySelector('.dash-agenda-search');
+    if (searchEl) searchEl.value = '';
+    _dashAgendaPopularLista(tipo);
+  }
+}
+function _dashAgendaPopularLista(tipo) {
+  const list = document.getElementById(`dash-agenda-${tipo}-list`);
+  if (!list) return;
+  const todos = _dashAgendaTodos[tipo] || [];
+  const sel = _dashAgendaFiltros[tipo];
+  if (!todos.length) { list.innerHTML = '<div style="padding:14px;font-size:11.5px;color:var(--text-3);text-align:center;">Carregue a agenda primeiro.</div>'; return; }
+  list.innerHTML = todos.map(nome => {
+    const checked = !sel || sel.has(nome);
+    const nomeSafe = nome.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+    return `<div data-val="${nomeSafe}" data-checked="${checked ? '1' : '0'}"
+      style="display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;border-radius:6px;margin:0 4px;user-select:none;">
+      <span class="dash-cb-box" style="flex-shrink:0;width:18px;height:18px;border-radius:5px;border:2px solid ${checked ? 'var(--pet-green,#b5e51d)' : '#bbb'};background:${checked ? 'var(--pet-green,#b5e51d)' : 'transparent'};display:flex;align-items:center;justify-content:center;">${checked ? _dashCheckSVG() : ''}</span>
+      <span style="font-size:12px;color:var(--text,#111);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${nome}</span>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('div[data-val]').forEach(row => {
+    row.addEventListener('mouseenter', () => row.style.background = 'rgba(0,0,0,0.04)');
+    row.addEventListener('mouseleave', () => row.style.background = '');
+    row.addEventListener('click', () => {
+      const checked = row.dataset.checked !== '1';
+      row.dataset.checked = checked ? '1' : '0';
+      _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), checked);
+    });
+  });
+}
+function dashAgendaFiltrarLista(tipo, busca) {
+  const list = document.getElementById(`dash-agenda-${tipo}-list`);
+  if (!list) return;
+  const b = (busca || '').toLowerCase();
+  list.querySelectorAll('div[data-val]').forEach(row => {
+    row.style.display = row.dataset.val.toLowerCase().includes(b) ? '' : 'none';
+  });
+}
+function dashAgendaSelecionarTodos(tipo, sel) {
+  const list = document.getElementById(`dash-agenda-${tipo}-list`);
+  if (!list) return;
+  list.querySelectorAll('div[data-val]').forEach(row => {
+    if (row.style.display === 'none') return;
+    row.dataset.checked = sel ? '1' : '0';
+    _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), sel);
+  });
+}
+function dashAgendaAplicarFiltro(tipo) {
+  const list = document.getElementById(`dash-agenda-${tipo}-list`);
+  if (!list) return;
+  const selecionados = new Set();
+  const _dec = s => s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  list.querySelectorAll('div[data-checked="1"]').forEach(row => selecionados.add(_dec(row.dataset.val)));
+  const todos = _dashAgendaTodos[tipo] || [];
+  _dashAgendaFiltros[tipo] = selecionados.size === todos.length ? null : selecionados;
+  const badge = document.getElementById(`dash-agenda-${tipo}-badge`);
+  if (badge) {
+    if (_dashAgendaFiltros[tipo]) { badge.textContent = selecionados.size; badge.style.display = ''; }
+    else badge.style.display = 'none';
+  }
+  document.getElementById(`dash-agenda-${tipo}-panel`).style.display = 'none';
+  dashRenderAgendaFechamento();
+}
+window.dashAgendaTogglePainel     = dashAgendaTogglePainel;
+window.dashAgendaFiltrarLista     = dashAgendaFiltrarLista;
+window.dashAgendaSelecionarTodos  = dashAgendaSelecionarTodos;
+window.dashAgendaAplicarFiltro    = dashAgendaAplicarFiltro;
+document.addEventListener('click', function(e) {
+  ['operacao', 'produto', 'transp'].forEach(tipo => {
+    const panel = document.getElementById(`dash-agenda-${tipo}-panel`);
+    const btn   = document.getElementById(`dash-agenda-${tipo}-btn`);
+    if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && !btn?.contains(e.target)) {
+      panel.style.display = 'none';
+    }
+  });
+});
 
 })(); // fim IIFE dashboard
 // A chave da OpenRouteService NÃO fica mais aqui — antes ficava exposta
