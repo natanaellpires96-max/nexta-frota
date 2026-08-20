@@ -1082,6 +1082,74 @@
         </div>
         <div id="dash-histveic-tabela"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;font-weight:700;">Selecione um veículo e um período, depois clique em "Buscar".</div></div>
       </div>
+      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🗓️ Agenda de Fechamento</div>
+            <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-top:2px;">Em qual dia da semana cada cliente costuma comprar mais — olhando todo o histórico (não só o período selecionado acima). Atualiza junto com o "🔄 Sincronizar" no topo da tela.</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 14px;padding-top:12px;border-top:1px solid var(--border-dk);">
+          <span style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin-right:2px;">Filtrar por</span>
+          <!-- Operação -->
+          <div style="position:relative;">
+            <button id="dash-agenda-operacao-btn" class="btn btn-sm" style="font-weight:700;position:relative;" onclick="dashAgendaTogglePainel('operacao')">
+              Operação <span id="dash-agenda-operacao-badge" style="display:none;background:#4F46E5;color:#fff;border-radius:99px;font-size:9.5px;font-weight:800;padding:1px 6px;margin-left:5px;"></span> ▾
+            </button>
+            <div id="dash-agenda-operacao-panel" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:500;background:#fff;border:1px solid #D1D5DB;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);width:240px;overflow:hidden;flex-direction:column;">
+              <div style="padding:8px 10px;border-bottom:1px solid #D1D5DB;">
+                <input type="text" class="dash-agenda-search" placeholder="Buscar operação..." oninput="dashAgendaFiltrarLista('operacao', this.value)"
+                  style="width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border:1px solid #D1D5DB;border-radius:6px;"/>
+              </div>
+              <div id="dash-agenda-operacao-list" style="max-height:240px;overflow-y:auto;padding:4px 0;"></div>
+              <div style="padding:10px 14px;border-top:1px solid #D1D5DB;display:flex;gap:8px;background:#fff;">
+                <button onclick="dashAgendaSelecionarTodos('operacao', true)" style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;">Todos</button>
+                <button onclick="dashAgendaSelecionarTodos('operacao', false)" style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;">Limpar</button>
+                <button onclick="dashAgendaAplicarFiltro('operacao')" style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:#4F46E5;color:#fff;cursor:pointer;">✓ Aplicar</button>
+              </div>
+            </div>
+          </div>
+          <!-- Produto -->
+          <div style="position:relative;">
+            <button id="dash-agenda-produto-btn" class="btn btn-sm" style="font-weight:700;position:relative;" onclick="dashAgendaTogglePainel('produto')">
+              Produto <span id="dash-agenda-produto-badge" style="display:none;background:#4F46E5;color:#fff;border-radius:99px;font-size:9.5px;font-weight:800;padding:1px 6px;margin-left:5px;"></span> ▾
+            </button>
+            <div id="dash-agenda-produto-panel" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:500;background:#fff;border:1px solid #D1D5DB;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);width:260px;overflow:hidden;flex-direction:column;">
+              <div style="padding:8px 10px;border-bottom:1px solid #D1D5DB;">
+                <input type="text" class="dash-agenda-search" placeholder="Buscar produto..." oninput="dashAgendaFiltrarLista('produto', this.value)"
+                  style="width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border:1px solid #D1D5DB;border-radius:6px;"/>
+              </div>
+              <div id="dash-agenda-produto-list" style="max-height:240px;overflow-y:auto;padding:4px 0;"></div>
+              <div style="padding:10px 14px;border-top:1px solid #D1D5DB;display:flex;gap:8px;background:#fff;">
+                <button onclick="dashAgendaSelecionarTodos('produto', true)" style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;">Todos</button>
+                <button onclick="dashAgendaSelecionarTodos('produto', false)" style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;">Limpar</button>
+                <button onclick="dashAgendaAplicarFiltro('produto')" style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:#4F46E5;color:#fff;cursor:pointer;">✓ Aplicar</button>
+              </div>
+            </div>
+          </div>
+          <!-- Transportadora -->
+          <div style="position:relative;">
+            <button id="dash-agenda-transp-btn" class="btn btn-sm" style="font-weight:700;position:relative;" onclick="dashAgendaTogglePainel('transp')">
+              Transportadora <span id="dash-agenda-transp-badge" style="display:none;background:#4F46E5;color:#fff;border-radius:99px;font-size:9.5px;font-weight:800;padding:1px 6px;margin-left:5px;"></span> ▾
+            </button>
+            <div id="dash-agenda-transp-panel" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:500;background:#fff;border:1px solid #D1D5DB;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);width:240px;overflow:hidden;flex-direction:column;">
+              <div style="padding:8px 10px;border-bottom:1px solid #D1D5DB;">
+                <input type="text" class="dash-agenda-search" placeholder="Buscar transportadora..." oninput="dashAgendaFiltrarLista('transp', this.value)"
+                  style="width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border:1px solid #D1D5DB;border-radius:6px;"/>
+              </div>
+              <div id="dash-agenda-transp-list" style="max-height:240px;overflow-y:auto;padding:4px 0;"></div>
+              <div style="padding:10px 14px;border-top:1px solid #D1D5DB;display:flex;gap:8px;background:#fff;">
+                <button onclick="dashAgendaSelecionarTodos('transp', true)" style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;">Todos</button>
+                <button onclick="dashAgendaSelecionarTodos('transp', false)" style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;">Limpar</button>
+                <button onclick="dashAgendaAplicarFiltro('transp')" style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:#4F46E5;color:#fff;cursor:pointer;">✓ Aplicar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="dash-agenda-fechamento-grid" style="display:grid;grid-template-columns:repeat(6,minmax(160px,1fr));gap:10px;overflow-x:auto;">
+          <div style="grid-column:1/-1;color:var(--text-3);text-align:center;padding:32px;font-size:12px;font-weight:700;">Clique em "🔄 Sincronizar" no topo da tela para montar a agenda a partir do histórico completo.</div>
+        </div>
+      </div>
     </div>
   </div>
   <!-- ── FRETE ─────────────────────────────────────────────────────────────── -->
