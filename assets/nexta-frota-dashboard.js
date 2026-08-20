@@ -4590,27 +4590,76 @@ function _dashAgendaChaveSimilar(k1, k2) {
   if (Math.abs(k1.length - k2.length) > maxDist) return false;
   return _dashLevenshtein(k1, k2) <= maxDist;
 }
-// Segunda passada sobre o agregado por cliente: junta buckets cuja chave
-// normalizada é "quase igual" a outra já aceita — começando pelas chaves
-// mais longas (tendem a ser a grafia mais completa/correta), somando os
-// volumes por dia e preferindo o nome de exibição mais completo (mesmo
-// critério de dashNomeCanônico usado no resto do sistema).
+// Código SAP normalizado só pra COMPARAR (zeros à esquerda não deveriam
+// importar: "0001234" e "1234" são o mesmo código) — nunca usado como texto
+// de exibição, só nesta comparação.
+function _dashAgendaSapNorm(sap) {
+  return (sap || '').toString().trim().replace(/^0+(?=\d)/, '');
+}
+// Nome "oficial" desse cliente no Cadastro de Clientes (roteirizador.js,
+// window.clientes) — casa por SAP normalizado (preferência) ou por nome
+// exato, mesmo critério já usado em _dashResolverCidadeUF/_dashResolverCoordPedido.
+// Quando existe, ele é a fonte de verdade da exibição — nunca uma
+// aproximação do texto que veio no pedido (que pode variar de digitação
+// entre importações).
+function _dashAgendaNomeCadastro(sapPedido, nomeBruto) {
+  if (typeof window.clientes === 'undefined' || !Array.isArray(window.clientes)) return null;
+  const sapNorm = _dashAgendaSapNorm(sapPedido);
+  const cli = window.clientes.find(c =>
+    (sapNorm && c.codigoSAP && _dashAgendaSapNorm(c.codigoSAP) === sapNorm) ||
+    (nomeBruto && c.nome && c.nome.toString().toUpperCase() === nomeBruto.toString().toUpperCase())
+  );
+  return cli?.nome || null;
+}
+// Segunda passada sobre o agregado por cliente: junta buckets que são o
+// MESMO cliente na prática. Prioridade:
+//   1) Código SAP igual (normalizado) → SEMPRE une, mesmo que o nome
+//      digitado seja bem diferente — SAP é a fonte de verdade quando existe
+//      nos dois lados.
+//   2) Se um dos dois (ou os dois) não tem SAP registrado nessa entrada,
+//      compara pelo nome normalizado com folga pra pequena diferença de
+//      caracteres (typo) — ver _dashAgendaChaveSimilar.
+//   3) SAP preenchido nos dois lados mas DIFERENTE → nunca une por
+//      aproximação de nome (são cadastros/unidades diferentes de verdade).
+// Nome de exibição: se QUALQUER um dos lados já veio com nome resolvido do
+// Cadastro de Clientes (nomeDoCadastro), esse é o nome definitivo do grupo
+// pra sempre — nunca mais troca por causa da grafia de um pedido antigo.
+// Só cai pra heurística "nome mais completo" (dashNomeCanônico) quando
+// NENHUM dos dois lados tem match no cadastro (cliente que só existe no
+// histórico, sem cadastro vivo hoje).
 function _dashAgendaMesclarSimilares(clientesMap) {
-  const chaves = Object.keys(clientesMap).sort((a, b) => b.length - a.length);
+  const chaves = Object.keys(clientesMap).sort((a, b) => clientesMap[b].nomeExibido.length - clientesMap[a].nomeExibido.length);
   const resultado = {};
+  const ordem = []; // mantém a ordem de inserção dos buckets em `resultado` (Object.keys não garante isso pra chaves numéricas)
   chaves.forEach(chave => {
-    let canonica = null;
-    for (const c of Object.keys(resultado)) {
-      if (_dashAgendaChaveSimilar(chave, c)) { canonica = c; break; }
-    }
     const origem = clientesMap[chave];
+    const sapOrigem = _dashAgendaSapNorm(origem.sap);
+    const nomeNormOrigem = dashNormalizarNomeCliente(origem.nomeExibido);
+    let canonica = null;
+    for (const c of ordem) {
+      const alvo = resultado[c];
+      const sapAlvo = _dashAgendaSapNorm(alvo.sap);
+      if (sapOrigem && sapAlvo) {
+        if (sapOrigem === sapAlvo) { canonica = c; break; }
+        continue; // os dois têm SAP e são diferentes — nunca une, mesmo com nome parecido
+      }
+      if (_dashAgendaChaveSimilar(nomeNormOrigem, dashNormalizarNomeCliente(alvo.nomeExibido))) { canonica = c; break; }
+    }
     if (!canonica) {
-      resultado[chave] = { nomeExibido: origem.nomeExibido, porDia: origem.porDia.map(d => ({ volume: d.volume, datas: new Set(d.datas) })) };
+      resultado[chave] = { nomeExibido: origem.nomeExibido, nomeDoCadastro: !!origem.nomeDoCadastro, sap: origem.sap || '', porDia: origem.porDia.map(d => ({ volume: d.volume, datas: new Set(d.datas) })) };
+      ordem.push(chave);
     } else {
-      resultado[canonica].nomeExibido = dashNomeCanônico(resultado[canonica].nomeExibido, origem.nomeExibido);
+      const bucket = resultado[canonica];
+      if (origem.nomeDoCadastro && !bucket.nomeDoCadastro) {
+        bucket.nomeExibido = origem.nomeExibido;
+        bucket.nomeDoCadastro = true;
+      } else if (!bucket.nomeDoCadastro) {
+        bucket.nomeExibido = dashNomeCanônico(bucket.nomeExibido, origem.nomeExibido);
+      } // se o bucket já tem nome do cadastro, mantém — não deixa nome de pedido sobrescrever
+      if (!bucket.sap && origem.sap) bucket.sap = origem.sap;
       for (let d = 0; d < 7; d++) {
-        resultado[canonica].porDia[d].volume += origem.porDia[d].volume;
-        origem.porDia[d].datas.forEach(data => resultado[canonica].porDia[d].datas.add(data));
+        bucket.porDia[d].volume += origem.porDia[d].volume;
+        origem.porDia[d].datas.forEach(data => bucket.porDia[d].datas.add(data));
       }
     }
   });
@@ -4620,6 +4669,12 @@ function _dashAgendaMesclarSimilares(clientesMap) {
 // Agrega volume por CLIENTE × DIA DA SEMANA (0=Dom..6=Sáb), aplicando os
 // filtros ativos de Operação/Produto/Transportadora na fonte — mesmo
 // princípio de dashAgregarProdutos (filtro entra ANTES de somar, não depois).
+// A chave primária de agrupamento já prioriza o CÓDIGO SAP do pedido
+// (normalizado, sem zero à esquerda) sobre o nome — mesmo critério de
+// dashChaveCliente usado no resto do Dashboard — e só cai pro nome
+// normalizado quando o pedido não tem SAP preenchido. A fusão fuzzy acima
+// (_dashAgendaMesclarSimilares) cobre o resto: registros do MESMO cliente
+// em que o SAP variou de grafia ou não foi preenchido em algum deles.
 function _dashAgendaColetarClientes() {
   const snaps = _dashAgendaSnapshotsCache || [];
   const { operacao: opFiltro, transp: transpFiltro, produto: prodFiltro } = _dashAgendaFiltros;
@@ -4633,23 +4688,31 @@ function _dashAgendaColetarClientes() {
         if (opFiltro && !opFiltro.has(dashCidadeOperacaoViagem(vi, v, terms))) return;
         (vi.paradas || []).forEach(p => {
           const nomeCliente = (p.pedido || {}).cliente || (p.pedido || {}).nomeCliente || p.nome || '?';
+          const sapPedido = (p.pedido?.codigoSAP || p.pedido?.codSAP || p.pedido?.sap || '').toString().trim();
           const dataEntrega = p.pedido?.dataEntregaLogistica || '';
           const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dataEntrega);
           if (!m) return; // sem data válida, não dá pra saber o dia da semana
           const dt = new Date(+m[3], +m[2] - 1, +m[1]);
           if (isNaN(dt.getTime())) return;
           const diaSemana = dt.getDay(); // 0=Dom..6=Sáb
-          const chaveCliente = dashNormalizarNomeCliente(nomeCliente);
+          const chaveCliente = sapPedido ? 'SAP:' + _dashAgendaSapNorm(sapPedido) : 'NM:' + dashNormalizarNomeCliente(nomeCliente);
+          // Nome do Cadastro de Clientes (window.clientes) é a fonte de
+          // verdade quando existe — resolve 1x por parada, usa em todos os
+          // itens dela.
+          const nomeCadastro = _dashAgendaNomeCadastro(sapPedido, nomeCliente);
           (p.itens || []).forEach(it => {
             const nomeProdBruto = (it.produto || '').toString().replace(/^\d+\s*-\s*/, '').trim();
             const nomeProd = nomeProdBruto ? nomeProdBruto.toUpperCase().replace(/\s+/g, ' ') : 'PRODUTO NÃO IDENTIFICADO';
             if (prodFiltro && !prodFiltro.has(nomeProd)) return;
             const vol = it.volume || 0;
             if (vol <= 0) return;
-            if (!clientesMap[chaveCliente]) clientesMap[chaveCliente] = { nomeExibido: nomeCliente, porDia: Array.from({ length: 7 }, () => ({ volume: 0, datas: new Set() })) };
-            clientesMap[chaveCliente].nomeExibido = dashNomeCanônico(clientesMap[chaveCliente].nomeExibido, nomeCliente);
-            clientesMap[chaveCliente].porDia[diaSemana].volume += vol;
-            if (dataEntrega) clientesMap[chaveCliente].porDia[diaSemana].datas.add(dataEntrega);
+            if (!clientesMap[chaveCliente]) clientesMap[chaveCliente] = { nomeExibido: nomeCadastro || nomeCliente, nomeDoCadastro: !!nomeCadastro, sap: sapPedido, porDia: Array.from({ length: 7 }, () => ({ volume: 0, datas: new Set() })) };
+            const bucket = clientesMap[chaveCliente];
+            if (nomeCadastro && !bucket.nomeDoCadastro) { bucket.nomeExibido = nomeCadastro; bucket.nomeDoCadastro = true; }
+            else if (!bucket.nomeDoCadastro) bucket.nomeExibido = dashNomeCanônico(bucket.nomeExibido, nomeCliente);
+            if (!bucket.sap && sapPedido) bucket.sap = sapPedido;
+            bucket.porDia[diaSemana].volume += vol;
+            if (dataEntrega) bucket.porDia[diaSemana].datas.add(dataEntrega);
           });
         });
       });
