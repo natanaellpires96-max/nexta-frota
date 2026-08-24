@@ -3823,9 +3823,87 @@ function salvarPedido() {
 }
 function removerPedido(id) { pedidos = pedidos.filter(p => p.id !== id); renderPedidos(); }
 function totalVolPedido(p) { return p.produtos.reduce((s,pr) => s+pr.volume, 0); }
+// ── Resumo dos Pedidos (botão "📊 Resumo" ao lado de "Modelo") ─────────────
+// Sempre reflete a MESMA lista filtrada que está sendo exibida nos cards
+// (mesmos filtros de Cliente/Cidade/Terminal) — pra bater com o que a
+// pessoa está olhando na tela, útil pra conferir contra o SAP.
+let _pedidosResumoAberto = false;
+function togglePedidosResumo() {
+  _pedidosResumoAberto = !_pedidosResumoAberto;
+  const box = document.getElementById('pedidos-resumo-box');
+  if (box) box.classList.toggle('hidden', !_pedidosResumoAberto);
+  const btn = document.getElementById('btn-pedidos-resumo');
+  if (btn) { btn.style.background = _pedidosResumoAberto ? 'var(--pet-green,#b5e51d)' : ''; btn.style.borderColor = _pedidosResumoAberto ? 'var(--pet-green,#b5e51d)' : ''; }
+  renderPedidos();
+}
+window.togglePedidosResumo = togglePedidosResumo;
+// Chave de cliente pra contar "clientes distintos" sem duplicar por typo de
+// digitação — SAP quando existe (fonte de verdade), senão nome em maiúsculas.
+function _chaveClientePedido(p) {
+  const sap = (p.codigoSAP || '').toString().trim();
+  return sap ? 'SAP:' + sap : 'NM:' + (p.cliente || '').toString().trim().toUpperCase();
+}
+function _renderPedidosResumo(lista) {
+  const box = document.getElementById('pedidos-resumo-box');
+  if (!box) return;
+  if (!lista.length) {
+    box.innerHTML = '<div class="card" style="text-align:center;color:var(--text-3);font-size:12px;padding:16px;">Nenhum pedido pra resumir com os filtros atuais.</div>';
+    return;
+  }
+  // Um pedido "quebrado" em Carga 1/Carga 2 vira 2 cards na tela, mas é o
+  // MESMO pedido de origem — conta como 1 na "quantidade de pedidos" (o que
+  // bate com o SAP), e mostra a quantidade de CARGAS à parte quando houver
+  // alguma quebra na lista.
+  const gruposPedido = new Set(lista.map(p => p._quebraGrupo || `id:${p.id}`));
+  const temQuebra = lista.some(p => p._quebraGrupo);
+  const clientesUnicos = new Set(lista.map(_chaveClientePedido));
+  const volumeTotal = lista.reduce((s, p) => s + totalVolPedido(p), 0);
+  const porOperacao = {};
+  lista.forEach(p => {
+    const op = p.terminal || 'Sem terminal definido';
+    if (!porOperacao[op]) porOperacao[op] = { volume: 0, grupos: new Set() };
+    porOperacao[op].volume += totalVolPedido(p);
+    porOperacao[op].grupos.add(p._quebraGrupo || `id:${p.id}`);
+  });
+  const linhasOperacao = Object.entries(porOperacao)
+    .sort((a, b) => b[1].volume - a[1].volume)
+    .map(([op, info]) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--border-dk);">
+        <span style="font-size:12px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🏭 ${op}</span>
+        <span style="display:flex;gap:10px;flex-shrink:0;align-items:baseline;">
+          <span style="font-size:10.5px;color:var(--text-3);">${info.grupos.size} pedido${info.grupos.size === 1 ? '' : 's'}</span>
+          <span style="font-size:12.5px;font-weight:700;color:#4F46E5;min-width:70px;text-align:right;">${info.volume.toFixed(1)} m³</span>
+        </span>
+      </div>`).join('');
+  box.innerHTML = `
+    <div class="card" style="padding:14px 16px;">
+      <div style="font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;">📊 Resumo dos pedidos filtrados</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px;">
+        <div style="background:var(--bg-2,#F4F6F1);border-radius:8px;padding:10px 12px;">
+          <div style="font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);">Volume total</div>
+          <div style="font-size:19px;font-weight:800;color:var(--text);margin-top:2px;">${volumeTotal.toFixed(1)} m³</div>
+        </div>
+        <div style="background:var(--bg-2,#F4F6F1);border-radius:8px;padding:10px 12px;">
+          <div style="font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);">Pedidos${temQuebra ? ' (SAP)' : ''}</div>
+          <div style="font-size:19px;font-weight:800;color:var(--text);margin-top:2px;">${gruposPedido.size}</div>
+          ${temQuebra ? `<div style="font-size:9.5px;color:var(--text-3);margin-top:1px;">${lista.length} carga${lista.length === 1 ? '' : 's'} na tela (com quebras)</div>` : ''}
+        </div>
+        <div style="background:var(--bg-2,#F4F6F1);border-radius:8px;padding:10px 12px;">
+          <div style="font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);">Clientes distintos</div>
+          <div style="font-size:19px;font-weight:800;color:var(--text);margin-top:2px;">${clientesUnicos.size}</div>
+        </div>
+        <div style="background:var(--bg-2,#F4F6F1);border-radius:8px;padding:10px 12px;">
+          <div style="font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);">Operações</div>
+          <div style="font-size:19px;font-weight:800;color:var(--text);margin-top:2px;">${Object.keys(porOperacao).length}</div>
+        </div>
+      </div>
+      <div style="font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:2px;">Volume por operação</div>
+      ${linhasOperacao}
+    </div>`;
+}
 function renderPedidos() {
   const el = document.getElementById('pedidos-list');
-  if (!pedidos.length) { el.innerHTML = ''; return; }
+  if (!pedidos.length) { el.innerHTML = ''; _renderPedidosResumo([]); return; }
   const filtroCliente = valId('f-ped-cliente');
   const filtroCidade = valId('f-ped-cidade');
   const filtroTerminal = valId('f-ped-terminal');
@@ -3834,6 +3912,7 @@ function renderPedidos() {
     containsFiltro(p.cidade, filtroCidade) &&
     containsFiltro(p.terminal, filtroTerminal)
   );
+  _renderPedidosResumo(lista);
   if (!lista.length) { el.innerHTML = '<div class="empty">Nenhum pedido encontrado para os filtros.</div>'; return; }
   // Mantém grupos de quebra juntos, ordenados por parte
   lista = lista.slice().sort((a, b) => {
