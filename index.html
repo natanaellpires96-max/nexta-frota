@@ -348,6 +348,7 @@
       <div style="display:flex;gap:6px;align-items:center;">
         <input type="file" id="upload-pedidos-input" accept=".xlsx,.xls" style="display:none;" onchange="uploadPedidosLiberados(this)"/>
         <button class="btn btn-sm" onclick="baixarModeloPedidos()" title="Baixar planilha modelo de pedidos">Modelo</button>
+        <button class="btn btn-sm" id="btn-pedidos-resumo" onclick="togglePedidosResumo()" title="Resumo dos pedidos filtrados: volume total, por operação, quantidade de pedidos e clientes">📊 Resumo</button>
         <button class="btn btn-yellow btn-sm" onclick="document.getElementById('upload-pedidos-input').click()">Importar Excel</button>
         <button class="btn btn-green btn-sm" onclick="abrirFormPedido(null)">+ Inserir</button>
         <button class="btn btn-danger btn-sm" onclick="limparTodosPedidos()">Limpar todos</button>
@@ -360,6 +361,7 @@
       <div class="field"><label>Terminal</label><input id="f-ped-terminal" placeholder="Filtrar terminal..." oninput="renderPedidos()"/></div>
       <button class="btn btn-sm" onclick="limparFiltros('pedidos')">Limpar</button>
     </div>
+    <div id="pedidos-resumo-box" class="hidden" style="margin-bottom:14px;"></div>
     <div id="pedidos-list"></div>
     <div id="pedidos-mapa-wrap" class="hidden" style="margin-top:8px;">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:8px 10px;background:var(--bg-2,#F4F6F1);border-radius:8px;">
