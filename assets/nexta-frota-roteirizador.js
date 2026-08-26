@@ -812,7 +812,7 @@ function exportarDadosPainel() {
       'Tempo Carregamento (min)', 'Abertura Padrão', 'Fechamento Padrão', 'Dias Ativos',
     ];
     const cliHeaders = [
-      'Código SAP', 'Nome', 'Cidade', 'Latitude', 'Longitude',
+      'Código SAP', 'Nome', 'Cidade', 'Latitude', 'Longitude', 'Endereço',
       'Tempo Descarga (min)', 'Restrição Horário', 'Tipos Caminhão', 'Observações', 'Identidade Petronas',
     ];
     const placaHeaders = [
@@ -844,6 +844,7 @@ function exportarDadosPainel() {
       'Cidade': c.cidade || '',
       'Latitude': c.lat ?? '',
       'Longitude': c.lon ?? '',
+      'Endereço': c.endereco || '',
       'Tempo Descarga (min)': c.tempoDescargaMediaMin ?? 45,
       'Restrição Horário': c.restricaoHorario || '',
       'Tipos Caminhão': (c.tiposCaminhao || []).join(';'),
@@ -882,7 +883,7 @@ function exportarDadosPainel() {
     const wsCli = XLSX.utils.json_to_sheet(rowsCli, { header: cliHeaders });
     const wsPlacas = XLSX.utils.json_to_sheet(rowsPlaca, { header: placaHeaders });
     wsTerm['!cols'] = termHeaders.map(() => ({ wch: 22 }));
-    wsCli['!cols'] = cliHeaders.map(() => ({ wch: 22 }));
+    wsCli['!cols'] = cliHeaders.map(h => ({ wch: h === 'Endereço' ? 45 : 22 }));
     wsPlacas['!cols'] = placaHeaders.map(() => ({ wch: 18 }));
     XLSX.utils.book_append_sheet(wb, wsTerm, 'Terminais');
     XLSX.utils.book_append_sheet(wb, wsCli, 'Clientes');
@@ -4146,7 +4147,7 @@ async function renderAprendizado() {
 // alocarItem, recalcularTimingViagem, itensCabemNosCompartimentos) — inclusive
 // a trava de encaixe exato de compartimentos.
 var mapaPedidosMap      = null;
-var _pmapaMarkers       = {};        // pedidoId -> { marker, pedido }
+var _pmapaMarkers       = {};        // pedidoId -> {marker,pedido} OU chaveCoord -> {marker,pedidos[],lat,lon,grupo:true} quando há 2+ pedidos na mesma coordenada
 var _pmapaSelecionados  = new Set(); // ids de pedido selecionados
 var _pmapaModoSelecao   = false;
 var _pmapaLassoPontos   = [];
@@ -4257,6 +4258,74 @@ function produtosPendentesDoPedido(p) {
   }).filter(pr => pr.volume > 0.0001);
 }
 
+// ── Agrupamento de pedidos na MESMA coordenada (mesmo cliente/endereço) ────
+// Antes, cada pedido virava seu próprio marcador — se 2+ pedidos caíssem
+// exatamente na mesma lat/lon (ex.: 2 pedidos do mesmo posto), os círculos
+// ficavam empilhados um em cima do outro e só o de cima era clicável; o(s)
+// de baixo ficavam inacessíveis pra seleção. Agora, pontos com a mesma
+// coordenada (arredondada a 5 casas — ~1m de folga) viram UM marcador só,
+// com um selo de contagem, e o clique abre um popup listando cada pedido
+// ali (com o volume pendente de cada um) pra escolher individualmente.
+function _pmapaChaveCoord(lat, lon) { return `${lat.toFixed(5)}|${lon.toFixed(5)}`; }
+function _pmapaCorGrupo(lista) {
+  const pendentes = lista.filter(p => _pmapaVolumePendente(p) > 0.0001);
+  if (!pendentes.length) return '#9CA3AF'; // tudo já roteirizado
+  const todasSelecionadas = pendentes.every(p => _pmapaSelecionados.has(p.id));
+  return todasSelecionadas ? '#F97316' : '#4A6535';
+}
+function _pmapaIconGrupo(cor, qtd) {
+  return L.divIcon({
+    className: '',
+    html: `<div style="position:relative;width:26px;height:26px;">
+      <div style="width:26px;height:26px;border-radius:50%;background:${cor};border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);"></div>
+      ${qtd > 1 ? `<div style="position:absolute;top:-4px;right:-4px;background:#111827;color:#fff;font-size:9px;font-weight:800;min-width:15px;height:15px;border-radius:99px;display:flex;align-items:center;justify-content:center;border:1.5px solid #fff;padding:0 2px;">${qtd}</div>` : ''}
+    </div>`,
+    iconSize: [26, 26], iconAnchor: [13, 13]
+  });
+}
+function _pmapaPopupGrupoHtml(chave, lista, lat, lon) {
+  const linhas = lista.map(p => {
+    const volPend = _pmapaVolumePendente(p);
+    const totalmenteAlocado = volPend <= 0.0001;
+    const sel = _pmapaSelecionados.has(p.id);
+    const produtosHtml = (p.produtos || []).map(pr => `${pr.produto}: ${pr.volume} m³`).join(', ');
+    return `<div style="padding:7px 0;border-bottom:1px solid #E5E7EB;">
+      <div style="font-weight:700;font-size:11.5px;">${p.cliente}${p.codigoSAP ? ` <span style="font-weight:400;color:#6B7280;">(SAP ${p.codigoSAP})</span>` : ''}</div>
+      <div style="font-size:10.5px;color:#6B7280;margin:2px 0;">${produtosHtml}</div>
+      ${totalmenteAlocado
+        ? `<div style="font-size:10.5px;color:#6B7280;font-weight:700;">✓ Já roteirizado</div>`
+        : `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:3px;">
+             <span style="font-size:11px;font-weight:700;color:#4A6535;">Pendente: ${volPend.toFixed(1)} m³ de ${totalVolPedido(p).toFixed(1)} m³</span>
+             <button onclick="pmapaToggleSelecaoPedido(${p.id}, '${chave}')" style="font-size:10.5px;font-weight:700;padding:3px 10px;border-radius:6px;border:1px solid ${sel ? '#F97316' : '#4A6535'};background:${sel ? '#F97316' : '#fff'};color:${sel ? '#fff' : '#4A6535'};cursor:pointer;white-space:nowrap;">${sel ? '✓ Selecionado' : 'Selecionar'}</button>
+           </div>`}
+    </div>`;
+  }).join('');
+  return `<div style="font-size:12px;min-width:230px;max-width:270px;">
+    <div style="font-weight:700;margin-bottom:2px;">📍 ${lista.length} pedidos neste ponto</div>
+    <div style="color:#666;margin-bottom:4px;font-size:10.5px;">Mesma coordenada — escolha individualmente quais programar agora.</div>
+    ${linhas}
+    ${streetViewBotaoHtml(lat, lon)}
+  </div>`;
+}
+// Atualiza a cor do marcador e o conteúdo do popup do grupo SEM fechar o
+// popup nem redesenhar o mapa inteiro — é o que permite marcar "Selecionar"
+// em mais de um pedido do mesmo ponto, um atrás do outro, sem o popup sumir
+// a cada clique.
+function _pmapaAtualizarMarkerGrupo(chave) {
+  const entry = _pmapaMarkers[chave];
+  if (!entry || !entry.grupo) return;
+  const cor = _pmapaCorGrupo(entry.pedidos);
+  entry.marker.setIcon(_pmapaIconGrupo(cor, entry.pedidos.length));
+  entry.marker.setPopupContent(_pmapaPopupGrupoHtml(chave, entry.pedidos, entry.lat, entry.lon));
+}
+function pmapaToggleSelecaoPedido(pedidoId, chave) {
+  if (_pmapaSelecionados.has(pedidoId)) _pmapaSelecionados.delete(pedidoId);
+  else _pmapaSelecionados.add(pedidoId);
+  _pmapaAtualizarMarkerGrupo(chave);
+  pmapaAtualizarPainel();
+}
+window.pmapaToggleSelecaoPedido = pmapaToggleSelecaoPedido;
+
 function renderPedidosMapa() {
   _pmapaGarantirMapa();
   if (!mapaPedidosMap) return;
@@ -4266,12 +4335,23 @@ function renderPedidosMapa() {
   const filtroCliente   = valId('f-ped-cliente');
   const filtroCidade    = valId('f-ped-cidade');
   const bounds = [];
-  pedidos
+  const pedidosFiltrados = pedidos
     .filter(p => containsFiltro(p.cliente, filtroCliente) && containsFiltro(p.cidade, filtroCidade))
     .filter(p => !terminalSel || p.terminal === terminalSel)
-    .forEach(p => {
-      const c = latLonEfetivo(p);
-      if (isNaN(c.lat) || isNaN(c.lon)) return;
+    .map(p => ({ p, c: latLonEfetivo(p) }))
+    .filter(({ c }) => !isNaN(c.lat) && !isNaN(c.lon));
+  // Agrupa por coordenada (ver comentário de _pmapaChaveCoord acima).
+  const grupos = new Map(); // chaveCoord -> { lat, lon, itens: [{p,c}] }
+  pedidosFiltrados.forEach(({ p, c }) => {
+    const chave = _pmapaChaveCoord(c.lat, c.lon);
+    if (!grupos.has(chave)) grupos.set(chave, { lat: c.lat, lon: c.lon, itens: [] });
+    grupos.get(chave).itens.push({ p, c });
+  });
+  grupos.forEach((grupo, chave) => {
+    bounds.push([grupo.lat, grupo.lon]);
+    if (grupo.itens.length === 1) {
+      // Ponto único — comportamento de sempre: clique alterna seleção direto.
+      const { p, c } = grupo.itens[0];
       const volPendente = _pmapaVolumePendente(p);
       const totalmenteAlocado = volPendente <= 0.0001;
       const selecionado = _pmapaSelecionados.has(p.id);
@@ -4303,8 +4383,19 @@ function renderPedidosMapa() {
         });
       }
       _pmapaMarkers[p.id] = { marker, pedido: p };
-      bounds.push([c.lat, c.lon]);
-    });
+    } else {
+      // Mais de um pedido na mesma coordenada — 1 marcador com selo de
+      // contagem; a seleção de cada pedido acontece dentro do popup (ver
+      // _pmapaPopupGrupoHtml), não no clique direto do marcador — assim dá
+      // pra selecionar um, ver o popup continuar aberto, e selecionar o
+      // outro em seguida, até programar tudo que está pendente ali.
+      const listaPedidos = grupo.itens.map(({ p }) => p);
+      const cor = _pmapaCorGrupo(listaPedidos);
+      const marker = L.marker([grupo.lat, grupo.lon], { icon: _pmapaIconGrupo(cor, listaPedidos.length) }).addTo(mapaPedidosMap);
+      marker.bindPopup(_pmapaPopupGrupoHtml(chave, listaPedidos, grupo.lat, grupo.lon), { maxWidth: 280 });
+      _pmapaMarkers[chave] = { marker, pedidos: listaPedidos, lat: grupo.lat, lon: grupo.lon, grupo: true };
+    }
+  });
   if (bounds.length) mapaPedidosMap.fitBounds(bounds, { padding: [32, 32], maxZoom: 12 });
   pmapaAtualizarPainel();
 }
@@ -4351,10 +4442,14 @@ function _pontoDentroPoligono(lat, lon, poligono) {
   return dentro;
 }
 function _pmapaAplicarSelecaoPoligono(poligono) {
-  Object.values(_pmapaMarkers).forEach(({ marker, pedido }) => {
-    if (_pmapaVolumePendente(pedido) <= 0.0001) return; // já roteirizado, não seleciona
-    const ll = marker.getLatLng();
-    if (_pontoDentroPoligono(ll.lat, ll.lng, poligono)) _pmapaSelecionados.add(pedido.id);
+  Object.values(_pmapaMarkers).forEach(entry => {
+    const ll = entry.marker.getLatLng();
+    if (!_pontoDentroPoligono(ll.lat, ll.lng, poligono)) return;
+    const lista = entry.grupo ? entry.pedidos : [entry.pedido];
+    lista.forEach(pedido => {
+      if (_pmapaVolumePendente(pedido) <= 0.0001) return; // já roteirizado, não seleciona
+      _pmapaSelecionados.add(pedido.id);
+    });
   });
   renderPedidosMapa();
 }
@@ -11191,11 +11286,11 @@ function _coletarLinhasPassagemTurno(snaps) {
           ultimaDescMin = fimDesc;
           const nomeCliente = p.pedido?.cliente || '?';
           if (!clientesVistos.includes(nomeCliente)) clientesVistos.push(nomeCliente);
-          const restricao = (p.pedido?.restricao || '').trim();
-          if (restricao) {
-            const obsTxt = `${nomeCliente}: janela ${restricao}`;
-            if (!observacoes.includes(obsTxt)) observacoes.push(obsTxt);
-          }
+          // A coluna "Observação" mostrava a janela de restrição de cada
+          // cliente ("⚠ Cliente: janela HH:MM-HH:MM") automaticamente — só
+          // que na prática isso não era usado e tinha que ser apagado à mão
+          // toda vez. Removido por pedido: a coluna agora sempre vem em
+          // branco (o array "observacoes" continua existindo, só que vazio).
         });
 
         const codViagem = vi.petId || `VIA${v.placa}${idx + 1}`;
