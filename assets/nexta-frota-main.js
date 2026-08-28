@@ -297,6 +297,14 @@ async function dbGetStatus(carrier, plate, dateStr) {
 // nenhum dos dois é sigiloso.
 const CLOUDINARY_CLOUD_NAME = 's6fazigd';
 const CLOUDINARY_UPLOAD_PRESET = 'vknwz7ua';
+// A CARTO passou a exigir chave de API pros mapas de fundo (o "voyager"
+// usado no roteirizador/dashboard) — sem isso, os tiles vêm com um carimbo
+// "API KEY REQUIRED" por cima. A chave é grátis (até 5 milhões de tiles/mês,
+// mais que suficiente aqui): peça em https://carto.com/basemaps/apikey/ e
+// cole o valor recebido aqui. Enquanto ficar vazia, o mapa continua
+// funcionando, só com o carimbo de aviso.
+const CARTO_API_KEY = 'cb1_2g7e_1_7138ae24b481899f8fe33df1';
+window.CARTO_API_KEY = CARTO_API_KEY;
 async function uploadHodometroFoto(carrier, plate, dateStr, file) {
   const comTimeout = (promessa, ms, msgTimeout) => Promise.race([
     promessa,

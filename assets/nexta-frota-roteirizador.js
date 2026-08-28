@@ -1488,7 +1488,7 @@ function corPorPlaca(placa) {
 function garantirMapaGeral() {
   if (!mapaGeral) {
     mapaGeral = L.map('mapa-geral-mapa');
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    L.tileLayer(`https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png${window.CARTO_API_KEY ? '?key=' + window.CARTO_API_KEY : ''}`, {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap &copy; CARTO'
     }).addTo(mapaGeral);
@@ -4186,7 +4186,7 @@ function _pmapaGarantirMapa() {
   if (mapaPedidosMap) { mapaPedidosMap.invalidateSize(); return; }
   if (typeof L === 'undefined') return;
   mapaPedidosMap = L.map('pedidos-mapa');
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png${window.CARTO_API_KEY ? '?key=' + window.CARTO_API_KEY : ''}`, {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap &copy; CARTO'
   }).addTo(mapaPedidosMap);

@@ -55,7 +55,7 @@ function _mvChaveViagem() {
 function garantirMapaViagem() {
   if (!mapaViagem) {
     mapaViagem = L.map('mv-mapa', { zoomControl: true });
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    L.tileLayer(`https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png${window.CARTO_API_KEY ? '?key=' + window.CARTO_API_KEY : ''}`, {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap &copy; CARTO',
       crossOrigin: true // permite que o html2canvas leia os tiles sem "tainted canvas" (CORS)
@@ -2964,7 +2964,7 @@ function dashRenderMapa(rotasMap) {
     // página. Não muda a aparência nem os marcadores (que continuam
     // divIcon, sempre DOM — só as linhas usam canvas).
     _dashMap = L.map('dash-mapa', { zoomControl: true, attributionControl: false, renderer: L.canvas() });
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    L.tileLayer(`https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png${window.CARTO_API_KEY ? '?key=' + window.CARTO_API_KEY : ''}`, {
       maxZoom: 18,
       attribution: '&copy; OpenStreetMap &copy; CARTO'
     }).addTo(_dashMap);
