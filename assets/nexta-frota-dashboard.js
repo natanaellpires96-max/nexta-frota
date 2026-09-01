@@ -945,6 +945,9 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
           transportadora: v.transportadora || '(sem transportadora)',
           placa: v.placa,
           data: dataViagemReal,
+          dataSnap, // data em que a roteirização foi salva (formato do Painel de Disponibilidade) — usada só pra reconstruir diasComViagemPorPlaca filtrado por cliente, ver dashOciosidadeDiasFiltradoPorCliente
+          cidadeOp: dashCidadeOperacaoViagem(vi, v, terms), // idem, pra reconstruir operacoes_ocup filtrado por cliente
+          capV, // idem
           mesKey: mesKeySnap,
           termOrigem: vi.terminalOrigem || v.terminal || '',
           destinos: Array.from(new Set(vi.paradas.map(p => (p.pedido?.cidade || p.pedido?.cliente || '')))).join(', '),
@@ -968,7 +971,12 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
         // capacidade, uma vez por viagem (mesma regra usada pra ocupação de
         // cliente/frota acima), pro gráfico "Ocupação vs Volume por Operação".
         // Já sai filtrado corretamente porque `viagens` acima já respeitou
-        // cidadesFiltro antes de chegar aqui.
+        // cidadesFiltro antes de chegar aqui. NÃO filtra por Cliente aqui —
+        // isso é feito depois, em dashRecalcularOperacoesOcupPorCliente,
+        // a partir de entradasTransportadora (mesmo padrão do Ranking de
+        // Transportadoras/Jornada), porque o filtro de Clientes só fica
+        // disponível DEPOIS que dashAgregar já rodou uma vez (a lista de
+        // clientes do picker vem do resultado dele).
         {
           const cidadeOp = dashCidadeOperacaoViagem(vi, v, terms);
           if (!operacoes[cidadeOp]) operacoes[cidadeOp] = { cidade: cidadeOp, volume: 0, capTotal: 0, viagens: 0 };
@@ -1266,6 +1274,53 @@ function dashAgregarJornada(entradasTransportadora, clientesEfetivos = null) {
     estourosPorTransportadora: estourosPorTransportadoraArr,
     estourosDetalhe: estourosDetalhe.slice(0, 30), // top 30 piores dias-veículo, pra não pesar a tela
   };
+}
+// ── Ociosidade e Ocupação por Operação — versões filtradas por Cliente ─────
+// dashAgregar() não recebe filtro de Cliente (ele PRODUZ a lista de nomes
+// que alimenta o próprio picker — dependência circular). Por isso, igual a
+// dashAgregarTransportadoras/dashAgregarJornada acima, essas duas
+// reconstroem o resultado a partir de entradasTransportadora (que já tem
+// tudo por viagem, inclusive o detalhe por cliente) respeitando o filtro —
+// sem isso, "Ociosidade da Frota" e "Ocupação vs Volume por Operação"
+// continuavam cheios mesmo com o resto do Dashboard já filtrado por Cliente.
+function dashOciosidadeDiasFiltradoPorCliente(entradasTransportadora, clientesEfetivos) {
+  if (!clientesEfetivos) return null; // sem filtro — quem chama usa d.diasComViagemPorPlaca original
+  const efetivosNorm = _dashNormalizarSetClientes(clientesEfetivos);
+  const set = new Set();
+  (entradasTransportadora || []).forEach(e => {
+    if (e._semViagem || !e.dataSnap) return;
+    const atende = Object.keys(e.volumePorCliente || {}).some(nome => _dashNomeBateFiltro(nome, efetivosNorm));
+    if (!atende) return;
+    set.add((e.placa || '').trim().toUpperCase() + '__' + e.dataSnap);
+  });
+  return set;
+}
+function dashOperacoesOcupFiltradoPorCliente(entradasTransportadora, clientesEfetivos) {
+  const efetivosNorm = _dashNormalizarSetClientes(clientesEfetivos);
+  const operacoes = {};
+  (entradasTransportadora || []).forEach(e => {
+    if (e._semViagem) return;
+    const cidadeOp = e.cidadeOp || '(sem cidade)';
+    if (!operacoes[cidadeOp]) operacoes[cidadeOp] = { cidade: cidadeOp, volume: 0, capTotal: 0, viagens: 0 };
+    const volumeConsiderado = clientesEfetivos
+      ? Object.entries(e.volumePorCliente || {}).reduce((s, [nome, vol]) => s + (_dashNomeBateFiltro(nome, efetivosNorm) ? vol : 0), 0)
+      : e.volume;
+    operacoes[cidadeOp].volume += volumeConsiderado;
+    const atende = !clientesEfetivos || Object.keys(e.volumePorCliente || {}).some(nome => _dashNomeBateFiltro(nome, efetivosNorm));
+    if (atende) {
+      operacoes[cidadeOp].viagens += 1;
+      if (e.capV > 0) operacoes[cidadeOp].capTotal += e.capV;
+    }
+  });
+  return Object.values(operacoes)
+    .filter(o => o.capTotal > 0)
+    .map(o => ({
+      nome: o.cidade,
+      ocup: Math.min(100, Math.round((o.volume / o.capTotal) * 100)),
+      volume: parseFloat(o.volume.toFixed(1)),
+      viagens: o.viagens,
+    }))
+    .sort((a, b) => b.volume - a.volume);
 }
 function _dashFmtHoras(min) {
   return (min / 60).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 'h';
@@ -2511,10 +2566,9 @@ function dashRender(snapshots) {
   const _elTempoPedagioMin = document.getElementById('dk-tempo-pedagio-min');
   if (_elTempoPedagioMin) _elTempoPedagioMin.textContent = _kpiViagensComPedagio > 0 ? `${_kpiTempoPedagioMin.toLocaleString('pt-BR')} min · ${_kpiViagensComPedagio} viagem(ns)` : '';
   // Consumo de Jornada — usa d.entradasTransportadora (já filtrado por
-  // cidade/operação na fonte, dentro de dashAgregar, igual ao Ranking de
-  // Transportadoras logo abaixo). Não é afetado pelo filtro de CLIENTE de
-  // propósito: jornada é sobre o veículo/motorista, não sobre quem ele
-  // atendeu naquele dia.
+  // cidade/operação na fonte, dentro de dashAgregar). Com filtro de
+  // Clientes ativo, dashAgregarJornada já descarta veículo/dia que não
+  // atendeu nenhum cliente filtrado (ver dentro da função).
   const _dashJornada = dashAgregarJornada(d.entradasTransportadora, _efetivos);
   set('dk-jornada', _dashJornada.totalPct + '%');
   _dashUltimosKPIs.jornadaPct = _dashJornada.totalPct;
@@ -2524,8 +2578,13 @@ function dashRender(snapshots) {
   if (_elJornadaHoras) _elJornadaHoras.textContent = `${_dashFmtHoras(_dashJornada.totalUsadoMin)} / ${_dashFmtHoras(_dashJornada.totalDispMin)}`;
   dashRenderJornadaTransportadoras(_dashJornada);
   // Ociosidade — busca no Painel de Disponibilidade (Firestore), cruzando
-  // com d.diasComViagemPorPlaca (já filtrado por cidade/operação na fonte,
+  // com diasComViagemPorPlaca (já filtrado por cidade/operação na fonte,
   // igual à Jornada acima) pra saber quem foi disponibilizado e ficou parado.
+  // Com filtro de Clientes ativo, reconstrói esse conjunto a partir de
+  // entradasTransportadora considerando só veículo/dia que atendeu algum
+  // cliente filtrado (dashOciosidadeDiasFiltradoPorCliente) — sem isso, o
+  // card e o gráfico de Ociosidade continuavam cheios mesmo com o resto do
+  // Dashboard já filtrado por Cliente.
   // É assíncrono (consulta ao Firestore), então atualiza o card e o gráfico
   // quando a resposta chegar — mostra "Carregando..." enquanto isso.
   set('dk-ociosidade', '…');
@@ -2534,7 +2593,8 @@ function dashRender(snapshots) {
   const _dashOciosidadeElBox = document.getElementById('dash-ociosidade-transp');
   if (_dashOciosidadeElBox) _dashOciosidadeElBox.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando do Painel de Disponibilidade...</div>';
   const _meuTokenOciosidade = ++_dashOciosidadeToken;
-  dashCarregarOciosidade(_dashSnapshotsAtivos, _dashCidadesSelecionadas, d.diasComViagemPorPlaca, d.placaCidade, d.placaCidadePorDia)
+  const _diasComViagemOciosidade = dashOciosidadeDiasFiltradoPorCliente(d.entradasTransportadora, _efetivos) || d.diasComViagemPorPlaca;
+  dashCarregarOciosidade(_dashSnapshotsAtivos, _dashCidadesSelecionadas, _diasComViagemOciosidade, d.placaCidade, d.placaCidadePorDia)
     .then(_dashOciosidade => {
       if (_meuTokenOciosidade !== _dashOciosidadeToken) return; // filtro mudou de novo antes de terminar — descarta
       set('dk-ociosidade', _dashOciosidade.pctOciosidade + '%');
@@ -2572,10 +2632,12 @@ function dashRender(snapshots) {
   dashKmVolChart('dash-chart-km', clientesFiltrados);
   // Gráfico de ocupação por cliente
   dashOcupClienteChart('dash-chart-ocup', ocupFiltrados);
-  // Gráfico de Ocupação vs Volume por Operação (cidade) — usa d.operacoes_ocup
-  // direto (já veio filtrado por cidade dentro de dashAgregar); não é afetado
-  // pelo filtro de CLIENTE de propósito, é uma visão por operação.
-  dashOcupVolPorOperacaoChart('dash-chart-op-ocup-vol', d.operacoes_ocup);
+  // Gráfico de Ocupação vs Volume por Operação (cidade) — já vem filtrado
+  // por cidade (dentro de dashAgregar). Com filtro de Clientes ativo,
+  // reconstrói a partir de entradasTransportadora considerando só o volume
+  // dos clientes filtrados (mesmo padrão do Ranking de Transportadoras).
+  dashOcupVolPorOperacaoChart('dash-chart-op-ocup-vol',
+    _efetivos ? dashOperacoesOcupFiltradoPorCliente(d.entradasTransportadora, _efetivos) : d.operacoes_ocup);
   // Volume por Produto — mesma fonte crua (_dashSnapshotsAtivos) e mesmos
   // filtros de cidade/cliente/segmento do resto do Dashboard.
   _dashUltimosProdutos = dashAgregarProdutos(_dashSnapshotsAtivos, _dashCidadesSelecionadas, _efetivos);
