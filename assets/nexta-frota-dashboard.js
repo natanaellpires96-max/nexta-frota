@@ -666,18 +666,138 @@ window.dashSalvarAtual = function() {
   dashPopularMeses();
   showToast(`Roteirização salva no Dashboard — ${dashChaveLabel(chave)} ✓`);
 };
-// ── Popular select de meses ────────────────────────────────────────────────
+// ── Popular lista de meses (multi-seleção) ──────────────────────────────────
+let _dashTodasChavesMeses = [];        // cache das chaves disponíveis ("202608", ...), mais recente primeiro
+let _dashRotulosMeses = {};            // chave -> "Ago/2026 (155 rot.)"
+let _dashMesesSelecionados = null;     // Set de chaves marcadas, ou null = nenhum filtro específico de mês (equivalente a "Todos")
+let _dashPeriodoPersonalizado = null;  // {ini:'YYYY-MM-DD', fim:'YYYY-MM-DD'} ou null
 window.dashPopularMeses = async function() {
-  const sel = document.getElementById('dash-mes-sel');
-  if (!sel) return;
   const store = await dashGetStoreMerged();
-  const chaves = Object.keys(store).sort().reverse();
-  sel.innerHTML = '<option value="">Selecionar</option>';
-  chaves.forEach(k => {
-    const opt = document.createElement('option');
-    opt.value = k; opt.textContent = dashChaveLabel(k) + ` (${store[k].length} rot.)`;
-    sel.appendChild(opt);
+  _dashTodasChavesMeses = Object.keys(store).sort().reverse();
+  _dashRotulosMeses = {};
+  _dashTodasChavesMeses.forEach(k => { _dashRotulosMeses[k] = `${dashChaveLabel(k)} (${store[k].length} rot.)`; });
+  // Se havia meses marcados que sumiram do histórico (arquivo excluído etc.),
+  // mantém só os que ainda existem — mesmo cuidado já usado nos filtros de
+  // Cidade/Cliente.
+  if (_dashMesesSelecionados) {
+    const validos = new Set(_dashTodasChavesMeses);
+    const atualizado = new Set([..._dashMesesSelecionados].filter(k => validos.has(k)));
+    _dashMesesSelecionados = atualizado.size ? atualizado : null;
+  }
+  _dashRenderListaMeses();
+};
+function _dashRenderListaMeses() {
+  const list = document.getElementById('dash-periodo-mes-list');
+  if (!list) return;
+  const sel = _dashMesesSelecionados;
+  list.innerHTML = _dashTodasChavesMeses.map(k => {
+    const checked = !!(sel && sel.has(k));
+    return `<div data-val="${k}" data-checked="${checked ? '1' : '0'}"
+      style="display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;border-radius:6px;margin:0 4px;user-select:none;">
+      <span class="dash-cb-box" style="flex-shrink:0;width:18px;height:18px;border-radius:5px;border:2px solid ${checked ? 'var(--pet-green,#b5e51d)' : '#bbb'};background:${checked ? 'var(--pet-green,#b5e51d)' : 'transparent'};display:flex;align-items:center;justify-content:center;">${checked ? _dashCheckSVG() : ''}</span>
+      <span style="font-size:12px;color:#111827;flex:1;">${_dashRotulosMeses[k] || dashChaveLabel(k)}</span>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('div[data-val]').forEach(row => {
+    row.addEventListener('mouseenter', () => row.style.background = 'rgba(0,0,0,0.04)');
+    row.addEventListener('mouseleave', () => row.style.background = '');
+    row.addEventListener('click', () => {
+      const checked = row.dataset.checked !== '1';
+      row.dataset.checked = checked ? '1' : '0';
+      _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), checked);
+    });
   });
+}
+function dashTogglePainelPeriodo() {
+  const panel = document.getElementById('dash-periodo-panel');
+  if (!panel) return;
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : 'flex';
+  if (!visible) _dashRenderListaMeses();
+}
+function dashSelecionarTodosMeses(sel) {
+  document.querySelectorAll('#dash-periodo-mes-list div[data-val]').forEach(row => {
+    row.dataset.checked = sel ? '1' : '0';
+    _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), sel);
+  });
+  // Marcar/limpar meses é sempre a intenção explícita — desiste do
+  // intervalo personalizado que porventura estivesse preenchido, senão o
+  // clique em "Aplicar" logo em seguida ignoraria os meses (a data tem
+  // prioridade) e pareceria que o clique em "Todos"/"Limpar" não fez nada.
+  const _ini = document.getElementById('dash-periodo-data-ini'); if (_ini) _ini.value = '';
+  const _fim = document.getElementById('dash-periodo-data-fim'); if (_fim) _fim.value = '';
+}
+function _dashAtualizarBadgePeriodo() {
+  const badge = document.getElementById('dash-periodo-badge');
+  const label = document.getElementById('dash-periodo-label');
+  if (!badge || !label) return;
+  if (_dashPeriodoPersonalizado) {
+    label.textContent = '🗓️ Período';
+    badge.textContent = '📅 personalizado';
+    badge.style.display = '';
+  } else if (_dashMesesSelecionados) {
+    label.textContent = '🗓️ Período';
+    badge.textContent = `${_dashMesesSelecionados.size} ${_dashMesesSelecionados.size === 1 ? 'mês' : 'meses'}`;
+    badge.style.display = '';
+  } else {
+    label.textContent = '🗓️ Período';
+    badge.style.display = 'none';
+  }
+}
+function _dashFmtDataBr(iso) {
+  const [y, m, d] = (iso || '').split('-');
+  return (y && m && d) ? `${d}/${m}/${y}` : iso;
+}
+window.dashAplicarFiltroPeriodo = async function() {
+  const panel = document.getElementById('dash-periodo-panel');
+  const dataIni = document.getElementById('dash-periodo-data-ini')?.value || '';
+  const dataFim = document.getElementById('dash-periodo-data-fim')?.value || '';
+  if (dataIni && dataFim) {
+    _dashPeriodoPersonalizado = { ini: dataIni, fim: dataFim };
+    _dashMesesSelecionados = null;
+    if (panel) panel.style.display = 'none';
+    await dashCarregarPeriodoPersonalizado(dataIni, dataFim);
+    return;
+  }
+  const marcados = new Set();
+  document.querySelectorAll('#dash-periodo-mes-list div[data-checked="1"]').forEach(row => marcados.add(row.dataset.val));
+  _dashPeriodoPersonalizado = null;
+  if (panel) panel.style.display = 'none';
+  if (!marcados.size || marcados.size === _dashTodasChavesMeses.length) {
+    // nada marcado, ou tudo marcado — equivale a "Todos os períodos"
+    _dashMesesSelecionados = null;
+    await window.dashCarregarTodos();
+    return;
+  }
+  _dashMesesSelecionados = marcados;
+  await dashCarregarMesesSelecionados([...marcados]);
+};
+// ── Carregar 1 ou mais meses selecionados ───────────────────────────────────
+window.dashCarregarMesesSelecionados = async function(chaves) {
+  const store = await dashGetStoreMerged();
+  const combinados = chaves.flatMap(k => store[k] || []);
+  _dashPeriodoAtualDescricao = chaves.slice().sort().map(k => dashChaveLabel(k)).join(', ');
+  _dashRenderListaMeses();
+  _dashAtualizarBadgePeriodo();
+  dashRender(combinados);
+};
+// ── Carregar intervalo de datas personalizado ───────────────────────────────
+// Filtra pela data de ENTREGA real das viagens (datasEntrega), mesmo
+// critério já usado em "Hoje" — uma roteirização salva num dia pode ter
+// entregas de outro, o intervalo precisa refletir quando a operação
+// aconteceu, não quando alguém mexeu no sistema.
+window.dashCarregarPeriodoPersonalizado = async function(dataIniISO, dataFimISO) {
+  const store = await dashGetStoreMerged();
+  const todos = Object.values(store).flat();
+  const filtrados = todos.filter(s => Array.isArray(s.datasEntrega) && s.datasEntrega.some(dBr => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dBr || '');
+    if (!m) return false;
+    const iso = `${m[3]}-${m[2]}-${m[1]}`;
+    return iso >= dataIniISO && iso <= dataFimISO;
+  }));
+  _dashPeriodoAtualDescricao = `${_dashFmtDataBr(dataIniISO)} a ${_dashFmtDataBr(dataFimISO)}`;
+  _dashAtualizarBadgePeriodo();
+  dashRender(filtrados);
 };
 // ── Extrair dados agregados de snapshots ───────────────────────────────────
 // ── Chave de unificação de cliente ────────────────────────────────────────
@@ -2361,10 +2481,19 @@ document.addEventListener('click', function(e) {
     panel.style.display = 'none';
   }
 });
+document.addEventListener('click', function(e) {
+  const panel = document.getElementById('dash-periodo-panel');
+  const btn   = document.getElementById('dash-periodo-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && !btn?.contains(e.target)) {
+    panel.style.display = 'none';
+  }
+});
 window.dashToggleFiltroCidades   = dashToggleFiltroCidades;
 window.dashFiltrarListaCidades    = dashFiltrarListaCidades;
 window.dashSelecionarTodosCidades = dashSelecionarTodosCidades;
 window.dashAplicarFiltroCidades   = dashAplicarFiltroCidades;
+window.dashTogglePainelPeriodo    = dashTogglePainelPeriodo;
+window.dashSelecionarTodosMeses   = dashSelecionarTodosMeses;
 
 function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
@@ -3125,9 +3254,10 @@ window.dashSincronizar = async function() {
       }
     }
     await dashPopularMeses();
-    const sel = document.getElementById('dash-mes-sel');
-    if (sel && sel.value) {
-      await window.dashCarregarMes(sel.value);
+    if (_dashPeriodoPersonalizado) {
+      await window.dashCarregarPeriodoPersonalizado(_dashPeriodoPersonalizado.ini, _dashPeriodoPersonalizado.fim);
+    } else if (_dashMesesSelecionados) {
+      await window.dashCarregarMesesSelecionados([..._dashMesesSelecionados]);
     } else {
       await window.dashCarregarTodos();
     }
@@ -3163,12 +3293,12 @@ function _dashResetarTodosFiltros() {
   const buscaCli = document.getElementById('dash-cli-search'); if (buscaCli) buscaCli.value = '';
   const buscaCid = document.getElementById('dash-cid-search'); if (buscaCid) buscaCid.value = '';
 }
-// ── Carregar por mês selecionado ───────────────────────────────────────────
+// ── Carregar por mês selecionado (uso legado — a UI agora chama
+// dashCarregarMesesSelecionados, que aceita 1 ou mais meses) ───────────────
 window.dashCarregarMes = async function(chave) {
   if (!chave) return;
   const store = await dashGetStoreMerged();
-  const sel = document.getElementById('dash-mes-sel');
-  _dashPeriodoAtualDescricao = sel?.selectedOptions?.[0]?.textContent?.trim() || chave;
+  _dashPeriodoAtualDescricao = _dashRotulosMeses[chave] || dashChaveLabel(chave);
   dashRender(store[chave] || []);
 };
 // ── Carregar todos os períodos ─────────────────────────────────────────────
@@ -3177,8 +3307,14 @@ window.dashCarregarTodos = async function() {
   const store = await dashGetStoreMerged();
   const todos = Object.values(store).flat();
   _dashPeriodoAtualDescricao = 'Todos os períodos';
-  const sel = document.getElementById('dash-mes-sel');
-  if (sel) sel.value = ''; // sem isso, o dropdown continuava mostrando o mês selecionado anteriormente mesmo carregando TUDO — enganoso (o rótulo dizia "Ago/2026" enquanto os dados eram de todos os meses)
+  // sem isso, o painel de Período continuava mostrando os meses/intervalo
+  // selecionados anteriormente mesmo carregando TUDO — enganoso.
+  _dashMesesSelecionados = null;
+  _dashPeriodoPersonalizado = null;
+  const _ini = document.getElementById('dash-periodo-data-ini'); if (_ini) _ini.value = '';
+  const _fim = document.getElementById('dash-periodo-data-fim'); if (_fim) _fim.value = '';
+  _dashRenderListaMeses();
+  _dashAtualizarBadgePeriodo();
   dashRender(todos);
 };
 // ── Resumo gerencial do dia — "Hoje" ────────────────────────────────────────
@@ -3204,9 +3340,14 @@ window.dashCarregarHoje = async function() {
   // não quando alguém mexeu no sistema.
   const doDia = todos.filter(s => Array.isArray(s.datasEntrega) && s.datasEntrega.includes(hojeBr));
   _dashPeriodoAtualDescricao = `Hoje (${hojeBr})`;
+  // "Hoje" não é nenhum mês/intervalo do painel de Período — desmarca visualmente
+  _dashMesesSelecionados = null;
+  _dashPeriodoPersonalizado = null;
+  const _ini2 = document.getElementById('dash-periodo-data-ini'); if (_ini2) _ini2.value = '';
+  const _fim2 = document.getElementById('dash-periodo-data-fim'); if (_fim2) _fim2.value = '';
+  _dashRenderListaMeses();
+  _dashAtualizarBadgePeriodo();
   dashRender(doDia);
-  const sel = document.getElementById('dash-mes-sel');
-  if (sel) sel.value = ''; // "Hoje" não é nenhum dos meses do dropdown — desmarca visualmente
 };
 // ── Ferramentas de Km Real são só pra admin (recalcular/desfazer mexe direto
 // nos arquivos do histórico compartilhado — não é algo pra qualquer usuário
@@ -3380,12 +3521,13 @@ window.showTab = function(tab) {
 const _origExcluir = window.excluirEntradaHistorico;
 window.excluirEntradaHistorico = async function(filename, btn) {
   if (_origExcluir) await _origExcluir(filename, btn);
-  // Atualiza o select de meses com os dados restantes
+  // Atualiza a lista de meses com os dados restantes
   await dashPopularMeses();
-  // Se há dados carregados no dashboard, recarrega automaticamente
-  const selMes = document.getElementById('dash-mes-sel');
-  if (selMes && selMes.value) {
-    await window.dashCarregarMes(selMes.value);
+  // Se há um período carregado no dashboard, recarrega automaticamente
+  if (_dashPeriodoPersonalizado) {
+    await window.dashCarregarPeriodoPersonalizado(_dashPeriodoPersonalizado.ini, _dashPeriodoPersonalizado.fim);
+  } else if (_dashMesesSelecionados) {
+    await window.dashCarregarMesesSelecionados([..._dashMesesSelecionados]);
   }
 };
 // Popular na inicialização — aguarda primeiro a restauração do handle salvo
