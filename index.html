@@ -714,12 +714,36 @@
                 </div>
               </div>
             </div>
-            <!-- Mês -->
-            <div style="display:flex;align-items:center;gap:6px;padding:7px 11px;">
-              <span style="font-size:10px;color:#6B7280;letter-spacing:0.06em;">MÊS</span>
-              <select id="dash-mes-sel" onchange="dashCarregarMes(this.value)" style="background:transparent;border:none;color:var(--accent,#4F46E5);font-size:11px;font-weight:700;font-family:inherit;outline:none;cursor:pointer;">
-                <option value="">Selecionar</option>
-              </select>
+            <!-- Período: meses (multi-seleção) + intervalo personalizado -->
+            <div style="position:relative;">
+              <button id="dash-periodo-btn" onclick="dashTogglePainelPeriodo()" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'"
+                style="display:flex;align-items:center;gap:5px;background:transparent;border:none;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;height:100%;">
+                <span id="dash-periodo-label">🗓️ Período</span>
+                <span id="dash-periodo-badge" style="display:none;background:var(--accent,#4F46E5);color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
+              </button>
+              <div id="dash-periodo-panel" style="display:none;position:absolute;top:calc(100% + 8px);left:0;z-index:500;background:#fff;border:1px solid #D1D5DB;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);width:280px;max-height:460px;flex-direction:column;overflow:hidden;">
+                <div style="padding:12px 14px 8px;border-bottom:1px solid #D1D5DB;flex-shrink:0;">
+                  <div style="font-size:11px;font-weight:600;color:#6B7280;letter-spacing:.06em;">MESES — SELECIONE 1 OU MAIS</div>
+                </div>
+                <div id="dash-periodo-mes-list" style="overflow-y:auto;max-height:180px;padding:6px 0;flex-shrink:0;"></div>
+                <div style="padding:10px 14px 4px;border-top:1px solid #D1D5DB;flex-shrink:0;">
+                  <div style="font-size:11px;font-weight:600;color:#6B7280;letter-spacing:.06em;margin-bottom:8px;">OU INTERVALO PERSONALIZADO</div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+                    <input id="dash-periodo-data-ini" type="date" style="flex:1;min-width:0;box-sizing:border-box;background:rgba(0,0,0,.04);border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;font-size:11.5px;color:#111827;outline:none;font-family:inherit;"/>
+                    <span style="font-size:11px;color:#9CA3AF;">até</span>
+                    <input id="dash-periodo-data-fim" type="date" style="flex:1;min-width:0;box-sizing:border-box;background:rgba(0,0,0,.04);border:1px solid #D1D5DB;border-radius:8px;padding:6px 8px;font-size:11.5px;color:#111827;outline:none;font-family:inherit;"/>
+                  </div>
+                  <div style="font-size:10px;color:#9CA3AF;margin-bottom:4px;">Preenchendo as duas datas, o intervalo tem prioridade sobre os meses marcados acima.</div>
+                </div>
+                <div style="padding:10px 14px;border-top:1px solid #D1D5DB;display:flex;gap:8px;flex-shrink:0;background:#fff;">
+                  <button onclick="dashSelecionarTodosMeses(true)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;letter-spacing:.02em;">Todos</button>
+                  <button onclick="dashSelecionarTodosMeses(false)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;letter-spacing:.02em;">Limpar</button>
+                  <button onclick="dashAplicarFiltroPeriodo()"
+                    style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:var(--accent,#4F46E5);color:#fff;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
+                </div>
+              </div>
             </div>
           </div>
 
