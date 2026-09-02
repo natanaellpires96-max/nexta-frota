@@ -4028,8 +4028,8 @@ function renderPedidos() {
     const podeQuebrar  = p.produtos.length >= 2;
     const selecionado  = _pedSelecionados.has(p.id);
     const pernoiteTag  = p.pernoiteDesejado
-      ? `<span class="tag" onclick="togglePernoitePedido(${p.id})" title="Clique para desmarcar — carrega hoje, sai no início de jornada de amanhã" style="font-size:9px;background:#4F46E5;color:#fff;border-color:#4F46E5;cursor:pointer;">🌙 Pernoite</span>`
-      : `<span class="tag" onclick="togglePernoitePedido(${p.id})" title="Marcar: carrega hoje, sai só no início de jornada de amanhã (decisão operacional, não é atraso)" style="font-size:9px;color:#6B7280;border-style:dashed;cursor:pointer;">🌙 + Pernoite</span>`;
+      ? `<span class="tag" onclick="togglePernoitePedido(${p.id})" title="Clique para desmarcar — carrega hoje, sai no início de jornada de amanhã" style="font-size:9px;background:#4F46E5;color:#fff;border-color:#4F46E5;cursor:pointer;display:inline-flex;align-items:center;gap:3px;"><span style="font-size:11px;line-height:1;">🌙</span>Pernoite</span>`
+      : `<span class="tag" onclick="togglePernoitePedido(${p.id})" title="Marcar: carrega hoje, sai só no início de jornada de amanhã (decisão operacional, não é atraso)" style="font-size:9px;color:#6B7280;border-style:dashed;cursor:pointer;display:inline-flex;align-items:center;gap:3px;"><span style="font-size:11px;line-height:1;">🌙</span>+ Pernoite</span>`;
     return `<div class="card" style="${borderStyle}">
       <div style="display:flex;align-items:flex-start;gap:10px;">
         <input type="checkbox" ${selecionado ? 'checked' : ''} onclick="togglePedidoSelecionado(${p.id}, event)" style="margin-top:4px;width:15px;height:15px;flex-shrink:0;cursor:pointer;" title="Selecionar pra marcar pernoite em lote"/>
@@ -9335,7 +9335,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           title="Arraste para mover esta viagem para outro veículo · Solte uma entrega aqui para adicioná-la a esta viagem">
           <span class="drag-handle">⠿</span>
           <span class="tag ${_temViol ? 'tag-red' : 'tag-blue'}">${label}</span>
-          ${viagem.pernoiteManual ? `<span class="tag" style="background:#4F46E5;color:#fff;border-color:#4F46E5;" title="Marcado como pernoite em Pedidos de Entrega — sai no início de jornada do dia seguinte, não é atraso">🌙 Pernoite</span>` : ''}
+          ${viagem.pernoiteManual ? `<span class="tag" style="background:#4F46E5;color:#fff;border-color:#4F46E5;display:inline-flex;align-items:center;gap:4px;" title="Marcado como pernoite em Pedidos de Entrega — sai no início de jornada do dia seguinte, não é atraso"><span style="font-size:12px;line-height:1;">🌙</span>Pernoite</span>` : ''}
           ${_lockBtnHtml}
           <span style="font-size:12px;color:#4A6535;">${volV.toFixed(1)} / ${v.capacidade} m³</span>
           <span style="font-size:12px;color:#4A6535;">${fmtDT(inicioCicloMin+esperaTermRender)} → ${fmtDT(fimCicloMin)}</span>
