@@ -2109,6 +2109,24 @@ function recalcularTimingViagem(viagem, v) {
   viagem._inicioCargaMin = clock;
   // Nota: esperaTerminalMin já foi somado dentro do else acima.
   // Não somar novamente aqui para evitar dupla contagem.
+  // ── Pernoite manual: garante que a espera está em QUEM É a 1ª parada agora ──
+  // Se a viagem foi reordenada (arrastando na tela, ou o otimizador
+  // escolhendo outra sequência mais barata), a espera de pernoite precisa
+  // "seguir" pra quem quer que seja a 1ª parada de verdade — nunca fica
+  // presa numa parada que deixou de ser a primeira.
+  if (viagem.pernoiteManual) {
+    viagem.paradas.forEach((p, i) => {
+      if (i > 0 && (p.overnight || p.waitAfterLoadingMin)) { p.overnight = false; p.waitAfterLoadingMin = 0; }
+    });
+    const primeira = viagem.paradas[0];
+    const pn = calcPernoiteManualViagem(v, primeira.pedido, clock - (viagem.esperaTerminalMin || 0), viagem.terminalOrigem, viagem.esperaTerminalMin || 0, jIniMin);
+    if (pn) {
+      primeira.overnight = true;
+      primeira.tempoCarregamentoMin = pn.tempoCarregamentoMin;
+      primeira.deslocCarregadoMin   = pn.deslocCarregadoMin;
+      primeira.waitAfterLoadingMin  = pn.waitAfterLoadingMin;
+    }
+  }
   // Recalcula cada parada
   let produtivo = 0;
   viagem.paradas.forEach((p, idxP) => {
@@ -2116,8 +2134,9 @@ function recalcularTimingViagem(viagem, v) {
     p.origemDeslocamento = idxP === 0 ? 'Terminal' : 'Entrega anterior';
     if (idxP === 0) {
       // Primeira parada sem tempoCarregamento (stop vindo de posição não-primeira)
-      // → recalcula distâncias a partir do terminal atual
-      if (!(p.tempoCarregamentoMin > 0)) {
+      // → recalcula distâncias a partir do terminal atual (pernoite manual já
+      // foi resolvido acima, então só entra aqui pro caso normal/janela)
+      if (!viagem.pernoiteManual && !(p.tempoCarregamentoMin > 0)) {
         const base = dadosCiclo(v, p.pedido, viagem.terminalOrigem);
         p.tempoCarregamentoMin = base.tempoCarregamentoMin;
         p.deslocCarregadoMin   = base.deslocCarregadoMin;
@@ -2131,6 +2150,9 @@ function recalcularTimingViagem(viagem, v) {
     const carga = idxP === 0 ? (p.tempoCarregamentoMin || 0) : 0;
     clock   += carga;
     produtivo += carga;
+    // Espera de pernoite (não conta como jornada produtiva, mesma isenção
+    // já usada no resto do sistema) — soma antes do deslocamento até o cliente.
+    if (p.overnight) clock += (p.waitAfterLoadingMin || 0);
     // Deslocamento até o cliente
     clock   += (p.deslocCarregadoMin || 0);
     produtivo += (p.deslocCarregadoMin || 0);
@@ -6032,6 +6054,29 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       // Primeiro produto do pedido → cria a parada com timing; demais → adiciona à parada existente
       alocarItem(viagem, item, pr.volume, primeiro ? detalheParada : null, 0, aloc);
       primeiro = false;
+    }
+    // Pernoite manual: se esse pedido acabou de entrar na posição 0 (venceu
+    // por ser mais barato geograficamente — a escolha de sequência continua
+    // 100% livre, ver posicoesCandidatas), a espera de pernoite precisa
+    // "se mudar" pra ele também, senão fica presa na parada que deixou de
+    // ser a primeira (era o bug relatado: 1ª parada no mesmo dia, espera
+    // aparecendo entre a 1ª e a 2ª em vez de antes da 1ª).
+    if (detalheParada?.insertIdx === 0 && viagem.pernoiteManual && viagem.paradas.length > 1) {
+      const primeira = viagem.paradas[0];
+      const antigaPrimeira = viagem.paradas[1];
+      if (antigaPrimeira.overnight) {
+        antigaPrimeira.overnight = false;
+        antigaPrimeira.waitAfterLoadingMin = 0;
+      }
+      const idxVPn = resultado[v.id].indexOf(viagem);
+      const ckOriginal = inicioViagemAbsMin(resultado[v.id], idxVPn, jIni(v), v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
+      const pn = calcPernoiteManualViagem(v, primeira.pedido, ckOriginal, viagem.terminalOrigem, viagem.esperaTerminalMin || 0, jIni(v));
+      if (pn) {
+        primeira.overnight = true;
+        primeira.waitAfterLoadingMin = pn.waitAfterLoadingMin;
+        primeira.tempoCarregamentoMin = pn.tempoCarregamentoMin;
+        primeira.deslocCarregadoMin = pn.deslocCarregadoMin;
+      }
     }
     viagem.tempoConsumidoMin = (viagem.tempoConsumidoMin || 0) + custoRelogio;
     controleTempo[v.id].usadoMin += custoProdutivo;
