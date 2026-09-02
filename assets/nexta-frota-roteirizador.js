@@ -2236,6 +2236,28 @@ function calcOvernightViagem(v, item, clockAbsMin, terminalNome, diaAlvoEntrega=
   if (waitAfterLoadingMin < 0 || totalElapsedMin <= 0) return null;
   return { ...base, waitBeforeLoadingMin, waitAfterLoadingMin, productiveMin, totalElapsedMin };
 }
+// Pernoite MANUAL — decisão do planejador (pedido.pernoiteDesejado marcado em
+// Pedidos de Entrega), SEM depender de janela de recebimento do cliente
+// (diferente de calcOvernightViagem acima, que exige janela pra funcionar).
+// Carrega assim que possível, aguarda na base até o início de jornada
+// cadastrado do veículo pro DIA SEGUINTE (jornadaInicioDiaMin — minuto do dia,
+// ex.: 360 = 06:00), sai, e segue deslocamento/descarga/retorno normalmente.
+function calcPernoiteManualViagem(v, pedido, clockAbsMin, terminalNome, esperaTerminalMin, jornadaInicioDiaMin) {
+  const loadStartAbs = clockAbsMin + (esperaTerminalMin || 0);
+  const base = dadosCiclo(v, pedido, terminalNome);
+  const { tempoCarregamentoMin, deslocCarregadoMin, tempoDescargaMin, deslocVazioMin } = base;
+  const loadEndAbs = loadStartAbs + tempoCarregamentoMin;
+  // Sempre o PRÓXIMO início de jornada estritamente depois do fim da carga —
+  // nunca o mesmo dia, mesmo que a carga termine de manhã cedo.
+  const diaCarregamento = Math.floor(loadEndAbs / 1440);
+  let partidaAbs = diaCarregamento * 1440 + jornadaInicioDiaMin;
+  if (partidaAbs <= loadEndAbs) partidaAbs += 1440;
+  const waitAfterLoadingMin = partidaAbs - loadEndAbs;
+  const productiveMin   = tempoCarregamentoMin + deslocCarregadoMin + tempoDescargaMin + deslocVazioMin;
+  const totalElapsedMin = (esperaTerminalMin || 0) + tempoCarregamentoMin + waitAfterLoadingMin + deslocCarregadoMin + tempoDescargaMin + deslocVazioMin;
+  if (totalElapsedMin <= 0) return null;
+  return { ...base, waitBeforeLoadingMin: esperaTerminalMin || 0, waitAfterLoadingMin, productiveMin, totalElapsedMin };
+}
 function chegadaPrevistaAbsMin(viagem, detalheParada, viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin = 0, numMaxBreaks = 1) {
   let t = inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin, numMaxBreaks);
   t += viagem.esperaTerminalMin || 0; // espera até abertura do terminal
@@ -3902,6 +3924,56 @@ function _renderPedidosResumo(lista) {
       ${linhasOperacao}
     </div>`;
 }
+// ── Pernoite planejado (carrega hoje, sai só no início da jornada de amanhã) ──
+// Diferente da "espera por janela de recebimento" (que já existia e é
+// automática): aqui é o PLANEJADOR quem decide, no cadastro do pedido, que
+// aquela carga vai pernoitar na base por opção operacional, não porque o
+// cliente exige. Ver otimizar() → tentarNovaViagem(): pedido marcado nunca
+// entra na mesma viagem de um pedido não-marcado; se não couber sozinho na
+// jornada de amanhã, o otimizador simplesmente abre outra viagem depois (ou
+// avisa estouro, igual qualquer outro excesso).
+var _pedSelecionados = new Set();
+function togglePernoitePedido(id) {
+  const p = pedidos.find(x => x.id === id);
+  if (!p) return;
+  p.pernoiteDesejado = !p.pernoiteDesejado;
+  renderPedidos();
+}
+function togglePedidoSelecionado(id, ev) {
+  if (ev) ev.stopPropagation();
+  if (_pedSelecionados.has(id)) _pedSelecionados.delete(id);
+  else _pedSelecionados.add(id);
+  renderPedidos();
+}
+function limparSelecaoPedidos() {
+  _pedSelecionados.clear();
+  renderPedidos();
+}
+function marcarSelecionadosPernoite(valor) {
+  if (!_pedSelecionados.size) return;
+  _pedSelecionados.forEach(id => {
+    const p = pedidos.find(x => x.id === id);
+    if (p) p.pernoiteDesejado = valor;
+  });
+  _pedSelecionados.clear();
+  renderPedidos();
+  showToast(valor ? '🌙 Pedidos marcados como pernoite' : 'Marcação de pernoite removida', true);
+}
+function _renderPedidosPernoiteBar() {
+  const box = document.getElementById('pedidos-pernoite-bar');
+  if (!box) return;
+  if (!_pedSelecionados.size) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 14px;background:#EEF2FF;border-color:#C7D2FE;">
+      <span style="font-size:12.5px;font-weight:700;color:#3730A3;">${_pedSelecionados.size} pedido${_pedSelecionados.size === 1 ? '' : 's'} selecionado${_pedSelecionados.size === 1 ? '' : 's'}</span>
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-sm" onclick="marcarSelecionadosPernoite(true)" style="background:#4F46E5;color:#fff;border-color:#4F46E5;">🌙 Marcar como pernoite</button>
+        <button class="btn btn-sm" onclick="marcarSelecionadosPernoite(false)">Desmarcar pernoite</button>
+        <button class="btn btn-sm" onclick="limparSelecaoPedidos()">Limpar seleção</button>
+      </div>
+    </div>`;
+}
 function renderPedidos() {
   const el = document.getElementById('pedidos-list');
   if (!pedidos.length) { el.innerHTML = ''; _renderPedidosResumo([]); return; }
@@ -3914,6 +3986,7 @@ function renderPedidos() {
     containsFiltro(p.terminal, filtroTerminal)
   );
   _renderPedidosResumo(lista);
+  _renderPedidosPernoiteBar();
   if (!lista.length) { el.innerHTML = '<div class="empty">Nenhum pedido encontrado para os filtros.</div>'; return; }
   // Mantém grupos de quebra juntos, ordenados por parte
   lista = lista.slice().sort((a, b) => {
@@ -3929,10 +4002,15 @@ function renderPedidos() {
     const temQuebra    = !!p._quebraGrupo;
     const parteTag     = p._quebraParte
       ? `<span class="tag tag-yellow" style="font-size:9px;">⌀ Carga ${p._quebraParte}</span>` : '';
-    const borderStyle  = temQuebra ? 'border-left:4px solid var(--pet-yellow);' : '';
+    const borderStyle  = temQuebra ? 'border-left:4px solid var(--pet-yellow);' : (p.pernoiteDesejado ? 'border-left:4px solid #4F46E5;' : '');
     const podeQuebrar  = p.produtos.length >= 2;
+    const selecionado  = _pedSelecionados.has(p.id);
+    const pernoiteTag  = p.pernoiteDesejado
+      ? `<span class="tag" onclick="togglePernoitePedido(${p.id})" title="Clique para desmarcar — carrega hoje, sai no início de jornada de amanhã" style="font-size:9px;background:#4F46E5;color:#fff;border-color:#4F46E5;cursor:pointer;">🌙 Pernoite</span>`
+      : `<span class="tag" onclick="togglePernoitePedido(${p.id})" title="Marcar: carrega hoje, sai só no início de jornada de amanhã (decisão operacional, não é atraso)" style="font-size:9px;color:#6B7280;border-style:dashed;cursor:pointer;">🌙 + Pernoite</span>`;
     return `<div class="card" style="${borderStyle}">
       <div style="display:flex;align-items:flex-start;gap:10px;">
+        <input type="checkbox" ${selecionado ? 'checked' : ''} onclick="togglePedidoSelecionado(${p.id}, event)" style="margin-top:4px;width:15px;height:15px;flex-shrink:0;cursor:pointer;" title="Selecionar pra marcar pernoite em lote"/>
         <div style="flex:1;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
             ${p.codigoSAP ? `<span class="sap-code">SAP ${p.codigoSAP}</span>` : ''}
@@ -3945,6 +4023,7 @@ function renderPedidos() {
               : `<span class="tag tag-blue" style="font-size:9px;">📅 ${p.dataEntregaLogistica}</span>`) : ''}
             ${p.restricao ? `<span class="tag tag-yellow">${p.restricao}</span>` : ''}
             ${p.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
+            ${pernoiteTag}
             ${tiposHtml}
           </div>
           <div class="pills">
@@ -6029,6 +6108,10 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     const permitirExcederJornada = !!opts.permitirExcederJornada;
     // Pedido sem terminal → aceita em qualquer viagem (usa o terminal de origem da viagem)
     if (pedido.terminal && viagem.terminalOrigem !== pedido.terminal) return null;
+    // Pernoite planejado nunca mistura com viagem normal (nem vice-versa) —
+    // são partidas em dias diferentes, não dá pra juntar na mesma viagem.
+    // Ver tentarNovaViagem() mais abaixo, onde o pernoite de verdade é criado.
+    if (!!pedido.pernoiteDesejado !== !!viagem.pernoiteManual) return null;
     if (!podeFitar(produtosSelecionados, viagem.compsDisp)) return null;
     const idxV = resultado[v.id].indexOf(viagem);
     const n    = viagem.paradas.length;
@@ -6093,6 +6176,38 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     const ck       = clockV(v);
     const espTerm  = calcEsperaTerminal(terminalEfetivo, ck);
     if (!podeFitar(produtosSelecionados, criarCompsDisp(v))) return null;
+    // ── Pernoite MANUAL (marcado pelo planejador no pedido, ver togglePernoitePedido
+    // em Pedidos de Entrega) — diferente do overnight automático abaixo, que só
+    // existe quando há janela de recebimento do cliente forçando a espera. Aqui
+    // não depende de janela nenhuma: carrega normal, aguarda até o início de
+    // jornada cadastrado do veículo pro DIA SEGUINTE, sai, segue o ciclo normal.
+    // tentarEncaixe() já garante que isso nunca mistura com pedido não marcado
+    // na mesma viagem — por isso sempre cai aqui em vez de tentar encaixar.
+    if (pedido.pernoiteDesejado) {
+      const prodRefeicaoPn = resultado[v.id].length === (doisTurnos(v) ? 2 : 1) ? (v.tempoPerdidoMin || 0) : 0;
+      const pn = calcPernoiteManualViagem(v, pedido, ck, terminalEfetivo, espTerm, jIni(v));
+      if (!pn) return null;
+      // Pernoite empurra o trabalho de verdade pro dia seguinte — trata como
+      // "pelo menos +1 dia de jornada disponível" (mesmo princípio de
+      // diasViagem usado no fluxo normal pra pedidos com entrega futura),
+      // senão o usadoMin de hoje sozinho barraria uma viagem que na prática
+      // só vai consumir jornada de amanhã.
+      const diasViagemPn = Math.max(2, ((diaAlvoPedido(pedido) ?? 0) + 1));
+      const limiteEfetivoPn = controleTempo[v.id].limiteMin * diasViagemPn;
+      const excessoPn = (controleTempo[v.id].usadoMin + pn.productiveMin + prodRefeicaoPn) - limiteEfetivoPn;
+      if (!permitirExcederJornada && excessoPn > 0.001) return null;
+      const detPn = {
+        ...pn,
+        tempoEsperaRestricaoMin: 0,
+        overnight: true,
+        pernoiteManual: true,
+        origemDeslocamento: 'Terminal',
+      };
+      if (excessoPn > 0.001) detPn._jornadaExcedenteMin = excessoPn;
+      const vi = novaViagem(v, terminalEfetivo, pn.waitBeforeLoadingMin);
+      vi.pernoiteManual = true; // marca a VIAGEM inteira — usado por tentarEncaixe() pra nunca misturar
+      return { vi, detalhe: detPn, custoRelogio: pn.totalElapsedMin, custoProdutivo: pn.productiveMin + prodRefeicaoPn };
+    }
     const vRef     = { paradas: [], terminalOrigem: terminalEfetivo, esperaTerminalMin: espTerm };
     const det      = dadosIncrementoParada(vRef, v, { ...pedido, terminal: terminalEfetivo }, terminalEfetivo);
     const chegAbs  = chegadaPrevistaAbsMin(vRef, det, resultado[v.id], resultado[v.id].length, jIni(v), v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
@@ -9175,6 +9290,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           title="Arraste para mover esta viagem para outro veículo · Solte uma entrega aqui para adicioná-la a esta viagem">
           <span class="drag-handle">⠿</span>
           <span class="tag ${_temViol ? 'tag-red' : 'tag-blue'}">${label}</span>
+          ${viagem.pernoiteManual ? `<span class="tag" style="background:#4F46E5;color:#fff;border-color:#4F46E5;" title="Marcado como pernoite em Pedidos de Entrega — sai no início de jornada do dia seguinte, não é atraso">🌙 Pernoite</span>` : ''}
           ${_lockBtnHtml}
           <span style="font-size:12px;color:#4A6535;">${volV.toFixed(1)} / ${v.capacidade} m³</span>
           <span style="font-size:12px;color:#4A6535;">${fmtDT(inicioCicloMin+esperaTermRender)} → ${fmtDT(fimCicloMin)}</span>
