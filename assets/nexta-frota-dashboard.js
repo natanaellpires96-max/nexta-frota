@@ -867,7 +867,7 @@ function dashCidadeOperacaoViagem(vi, v, terms) {
   const term = terms.find(t => t.nome === nomeTerm);
   return term?.cidade || '(sem cidade)';
 }
-function dashAgregar(snapshots, cidadesFiltro = null) {
+function dashAgregar(snapshots, cidadesFiltro = null, transportadorasFiltro = null) {
   const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade, capTotal}
   const operacoes = {};  // key=cidade da operação: {cidade, volume, capTotal, viagens} — pro gráfico Ocupação vs Volume por Operação
   const viagens_ocup = []; // {label, ocup}
@@ -907,6 +907,12 @@ function dashAgregar(snapshots, cidadesFiltro = null) {
     const mesKeySnap = (snap.savedAt || '').slice(0,7);
     const dataSnap = (snap.savedAt || '').slice(0,10);
     vecs.forEach(v => {
+      // Filtro de Transportadora: exclui o veículo inteiro (não só viagens
+      // individuais como o filtro de cidade abaixo) — transportadora é um
+      // atributo do veículo, não varia viagem a viagem. Aplicado antes de
+      // qualquer acumulação (inclusive placaCidade/Ociosidade), pra esse
+      // veículo simplesmente não existir em nada da tela quando filtrado.
+      if (transportadorasFiltro && !transportadorasFiltro.has(v.transportadora || '')) return;
       const pNormMap = (v.placa || '').trim().toUpperCase();
       const viagensTodas = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
       if (pNormMap) {
@@ -1503,7 +1509,7 @@ let _dashOciosidadeToken = 0;
 // sequência de cliques em filtros dentro de poucos minutos.
 const _dashOciosidadeCacheDocs = new Map(); // "dataIni_dataFim" -> { docs, expiraEm }
 const _DASH_OCIOSIDADE_CACHE_TTL_MS = 120_000; // 2 minutos
-async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComViagemPorPlaca, placaCidade, placaCidadePorDia) {
+async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComViagemPorPlaca, placaCidade, placaCidadePorDia, transportadorasFiltro) {
   const vazio = { totalDisponibilizados: 0, totalUsados: 0, pctOciosidade: 0, porTransportadora: [] };
   if (!window.fbDb || !window.fbCollection || !window.fbQuery || !window.fbWhere || !window.fbGetDocs || typeof window.dbGetPlates !== 'function') {
     console.warn('[Ociosidade] Firestore/dbGetPlates não disponível ainda.');
@@ -1564,6 +1570,7 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
     if (rec.status !== 'disponivel') return; // só conta quem foi marcado Disponível naquele dia no Painel
     const pNorm = normPlaca(rec.plate);
     if (!placaAtiva.has(pNorm) || placaAtiva.get(pNorm) === false) return; // placa desconhecida/desativada no cadastro atual — fora da conta
+    if (transportadorasFiltro && !transportadorasFiltro.has(rec.carrier || '(sem transportadora)')) return;
     if (cidadesFiltroNorm) {
       // Reúne todos os "candidatos" de cidade/operação pra essa placa nesse
       // registro: (1) operação cadastrada na placa — fonte primária; (2)
@@ -2273,6 +2280,8 @@ document.addEventListener('click', function(e) {
 });
 let _dashCidadesSelecionadas  = null; // null = todas as cidades de operação; Set = filtro ativo
 let _dashTodasCidades         = [];   // lista completa de cidades de operação do período
+let _dashTransportadorasSelecionadas = null; // null = todas; Set = filtro ativo — aplicado na fonte, dentro de dashAgregar (mesmo princípio do filtro de Cidade)
+let _dashTodasTransportadoras         = [];  // lista completa de transportadoras do período
 let _dashSnapshotsAtivos = [];        // snapshots atualmente carregados
 let _dashUltimoAgregado = null;       // último retorno de dashAgregar() — reaproveitado pelo Histórico por Veículo
 let _dashHistVeiculoDados = [];       // última tabela renderizada do Histórico por Veículo — usada pelo botão de exportar CSV
@@ -2488,6 +2497,86 @@ document.addEventListener('click', function(e) {
     panel.style.display = 'none';
   }
 });
+// ── Filtro de Transportadora — mesmo padrão do filtro de Cidade acima ──────
+function dashTogglePainelTransportadora() {
+  const panel = document.getElementById('dash-transp-panel');
+  if (!panel) return;
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : 'flex';
+  if (!visible) {
+    document.getElementById('dash-transp-search').value = '';
+    dashPopularListaTransportadoras();
+    dashFiltrarListaTransportadora('');
+  }
+}
+function dashPopularListaTransportadoras() {
+  const list = document.getElementById('dash-transp-list');
+  if (!list) return;
+  list.innerHTML = _dashTodasTransportadoras.map(nome => {
+    const sel      = !_dashTransportadorasSelecionadas || _dashTransportadorasSelecionadas.has(nome);
+    const nomeSafe = nome.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    const chk      = sel ? _dashCheckSVG() : '';
+    const bc       = sel ? 'var(--pet-green,#b5e51d)' : '#bbb';
+    const bg       = sel ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    return `<div data-transp="${nomeSafe}" data-checked="${sel ? '1' : '0'}"
+      style="display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;border-radius:6px;margin:0 4px;user-select:none;">
+      <span class="dash-cb-box" style="flex-shrink:0;width:20px;height:20px;border-radius:5px;border:2px solid ${bc};background:${bg};display:flex;align-items:center;justify-content:center;transition:all .12s;">${chk}</span>
+      <span style="font-size:12px;color:var(--text,#111);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${nome}</span>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('div[data-transp]').forEach(row => {
+    row.addEventListener('mouseenter', () => row.style.background = 'rgba(0,0,0,0.04)');
+    row.addEventListener('mouseleave', () => row.style.background = '');
+    row.addEventListener('click', () => {
+      const checked = row.dataset.checked !== '1';
+      row.dataset.checked = checked ? '1' : '0';
+      _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), checked);
+    });
+  });
+}
+function dashSelecionarTodosTransportadora(sel) {
+  const list = document.getElementById('dash-transp-list');
+  if (!list) return;
+  list.querySelectorAll('div[data-transp]').forEach(row => {
+    if (row.style.display === 'none') return;
+    row.dataset.checked = sel ? '1' : '0';
+    _dashAtualizarBoxVisual(row.querySelector('.dash-cb-box'), sel);
+  });
+}
+function dashFiltrarListaTransportadora(busca) {
+  const list = document.getElementById('dash-transp-list');
+  if (!list) return;
+  const b = (busca || '').toLowerCase();
+  list.querySelectorAll('div[data-transp]').forEach(row => {
+    row.style.display = row.dataset.transp.toLowerCase().includes(b) ? '' : 'none';
+  });
+}
+function dashAplicarFiltroTransportadora() {
+  const list = document.getElementById('dash-transp-list');
+  if (!list) return;
+  const selecionadas = new Set();
+  const _dec = s => s.replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+  list.querySelectorAll('div[data-checked="1"]').forEach(row => selecionadas.add(_dec(row.dataset.transp)));
+  _dashTransportadorasSelecionadas = selecionadas.size === _dashTodasTransportadoras.length ? null : selecionadas;
+  const badge = document.getElementById('dash-transp-badge');
+  if (badge) {
+    if (_dashTransportadorasSelecionadas) { badge.textContent = selecionadas.size; badge.style.display = ''; }
+    else badge.style.display = 'none';
+  }
+  document.getElementById('dash-transp-panel').style.display = 'none';
+  dashRenderComFiltro();
+}
+document.addEventListener('click', function(e) {
+  const panel = document.getElementById('dash-transp-panel');
+  const btn   = document.getElementById('dash-transp-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && !btn?.contains(e.target)) {
+    panel.style.display = 'none';
+  }
+});
+window.dashTogglePainelTransportadora    = dashTogglePainelTransportadora;
+window.dashFiltrarListaTransportadora    = dashFiltrarListaTransportadora;
+window.dashSelecionarTodosTransportadora = dashSelecionarTodosTransportadora;
+window.dashAplicarFiltroTransportadora   = dashAplicarFiltroTransportadora;
 window.dashToggleFiltroCidades   = dashToggleFiltroCidades;
 window.dashFiltrarListaCidades    = dashFiltrarListaCidades;
 window.dashSelecionarTodosCidades = dashSelecionarTodosCidades;
@@ -2524,10 +2613,27 @@ function dashRender(snapshots) {
     }
   }
   dashPopularListaCidades();
+  // Atualiza lista global de transportadoras (pro filtro) — mesmo princípio
+  // acima, olha os veículos de TODOS os snapshots carregados antes de
+  // aplicar o filtro, senão ele nunca teria opções pra mostrar.
+  const _novaListaTransp = Array.from(new Set(
+    snapshots.flatMap(s => (s.veiculos || []).map(v => v.transportadora).filter(Boolean))
+  )).sort((a,b) => a.localeCompare(b, 'pt-BR'));
+  const _listaTranspIgual = _novaListaTransp.length === _dashTodasTransportadoras.length &&
+    _novaListaTransp.every((n,i) => n === _dashTodasTransportadoras[i]);
+  if (!_listaTranspIgual) {
+    _dashTodasTransportadoras = _novaListaTransp;
+    if (_dashTransportadorasSelecionadas) {
+      const novasTransp = new Set(_dashTodasTransportadoras);
+      const filtroAtualizadoTransp = new Set([..._dashTransportadorasSelecionadas].filter(n => novasTransp.has(n)));
+      _dashTransportadorasSelecionadas = filtroAtualizadoTransp.size === _dashTodasTransportadoras.length ? null : filtroAtualizadoTransp;
+    }
+  }
+  dashPopularListaTransportadoras();
   // Filtro de cidade da operação aplicado NA FONTE (dentro de dashAgregar) —
   // por isso todo o resto do dashboard (KPIs, gráficos, mapa, ranking) já sai
   // filtrado corretamente, sem precisar re-filtrar depois.
-  const d = dashAgregar(snapshots, _dashCidadesSelecionadas);
+  const d = dashAgregar(snapshots, _dashCidadesSelecionadas, _dashTransportadorasSelecionadas);
   _dashAtualizarMapaNomeSAP(d.clientes); // alimenta a busca de Segmento por SAP (ver dashClienteSegmento)
   _dashUltimoAgregado = d; // reaproveitado pelo Histórico por Veículo (km por dia), sem recalcular
   // Atualiza lista global de clientes para o filtro
@@ -2579,6 +2685,7 @@ function dashRender(snapshots) {
     _dashSnapshotsAtivos.forEach((snap, sIdx) => {
       const res = snap.resultado || {}, vecs = snap.veiculos || [], terms = snap.terminais || [];
       vecs.forEach(v => {
+        if (_dashTransportadorasSelecionadas && !_dashTransportadorasSelecionadas.has(v.transportadora || '')) return;
         const capV = v.capacidade || v.capacidadeTotal || 0;
         const viagens = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
         viagens.forEach(vi => {
@@ -2613,6 +2720,7 @@ function dashRender(snapshots) {
       const vecs = snap.veiculos  || [];
       const terms = snap.terminais || [];
       vecs.forEach(v => {
+        if (_dashTransportadorasSelecionadas && !_dashTransportadorasSelecionadas.has(v.transportadora || '')) return;
         (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length).forEach(vi => {
           const termNomeViagem = vi.terminalOrigem || vi.paradas?.find(p => p.pedido?.terminal)?.pedido?.terminal || v.terminal;
           const term = terms.find(t => t.nome === termNomeViagem);
@@ -2723,7 +2831,7 @@ function dashRender(snapshots) {
   if (_dashOciosidadeElBox) _dashOciosidadeElBox.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando do Painel de Disponibilidade...</div>';
   const _meuTokenOciosidade = ++_dashOciosidadeToken;
   const _diasComViagemOciosidade = dashOciosidadeDiasFiltradoPorCliente(d.entradasTransportadora, _efetivos) || d.diasComViagemPorPlaca;
-  dashCarregarOciosidade(_dashSnapshotsAtivos, _dashCidadesSelecionadas, _diasComViagemOciosidade, d.placaCidade, d.placaCidadePorDia)
+  dashCarregarOciosidade(_dashSnapshotsAtivos, _dashCidadesSelecionadas, _diasComViagemOciosidade, d.placaCidade, d.placaCidadePorDia, _dashTransportadorasSelecionadas)
     .then(_dashOciosidade => {
       if (_meuTokenOciosidade !== _dashOciosidadeToken) return; // filtro mudou de novo antes de terminar — descarta
       set('dk-ociosidade', _dashOciosidade.pctOciosidade + '%');
@@ -3287,11 +3395,14 @@ function _dashResetarTodosFiltros() {
   _dashClientesSelecionados = null;
   _dashCidadesSelecionadas = null;
   _dashSegmentosSelecionados = null;
+  _dashTransportadorasSelecionadas = null;
   const badgeCli = document.getElementById('dash-cli-badge'); if (badgeCli) badgeCli.style.display = 'none';
   const badgeCid = document.getElementById('dash-cid-badge'); if (badgeCid) badgeCid.style.display = 'none';
+  const badgeTransp = document.getElementById('dash-transp-badge'); if (badgeTransp) badgeTransp.style.display = 'none';
   _dashAtualizarBadgeSegmento('dash-seg-badge', null);
   const buscaCli = document.getElementById('dash-cli-search'); if (buscaCli) buscaCli.value = '';
   const buscaCid = document.getElementById('dash-cid-search'); if (buscaCid) buscaCid.value = '';
+  const buscaTransp = document.getElementById('dash-transp-search'); if (buscaTransp) buscaTransp.value = '';
 }
 // ── Carregar por mês selecionado (uso legado — a UI agora chama
 // dashCarregarMesesSelecionados, que aceita 1 ou mais meses) ───────────────
@@ -3804,6 +3915,7 @@ function _dashDescricaoFiltroAtual() {
   partes.push(_dashPeriodoAtualDescricao || 'Período não identificado');
   if (_dashClientesSelecionados) partes.push(`${_dashClientesSelecionados.size} cliente${_dashClientesSelecionados.size === 1 ? '' : 's'} selecionado${_dashClientesSelecionados.size === 1 ? '' : 's'}`);
   if (_dashCidadesSelecionadas) partes.push(`${_dashCidadesSelecionadas.size} operação(ões) selecionada(s)`);
+  if (_dashTransportadorasSelecionadas) partes.push(`${_dashTransportadorasSelecionadas.size} transportadora${_dashTransportadorasSelecionadas.size === 1 ? '' : 's'} selecionada${_dashTransportadorasSelecionadas.size === 1 ? '' : 's'}`);
   if (_dashSegmentosSelecionados) partes.push(`Segmento: ${[..._dashSegmentosSelecionados].join(', ')}`);
   return partes.join(' · ');
 }
