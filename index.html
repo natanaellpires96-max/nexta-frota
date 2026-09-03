@@ -661,12 +661,37 @@
                  parecia não fazer nada. O visual de pílula arredondada
                  continua pela borda do próprio contêiner (border-radius
                  abaixo); só não recorta mais o conteúdo. -->
+            <!-- Filtro de Transportadora — igual ao de Segmento, afeta a
+                 tela inteira (aplicado direto na fonte, dentro de
+                 dashAgregar, igual o filtro de Operação/Cidade). -->
+            <div style="position:relative;border-right:1px solid #D1D5DB;">
+              <button id="dash-transp-btn" onclick="dashTogglePainelTransportadora()" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'"
+                style="display:flex;align-items:center;gap:5px;background:transparent;border:none;border-radius:8px 0 0 8px;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;height:100%;">
+                <span>🚛 Transportadora</span>
+                <span id="dash-transp-badge" style="display:none;background:#4F46E5;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
+              </button>
+              <div id="dash-transp-panel" style="display:none;position:absolute;top:calc(100% + 8px);left:0;z-index:500;background:#fff;border:1px solid #D1D5DB;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);width:260px;max-height:400px;flex-direction:column;overflow:hidden;">
+                <div style="padding:10px 14px 8px;border-bottom:1px solid #D1D5DB;flex-shrink:0;">
+                  <input type="text" id="dash-transp-search" placeholder="Buscar transportadora..." oninput="dashFiltrarListaTransportadora(this.value)"
+                    style="width:100%;box-sizing:border-box;font-size:12px;padding:6px 8px;border:1px solid #D1D5DB;border-radius:6px;font-family:inherit;"/>
+                </div>
+                <div id="dash-transp-list" style="overflow-y:auto;max-height:240px;padding:4px 0;"></div>
+                <div style="padding:10px 14px;border-top:1px solid #D1D5DB;display:flex;gap:8px;background:#fff;flex-shrink:0;">
+                  <button onclick="dashSelecionarTodosTransportadora(true)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;letter-spacing:.02em;">Todos</button>
+                  <button onclick="dashSelecionarTodosTransportadora(false)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;letter-spacing:.02em;">Limpar</button>
+                  <button onclick="dashAplicarFiltroTransportadora()"
+                    style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:#4F46E5;color:#fff;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
+                </div>
+              </div>
+            </div>
             <!-- Filtro de Segmento (B2B/B2C/TRR) — afeta todos os
                  gráficos/tabela/mapa que envolvem cliente no Dashboard,
                  junto com o filtro de Clientes (os dois se cruzam). -->
             <div style="position:relative;border-right:1px solid #D1D5DB;">
               <button id="dash-seg-btn" onclick="dashTogglePainelSegmento('dash-seg-panel')" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'"
-                style="display:flex;align-items:center;gap:5px;background:transparent;border:none;border-radius:8px 0 0 8px;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;height:100%;">
+                style="display:flex;align-items:center;gap:5px;background:transparent;border:none;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;height:100%;">
                 <span>🏷️ Segmento</span>
                 <span id="dash-seg-badge" style="display:none;background:#4F46E5;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
               </button>
