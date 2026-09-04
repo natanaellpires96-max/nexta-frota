@@ -12166,6 +12166,264 @@ function toggleContratosPlacaTabela() {
   conteudo.style.display = oculto ? '' : 'none';
   if (seta) seta.textContent = oculto ? '▲' : '▼';
 }
+// ══════════════════════════════════════════════════════════════════════════
+// SIMULADOR DE ROTA NOVA — dimensiona quantos veículos e quanto custaria uma
+// rota que AINDA NÃO existe (diferente do resto da aba Frete, que calcula
+// custo de viagens que JÁ aconteceram). Inspirado na planilha "Simulador de
+// Frete e Dimensionamento Outbound": carrega → desloca carregado → descarga
+// → desloca vazio, repetido até bater o volume mensal esperado, descontando
+// jornada útil (manutenção + ociosidade). Cada cálculo feito fica salvo no
+// Firestore (não no localStorage como Contratos/Spot) de propósito — a
+// ideia é virar uma estrutura de referência por cliente que dure e cresça
+// com o tempo, sem risco de se perder trocando de computador/navegador.
+// ══════════════════════════════════════════════════════════════════════════
+let _simFreteCenarios = []; // cenários calculados nesta sessão do modal (comparação lado a lado)
+let _simFreteDistanciaToken = 0; // evita que uma consulta de rota real antiga (lenta) sobrescreva uma mais nova, se o usuário trocar cliente/origem rápido
+
+function abrirSimuladorFrete() {
+  const sel = document.getElementById('sim-origem');
+  if (sel) {
+    sel.innerHTML = '<option value="">Selecione...</option>' +
+      terminaisCad.map(t => `<option value="${t.nome}">${t.nome}${t.cidade ? ' — ' + t.cidade : ''}</option>`).join('');
+  }
+  const dl = document.getElementById('sim-cliente-lista');
+  if (dl) dl.innerHTML = clientes.map(c => `<option value="${c.nome}"></option>`).join('');
+  _simFreteCenarios = [];
+  _simFreteRenderTabela();
+  document.getElementById('modal-simulador-frete').classList.add('show');
+}
+function fecharSimuladorFrete(ev) {
+  if (ev && ev.target && ev.target.id !== 'modal-simulador-frete') return;
+  document.getElementById('modal-simulador-frete').classList.remove('show');
+}
+// Cliente digitado bate com o cadastro? Preenche SAP, cidade e tempo médio
+// de descarga automaticamente — a mesma lógica do "usa o que já está
+// cadastrado" pedida pro resto do simulador.
+function simFretePreencherCliente() {
+  const nomeDigitado = document.getElementById('sim-cliente').value.trim();
+  const c = clientes.find(x => x.nome.toLowerCase() === nomeDigitado.toLowerCase());
+  if (c) {
+    document.getElementById('sim-sap').value = c.codigoSAP || '';
+    document.getElementById('sim-destino-cidade').value = c.cidade || '';
+    if (Number.isFinite(c.tempoDescargaMediaMin)) document.getElementById('sim-tempo-descarga').value = c.tempoDescargaMediaMin;
+  }
+  simFreteAoTrocarOrigemOuCliente();
+}
+// Origem (terminal) escolhida → preenche tempo de carga a partir do cadastro
+// do terminal, e busca a distância pela ROTA REAL (OpenRouteService, perfil
+// de caminhão/hazmat — a mesma osrmFetchSegmento usada no resto do sistema
+// pro mapa e pro "Km Real"). Nada de linha reta aqui — isso já foi removido
+// do sistema de propósito porque subestimava a distância real (serra,
+// restrição de via, etc.).
+async function simFreteAoTrocarOrigemOuCliente() {
+  const nomeTerm = document.getElementById('sim-origem').value;
+  const term = terminaisCad.find(t => t.nome === nomeTerm);
+  if (term && Number.isFinite(term.tempoCarregamentoMedioMin)) {
+    document.getElementById('sim-tempo-carga').value = term.tempoCarregamentoMedioMin;
+  }
+  const nomeCliente = document.getElementById('sim-cliente').value.trim();
+  const c = clientes.find(x => x.nome.toLowerCase() === nomeCliente.toLowerCase());
+  const campoDist = document.getElementById('sim-distancia');
+  if (!(term && c && Number.isFinite(term.lat) && Number.isFinite(term.lon) && Number.isFinite(c.lat) && Number.isFinite(c.lon))) return;
+  if (typeof osrmFetchSegmento !== 'function') {
+    campoDist.placeholder = 'Rota real indisponível — digite a distância';
+    return;
+  }
+  const meuToken = ++_simFreteDistanciaToken;
+  campoDist.value = '';
+  campoDist.placeholder = '⏳ Calculando rota real...';
+  try {
+    const seg = await osrmFetchSegmento({ lat: term.lat, lon: term.lon }, { lat: c.lat, lon: c.lon });
+    if (meuToken !== _simFreteDistanciaToken) return; // usuário já trocou origem/cliente de novo — descarta esse resultado
+    if (seg && seg.distKm > 0) {
+      campoDist.value = seg.distKm.toFixed(1);
+      campoDist.placeholder = '';
+    } else {
+      campoDist.placeholder = 'Não achou rota — digite a distância';
+    }
+  } catch (e) {
+    if (meuToken !== _simFreteDistanciaToken) return;
+    console.error('[Simulador de Frete] falha ao calcular distância real:', e);
+    campoDist.placeholder = 'Erro na rota real — digite a distância';
+  }
+}
+// ── Motor de cálculo — puro, sem tocar DOM, pra poder testar/reaproveitar ──
+function _simFreteCalcular(inp) {
+  const distanciaTotalKm = inp.distanciaKm * 2; // ida + volta
+  const transitoIdaMin   = (inp.distanciaKm / (inp.velCarregado || 45)) * 60;
+  const transitoVoltaMin = (inp.distanciaKm / (inp.velVazio || 55)) * 60;
+  const tempoCicloMin    = (inp.tempoCargaMin || 0) + transitoIdaMin + (inp.tempoDescargaMin || 0) + transitoVoltaMin;
+  const jornadaUtilMin   = (inp.jornadaHoras || 12) * 60 * (1 - (inp.manutencaoPct || 0) / 100 - (inp.ociosidadePct || 0) / 100);
+  if (tempoCicloMin <= 0 || jornadaUtilMin <= 0) return null;
+  const diasPorViagem       = tempoCicloMin / jornadaUtilMin;
+  const viagensPorVeiculoMes = (inp.diasUteisMes || 26) / diasPorViagem;
+  const viagensNecessariasMes = inp.capacidadeM3 > 0 ? inp.volumeMensal / inp.capacidadeM3 : 0; // demanda — pode dar fracionário, é esperado
+  const veiculosExato       = viagensPorVeiculoMes > 0 ? viagensNecessariasMes / viagensPorVeiculoMes : 0;
+  const veiculosArredondado = Math.max(1, Math.ceil(veiculosExato));
+  const utilizacaoPct       = veiculosArredondado > 0 ? (veiculosExato / veiculosArredondado) * 100 : 0;
+  const custoFixoTotal      = veiculosArredondado * (inp.custoFixoMensal || 0);
+  const custoVariavelTotal  = viagensNecessariasMes * distanciaTotalKm * (inp.custoVariavelKm || 0);
+  const custoTotal          = custoFixoTotal + custoVariavelTotal;
+  const custoPorM3          = inp.volumeMensal > 0 ? custoTotal / inp.volumeMensal : 0;
+  const custoPorViagem      = viagensNecessariasMes > 0 ? custoTotal / viagensNecessariasMes : 0;
+  return {
+    distanciaTotalKm, tempoCicloMin, diasPorViagem, viagensPorVeiculoMes,
+    viagensNecessariasMes, veiculosExato, veiculosArredondado, utilizacaoPct,
+    custoFixoTotal, custoVariavelTotal, custoTotal, custoPorM3, custoPorViagem,
+  };
+}
+function simFreteCalcularEAdicionar() {
+  const val = id => parseFloat(document.getElementById(id).value);
+  const cliente     = document.getElementById('sim-cliente').value.trim();
+  const codigoSAP   = document.getElementById('sim-sap').value.trim();
+  const origem      = document.getElementById('sim-origem').value;
+  const destinoCidade = document.getElementById('sim-destino-cidade').value.trim();
+  const inp = {
+    distanciaKm: val('sim-distancia'), volumeMensal: val('sim-volume'), capacidadeM3: val('sim-capacidade'),
+    jornadaHoras: val('sim-jornada'), velCarregado: val('sim-vel-carregado'), velVazio: val('sim-vel-vazio'),
+    tempoCargaMin: val('sim-tempo-carga'), tempoDescargaMin: val('sim-tempo-descarga'),
+    manutencaoPct: val('sim-manutencao'), ociosidadePct: val('sim-ociosidade'), diasUteisMes: val('sim-dias-mes'),
+    custoFixoMensal: val('sim-custo-fixo'), custoVariavelKm: val('sim-custo-variavel'),
+  };
+  if (!cliente) { alert('Informe o nome do cliente.'); return; }
+  if (!origem) { alert('Selecione o terminal de origem.'); return; }
+  if (!(inp.distanciaKm > 0)) { alert('Informe a distância (km).'); return; }
+  if (!(inp.volumeMensal > 0)) { alert('Informe o volume mensal esperado (m³).'); return; }
+  if (!(inp.capacidadeM3 > 0)) { alert('Informe a capacidade do veículo (m³).'); return; }
+  if (isNaN(inp.tempoCargaMin) || isNaN(inp.tempoDescargaMin)) { alert('Tempo de carga/descarga não encontrado — confira o cadastro do terminal/cliente ou digite manualmente.'); return; }
+  const resultado = _simFreteCalcular(inp);
+  if (!resultado) { alert('Não foi possível calcular com esses valores — confira jornada, manutenção e ociosidade (a jornada útil não pode ficar zero ou negativa).'); return; }
+  const cenario = { cliente, codigoSAP, origem, destinoCidade, ...inp, ...resultado, criadoEm: new Date().toISOString() };
+  _simFreteCenarios.push(cenario);
+  _simFreteRenderTabela();
+  salvarSimulacaoFrete(cenario);
+}
+function simFreteRemoverCenario(idx) {
+  // Só tira da comparação desta sessão — o cálculo já foi salvo no Firestore
+  // e continua no histórico do cliente, de propósito (o objetivo é nunca
+  // perder um cálculo já feito).
+  _simFreteCenarios.splice(idx, 1);
+  _simFreteRenderTabela();
+}
+function _simFreteFmtMoeda(v) { return 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function _simFreteRenderTabela() {
+  const box = document.getElementById('sim-frete-tabela');
+  if (!box) return;
+  if (!_simFreteCenarios.length) {
+    box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Nenhum cenário ainda — preenche o formulário acima e clica em "Calcular e Adicionar".</div>';
+    return;
+  }
+  box.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:920px;">
+    <thead><tr style="background:rgba(0,0,0,0.03);">
+      <th style="padding:7px 10px;text-align:left;color:var(--text-3);">CLIENTE</th>
+      <th style="padding:7px 10px;text-align:left;color:var(--text-3);">ORIGEM → DESTINO</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);">DIST. (KM)</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);">VOL/MÊS</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);">VEÍCULOS</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);">UTILIZ.</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);">VIAG./MÊS</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);">CUSTO FIXO</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);">CUSTO VAR.</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);font-weight:700;">CUSTO TOTAL</th>
+      <th style="padding:7px 10px;text-align:right;color:var(--text-3);font-weight:700;">R$/M³</th>
+      <th style="padding:7px 10px;"></th>
+    </tr></thead>
+    <tbody>
+      ${_simFreteCenarios.map((c, idx) => `
+        <tr style="border-top:1px solid var(--border-dk);">
+          <td style="padding:7px 10px;font-weight:600;">${c.cliente}${c.codigoSAP ? `<div style="font-size:9.5px;color:var(--text-3);">SAP ${c.codigoSAP}</div>` : ''}</td>
+          <td style="padding:7px 10px;">${c.origem} → ${c.destinoCidade || '—'}</td>
+          <td style="padding:7px 10px;text-align:right;">${c.distanciaKm.toFixed(1)}</td>
+          <td style="padding:7px 10px;text-align:right;">${c.volumeMensal.toFixed(0)} m³</td>
+          <td style="padding:7px 10px;text-align:right;font-weight:700;">${c.veiculosArredondado}<span style="color:var(--text-3);font-weight:400;"> (${c.veiculosExato.toFixed(2)})</span></td>
+          <td style="padding:7px 10px;text-align:right;color:${c.utilizacaoPct >= 85 ? '#16A34A' : c.utilizacaoPct >= 60 ? '#D97706' : '#DC2626'};font-weight:600;">${c.utilizacaoPct.toFixed(0)}%</td>
+          <td style="padding:7px 10px;text-align:right;">${c.viagensNecessariasMes.toFixed(1)}</td>
+          <td style="padding:7px 10px;text-align:right;">${_simFreteFmtMoeda(c.custoFixoTotal)}</td>
+          <td style="padding:7px 10px;text-align:right;">${_simFreteFmtMoeda(c.custoVariavelTotal)}</td>
+          <td style="padding:7px 10px;text-align:right;font-weight:700;">${_simFreteFmtMoeda(c.custoTotal)}</td>
+          <td style="padding:7px 10px;text-align:right;font-weight:700;color:#4F46E5;">${_simFreteFmtMoeda(c.custoPorM3)}</td>
+          <td style="padding:7px 10px;text-align:center;"><span onclick="simFreteRemoverCenario(${idx})" style="cursor:pointer;color:#DC2626;" title="Tirar da comparação (o cálculo continua salvo no histórico)">✕</span></td>
+        </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+// ── Persistência no Firestore (coleção própria, cresce com o tempo) ───────
+async function salvarSimulacaoFrete(cenario) {
+  try {
+    if (!window.fbDb || !window.fbCollection || !window.fbDoc || !window.fbSetDoc) {
+      console.warn('[Simulador de Frete] Firestore indisponível — cenário não foi salvo no histórico.');
+      return;
+    }
+    const ref = window.fbDoc(window.fbCollection(window.fbDb, 'freteSimulacoes'));
+    await window.fbSetDoc(ref, cenario);
+  } catch (e) {
+    console.error('[Simulador de Frete] falha ao salvar simulação:', e);
+    showToast('Cenário calculado, mas não consegui salvar no histórico (fica só nesta sessão).', false);
+  }
+}
+async function simFreteBuscarHistoricoCliente() {
+  const box = document.getElementById('sim-frete-historico');
+  if (!box) return;
+  const termoNome = document.getElementById('sim-cliente').value.trim().toLowerCase();
+  const termoSAP  = document.getElementById('sim-sap').value.trim();
+  if (!termoNome && !termoSAP) { alert('Digite o nome ou o código SAP do cliente pra buscar.'); return; }
+  box.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">Buscando...</div>';
+  try {
+    if (!window.fbDb || !window.fbCollection || !window.fbGetDocs || !window.fbQuery || !window.fbOrderBy || !window.fbLimit) {
+      box.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">Firestore indisponível agora.</div>';
+      return;
+    }
+    // Sem índice de texto no Firestore — busca as últimas N simulações
+    // salvas e filtra por nome/SAP no próprio navegador (suficiente pro
+    // volume que esse simulador deve gerar; se crescer muito, dá pra trocar
+    // por uma query com "where" direto no SAP).
+    const q = window.fbQuery(window.fbCollection(window.fbDb, 'freteSimulacoes'), window.fbOrderBy('criadoEm', 'desc'), window.fbLimit(500));
+    const snap = await window.fbGetDocs(q);
+    const todas = snap.docs.map(d => d.data());
+    const encontradas = todas.filter(s =>
+      (termoSAP && (s.codigoSAP || '').trim() === termoSAP) ||
+      (termoNome && (s.cliente || '').toLowerCase().includes(termoNome))
+    );
+    if (!encontradas.length) {
+      box.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma simulação salva encontrada pra esse cliente ainda.</div>';
+      return;
+    }
+    box.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:820px;">
+      <thead><tr style="background:rgba(0,0,0,0.03);">
+        <th style="padding:7px 10px;text-align:left;color:var(--text-3);">DATA</th>
+        <th style="padding:7px 10px;text-align:left;color:var(--text-3);">CLIENTE</th>
+        <th style="padding:7px 10px;text-align:left;color:var(--text-3);">ORIGEM → DESTINO</th>
+        <th style="padding:7px 10px;text-align:right;color:var(--text-3);">VOL/MÊS</th>
+        <th style="padding:7px 10px;text-align:right;color:var(--text-3);">VEÍCULOS</th>
+        <th style="padding:7px 10px;text-align:right;color:var(--text-3);font-weight:700;">CUSTO TOTAL</th>
+        <th style="padding:7px 10px;text-align:right;color:var(--text-3);font-weight:700;">R$/M³</th>
+      </tr></thead>
+      <tbody>
+        ${encontradas.map(s => `
+          <tr style="border-top:1px solid var(--border-dk);">
+            <td style="padding:7px 10px;">${new Date(s.criadoEm).toLocaleDateString('pt-BR')}</td>
+            <td style="padding:7px 10px;">${s.cliente}${s.codigoSAP ? `<div style="font-size:9.5px;color:var(--text-3);">SAP ${s.codigoSAP}</div>` : ''}</td>
+            <td style="padding:7px 10px;">${s.origem} → ${s.destinoCidade || '—'}</td>
+            <td style="padding:7px 10px;text-align:right;">${(s.volumeMensal||0).toFixed(0)} m³</td>
+            <td style="padding:7px 10px;text-align:right;">${s.veiculosArredondado}</td>
+            <td style="padding:7px 10px;text-align:right;font-weight:700;">${_simFreteFmtMoeda(s.custoTotal)}</td>
+            <td style="padding:7px 10px;text-align:right;font-weight:700;color:#4F46E5;">${_simFreteFmtMoeda(s.custoPorM3)}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+  } catch (e) {
+    console.error('[Simulador de Frete] falha ao buscar histórico:', e);
+    box.innerHTML = '<div style="padding:16px;text-align:center;color:#DC2626;font-size:12px;">Erro ao buscar histórico — tenta de novo em alguns segundos.</div>';
+  }
+}
+window.abrirSimuladorFrete = abrirSimuladorFrete;
+window.fecharSimuladorFrete = fecharSimuladorFrete;
+window.simFretePreencherCliente = simFretePreencherCliente;
+window.simFreteAoTrocarOrigemOuCliente = simFreteAoTrocarOrigemOuCliente;
+window.simFreteCalcularEAdicionar = simFreteCalcularEAdicionar;
+window.simFreteRemoverCenario = simFreteRemoverCenario;
+window.simFreteBuscarHistoricoCliente = simFreteBuscarHistoricoCliente;
+
 function freteAdicionarContrato() {
   var arr = freteCarregarContratos();
   arr.push({ placa: '', transportadora: '', tipo:'fixo_km', kmModo:'ida_volta', fixo:'', km:'', m3:'', diaria:'' });
