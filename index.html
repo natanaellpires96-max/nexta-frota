@@ -1213,6 +1213,7 @@
         <div class="sec-title" style="margin:0;">Calculadora de Frete</div>
         <div style="font-size:12px;color:var(--text-3);margin-top:2px;">Custos de frete por contrato, spot e histórico de viagens</div>
       </div>
+      <button class="btn btn-sm" onclick="abrirSimuladorFrete()" style="background:#EEF2FF;color:#3730A3;border-color:#C7D2FE;font-weight:700;" title="Simula o custo de uma rota nova (ainda não roteirizada) antes de decidir">🧮 Simular Rota Nova</button>
     </div>
 
     <!-- Contratos de frete -->
@@ -1398,6 +1399,114 @@
     <div onclick="event.stopPropagation()" style="max-width:92vw;max-height:88vh;display:flex;flex-direction:column;align-items:center;gap:10px;">
       <img id="modal-foto-cliente-img" src="" style="max-width:92vw;max-height:80vh;border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.4);"/>
       <button class="btn btn-sm btn-danger" onclick="fecharFotoClienteExpandida()">Fechar</button>
+    </div>
+  </div>
+  <!-- ── MODAL SIMULADOR DE FRETE (dimensionamento de rota nova) ──────────── -->
+  <div id="modal-simulador-frete" class="modal-backdrop" onclick="fecharSimuladorFrete(event)">
+    <div onclick="event.stopPropagation()" style="background:var(--surface,#fff);border-radius:12px;width:min(96vw,1180px);max-height:92vh;overflow-y:auto;padding:22px 24px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <div style="font-family:var(--font-cond);font-weight:700;font-size:19px;">🧮 Simulador de Rota Nova</div>
+        <button class="btn btn-sm" onclick="fecharSimuladorFrete()">Fechar</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-3);margin-bottom:16px;">
+        Dimensiona uma rota antes de ela existir de verdade: quantos veículos ela precisa e quanto custaria por m³, com base num volume mensal esperado. Tempo de carga vem do terminal escolhido, tempo de descarga vem do cadastro do cliente, e a distância é calculada pela rota real (mesma API de rotas do resto do sistema, perfil de caminhão) — se algum estiver errado, corrige lá no cadastro.
+      </div>
+
+      <!-- Formulário de novo cenário -->
+      <div style="border:1px solid var(--border-dk);border-radius:10px;padding:14px 16px;margin-bottom:16px;background:rgba(0,0,0,0.015);">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;">Novo cenário</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:10px;">
+          <div class="field">
+            <label>Cliente</label>
+            <input id="sim-cliente" list="sim-cliente-lista" placeholder="Nome do cliente..." oninput="simFretePreencherCliente()"/>
+            <datalist id="sim-cliente-lista"></datalist>
+          </div>
+          <div class="field">
+            <label>Código SAP</label>
+            <input id="sim-sap" placeholder="Ex.: 1234567"/>
+          </div>
+          <div class="field">
+            <label>Origem (terminal)</label>
+            <select id="sim-origem" onchange="simFreteAoTrocarOrigemOuCliente()">
+              <option value="">Selecione...</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Destino (cidade)</label>
+            <input id="sim-destino-cidade" placeholder="Preenche com o cliente" readonly style="background:rgba(0,0,0,0.03);"/>
+          </div>
+          <div class="field">
+            <label>Distância (km, ida)</label>
+            <input id="sim-distancia" type="number" min="0" step="0.1" placeholder="Calcula pela rota real"/>
+          </div>
+          <div class="field">
+            <label>Volume mensal (m³)</label>
+            <input id="sim-volume" type="number" min="0" step="1" placeholder="Ex.: 3000"/>
+          </div>
+          <div class="field">
+            <label>Capacidade veículo (m³)</label>
+            <input id="sim-capacidade" type="number" min="1" step="1" value="20"/>
+          </div>
+          <div class="field">
+            <label>Jornada (h/dia)</label>
+            <input id="sim-jornada" type="number" min="1" step="0.5" value="12"/>
+          </div>
+          <div class="field">
+            <label>Vel. carregado (km/h)</label>
+            <input id="sim-vel-carregado" type="number" min="1" step="1" value="45"/>
+          </div>
+          <div class="field">
+            <label>Vel. vazio (km/h)</label>
+            <input id="sim-vel-vazio" type="number" min="1" step="1" value="55"/>
+          </div>
+          <div class="field">
+            <label>Tempo de carga (min)</label>
+            <input id="sim-tempo-carga" type="number" min="0" step="1" placeholder="Auto (terminal)"/>
+          </div>
+          <div class="field">
+            <label>Tempo de descarga (min)</label>
+            <input id="sim-tempo-descarga" type="number" min="0" step="1" placeholder="Auto (cliente)"/>
+          </div>
+          <div class="field">
+            <label>Manutenção (%)</label>
+            <input id="sim-manutencao" type="number" min="0" step="0.5" value="3"/>
+          </div>
+          <div class="field">
+            <label>Ociosidade (%)</label>
+            <input id="sim-ociosidade" type="number" min="0" step="0.5" value="5"/>
+          </div>
+          <div class="field">
+            <label>Dias úteis/mês</label>
+            <input id="sim-dias-mes" type="number" min="1" step="1" value="26"/>
+          </div>
+          <div class="field">
+            <label>Custo Fixo (R$/mês/veíc.)</label>
+            <input id="sim-custo-fixo" type="number" min="0" step="10" placeholder="Ex.: 38000"/>
+          </div>
+          <div class="field">
+            <label>Custo Variável (R$/km)</label>
+            <input id="sim-custo-variavel" type="number" min="0" step="0.01" placeholder="Ex.: 3.86"/>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;">
+          <button class="btn btn-green btn-sm" onclick="simFreteCalcularEAdicionar()">+ Calcular e Adicionar Cenário</button>
+        </div>
+      </div>
+
+      <!-- Comparação dos cenários desta sessão -->
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:18px 0 8px;">Cenários pra comparar</div>
+      <div id="sim-frete-tabela" style="overflow-x:auto;border:1px solid var(--border-dk);border-radius:10px;">
+        <div style="padding:20px;text-align:center;color:var(--text-3);font-size:12px;">Nenhum cenário ainda — preenche o formulário acima e clica em "Calcular e Adicionar".</div>
+      </div>
+
+      <!-- Histórico salvo (por cliente) -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 8px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);">Histórico salvo deste cliente</div>
+        <button class="btn btn-sm" onclick="simFreteBuscarHistoricoCliente()">🔍 Buscar histórico</button>
+      </div>
+      <div id="sim-frete-historico" style="overflow-x:auto;border:1px solid var(--border-dk);border-radius:10px;">
+        <div style="padding:16px;text-align:center;color:var(--text-3);font-size:12px;">Digite um cliente acima e clique em "Buscar histórico" pra ver simulações salvas anteriormente pra ele.</div>
+      </div>
     </div>
   </div>
   <div id="modal-frete-restaurar" class="modal-backdrop" onclick="freteFecharRestaurarBackup(event)">
