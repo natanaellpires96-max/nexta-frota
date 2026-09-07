@@ -1433,12 +1433,17 @@
           </div>
           <div class="field">
             <label>Destino (cidade)</label>
-            <input id="sim-destino-cidade" placeholder="Preenche com o cliente" readonly style="background:rgba(0,0,0,0.03);"/>
+            <div style="display:flex;gap:4px;">
+              <input id="sim-destino-cidade" placeholder="Preenche com o cliente, ou digite" style="flex:1;min-width:0;"/>
+              <button type="button" class="btn btn-sm" onclick="simFreteBuscarDistanciaPorCidade()" title="Sem cadastro do cliente? Digite a cidade (ex.: 'Contagem, MG') e busca a distância por aqui" style="flex-shrink:0;padding:0 10px;">🔍</button>
+            </div>
           </div>
           <div class="field">
             <label>Distância (km, ida)</label>
             <input id="sim-distancia" type="number" min="0" step="0.1" placeholder="Calcula pela rota real"/>
           </div>
+          <input type="hidden" id="sim-destino-lat"/>
+          <input type="hidden" id="sim-destino-lon"/>
           <div class="field">
             <label>Volume mensal (m³)</label>
             <input id="sim-volume" type="number" min="0" step="1" placeholder="Ex.: 3000"/>
