@@ -12223,8 +12223,20 @@ async function simFreteAoTrocarOrigemOuCliente() {
   }
   const nomeCliente = document.getElementById('sim-cliente').value.trim();
   const c = clientes.find(x => x.nome.toLowerCase() === nomeCliente.toLowerCase());
+  if (!term || !Number.isFinite(term.lat) || !Number.isFinite(term.lon)) return;
+  if (c && Number.isFinite(c.lat) && Number.isFinite(c.lon)) {
+    document.getElementById('sim-destino-lat').value = c.lat;
+    document.getElementById('sim-destino-lon').value = c.lon;
+    await _simFreteAplicarDistanciaReal({ lat: term.lat, lon: term.lon }, { lat: c.lat, lon: c.lon });
+  }
+  // Sem cliente cadastrado: não calcula sozinho aqui (evitaria gastar uma
+  // consulta de geocodificação a cada tecla digitada) — usa o botão 🔍
+  // ao lado do campo "Destino (cidade)", ver simFreteBuscarDistanciaPorCidade.
+}
+// ── Motor de distância real, compartilhado pelos dois caminhos (cliente
+// cadastrado com lat/lon, ou cidade digitada + geocodificada abaixo) ───────
+async function _simFreteAplicarDistanciaReal(origemCoord, destinoCoord) {
   const campoDist = document.getElementById('sim-distancia');
-  if (!(term && c && Number.isFinite(term.lat) && Number.isFinite(term.lon) && Number.isFinite(c.lat) && Number.isFinite(c.lon))) return;
   if (typeof osrmFetchSegmento !== 'function') {
     campoDist.placeholder = 'Rota real indisponível — digite a distância';
     return;
@@ -12233,8 +12245,8 @@ async function simFreteAoTrocarOrigemOuCliente() {
   campoDist.value = '';
   campoDist.placeholder = '⏳ Calculando rota real...';
   try {
-    const seg = await osrmFetchSegmento({ lat: term.lat, lon: term.lon }, { lat: c.lat, lon: c.lon });
-    if (meuToken !== _simFreteDistanciaToken) return; // usuário já trocou origem/cliente de novo — descarta esse resultado
+    const seg = await osrmFetchSegmento(origemCoord, destinoCoord);
+    if (meuToken !== _simFreteDistanciaToken) return; // usuário já trocou de novo — descarta esse resultado
     if (seg && seg.distKm > 0) {
       campoDist.value = seg.distKm.toFixed(1);
       campoDist.placeholder = '';
@@ -12245,6 +12257,38 @@ async function simFreteAoTrocarOrigemOuCliente() {
     if (meuToken !== _simFreteDistanciaToken) return;
     console.error('[Simulador de Frete] falha ao calcular distância real:', e);
     campoDist.placeholder = 'Erro na rota real — digite a distância';
+  }
+}
+// ── Sem cadastro do cliente: geocodifica o nome da cidade digitada
+// (Nominatim/OpenStreetMap, gratuito, mesmo serviço já usado no "📍 Buscar"
+// endereço de Clientes) e calcula a distância pela rota real a partir dali.
+// É uma estimativa de CENTRO DA CIDADE, não do endereço exato — melhor do
+// que nada enquanto o cliente ainda não tem cadastro, mas vale reconferir
+// quando ele for cadastrado de verdade (com lat/lon do endereço certo).
+async function simFreteBuscarDistanciaPorCidade() {
+  const nomeCidade = document.getElementById('sim-destino-cidade').value.trim();
+  if (!nomeCidade) { alert('Digite o nome da cidade de destino (ex.: "Contagem, MG").'); return; }
+  const nomeTerm = document.getElementById('sim-origem').value;
+  const term = terminaisCad.find(t => t.nome === nomeTerm);
+  if (!term || !Number.isFinite(term.lat) || !Number.isFinite(term.lon)) { alert('Selecione o terminal de origem primeiro.'); return; }
+  const campoDist = document.getElementById('sim-distancia');
+  campoDist.value = '';
+  campoDist.placeholder = '⏳ Localizando cidade...';
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(nomeCidade + ', Brasil')}&countrycodes=br&limit=1`;
+    const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+    const data = await res.json();
+    if (!data || !data.length) {
+      campoDist.placeholder = 'Cidade não encontrada — digite a distância';
+      return;
+    }
+    const lat = parseFloat(data[0].lat), lon = parseFloat(data[0].lon);
+    document.getElementById('sim-destino-lat').value = lat;
+    document.getElementById('sim-destino-lon').value = lon;
+    await _simFreteAplicarDistanciaReal({ lat: term.lat, lon: term.lon }, { lat, lon });
+  } catch (e) {
+    console.error('[Simulador de Frete] falha ao geocodificar cidade:', e);
+    campoDist.placeholder = 'Erro ao localizar cidade — digite a distância';
   }
 }
 // ── Motor de cálculo — puro, sem tocar DOM, pra poder testar/reaproveitar ──
@@ -12278,6 +12322,8 @@ function simFreteCalcularEAdicionar() {
   const codigoSAP   = document.getElementById('sim-sap').value.trim();
   const origem      = document.getElementById('sim-origem').value;
   const destinoCidade = document.getElementById('sim-destino-cidade').value.trim();
+  const destinoLat  = val('sim-destino-lat');
+  const destinoLon  = val('sim-destino-lon');
   const inp = {
     distanciaKm: val('sim-distancia'), volumeMensal: val('sim-volume'), capacidadeM3: val('sim-capacidade'),
     jornadaHoras: val('sim-jornada'), velCarregado: val('sim-vel-carregado'), velVazio: val('sim-vel-vazio'),
@@ -12293,7 +12339,12 @@ function simFreteCalcularEAdicionar() {
   if (isNaN(inp.tempoCargaMin) || isNaN(inp.tempoDescargaMin)) { alert('Tempo de carga/descarga não encontrado — confira o cadastro do terminal/cliente ou digite manualmente.'); return; }
   const resultado = _simFreteCalcular(inp);
   if (!resultado) { alert('Não foi possível calcular com esses valores — confira jornada, manutenção e ociosidade (a jornada útil não pode ficar zero ou negativa).'); return; }
-  const cenario = { cliente, codigoSAP, origem, destinoCidade, ...inp, ...resultado, criadoEm: new Date().toISOString() };
+  const cenario = {
+    cliente, codigoSAP, origem, destinoCidade,
+    destinoLat: isNaN(destinoLat) ? null : destinoLat,
+    destinoLon: isNaN(destinoLon) ? null : destinoLon,
+    ...inp, ...resultado, criadoEm: new Date().toISOString(),
+  };
   _simFreteCenarios.push(cenario);
   _simFreteRenderTabela();
   salvarSimulacaoFrete(cenario);
@@ -12420,6 +12471,7 @@ window.abrirSimuladorFrete = abrirSimuladorFrete;
 window.fecharSimuladorFrete = fecharSimuladorFrete;
 window.simFretePreencherCliente = simFretePreencherCliente;
 window.simFreteAoTrocarOrigemOuCliente = simFreteAoTrocarOrigemOuCliente;
+window.simFreteBuscarDistanciaPorCidade = simFreteBuscarDistanciaPorCidade;
 window.simFreteCalcularEAdicionar = simFreteCalcularEAdicionar;
 window.simFreteRemoverCenario = simFreteRemoverCenario;
 window.simFreteBuscarHistoricoCliente = simFreteBuscarHistoricoCliente;
