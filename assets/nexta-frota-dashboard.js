@@ -3129,14 +3129,16 @@ function dashColetarDemandaPorOperacao(snapshots) {
     if (snap.substituidoPor) return; // revisão substituída — não conta (mesma regra do resto do Dashboard)
     const terms = snap.terminais || [];
     const alocadoPorPedido = {};
+    // O id do pedido fica na PARADA (parada.pedido.id) — cada item dentro
+    // dela é só {produto, volume, completo, ordemSAP}, sem pedidoId próprio.
     Object.values(snap.resultado || {}).forEach(viagens => {
       (viagens || []).forEach(vi => {
         if (!vi || vi._vazio) return;
         (vi.paradas || []).forEach(p => {
-          (p.itens || []).forEach(it => {
-            if (it.pedidoId == null) return;
-            alocadoPorPedido[it.pedidoId] = (alocadoPorPedido[it.pedidoId] || 0) + (it.volume || 0);
-          });
+          const pid = p.pedido?.id;
+          if (pid == null) return;
+          const volParada = (p.itens || []).reduce((s, it) => s + (it.volume || 0), 0);
+          alocadoPorPedido[pid] = (alocadoPorPedido[pid] || 0) + volParada;
         });
       });
     });
@@ -3162,28 +3164,42 @@ async function dashCarregarBalanceamentoFrota() {
   const box = document.getElementById('dash-balanceamento-box');
   if (!box) return;
   box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Cruzando demanda, ocupação, utilização e jornada do período carregado...</div>';
+  const snapshots = _dashSnapshotsAtivos || [];
+  if (!snapshots.length) {
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma roteirização carregada nesse período — ajuste o filtro "🗓️ Período" no topo do Dashboard e tente de novo.</div>';
+    return;
+  }
+  // Cada etapa isolada no seu próprio try/catch, com uma etiqueta própria —
+  // se algo falhar, a mensagem na tela (e no console) já diz EM QUAL ETAPA,
+  // em vez de um erro genérico que obriga a adivinhar.
+  let etapa = 'agregação geral (dashAgregar)';
   try {
-    const snapshots = _dashSnapshotsAtivos || [];
-    if (!snapshots.length) {
-      box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma roteirização carregada nesse período — ajuste o filtro "🗓️ Período" no topo do Dashboard e tente de novo.</div>';
-      return;
-    }
     // Deliberadamente SEM filtro de cidade/cliente/segmento/transportadora —
     // esse relatório é justamente sobre comparar operações entre si; filtrar
     // por uma delas ia esconder o resto da comparação.
     const d = dashAgregar(snapshots, null, null);
+
+    etapa = 'demanda não atendida (pedidos x resultado)';
     const demanda = dashColetarDemandaPorOperacao(snapshots);
+
+    etapa = 'estouro de jornada por operação';
     const jornadaOp = dashAgregarJornadaPorOperacao(d.entradasTransportadora);
     const jornadaPorOpMap = {};
     jornadaOp.forEach(j => { jornadaPorOpMap[j.operacao] = j; });
+
+    etapa = 'ocupação por operação';
     const ocupacaoPorOpMap = {};
     (d.operacoes_ocup || []).forEach(o => { ocupacaoPorOpMap[o.nome] = o; });
+
+    etapa = 'utilização (Painel de Disponibilidade)';
     let ociosidade = { porOperacaoUtilizacao: [] };
     try {
       ociosidade = await dashCarregarOciosidade(snapshots, null, d.diasComViagemPorPlaca, d.placaCidade, d.placaCidadePorDia, null);
-    } catch (e) { console.warn('[Balanceamento de Frota] falha ao consultar utilização (Painel de Disponibilidade):', e); }
+    } catch (e) { console.warn('[Balanceamento de Frota] falha ao consultar utilização (Painel de Disponibilidade), seguindo sem esse sinal:', e); }
     const utilPorOpMap = {};
     (ociosidade.porOperacaoUtilizacao || []).forEach(u => { utilPorOpMap[u.operacao] = u; });
+
+    etapa = 'combinação dos sinais por operação';
     // União de todas as operações que apareceram em QUALQUER um dos 4 sinais
     const todasOperacoes = new Set([
       ...Object.keys(demanda), ...Object.keys(jornadaPorOpMap),
@@ -3223,11 +3239,15 @@ async function dashCarregarBalanceamentoFrota() {
       const { veredito, motivosFalta, motivosSobra } = _dashClassificarOperacaoFrota(m);
       return { ...m, veredito, motivosFalta, motivosSobra };
     }).sort((a, b) => b.volumeNaoAtendido - a.volumeNaoAtendido);
+
+    etapa = 'geração de recomendações';
     const recomendacoes = _dashGerarRecomendacoesFrota(linhas);
+
+    etapa = 'montagem visual do relatório';
     _dashRenderBalanceamentoFrota(box, linhas, recomendacoes, snapshots);
   } catch (e) {
-    console.error('[Balanceamento de Frota] falha ao gerar relatório:', e);
-    box.innerHTML = '<div style="padding:24px;text-align:center;color:#DC2626;font-size:12px;">Erro ao gerar o relatório — tenta de novo em alguns segundos. Detalhe no console.</div>';
+    console.error(`[Balanceamento de Frota] falha na etapa "${etapa}":`, e);
+    box.innerHTML = `<div style="padding:24px;text-align:center;color:#DC2626;font-size:12px;">Erro ao gerar o relatório, na etapa "<b>${etapa}</b>" — abre o console do navegador (F12) e me manda a mensagem completa que aparece lá, com essa etapa.</div>`;
   }
 }
 // Classificação transparente: cada operação sai com os MOTIVOS explícitos,
