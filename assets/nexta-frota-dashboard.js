@@ -1401,7 +1401,35 @@ function dashAgregarJornada(entradasTransportadora, clientesEfetivos = null) {
     estourosDetalhe: estourosDetalhe.slice(0, 30), // top 30 piores dias-veículo, pra não pesar a tela
   };
 }
-// ── Ociosidade e Ocupação por Operação — versões filtradas por Cliente ─────
+// ── Estouro de jornada por OPERAÇÃO (mesma lógica de dashAgregarJornada
+// acima, só que agrupada por cidade da operação em vez de transportadora —
+// usada no relatório de Balanceamento de Frota) ────────────────────────────
+function dashAgregarJornadaPorOperacao(entradasTransportadora) {
+  const porVeiculoDia = new Map();
+  (entradasTransportadora || []).forEach(e => {
+    if (e._semViagem) return;
+    const key = e.placa + '__' + e.data;
+    if (!porVeiculoDia.has(key)) {
+      porVeiculoDia.set(key, { placa: e.placa, data: e.data, cidadeOp: e.cidadeOp || '(sem operação)', dispMin: e.jornadaDispMin || 0, usadoMin: 0 });
+    }
+    porVeiculoDia.get(key).usadoMin += e.jornadaUsadaMin || 0;
+  });
+  const porOperacao = {};
+  porVeiculoDia.forEach(reg => {
+    const key = reg.cidadeOp;
+    if (!porOperacao[key]) porOperacao[key] = { operacao: key, veiculosDia: 0, diasComEstouro: 0, minutosEstouroTotal: 0 };
+    porOperacao[key].veiculosDia += 1;
+    if (reg.dispMin > 0 && reg.usadoMin > reg.dispMin) {
+      porOperacao[key].diasComEstouro += 1;
+      porOperacao[key].minutosEstouroTotal += (reg.usadoMin - reg.dispMin);
+    }
+  });
+  return Object.values(porOperacao).map(o => ({
+    ...o,
+    pctDiasComEstouro: o.veiculosDia > 0 ? Math.round((o.diasComEstouro / o.veiculosDia) * 100) : 0,
+  }));
+}
+
 // dashAgregar() não recebe filtro de Cliente (ele PRODUZ a lista de nomes
 // que alimenta o próprio picker — dependência circular). Por isso, igual a
 // dashAgregarTransportadoras/dashAgregarJornada acima, essas duas
@@ -1565,6 +1593,7 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
     }
   }
   const porTransportadora = {};
+  const porOperacaoUtil = {}; // usado no relatório de Balanceamento de Frota (dias usado vs disponibilizado, por operação)
   let totalDisponibilizados = 0, totalUsados = 0;
   docs.forEach(rec => {
     if (rec.status !== 'disponivel') return; // só conta quem foi marcado Disponível naquele dia no Painel
@@ -1595,6 +1624,17 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
     if (!porTransportadora[key]) porTransportadora[key] = { transportadora: key, disponibilizados: 0, usados: 0 };
     porTransportadora[key].disponibilizados++;
     if (usado) porTransportadora[key].usados++;
+    // Operação resolvida com a mesma prioridade usada no filtro acima:
+    // cadastro da placa > cidade da viagem daquele dia > qualquer cidade já
+    // vista pra essa placa > "(sem operação)" como último recurso.
+    const opResolvida = placaOperacao.get(pNorm)
+      || (placaCidadePorDia.get(pNorm + '__' + rec.dateStr) || [])[0]
+      || (placaCidade.get(pNorm) || [])[0]
+      || '(sem operação)';
+    if (!porOperacaoUtil[opResolvida]) porOperacaoUtil[opResolvida] = { operacao: opResolvida, disponibilizados: 0, usados: 0, placas: new Set() };
+    porOperacaoUtil[opResolvida].disponibilizados++;
+    porOperacaoUtil[opResolvida].placas.add(pNorm);
+    if (usado) porOperacaoUtil[opResolvida].usados++;
   });
   // Diagnóstico: se um filtro de cidade está ativo e ZERO placas bateram,
   // loga uma amostra pra investigar direto do console do navegador (nomes
@@ -1616,11 +1656,16 @@ async function dashCarregarOciosidade(snapshotsAtivos, cidadesFiltro, diasComVia
   const porTransportadoraArr = Object.values(porTransportadora)
     .map(t => ({ ...t, pctOciosidade: t.disponibilizados > 0 ? Math.round((1 - t.usados / t.disponibilizados) * 100) : 0 }))
     .sort((a, b) => b.pctOciosidade - a.pctOciosidade);
+  const porOperacaoUtilArr = Object.values(porOperacaoUtil)
+    .map(o => ({ operacao: o.operacao, disponibilizados: o.disponibilizados, usados: o.usados, qtdPlacas: o.placas.size,
+      pctUtilizacao: o.disponibilizados > 0 ? Math.round((o.usados / o.disponibilizados) * 100) : 0 }))
+    .sort((a, b) => b.disponibilizados - a.disponibilizados);
   return {
     totalDisponibilizados,
     totalUsados,
     pctOciosidade: totalDisponibilizados > 0 ? Math.round((1 - totalUsados / totalDisponibilizados) * 100) : 0,
     porTransportadora: porTransportadoraArr,
+    porOperacaoUtilizacao: porOperacaoUtilArr, // pro relatório de Balanceamento de Frota — % de dias disponibilizados que tiveram viagem, por operação
   };
 }
 let _dashUltimaOciosidade = { porTransportadora: [] };
@@ -3066,6 +3111,214 @@ function dashOcupVolPorOperacaoChart(containerId, operacoes) {
 // aparece ao clicar numa barra: quantos dias em média o cliente demora
 // entre um pedido e outro daquele produto, e quanto ele pede em média por
 // vez.
+// ══════════════════════════════════════════════════════════════════════════
+// BALANCEAMENTO DE FROTA — onde falta caminhão (e quanto), onde sobra, e
+// recomendação de realocação de frota DEDICADA entre operações.
+// ══════════════════════════════════════════════════════════════════════════
+// Demanda não atendida por operação — sinal DURO, não estimado: compara,
+// pra cada roteirização salva, TODOS os pedidos daquele dia (inclusive os
+// que não couberam em veículo nenhum — o snapshot salva a lista completa,
+// não só o que foi roteirizado) contra o que de fato foi alocado no
+// resultado. Pedido que sobrou é volume real que faltou caminhão pra
+// atender — mesmo critério já usado em "Pedidos com problema" (Resumo
+// Operação), só que aplicado a todo o histórico do período em vez de só a
+// sessão atual.
+function dashColetarDemandaPorOperacao(snapshots) {
+  const porOperacao = {};
+  (snapshots || []).forEach(snap => {
+    if (snap.substituidoPor) return; // revisão substituída — não conta (mesma regra do resto do Dashboard)
+    const terms = snap.terminais || [];
+    const alocadoPorPedido = {};
+    Object.values(snap.resultado || {}).forEach(viagens => {
+      (viagens || []).forEach(vi => {
+        if (!vi || vi._vazio) return;
+        (vi.paradas || []).forEach(p => {
+          (p.itens || []).forEach(it => {
+            if (it.pedidoId == null) return;
+            alocadoPorPedido[it.pedidoId] = (alocadoPorPedido[it.pedidoId] || 0) + (it.volume || 0);
+          });
+        });
+      });
+    });
+    (snap.pedidos || []).forEach(p => {
+      const totalVol = (p.produtos || []).reduce((s, pr) => s + (pr.volume || 0), 0);
+      if (totalVol <= 0) return;
+      const term = terms.find(t => t.nome === p.terminal);
+      const operacao = term?.cidade || p.terminal || '(sem terminal)';
+      const alocado = alocadoPorPedido[p.id] || 0;
+      const faltante = Math.max(0, totalVol - alocado - 0.01);
+      if (!porOperacao[operacao]) porOperacao[operacao] = { operacao, volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set() };
+      porOperacao[operacao].volumeDemandado += totalVol;
+      porOperacao[operacao].volumeNaoAtendido += faltante;
+      if (p.dataEntregaLogistica) porOperacao[operacao].datas.add(p.dataEntregaLogistica);
+    });
+  });
+  return porOperacao;
+}
+// Junta os 4 sinais (demanda não atendida, ocupação, utilização, estouro de
+// jornada) num relatório único por operação, com veredito transparente —
+// mostra os componentes, não só um score escondido.
+async function dashCarregarBalanceamentoFrota() {
+  const box = document.getElementById('dash-balanceamento-box');
+  if (!box) return;
+  box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Cruzando demanda, ocupação, utilização e jornada do período carregado...</div>';
+  try {
+    const snapshots = _dashSnapshotsAtivos || [];
+    if (!snapshots.length) {
+      box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma roteirização carregada nesse período — ajuste o filtro "🗓️ Período" no topo do Dashboard e tente de novo.</div>';
+      return;
+    }
+    // Deliberadamente SEM filtro de cidade/cliente/segmento/transportadora —
+    // esse relatório é justamente sobre comparar operações entre si; filtrar
+    // por uma delas ia esconder o resto da comparação.
+    const d = dashAgregar(snapshots, null, null);
+    const demanda = dashColetarDemandaPorOperacao(snapshots);
+    const jornadaOp = dashAgregarJornadaPorOperacao(d.entradasTransportadora);
+    const jornadaPorOpMap = {};
+    jornadaOp.forEach(j => { jornadaPorOpMap[j.operacao] = j; });
+    const ocupacaoPorOpMap = {};
+    (d.operacoes_ocup || []).forEach(o => { ocupacaoPorOpMap[o.nome] = o; });
+    let ociosidade = { porOperacaoUtilizacao: [] };
+    try {
+      ociosidade = await dashCarregarOciosidade(snapshots, null, d.diasComViagemPorPlaca, d.placaCidade, d.placaCidadePorDia, null);
+    } catch (e) { console.warn('[Balanceamento de Frota] falha ao consultar utilização (Painel de Disponibilidade):', e); }
+    const utilPorOpMap = {};
+    (ociosidade.porOperacaoUtilizacao || []).forEach(u => { utilPorOpMap[u.operacao] = u; });
+    // União de todas as operações que apareceram em QUALQUER um dos 4 sinais
+    const todasOperacoes = new Set([
+      ...Object.keys(demanda), ...Object.keys(jornadaPorOpMap),
+      ...Object.keys(ocupacaoPorOpMap), ...Object.keys(utilPorOpMap),
+    ]);
+    const linhas = [...todasOperacoes].map(operacao => {
+      const dem = demanda[operacao] || { volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set() };
+      const oc = ocupacaoPorOpMap[operacao] || { ocup: 0, volume: 0, viagens: 0 };
+      const jo = jornadaPorOpMap[operacao] || { veiculosDia: 0, diasComEstouro: 0, pctDiasComEstouro: 0, minutosEstouroTotal: 0 };
+      const ut = utilPorOpMap[operacao] || { disponibilizados: 0, usados: 0, qtdPlacas: 0, pctUtilizacao: 0 };
+      // Capacidade média de veículo cadastrado nessa operação (dado real do
+      // cadastro de Veículos & Turnos) — usada só pra estimar quantos
+      // veículos a recomendação sugere mover, nunca pra classificar falta/sobra.
+      const veiculosDaOp = (veiculos || []).filter(v => cidadeBaseVeiculo(v) === operacao);
+      const capMedia = veiculosDaOp.length
+        ? veiculosDaOp.reduce((s, v) => s + (v.capacidade || v.capacidadeTotal || 0), 0) / veiculosDaOp.length
+        : 0;
+      const diasNoPeriodo = dem.datas.size;
+      const m = {
+        operacao,
+        volumeDemandado: dem.volumeDemandado,
+        volumeNaoAtendido: dem.volumeNaoAtendido,
+        diasNoPeriodo,
+        volumeNaoAtendidoPorDia: diasNoPeriodo > 0 ? dem.volumeNaoAtendido / diasNoPeriodo : 0,
+        ocupacaoMediaPct: oc.ocup || 0,
+        volumeMovimentado: oc.volume || 0,
+        viagens: oc.viagens || 0,
+        utilizacaoPct: ut.pctUtilizacao || 0,
+        disponibilizados: ut.disponibilizados || 0,
+        usados: ut.usados || 0,
+        qtdPlacas: ut.qtdPlacas || veiculosDaOp.length,
+        estouroPct: jo.pctDiasComEstouro || 0,
+        diasComEstouro: jo.diasComEstouro || 0,
+        veiculosDia: jo.veiculosDia || 0,
+        capMedia,
+      };
+      const { veredito, motivosFalta, motivosSobra } = _dashClassificarOperacaoFrota(m);
+      return { ...m, veredito, motivosFalta, motivosSobra };
+    }).sort((a, b) => b.volumeNaoAtendido - a.volumeNaoAtendido);
+    const recomendacoes = _dashGerarRecomendacoesFrota(linhas);
+    _dashRenderBalanceamentoFrota(box, linhas, recomendacoes, snapshots);
+  } catch (e) {
+    console.error('[Balanceamento de Frota] falha ao gerar relatório:', e);
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:#DC2626;font-size:12px;">Erro ao gerar o relatório — tenta de novo em alguns segundos. Detalhe no console.</div>';
+  }
+}
+// Classificação transparente: cada operação sai com os MOTIVOS explícitos,
+// não só um rótulo — pra você poder auditar por que o sistema concluiu
+// aquilo, exatamente como prometido antes de construir isso.
+function _dashClassificarOperacaoFrota(m) {
+  const motivosFalta = [], motivosSobra = [];
+  if (m.volumeNaoAtendido > 0.5) motivosFalta.push(`${m.volumeNaoAtendido.toFixed(1)} m³ de pedidos não atendidos no período (evidência direta)`);
+  if (m.ocupacaoMediaPct >= 85) motivosFalta.push(`ocupação média alta (${m.ocupacaoMediaPct}%) — veículos saindo quase sempre cheios`);
+  if (m.utilizacaoPct >= 85 && m.disponibilizados >= 5) motivosFalta.push(`frota em uso em ${m.utilizacaoPct}% dos dias disponibilizados — pouca folga`);
+  if (m.estouroPct >= 15 && m.veiculosDia >= 5) motivosFalta.push(`estouro de jornada em ${m.estouroPct}% dos dias-veículo`);
+  if (m.ocupacaoMediaPct > 0 && m.ocupacaoMediaPct <= 55) motivosSobra.push(`ocupação média baixa (${m.ocupacaoMediaPct}%) — veículos saindo com pouca carga`);
+  if (m.utilizacaoPct > 0 && m.utilizacaoPct <= 55 && m.disponibilizados >= 5) motivosSobra.push(`frota ociosa boa parte do tempo (só ${m.utilizacaoPct}% de utilização)`);
+  if (m.estouroPct === 0 && m.veiculosDia >= 5) motivosSobra.push('nenhum estouro de jornada no período — sem sinal de sobrecarga');
+  let veredito = 'equilibrado';
+  if (m.volumeNaoAtendido > 0.5 || motivosFalta.length >= 2) veredito = 'falta';
+  else if (motivosSobra.length >= 2) veredito = 'sobra';
+  return { veredito, motivosFalta, motivosSobra };
+}
+// Recomendação de realocação — sempre pareando quem tem SOBRA com quem tem
+// FALTA, quantificando com dado real (capacidade média cadastrada dos
+// veículos já na operação de sobra), nunca com número inventado.
+function _dashGerarRecomendacoesFrota(linhas) {
+  const emFalta = linhas.filter(l => l.veredito === 'falta' && l.volumeNaoAtendidoPorDia > 0).sort((a, b) => b.volumeNaoAtendidoPorDia - a.volumeNaoAtendidoPorDia);
+  const comSobra = linhas.filter(l => l.veredito === 'sobra').sort((a, b) => a.utilizacaoPct - b.utilizacaoPct);
+  const recos = [];
+  const sobraRestante = new Map(comSobra.map(s => [s.operacao, Math.max(1, s.qtdPlacas - Math.ceil(s.qtdPlacas * (s.utilizacaoPct / 100)))]));
+  emFalta.forEach(f => {
+    const origem = comSobra.find(s => (sobraRestante.get(s.operacao) || 0) > 0);
+    if (!origem) return;
+    const capParaEstimar = origem.capMedia || f.capMedia || 20;
+    const veiculosSugeridos = Math.max(1, Math.min(sobraRestante.get(origem.operacao), Math.ceil(f.volumeNaoAtendidoPorDia / capParaEstimar)));
+    sobraRestante.set(origem.operacao, Math.max(0, sobraRestante.get(origem.operacao) - veiculosSugeridos));
+    recos.push({
+      de: origem.operacao, para: f.operacao, veiculosSugeridos,
+      capUsada: capParaEstimar, volumeNaoAtendidoPorDia: f.volumeNaoAtendidoPorDia,
+    });
+  });
+  return recos;
+}
+// ── Renderização do relatório ──────────────────────────────────────────────
+function _dashRenderBalanceamentoFrota(box, linhas, recomendacoes, snapshots) {
+  const datasIni = (snapshots || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean).sort();
+  const periodoTxt = datasIni.length ? `${_dashFmtDataBr ? _dashFmtDataBr(datasIni[0]) : datasIni[0]} a ${_dashFmtDataBr ? _dashFmtDataBr(datasIni[datasIni.length - 1]) : datasIni[datasIni.length - 1]}` : 'período carregado';
+  const corVeredito = v => v === 'falta' ? '#DC2626' : v === 'sobra' ? '#16A34A' : '#6B7280';
+  const rotuloVeredito = v => v === 'falta' ? '🔴 Falta de caminhão' : v === 'sobra' ? '🟢 Sobra de caminhão' : '⚪ Equilibrado';
+  const semDadoSuficiente = linhas.every(l => l.disponibilizados === 0 && l.veiculosDia === 0);
+  const recosHtml = recomendacoes.length
+    ? recomendacoes.map(r => `
+      <div style="background:#EEF2FF;border:1px solid #C7D2FE;border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:12.5px;color:#3730A3;">
+        <b>➜ Mover ~${r.veiculosSugeridos} veículo${r.veiculosSugeridos === 1 ? '' : 's'}</b> de <b>${r.de}</b> pra <b>${r.para}</b>
+        <span style="color:#6366F1;"> — estimado com a capacidade média já cadastrada em ${r.de} (~${r.capUsada.toFixed(0)} m³/veículo) contra o déficit de ~${r.volumeNaoAtendidoPorDia.toFixed(1)} m³/dia em ${r.para}.</span>
+      </div>`).join('')
+    : '<div style="padding:10px 14px;color:var(--text-3);font-size:12px;">Nenhuma recomendação de realocação — não há operação com sobra clara pra cobrir uma com falta clara nesse período (ou não há falta/sobra suficientemente forte pra recomendar mexer na frota).</div>';
+  box.innerHTML = `
+    <div style="font-size:11px;color:var(--text-3);margin-bottom:12px;">Período analisado: <b>${periodoTxt}</b> (${snapshots.length} roteirização(ões) salva(s) carregada(s)) — sem filtro de cidade/cliente/transportadora, de propósito: aqui a ideia é comparar as operações entre si.</div>
+    ${semDadoSuficiente ? '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;">⚠️ Não achei registros do Painel de Disponibilidade pra esse período — os sinais de <b>ocupação</b> e <b>demanda não atendida</b> abaixo ainda são reais, mas <b>utilização</b> e <b>estouro de jornada</b> podem estar incompletos.</div>' : ''}
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Recomendação de realocação</div>
+    ${recosHtml}
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:18px 0 8px;">Detalhe por operação — confira os motivos antes de agir</div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:900px;">
+        <thead><tr style="background:rgba(0,0,0,0.03);">
+          <th style="padding:7px 10px;text-align:left;color:var(--text-3);">OPERAÇÃO</th>
+          <th style="padding:7px 10px;text-align:left;color:var(--text-3);">VEREDITO</th>
+          <th style="padding:7px 10px;text-align:right;color:var(--text-3);">NÃO ATENDIDO (M³)</th>
+          <th style="padding:7px 10px;text-align:right;color:var(--text-3);">OCUPAÇÃO MÉDIA</th>
+          <th style="padding:7px 10px;text-align:right;color:var(--text-3);">UTILIZAÇÃO (DIAS)</th>
+          <th style="padding:7px 10px;text-align:right;color:var(--text-3);">ESTOURO JORNADA</th>
+          <th style="padding:7px 10px;text-align:left;color:var(--text-3);">POR QUÊ</th>
+        </tr></thead>
+        <tbody>
+          ${linhas.map(l => `
+            <tr style="border-top:1px solid var(--border-dk);">
+              <td style="padding:7px 10px;font-weight:700;">${l.operacao}</td>
+              <td style="padding:7px 10px;font-weight:700;color:${corVeredito(l.veredito)};">${rotuloVeredito(l.veredito)}</td>
+              <td style="padding:7px 10px;text-align:right;${l.volumeNaoAtendido > 0.5 ? 'color:#DC2626;font-weight:700;' : ''}">${l.volumeNaoAtendido.toFixed(1)}</td>
+              <td style="padding:7px 10px;text-align:right;">${l.ocupacaoMediaPct}%</td>
+              <td style="padding:7px 10px;text-align:right;">${l.utilizacaoPct}% <span style="color:var(--text-3);">(${l.usados}/${l.disponibilizados}d · ${l.qtdPlacas} placas)</span></td>
+              <td style="padding:7px 10px;text-align:right;">${l.estouroPct}% <span style="color:var(--text-3);">(${l.diasComEstouro}/${l.veiculosDia})</span></td>
+              <td style="padding:7px 10px;font-size:10.5px;color:var(--text-3);max-width:280px;">${[...l.motivosFalta, ...l.motivosSobra].join(' · ') || '—'}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div style="font-size:10px;color:var(--text-3);margin-top:12px;">
+      <b>Como ler:</b> "Não atendido" é fato (pedido que não coube em veículo nenhum). Os outros três são sinais de pressão/sobra — uma operação só é classificada com convicção quando pelo menos 2 sinais apontam na mesma direção. "Equilibrado" significa que o período não trouxe evidência forte de falta nem de sobra ali.
+    </div>`;
+}
+window.dashCarregarBalanceamentoFrota = dashCarregarBalanceamentoFrota;
+
 function dashAgregarProdutos(snapshots, cidadesFiltro, clientesEfetivos) {
   const produtos = {}; // nome do produto -> { volume, porCliente: { chaveNormalizada: { nomeExibido, volume, datas:Set } } }
   const _efetivosNormProdutos = _dashNormalizarSetClientes(clientesEfetivos);
