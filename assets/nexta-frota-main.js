@@ -5241,6 +5241,17 @@ async function reiniciarRoteirizador(){
   limpar('pedidos-list');
   limpar('veiculos-list');
   limpar('resultado-content', '<div class="empty">\u25BA Clique em "Roteirizar Pedidos" para gerar a programação</div>');
+  // Seleções da aba Pedidos (marcação em lote de pernoite, seleção no mapa
+  // de pedidos) ficavam "presas" depois do Reiniciar — o array `pedidos`
+  // zerava, mas esses Sets de seleção (guardam só o id do pedido, não o
+  // pedido em si) continuavam com os ids antigos, e a barra "X pedidos
+  // selecionados"/pernoite continuava visível com número errado.
+  if (typeof _pedSelecionados !== 'undefined') _pedSelecionados.clear();
+  if (typeof _pmapaSelecionados !== 'undefined') _pmapaSelecionados.clear();
+  ['pedidos-pernoite-bar', 'pedidos-resumo-box'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.innerHTML = ''; el.classList.add('hidden'); }
+  });
   // Limpa filtros de texto de todas as abas
   ['f-term-terminal','f-term-cidade',
    'f-cli-cliente','f-cli-cidade',
