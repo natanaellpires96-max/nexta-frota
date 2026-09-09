@@ -3128,11 +3128,18 @@ function dashColetarDemandaPorOperacao(snapshots) {
   (snapshots || []).forEach(snap => {
     if (snap.substituidoPor) return; // revisão substituída — não conta (mesma regra do resto do Dashboard)
     const terms = snap.terminais || [];
+    const res = snap.resultado || {};
     const alocadoPorPedido = {};
     // O id do pedido fica na PARADA (parada.pedido.id) — cada item dentro
     // dela é só {produto, volume, completo, ordemSAP}, sem pedidoId próprio.
-    Object.values(snap.resultado || {}).forEach(viagens => {
-      (viagens || []).forEach(vi => {
+    // Acessa res[v.id] pela lista de veículos (mesmo padrão usado em TODO o
+    // resto do dashboard.js) em vez de "Object.values(res)" — arquivos mais
+    // antigos do histórico podem ter chaves em `resultado` que não são um
+    // array de viagens, e iterar tudo cegamente quebrava nesses arquivos.
+    (snap.veiculos || []).forEach(v => {
+      const viagens = res[v.id];
+      if (!Array.isArray(viagens)) return;
+      viagens.forEach(vi => {
         if (!vi || vi._vazio) return;
         (vi.paradas || []).forEach(p => {
           const pid = p.pedido?.id;
