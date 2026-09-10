@@ -3182,11 +3182,14 @@ function dashColetarDemandaPorOperacao(snapshots) {
       const operacao = _dashNormOperacaoKey(nomeOperacao);
       const alocado = alocadoPorPedido[p.id] || 0;
       const faltante = Math.max(0, totalVol - alocado - 0.01);
-      if (!porOperacao[operacao]) porOperacao[operacao] = { operacao, nomeExibido: nomeOperacao, volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set() };
+      if (!porOperacao[operacao]) porOperacao[operacao] = { operacao, nomeExibido: nomeOperacao, volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set(), porDia: {} };
       porOperacao[operacao].nomeExibido = _dashMelhorNomeOperacao(porOperacao[operacao].nomeExibido, nomeOperacao);
       porOperacao[operacao].volumeDemandado += totalVol;
       porOperacao[operacao].volumeNaoAtendido += faltante;
-      if (p.dataEntregaLogistica) porOperacao[operacao].datas.add(p.dataEntregaLogistica);
+      if (p.dataEntregaLogistica) {
+        porOperacao[operacao].datas.add(p.dataEntregaLogistica);
+        porOperacao[operacao].porDia[p.dataEntregaLogistica] = (porOperacao[operacao].porDia[p.dataEntregaLogistica] || 0) + totalVol;
+      }
     });
   });
   return porOperacao;
@@ -3260,7 +3263,7 @@ async function dashCarregarBalanceamentoFrota() {
       ...Object.keys(ocupacaoPorOpMap), ...Object.keys(utilPorOpMap),
     ]);
     const linhas = [...todasOperacoes].map(chave => {
-      const dem = demanda[chave] || { volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set() };
+      const dem = demanda[chave] || { volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set(), porDia: {} };
       const oc = ocupacaoPorOpMap[chave] || { ocup: 0, volume: 0, viagens: 0 };
       const jo = jornadaPorOpMap[chave] || { veiculosDia: 0, diasComEstouro: 0, pctDiasComEstouro: 0, minutosEstouroTotal: 0 };
       const ut = utilPorOpMap[chave] || { disponibilizados: 0, usados: 0, qtdPlacas: 0, pctUtilizacao: 0 };
@@ -3269,19 +3272,33 @@ async function dashCarregarBalanceamentoFrota() {
         _dashMelhorNomeOperacao(jo.nomeExibido, ut.nomeExibido)
       ) || chave;
       // Capacidade média de veículo cadastrado nessa operação (dado real do
-      // cadastro de Veículos & Turnos) — usada só pra estimar quantos
-      // veículos a recomendação sugere mover, nunca pra classificar falta/sobra.
+      // cadastro de Veículos & Turnos) — se não achar nenhum veículo
+      // cadastrado com essa base (pode ter sido desativado/trocado desde o
+      // período analisado), cai pra média geral da frota, só pra não deixar
+      // a capacidade acumulada zerada sem necessidade.
       const veiculosDaOp = (veiculos || []).filter(v => _dashNormOperacaoKey(cidadeBaseVeiculo(v)) === chave);
+      const capMediaGeral = (veiculos || []).length
+        ? (veiculos || []).reduce((s, v) => s + (v.capacidade || v.capacidadeTotal || 0), 0) / (veiculos || []).length
+        : 20;
       const capMedia = veiculosDaOp.length
         ? veiculosDaOp.reduce((s, v) => s + (v.capacidade || v.capacidadeTotal || 0), 0) / veiculosDaOp.length
-        : 0;
+        : capMediaGeral;
       const diasNoPeriodo = dem.datas.size;
+      // Volumetria acumulada da frota = capacidade média do veículo × dias
+      // que a frota dessa operação foi disponibilizada no período (Painel de
+      // Disponibilidade) — é o máximo teórico que a frota daria conta de
+      // mover, pra comparar direto com quanto realmente foi demandado.
+      const capacidadeAcumulada = capMedia * (ut.disponibilizados || 0);
+      const gapM3 = capacidadeAcumulada - dem.volumeDemandado;
+      const gapPct = dem.volumeDemandado > 0 ? (gapM3 / dem.volumeDemandado) * 100 : (capacidadeAcumulada > 0 ? 100 : 0);
       const m = {
         operacao: nomeExibido,
         volumeDemandado: dem.volumeDemandado,
         volumeNaoAtendido: dem.volumeNaoAtendido,
         diasNoPeriodo,
         volumeNaoAtendidoPorDia: diasNoPeriodo > 0 ? dem.volumeNaoAtendido / diasNoPeriodo : 0,
+        volumeMedioDiario: diasNoPeriodo > 0 ? dem.volumeDemandado / diasNoPeriodo : 0,
+        porDia: dem.porDia || {},
         ocupacaoMediaPct: oc.ocup || 0,
         volumeMovimentado: oc.volume || 0,
         viagens: oc.viagens || 0,
@@ -3293,10 +3310,13 @@ async function dashCarregarBalanceamentoFrota() {
         diasComEstouro: jo.diasComEstouro || 0,
         veiculosDia: jo.veiculosDia || 0,
         capMedia,
+        capacidadeAcumulada,
+        gapM3,
+        gapPct,
       };
       const { veredito, motivosFalta, motivosSobra } = _dashClassificarOperacaoFrota(m);
       return { ...m, veredito, motivosFalta, motivosSobra };
-    }).sort((a, b) => b.volumeNaoAtendido - a.volumeNaoAtendido);
+    }).sort((a, b) => a.gapPct - b.gapPct); // quem tem o déficit proporcional maior (gap mais negativo) primeiro
 
     etapa = 'geração de recomendações';
     const recomendacoes = _dashGerarRecomendacoesFrota(linhas);
@@ -3308,28 +3328,39 @@ async function dashCarregarBalanceamentoFrota() {
     box.innerHTML = `<div style="padding:24px;text-align:center;color:#DC2626;font-size:12px;">Erro ao gerar o relatório, na etapa "<b>${etapa}</b>" — abre o console do navegador (F12) e me manda a mensagem completa que aparece lá, com essa etapa.</div>`;
   }
 }
-// Classificação transparente: cada operação sai com os MOTIVOS explícitos,
-// não só um rótulo — pra você poder auditar por que o sistema concluiu
-// aquilo, exatamente como prometido antes de construir isso.
+// Classificação — o critério PRINCIPAL agora é a conta concreta de
+// capacidade acumulada da frota vs volume demandado (gapPct), não mais
+// "pedido não atendido": numa operação que sempre entrega tudo (mesmo sob
+// pressão, via hora extra/spot), "não atendido" nunca aparece mesmo quando
+// falta caminhão de verdade — por isso ele deixou de decidir o veredito.
+// Ocupação/utilização/estouro entram como reforço, não como base.
 function _dashClassificarOperacaoFrota(m) {
   const motivosFalta = [], motivosSobra = [];
-  if (m.volumeNaoAtendido > 0.5) motivosFalta.push(`${m.volumeNaoAtendido.toFixed(1)} m³ de pedidos não atendidos no período (evidência direta)`);
-  if (m.ocupacaoMediaPct >= 85) motivosFalta.push(`ocupação média alta (${m.ocupacaoMediaPct}%) — veículos saindo quase sempre cheios`);
-  if (m.utilizacaoPct >= 85 && m.disponibilizados >= 5) motivosFalta.push(`frota em uso em ${m.utilizacaoPct}% dos dias disponibilizados — pouca folga`);
-  if (m.estouroPct >= 15 && m.veiculosDia >= 5) motivosFalta.push(`estouro de jornada em ${m.estouroPct}% dos dias-veículo`);
-  if (m.ocupacaoMediaPct > 0 && m.ocupacaoMediaPct <= 55) motivosSobra.push(`ocupação média baixa (${m.ocupacaoMediaPct}%) — veículos saindo com pouca carga`);
-  if (m.utilizacaoPct > 0 && m.utilizacaoPct <= 55 && m.disponibilizados >= 5) motivosSobra.push(`frota ociosa boa parte do tempo (só ${m.utilizacaoPct}% de utilização)`);
+  if (m.gapM3 < 0) motivosFalta.push(`déficit de capacidade: ${Math.abs(m.gapM3).toFixed(0)} m³ no período (${m.gapPct.toFixed(0)}%)`);
+  if (m.ocupacaoMediaPct >= 85) motivosFalta.push(`ocupação média de ${m.ocupacaoMediaPct}% — veículos saindo quase sempre cheios`);
+  if (m.utilizacaoPct >= 85 && m.disponibilizados >= 5) motivosFalta.push(`frota rodou em ${m.utilizacaoPct}% dos dias disponibilizados (${m.usados}/${m.disponibilizados}d) — pouca folga`);
+  if (m.estouroPct >= 15 && m.veiculosDia >= 5) motivosFalta.push(`jornada estourada em ${m.estouroPct}% dos dias-veículo (${m.diasComEstouro}/${m.veiculosDia})`);
+  if (m.volumeNaoAtendido > 0.5) motivosFalta.push(`${m.volumeNaoAtendido.toFixed(1)} m³ de pedidos ficaram fora do plano automático (pode ter sido coberto com spot/hora extra)`);
+  if (m.gapM3 > 0) motivosSobra.push(`sobra de capacidade: ${m.gapM3.toFixed(0)} m³ no período (+${m.gapPct.toFixed(0)}%)`);
+  if (m.ocupacaoMediaPct > 0 && m.ocupacaoMediaPct <= 55) motivosSobra.push(`ocupação média de só ${m.ocupacaoMediaPct}% — veículos saindo com pouca carga`);
+  if (m.utilizacaoPct > 0 && m.utilizacaoPct <= 55 && m.disponibilizados >= 5) motivosSobra.push(`frota parada boa parte do tempo (${m.usados}/${m.disponibilizados}d = ${m.utilizacaoPct}% de uso)`);
   if (m.estouroPct === 0 && m.veiculosDia >= 5) motivosSobra.push('nenhum estouro de jornada no período — sem sinal de sobrecarga');
+  // Precisa de um mínimo de base (capacidade OU demanda reais) pra classificar
+  // com convicção — senão fica "equilibrado" por falta de dado, não por
+  // realmente estar equilibrado.
+  const temBaseSuficiente = m.disponibilizados >= 5 || m.volumeDemandado > 0;
   let veredito = 'equilibrado';
-  if (m.volumeNaoAtendido > 0.5 || motivosFalta.length >= 2) veredito = 'falta';
-  else if (motivosSobra.length >= 2) veredito = 'sobra';
+  if (temBaseSuficiente) {
+    if (m.gapPct <= -15 || m.estouroPct >= 25) veredito = 'falta';
+    else if (m.gapPct >= 40 && m.utilizacaoPct > 0 && m.utilizacaoPct <= 55) veredito = 'sobra';
+  }
   return { veredito, motivosFalta, motivosSobra };
 }
 // Recomendação de realocação — sempre pareando quem tem SOBRA com quem tem
-// FALTA, quantificando com dado real (capacidade média cadastrada dos
-// veículos já na operação de sobra), nunca com número inventado.
+// FALTA, quantificando com o déficit/sobra em m³ real (gapM3), nunca com
+// número inventado.
 function _dashGerarRecomendacoesFrota(linhas) {
-  const emFalta = linhas.filter(l => l.veredito === 'falta' && l.volumeNaoAtendidoPorDia > 0).sort((a, b) => b.volumeNaoAtendidoPorDia - a.volumeNaoAtendidoPorDia);
+  const emFalta = linhas.filter(l => l.veredito === 'falta' && l.gapM3 < 0).sort((a, b) => a.gapM3 - b.gapM3);
   const comSobra = linhas.filter(l => l.veredito === 'sobra').sort((a, b) => a.utilizacaoPct - b.utilizacaoPct);
   const recos = [];
   const sobraRestante = new Map(comSobra.map(s => [s.operacao, Math.max(1, s.qtdPlacas - Math.ceil(s.qtdPlacas * (s.utilizacaoPct / 100)))]));
@@ -3337,16 +3368,46 @@ function _dashGerarRecomendacoesFrota(linhas) {
     const origem = comSobra.find(s => (sobraRestante.get(s.operacao) || 0) > 0);
     if (!origem) return;
     const capParaEstimar = origem.capMedia || f.capMedia || 20;
-    const veiculosSugeridos = Math.max(1, Math.min(sobraRestante.get(origem.operacao), Math.ceil(f.volumeNaoAtendidoPorDia / capParaEstimar)));
+    const deficitPorDia = Math.abs(f.gapM3) / Math.max(1, f.diasNoPeriodo);
+    const veiculosSugeridos = Math.max(1, Math.min(sobraRestante.get(origem.operacao), Math.ceil(deficitPorDia / capParaEstimar)));
     sobraRestante.set(origem.operacao, Math.max(0, sobraRestante.get(origem.operacao) - veiculosSugeridos));
     recos.push({
       de: origem.operacao, para: f.operacao, veiculosSugeridos,
-      capUsada: capParaEstimar, volumeNaoAtendidoPorDia: f.volumeNaoAtendidoPorDia,
+      capUsada: capParaEstimar, deficitM3: Math.abs(f.gapM3), deficitPctFalta: Math.abs(f.gapPct),
     });
   });
   return recos;
 }
 // ── Renderização do relatório ──────────────────────────────────────────────
+// ── Renderização do relatório ──────────────────────────────────────────────
+// Sparkline diária simples (SVG puro, sem lib externa — mesmo princípio dos
+// outros gráficos já existentes no Dashboard, só que em linha em vez de
+// barra) — mostra a variação de volume dia a dia dentro do período, não só
+// o total acumulado.
+function _dashSparklineSvg(porDia, corLinha) {
+  const entradas = Object.entries(porDia || {}).map(([data, vol]) => {
+    const partes = (data || '').split('/');
+    const d = parseInt(partes[0], 10), m = parseInt(partes[1], 10), y = parseInt(partes[2], 10);
+    return { ts: new Date(y || 2000, (m || 1) - 1, d || 1).getTime(), data, vol: vol || 0 };
+  }).filter(e => !isNaN(e.ts)).sort((a, b) => a.ts - b.ts);
+  if (entradas.length < 2) {
+    return '<div style="font-size:10px;color:var(--text-3);padding:8px 0;">Poucos dias no período pra mostrar tendência diária.</div>';
+  }
+  const W = 300, H = 46, pad = 3;
+  const maxV = Math.max(...entradas.map(e => e.vol), 1);
+  const stepX = (W - pad * 2) / (entradas.length - 1);
+  const pontos = entradas.map((e, i) => {
+    const x = pad + i * stepX;
+    const y = H - pad - ((e.vol / maxV) * (H - pad * 2));
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const ultimaData = entradas[entradas.length - 1].data;
+  const primeiraData = entradas[0].data;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:46px;display:block;overflow:visible;">
+      <polyline points="${pontos}" fill="none" stroke="${corLinha}" stroke-width="2" vector-effect="non-scaling-stroke"/>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-3);margin-top:2px;"><span>${primeiraData}</span><span>${ultimaData}</span></div>`;
+}
 function _dashRenderBalanceamentoFrota(box, linhas, recomendacoes, snapshots) {
   const datasIni = (snapshots || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean).sort();
   const periodoTxt = datasIni.length ? `${_dashFmtDataBr ? _dashFmtDataBr(datasIni[0]) : datasIni[0]} a ${_dashFmtDataBr ? _dashFmtDataBr(datasIni[datasIni.length - 1]) : datasIni[datasIni.length - 1]}` : 'período carregado';
@@ -3357,42 +3418,55 @@ function _dashRenderBalanceamentoFrota(box, linhas, recomendacoes, snapshots) {
     ? recomendacoes.map(r => `
       <div style="background:#EEF2FF;border:1px solid #C7D2FE;border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:12.5px;color:#3730A3;">
         <b>➜ Mover ~${r.veiculosSugeridos} veículo${r.veiculosSugeridos === 1 ? '' : 's'}</b> de <b>${r.de}</b> pra <b>${r.para}</b>
-        <span style="color:#6366F1;"> — estimado com a capacidade média já cadastrada em ${r.de} (~${r.capUsada.toFixed(0)} m³/veículo) contra o déficit de ~${r.volumeNaoAtendidoPorDia.toFixed(1)} m³/dia em ${r.para}.</span>
+        <span style="color:#6366F1;"> — capacidade média em ${r.de}: ~${r.capUsada.toFixed(0)} m³/veículo · déficit em ${r.para}: ${r.deficitM3.toFixed(0)} m³ no período (${r.deficitPctFalta.toFixed(0)}%).</span>
       </div>`).join('')
-    : '<div style="padding:10px 14px;color:var(--text-3);font-size:12px;">Nenhuma recomendação de realocação — não há operação com sobra clara pra cobrir uma com falta clara nesse período (ou não há falta/sobra suficientemente forte pra recomendar mexer na frota).</div>';
+    : '<div style="padding:10px 14px;color:var(--text-3);font-size:12px;">Nenhuma recomendação de realocação — não há operação com sobra clara pra cobrir uma com falta clara nesse período.</div>';
+  const cardsHtml = linhas.map(l => {
+    const maxBar = Math.max(l.volumeDemandado, l.capacidadeAcumulada, 1);
+    const pctDemanda = Math.round((l.volumeDemandado / maxBar) * 100);
+    const pctCap = Math.round((l.capacidadeAcumulada / maxBar) * 100);
+    const corGap = l.gapM3 < 0 ? '#DC2626' : '#16A34A';
+    return `<div style="border:1px solid var(--border-dk);border-radius:10px;padding:14px 16px;margin-bottom:12px;background:rgba(0,0,0,0.015);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+          <span style="font-size:14.5px;font-weight:700;">${l.operacao}</span>
+          <span style="font-size:12px;font-weight:700;color:${corVeredito(l.veredito)};">${rotuloVeredito(l.veredito)}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1.1fr 1fr;gap:24px;align-items:start;">
+          <div>
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px;">
+              <span style="font-size:10px;font-weight:700;color:#b8860b;width:100px;flex-shrink:0;">Demanda</span>
+              <div style="flex:1;height:9px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;"><div style="width:${pctDemanda}%;height:100%;background:#f0be40;border-radius:99px;"></div></div>
+              <span style="font-size:10.5px;font-weight:700;width:76px;text-align:right;flex-shrink:0;">${l.volumeDemandado.toFixed(0)} m³</span>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span style="font-size:10px;font-weight:700;color:#4F46E5;width:100px;flex-shrink:0;">Capacidade frota</span>
+              <div style="flex:1;height:9px;background:rgba(0,0,0,0.08);border-radius:99px;overflow:hidden;"><div style="width:${pctCap}%;height:100%;background:#4F46E5;border-radius:99px;"></div></div>
+              <span style="font-size:10.5px;font-weight:700;width:76px;text-align:right;flex-shrink:0;">${l.capacidadeAcumulada.toFixed(0)} m³</span>
+            </div>
+            <div style="font-size:11px;color:${corGap};font-weight:700;margin-top:8px;">${l.gapM3 < 0 ? 'Déficit' : 'Sobra'} de ${Math.abs(l.gapM3).toFixed(0)} m³ no período (${l.gapPct >= 0 ? '+' : ''}${l.gapPct.toFixed(0)}%)</div>
+            <div style="font-size:9.5px;color:var(--text-3);margin-top:2px;">Capacidade = ${l.capMedia.toFixed(0)} m³/veículo (cadastro) × ${l.disponibilizados} dia(s)-veículo disponibilizado(s)</div>
+          </div>
+          <div>
+            <div style="font-size:10px;font-weight:700;color:var(--text-3);margin-bottom:2px;">Volume diário demandado (${l.diasNoPeriodo} dia(s) com pedido)</div>
+            ${_dashSparklineSvg(l.porDia, '#b8860b')}
+            <div style="font-size:9.5px;color:var(--text-3);margin-top:2px;">Média: ${l.volumeMedioDiario.toFixed(1)} m³/dia · Movimentado: ${l.volumeMovimentado.toFixed(0)} m³ em ${l.viagens} viagem(ns)</div>
+          </div>
+        </div>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border-dk);font-size:10.5px;color:var(--text-3);">
+          <b style="color:var(--text);">Ocupação</b> ${l.ocupacaoMediaPct}% · <b style="color:var(--text);">Utilização</b> ${l.utilizacaoPct}% (${l.usados}/${l.disponibilizados}d · ${l.qtdPlacas} placa(s)) · <b style="color:var(--text);">Estouro de jornada</b> ${l.estouroPct}% (${l.diasComEstouro}/${l.veiculosDia} dias-veículo)
+          <div style="margin-top:4px;">${[...l.motivosFalta, ...l.motivosSobra].join(' · ') || 'Sem sinal forte de falta nem sobra nesse período.'}</div>
+        </div>
+      </div>`;
+  }).join('');
   box.innerHTML = `
     <div style="font-size:11px;color:var(--text-3);margin-bottom:12px;">Período analisado: <b>${periodoTxt}</b> (${snapshots.length} roteirização(ões) salva(s) carregada(s)) — sem filtro de cidade/cliente/transportadora, de propósito: aqui a ideia é comparar as operações entre si.</div>
-    ${semDadoSuficiente ? '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;">⚠️ Não achei registros do Painel de Disponibilidade pra esse período — os sinais de <b>ocupação</b> e <b>demanda não atendida</b> abaixo ainda são reais, mas <b>utilização</b> e <b>estouro de jornada</b> podem estar incompletos.</div>' : ''}
+    ${semDadoSuficiente ? '<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;">⚠️ Não achei registros do Painel de Disponibilidade pra esse período — <b>capacidade da frota</b>, <b>utilização</b> e <b>estouro de jornada</b> abaixo podem estar incompletos. Demanda e ocupação continuam reais.</div>' : ''}
     <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Recomendação de realocação</div>
     ${recosHtml}
-    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:18px 0 8px;">Detalhe por operação — confira os motivos antes de agir</div>
-    <div style="overflow-x:auto;">
-      <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:900px;">
-        <thead><tr style="background:rgba(0,0,0,0.03);">
-          <th style="padding:7px 10px;text-align:left;color:var(--text-3);">OPERAÇÃO</th>
-          <th style="padding:7px 10px;text-align:left;color:var(--text-3);">VEREDITO</th>
-          <th style="padding:7px 10px;text-align:right;color:var(--text-3);">NÃO ATENDIDO (M³)</th>
-          <th style="padding:7px 10px;text-align:right;color:var(--text-3);">OCUPAÇÃO MÉDIA</th>
-          <th style="padding:7px 10px;text-align:right;color:var(--text-3);">UTILIZAÇÃO (DIAS)</th>
-          <th style="padding:7px 10px;text-align:right;color:var(--text-3);">ESTOURO JORNADA</th>
-          <th style="padding:7px 10px;text-align:left;color:var(--text-3);">POR QUÊ</th>
-        </tr></thead>
-        <tbody>
-          ${linhas.map(l => `
-            <tr style="border-top:1px solid var(--border-dk);">
-              <td style="padding:7px 10px;font-weight:700;">${l.operacao}</td>
-              <td style="padding:7px 10px;font-weight:700;color:${corVeredito(l.veredito)};">${rotuloVeredito(l.veredito)}</td>
-              <td style="padding:7px 10px;text-align:right;${l.volumeNaoAtendido > 0.5 ? 'color:#DC2626;font-weight:700;' : ''}">${l.volumeNaoAtendido.toFixed(1)}</td>
-              <td style="padding:7px 10px;text-align:right;">${l.ocupacaoMediaPct}%</td>
-              <td style="padding:7px 10px;text-align:right;">${l.utilizacaoPct}% <span style="color:var(--text-3);">(${l.usados}/${l.disponibilizados}d · ${l.qtdPlacas} placas)</span></td>
-              <td style="padding:7px 10px;text-align:right;">${l.estouroPct}% <span style="color:var(--text-3);">(${l.diasComEstouro}/${l.veiculosDia})</span></td>
-              <td style="padding:7px 10px;font-size:10.5px;color:var(--text-3);max-width:280px;">${[...l.motivosFalta, ...l.motivosSobra].join(' · ') || '—'}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>
-    <div style="font-size:10px;color:var(--text-3);margin-top:12px;">
-      <b>Como ler:</b> "Não atendido" é fato (pedido que não coube em veículo nenhum). Os outros três são sinais de pressão/sobra — uma operação só é classificada com convicção quando pelo menos 2 sinais apontam na mesma direção. "Equilibrado" significa que o período não trouxe evidência forte de falta nem de sobra ali.
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:18px 0 8px;">Detalhe por operação</div>
+    ${cardsHtml}
+    <div style="font-size:10px;color:var(--text-3);margin-top:8px;">
+      <b>Como ler:</b> "Capacidade frota" é a capacidade média cadastrada dos veículos dessa operação × quantos dias-veículo foram disponibilizados no período (Painel de Disponibilidade) — o máximo teórico que a frota daria conta de mover. O veredito compara isso direto com a demanda real; ocupação, utilização e estouro de jornada entram como reforço da leitura, não como base sozinha. "Fora do plano automático" é informativo (pode já ter sido coberto com spot/hora extra), não decide mais o veredito.
     </div>`;
 }
 window.dashCarregarBalanceamentoFrota = dashCarregarBalanceamentoFrota;
