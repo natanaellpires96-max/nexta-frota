@@ -1401,6 +1401,30 @@ function dashAgregarJornada(entradasTransportadora, clientesEfetivos = null) {
     estourosDetalhe: estourosDetalhe.slice(0, 30), // top 30 piores dias-veículo, pra não pesar a tela
   };
 }
+// ── Normalização de nome de operação/cidade — usada só pra AGRUPAR (nunca
+// pra exibir): tira acento, maiúscula, e o sufixo " - UF" (ex.: "Ribeirão
+// Preto - SP" e "Ribeirão Preto" viram a MESMA chave). Sem isso, a mesma
+// cidade virava duas linhas no relatório de Balanceamento de Frota — cada
+// sinal (demanda, ocupação, utilização, jornada) resolve o nome da cidade
+// de um jeito ligeiramente diferente (cadastro do terminal vs cadastro da
+// placa vs inferência da viagem).
+function _dashNormOperacaoKey(nome) {
+  return (nome || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s*-\s*[a-zA-Z]{2}$/, '')
+    .trim().toUpperCase();
+}
+// Entre dois nomes que colidiram na mesma chave normalizada, prefere o que
+// tem o sufixo " - UF" (mais informativo pra exibir na tela); no empate,
+// fica com o mais longo.
+function _dashMelhorNomeOperacao(atual, novo) {
+  if (!atual) return novo;
+  if (!novo) return atual;
+  const atualTemUf = /\s-\s[a-zA-Z]{2}$/.test(atual);
+  const novoTemUf = /\s-\s[a-zA-Z]{2}$/.test(novo);
+  if (novoTemUf && !atualTemUf) return novo;
+  if (atualTemUf && !novoTemUf) return atual;
+  return novo.length > atual.length ? novo : atual;
+}
 // ── Estouro de jornada por OPERAÇÃO (mesma lógica de dashAgregarJornada
 // acima, só que agrupada por cidade da operação em vez de transportadora —
 // usada no relatório de Balanceamento de Frota) ────────────────────────────
@@ -1416,8 +1440,9 @@ function dashAgregarJornadaPorOperacao(entradasTransportadora) {
   });
   const porOperacao = {};
   porVeiculoDia.forEach(reg => {
-    const key = reg.cidadeOp;
-    if (!porOperacao[key]) porOperacao[key] = { operacao: key, veiculosDia: 0, diasComEstouro: 0, minutosEstouroTotal: 0 };
+    const key = _dashNormOperacaoKey(reg.cidadeOp);
+    if (!porOperacao[key]) porOperacao[key] = { operacao: key, nomeExibido: reg.cidadeOp, veiculosDia: 0, diasComEstouro: 0, minutosEstouroTotal: 0 };
+    porOperacao[key].nomeExibido = _dashMelhorNomeOperacao(porOperacao[key].nomeExibido, reg.cidadeOp);
     porOperacao[key].veiculosDia += 1;
     if (reg.dispMin > 0 && reg.usadoMin > reg.dispMin) {
       porOperacao[key].diasComEstouro += 1;
@@ -3153,10 +3178,12 @@ function dashColetarDemandaPorOperacao(snapshots) {
       const totalVol = (p.produtos || []).reduce((s, pr) => s + (pr.volume || 0), 0);
       if (totalVol <= 0) return;
       const term = terms.find(t => t.nome === p.terminal);
-      const operacao = term?.cidade || p.terminal || '(sem terminal)';
+      const nomeOperacao = term?.cidade || p.terminal || '(sem terminal)';
+      const operacao = _dashNormOperacaoKey(nomeOperacao);
       const alocado = alocadoPorPedido[p.id] || 0;
       const faltante = Math.max(0, totalVol - alocado - 0.01);
-      if (!porOperacao[operacao]) porOperacao[operacao] = { operacao, volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set() };
+      if (!porOperacao[operacao]) porOperacao[operacao] = { operacao, nomeExibido: nomeOperacao, volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set() };
+      porOperacao[operacao].nomeExibido = _dashMelhorNomeOperacao(porOperacao[operacao].nomeExibido, nomeOperacao);
       porOperacao[operacao].volumeDemandado += totalVol;
       porOperacao[operacao].volumeNaoAtendido += faltante;
       if (p.dataEntregaLogistica) porOperacao[operacao].datas.add(p.dataEntregaLogistica);
@@ -3196,7 +3223,11 @@ async function dashCarregarBalanceamentoFrota() {
 
     etapa = 'ocupação por operação';
     const ocupacaoPorOpMap = {};
-    (d.operacoes_ocup || []).forEach(o => { ocupacaoPorOpMap[o.nome] = o; });
+    (d.operacoes_ocup || []).forEach(o => {
+      const chave = _dashNormOperacaoKey(o.nome);
+      if (!ocupacaoPorOpMap[chave]) ocupacaoPorOpMap[chave] = { ...o, nomeExibido: o.nome };
+      ocupacaoPorOpMap[chave].nomeExibido = _dashMelhorNomeOperacao(ocupacaoPorOpMap[chave].nomeExibido, o.nome);
+    });
 
     etapa = 'utilização (Painel de Disponibilidade)';
     let ociosidade = { porOperacaoUtilizacao: [] };
@@ -3204,29 +3235,49 @@ async function dashCarregarBalanceamentoFrota() {
       ociosidade = await dashCarregarOciosidade(snapshots, null, d.diasComViagemPorPlaca, d.placaCidade, d.placaCidadePorDia, null);
     } catch (e) { console.warn('[Balanceamento de Frota] falha ao consultar utilização (Painel de Disponibilidade), seguindo sem esse sinal:', e); }
     const utilPorOpMap = {};
-    (ociosidade.porOperacaoUtilizacao || []).forEach(u => { utilPorOpMap[u.operacao] = u; });
+    (ociosidade.porOperacaoUtilizacao || []).forEach(u => {
+      const chave = _dashNormOperacaoKey(u.operacao);
+      if (!utilPorOpMap[chave]) utilPorOpMap[chave] = { ...u, nomeExibido: u.operacao };
+      else {
+        // Mesma operação apareceu mais de uma vez com grafia diferente
+        // (ex.: cadastro da placa "Paulínia" + inferência "Paulínia - SP")
+        // — soma os dois em vez de sobrescrever, senão perderia contagem.
+        utilPorOpMap[chave].disponibilizados += u.disponibilizados;
+        utilPorOpMap[chave].usados += u.usados;
+        utilPorOpMap[chave].qtdPlacas += u.qtdPlacas;
+        utilPorOpMap[chave].pctUtilizacao = utilPorOpMap[chave].disponibilizados > 0
+          ? Math.round((utilPorOpMap[chave].usados / utilPorOpMap[chave].disponibilizados) * 100) : 0;
+      }
+      utilPorOpMap[chave].nomeExibido = _dashMelhorNomeOperacao(utilPorOpMap[chave].nomeExibido, u.operacao);
+    });
 
     etapa = 'combinação dos sinais por operação';
     // União de todas as operações que apareceram em QUALQUER um dos 4 sinais
+    // — já usando a chave NORMALIZADA (sem sufixo " - UF", sem acento), pra
+    // "Ribeirão Preto - SP" e "Ribeirão Preto" caírem na mesma linha.
     const todasOperacoes = new Set([
       ...Object.keys(demanda), ...Object.keys(jornadaPorOpMap),
       ...Object.keys(ocupacaoPorOpMap), ...Object.keys(utilPorOpMap),
     ]);
-    const linhas = [...todasOperacoes].map(operacao => {
-      const dem = demanda[operacao] || { volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set() };
-      const oc = ocupacaoPorOpMap[operacao] || { ocup: 0, volume: 0, viagens: 0 };
-      const jo = jornadaPorOpMap[operacao] || { veiculosDia: 0, diasComEstouro: 0, pctDiasComEstouro: 0, minutosEstouroTotal: 0 };
-      const ut = utilPorOpMap[operacao] || { disponibilizados: 0, usados: 0, qtdPlacas: 0, pctUtilizacao: 0 };
+    const linhas = [...todasOperacoes].map(chave => {
+      const dem = demanda[chave] || { volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set() };
+      const oc = ocupacaoPorOpMap[chave] || { ocup: 0, volume: 0, viagens: 0 };
+      const jo = jornadaPorOpMap[chave] || { veiculosDia: 0, diasComEstouro: 0, pctDiasComEstouro: 0, minutosEstouroTotal: 0 };
+      const ut = utilPorOpMap[chave] || { disponibilizados: 0, usados: 0, qtdPlacas: 0, pctUtilizacao: 0 };
+      const nomeExibido = _dashMelhorNomeOperacao(
+        _dashMelhorNomeOperacao(dem.nomeExibido, oc.nomeExibido),
+        _dashMelhorNomeOperacao(jo.nomeExibido, ut.nomeExibido)
+      ) || chave;
       // Capacidade média de veículo cadastrado nessa operação (dado real do
       // cadastro de Veículos & Turnos) — usada só pra estimar quantos
       // veículos a recomendação sugere mover, nunca pra classificar falta/sobra.
-      const veiculosDaOp = (veiculos || []).filter(v => cidadeBaseVeiculo(v) === operacao);
+      const veiculosDaOp = (veiculos || []).filter(v => _dashNormOperacaoKey(cidadeBaseVeiculo(v)) === chave);
       const capMedia = veiculosDaOp.length
         ? veiculosDaOp.reduce((s, v) => s + (v.capacidade || v.capacidadeTotal || 0), 0) / veiculosDaOp.length
         : 0;
       const diasNoPeriodo = dem.datas.size;
       const m = {
-        operacao,
+        operacao: nomeExibido,
         volumeDemandado: dem.volumeDemandado,
         volumeNaoAtendido: dem.volumeNaoAtendido,
         diasNoPeriodo,
