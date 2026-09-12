@@ -7139,6 +7139,7 @@ async function exportarHrrlog(dados = null, { salvarHistorico = true } = {}) {
         'Peso total (KG)': '',
         'Prioridade': 'Normal',
         'Ordem de Retirada': '',
+        'Tipo de Viagem': '',
       });
       // ── Evento: Carregamento (1 por base usada nesta viagem) ─────────────────
       // Antes só existia 1 evento de Carregamento (o do primeiro terminal
@@ -7190,15 +7191,43 @@ async function exportarHrrlog(dados = null, { salvarHistorico = true } = {}) {
       });
     });
   });
-  const hV = ['Código da Viagem*','Status','Início Previsto*','Placa*','Trailers*','Tipo de atendimento','KM','Produto','Observação','Valor (R$)','Total Planejado (Kg)','Total Carregado (KG)','Peso total (KG)','Prioridade','Ordem de Retirada'];
+  const hV = ['Código da Viagem*','Status','Início Previsto*','Placa*','Trailers*','Tipo de atendimento','KM','Produto','Observação','Valor (R$)','Total Planejado (Kg)','Total Carregado (KG)','Peso total (KG)','Prioridade','Ordem de Retirada','Tipo de Viagem'];
   const hE = ['Código da Viagem*','Codigo do Cliente*','Tipo Evento*','Data Planejada*'];
   const wb = XLSX.utils.book_new();
   const wsV = XLSX.utils.json_to_sheet(rowsViagens, { header: hV });
   const wsE = XLSX.utils.json_to_sheet(rowsEventos, { header: hE });
-  wsV['!cols'] = [22,14,20,12,12,18,8,40,16,12,18,18,14,12,16].map(w => ({ wch: w }));
+  wsV['!cols'] = [22,14,20,12,12,18,8,40,16,12,18,18,14,12,16,16].map(w => ({ wch: w }));
   wsE['!cols'] = [22,20,22,20].map(w => ({ wch: w }));
+  // "Dados Extras" — 3ª aba do modelo oficial da Herrlog, com as listas de
+  // valores válidos (status de viagem, tipos de entrega) que alimentam os
+  // menus suspensos das outras duas abas. Faltava inteira na exportação —
+  // o importador da Herrlog valida a estrutura do arquivo contra o modelo
+  // oficial (3 abas, cabeçalhos exatos) e rejeitava por causa disso, mesmo
+  // com os dados de viagem certos nas outras abas.
+  const dadosExtrasAoa = [
+    ['Satatus Viagem:', null, 'Tipos de Entrega:', null, null],
+    ['Programado', 'Desconhecida', 'Baixa', 'Desconhecido', 'Desconhecido'],
+    ['Cancelado', 'CIF', 'Normal', 'Carregamento', 'Viagem comum'],
+    ['Em realização', 'FOB', 'ALTA', 'Descarga', 'Viagem de Retorno'],
+    ['Concluído', 'Desassistida', 'URGENTE', 'Passagem sem descarga', 'Viagem vazia'],
+    ['Simulação', 'Entrega por Compartimentos abertos', null, 'Ponte', null],
+    ['Aguardando agendamento', 'Entrega por Compartimentos lacrado', null, 'Retorno', null],
+    ['Concluído com pendência', 'DAP', null, 'Manutenção', null],
+    ['Em validação', null, null, 'Troca de nota', null],
+    ['No Show', null, null, 'Passagem em Local Auxiliar', null],
+    ['Aguardando oferecimento de carga', null, null, 'Espera para carregamento', null],
+    ['Aguardando aceitação de oferecimento de carga', null, null, 'Espera para descarga', null],
+    ['Expirando', null, null, 'Ponto de conexão', null],
+    ['Recusado por Sistema Terceiro', null, null, 'Início de deslocamento', null],
+    [null, null, null, 'Fim de deslocamento', null],
+    [null, null, null, 'Descarte', null],
+    [null, null, null, 'Troca', null],
+  ];
+  const wsD = XLSX.utils.aoa_to_sheet(dadosExtrasAoa);
+  wsD['!cols'] = [32,32,10,28,16].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, wsV, 'Viagens');
   XLSX.utils.book_append_sheet(wb, wsE, 'Eventos de Viagem');
+  XLSX.utils.book_append_sheet(wb, wsD, 'Dados Extras');
   const hoje = new Date();
   const fname = `Herrlog_${String(hoje.getDate()).padStart(2,'0')}${String(hoje.getMonth()+1).padStart(2,'0')}${hoje.getFullYear()}_${String(hoje.getHours()).padStart(2,'0')}${String(hoje.getMinutes()).padStart(2,'0')}.xlsx`;
   XLSX.writeFile(wb, fname);
