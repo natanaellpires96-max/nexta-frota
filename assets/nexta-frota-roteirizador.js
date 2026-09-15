@@ -10238,6 +10238,10 @@ async function abrirDetalheHistorico(filename) {
           : (pa.itens || []).reduce((s, it) => s + (it.volume || 0), 0));
         volViagem = volumes.reduce((s, v2) => s + v2, 0);
         totalM3 += volViagem;
+        // Base de carregamento: prioriza o que está no PEDIDO da 1ª parada
+        // (o dado de origem, "o que vem no pedido") — só cai pro terminal já
+        // resolvido da viagem se o pedido não tiver essa informação.
+        const baseCarregamento = paradas[0]?.pedido?.terminal || vi.terminalOrigem || '—';
         paradas.forEach((pa, i) => {
           const cliente  = pa.pedido?.cliente || '—';
           const entrega  = pa.pedido?.dataEntregaLogistica || '—';
@@ -10249,6 +10253,7 @@ async function abrirDetalheHistorico(filename) {
             ? `<td rowspan="${paradas.length}" style="padding:8px;font-weight:700;font-family:var(--font-cond);letter-spacing:.04em;vertical-align:top;white-space:nowrap;border-right:0.5px solid var(--border);background:var(--bg);${bordaGrupo}">
                  ${petId}<br>
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span><br>
+                 <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">🏭 ${baseCarregamento}</span><br>
                  <span style="font-weight:700;font-family:var(--font);font-size:11px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
                </td>`
             : '';
