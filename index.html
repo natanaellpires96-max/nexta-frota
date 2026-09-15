@@ -1212,12 +1212,25 @@
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;">
           <div>
             <div style="font-size:14px;font-weight:700;color:var(--text);">⚖️ Balanceamento de Frota</div>
-            <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-top:2px;">Onde falta caminhão (e quanto), onde sobra, e recomendação de realocação — cruza demanda não atendida, ocupação, utilização e estouro de jornada, no período carregado com o "🗓️ Período" no topo.</div>
+            <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-top:2px;">Onde falta caminhão (e quanto), onde sobra, e recomendação de realocação — compara a capacidade acumulada da frota com a demanda real, por operação, no período carregado com o "🗓️ Período" no topo.</div>
           </div>
-          <button class="btn btn-sm btn-green" style="font-weight:700;" onclick="dashCarregarBalanceamentoFrota()" title="Cruza todos os sinais de novo pro período atualmente carregado">📊 Gerar Relatório</button>
+          <div style="display:flex;gap:8px;flex-shrink:0;">
+            <button class="btn btn-sm" onclick="dashToggleAliasesOperacao()" title="Unificar nomes que representam a mesma operação mas vêm escritos diferente (ex.: 'São Caetano' e 'São Caetano do Sul')">⚙️ Unificar nomes</button>
+            <button class="btn btn-sm btn-green" style="font-weight:700;" onclick="dashCarregarBalanceamentoFrota()" title="Cruza todos os sinais de novo pro período atualmente carregado">📊 Gerar Relatório</button>
+          </div>
+        </div>
+        <div id="dash-aliases-panel" style="display:none;margin:10px 0;padding:12px 14px;background:rgba(0,0,0,0.02);border:1px solid var(--border-dk);border-radius:10px;">
+          <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-bottom:8px;">OPERAÇÕES QUE SÃO A MESMA COISA (unifica na hora de gerar o relatório)</div>
+          <div id="dash-aliases-lista" style="margin-bottom:10px;"></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input id="dash-alias-de" placeholder="Nome que aparece (ex.: São Caetano)" style="flex:1;min-width:180px;font-size:12px;padding:6px 8px;border:1px solid var(--border-dk);border-radius:6px;background:var(--surface);color:var(--text);"/>
+            <span style="font-size:12px;color:var(--text-3);">é a mesma que</span>
+            <input id="dash-alias-para" placeholder="Nome canônico (ex.: São Caetano do Sul)" style="flex:1;min-width:180px;font-size:12px;padding:6px 8px;border:1px solid var(--border-dk);border-radius:6px;background:var(--surface);color:var(--text);"/>
+            <button class="btn btn-sm btn-green" onclick="dashAdicionarAliasOperacaoUI()">+ Unificar</button>
+          </div>
         </div>
         <div id="dash-balanceamento-box" style="margin-top:10px;">
-          <div style="color:var(--text-3);text-align:center;padding:32px;font-size:12px;font-weight:700;">Clique em "📊 Gerar Relatório" pra cruzar demanda, ocupação, utilização e jornada do período carregado.</div>
+          <div style="color:var(--text-3);text-align:center;padding:32px;font-size:12px;font-weight:700;">Clique em "📊 Gerar Relatório" pra cruzar demanda, capacidade da frota, ocupação, utilização e jornada do período carregado.</div>
         </div>
       </div>
     </div>
@@ -1556,7 +1569,10 @@
   <div id="modal-hist-detalhe" class="modal-backdrop" onclick="fecharDetalheHistorico(event)">
     <div class="modal-card" style="max-width:640px;width:96vw;" onclick="event.stopPropagation()">
       <div class="modal-head">
-        <div id="hist-detalhe-titulo" style="font-family:var(--font-cond);font-size:16px;font-weight:700;">Detalhe da roteirização</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#c8f032;background:rgba(200,240,50,0.12);border:1px solid rgba(200,240,50,0.3);border-radius:5px;padding:2px 7px;">OUTBOUND</span>
+          <div id="hist-detalhe-titulo" style="font-family:var(--font-cond);font-size:16px;font-weight:700;">Detalhe da roteirização</div>
+        </div>
         <div style="display:flex;gap:6px;">
           <button class="btn btn-sm" onclick="exportarHerrlogHistorico(_histDetalheFilenameAtual)" title="Reexportar o mesmo Excel do Envio Transportadora a partir deste snapshot salvo — só baixa o arquivo de novo, não altera o histórico">📊 Exportar Herrlog</button>
           <button class="btn btn-sm btn-danger" onclick="fecharDetalheHistorico()">Fechar</button>
