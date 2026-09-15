@@ -10252,9 +10252,9 @@ async function abrirDetalheHistorico(filename) {
           const idCellHtml = i === 0
             ? `<td rowspan="${paradas.length}" style="padding:8px;font-weight:700;font-family:var(--font-cond);letter-spacing:.04em;vertical-align:top;white-space:nowrap;border-right:0.5px solid var(--border);background:var(--bg);${bordaGrupo}">
                  ${petId}<br>
-                 <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span><br>
-                 <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">🏭 ${baseCarregamento}</span><br>
-                 <span style="font-weight:700;font-family:var(--font);font-size:11px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
+                 <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span>
+                 <div style="margin:5px 0;white-space:normal;max-width:150px;">${termTag(baseCarregamento)}</div>
+                 <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
                </td>`
             : '';
           linhasHtml.push(`<tr>
