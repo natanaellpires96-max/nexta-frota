@@ -2186,6 +2186,15 @@ function doisTurnos(v) {
 // A pausa de refeição NÃO é armazenada em tempoConsumidoMin das viagens;
 // é adicionada aqui para que o relógio absoluto fique correto.
 function inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin = 0, numMaxBreaks = 1) {
+  // Tempo de PAREDE (relógio real) que essa viagem consumiu — diferente de
+  // tempoConsumidoMin, que de propósito NÃO inclui a espera de pernoite
+  // (manual ou por janela de recebimento do cliente), porque essa espera
+  // não conta como jornada trabalhada. Mas pra saber quando a PRÓXIMA
+  // viagem desse mesmo veículo pode começar, o relógio de parede real tem
+  // que incluir a espera sim — senão a viagem seguinte nasce pensando que
+  // passaram só as horas produtivas, quando na real passou o dia inteiro
+  // por causa do pernoite, e a data calculada sai um dia adiantada.
+  const _tempoParedeViagem = vi => (vi?.tempoConsumidoMin || 0) + ((vi?.paradas?.[0]?.overnight ? vi.paradas[0].waitAfterLoadingMin : 0) || 0);
   let t = jornadaInicioMin;
   for (let i = 0; i < idxViagem; i++) {
     const vi = viagensVeiculo[i];
@@ -2194,12 +2203,12 @@ function inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPe
     const proxVi = viagensVeiculo[i + 1];
     if (proxVi?.horarioCargaManualMin !== undefined && i + 1 === idxViagem) {
       // Retorna o horário manual absoluto (ajustado para o dia correto)
-      const baseDay = Math.floor((t + (vi?.tempoConsumidoMin || 0)) / 1440) * 1440;
+      const baseDay = Math.floor((t + _tempoParedeViagem(vi)) / 1440) * 1440;
       let alvo = baseDay + proxVi.horarioCargaManualMin;
       if (alvo < t - 0.001) alvo += 1440;
       return alvo;
     }
-    t += vi?.tempoConsumidoMin || 0;
+    t += _tempoParedeViagem(vi);
   }
   t += Math.min(idxViagem, numMaxBreaks) * tempoPerdidoMin;
   return t;
@@ -8639,7 +8648,12 @@ function editarHorarioCarga(vid, ti, hhmm) {
       const _jIniRaw = parseHoraMin(v.jornadaInicio || '06:00');
       const jIniMin  = isNaN(_jIniRaw) ? 360 : _jIniRaw;
       const iniAnterior = inicioViagemAbsMin(viagens, idxNaLista - 1, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
-      const fimAnteriorEstimado = iniAnterior + (viagemAnterior.tempoConsumidoMin || 0);
+      // Igual ao fix de inicioViagemAbsMin: soma o tempo de PAREDE real da
+      // viagem anterior (produtivo + espera de pernoite, se houver), senão
+      // esse alerta de sobreposição nasce pensando que a viagem anterior
+      // acabou horas antes do que realmente aconteceu.
+      const esperaOvernightAnterior = (viagemAnterior.paradas?.[0]?.overnight ? viagemAnterior.paradas[0].waitAfterLoadingMin : 0) || 0;
+      const fimAnteriorEstimado = iniAnterior + (viagemAnterior.tempoConsumidoMin || 0) + esperaOvernightAnterior;
       const baseDay  = Math.floor(fimAnteriorEstimado / 1440) * 1440;
       let   alvoAbs  = baseDay + min;
       if (alvoAbs < fimAnteriorEstimado - 0.001) alvoAbs += 1440;
