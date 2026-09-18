@@ -10076,6 +10076,7 @@ function limparFiltroHistoricoData() {
 function _histRenderLista(entries) {
   const el = document.getElementById('historico-list');
   if (!el) return;
+  _devCarregarCacheRegistros(); // dispara em segundo plano (fire-and-forget) — re-renderiza sozinho quando chegar
   if (!entries.length) {
     el.innerHTML = '<div class="empty">Nenhuma roteirização salva nesta pasta.</div>';
     const cont = document.getElementById('hist-filtro-contagem');
@@ -10111,6 +10112,10 @@ function _histRenderLista(entries) {
     const substTagHtml = opts.substituida
       ? `<span class="tag tag-gray" style="font-style:italic;">Substituída${opts.substituidaEm ? ` em ${opts.substituidaEm}` : ''}</span>`
       : '';
+    const qtdOcorrencias = _devContarOcorrenciasArquivo(name);
+    const ocorrenciaTagHtml = qtdOcorrencias > 0
+      ? `<span class="tag tag-red" title="Essa roteirização tem devolução/reentrega registrada">⚠️ ${qtdOcorrencias} ocorrência${qtdOcorrencias !== 1 ? 's' : ''}</span>`
+      : '';
     return `
       <div class="hist-entry"${opts.substituida ? ' style="opacity:0.72;"' : ''}>
         <div class="hist-entry-info">
@@ -10122,6 +10127,7 @@ function _histRenderLista(entries) {
             <span class="tag tag-gray">${totalPedidos} pedido${totalPedidos !== 1 ? 's' : ''}</span>
             <span class="tag tag-yellow">${String(totalVolume_m3).replace('.', ',')} m³</span>
             ${substTagHtml}
+            ${ocorrenciaTagHtml}
           </div>
         </div>
         <div class="hist-entry-actions">
@@ -10212,6 +10218,36 @@ function _histRenderLista(entries) {
 // isso relê o arquivo completo aqui, sob demanda, só quando o usuário pede.
 let _histDetalheFilenameAtual = null;
 let _devContextosHistorico = []; // contexto de cada linha do modal de detalhe, indexado — alimenta o botão "⚠️ Registrar" de devolução/reentrega
+// Cache de TODAS as ocorrências já registradas (Firestore) — usado tanto pro
+// selo na lista de arquivos do Histórico quanto pro estado "já registrado"
+// de cada linha dentro do modal de detalhe. Um fetch só, reaproveitado nos
+// dois lugares; invalidado (= null) depois de salvar um registro novo, pra
+// aparecer na hora sem precisar recarregar a pasta.
+let _devTodosRegistrosCache = null;
+let _devCacheCarregando = false;
+async function _devCarregarCacheRegistros(forcar = false) {
+  if (_devCacheCarregando || (!forcar && _devTodosRegistrosCache)) return;
+  _devCacheCarregando = true;
+  try {
+    if (!window.fbDb || !window.fbCollection || !window.fbGetDocs || !window.fbQuery || !window.fbOrderBy || !window.fbLimit) return;
+    const q = window.fbQuery(window.fbCollection(window.fbDb, 'devolucoesReentregas'), window.fbOrderBy('criadoEm', 'desc'), window.fbLimit(3000));
+    const snap = await window.fbGetDocs(q);
+    _devTodosRegistrosCache = snap.docs.map(d => d.data());
+    // Já tem lista de histórico na tela? Re-renderiza pra mostrar os selos
+    // sem precisar o usuário recarregar a pasta manualmente.
+    if (_histEntriesUltimas && _histEntriesUltimas.length) _histRenderLista(_histEntriesUltimas);
+  } catch (e) {
+    console.warn('[Devoluções] falha ao carregar cache de ocorrências:', e);
+    _devTodosRegistrosCache = _devTodosRegistrosCache || [];
+  } finally {
+    _devCacheCarregando = false;
+  }
+}
+// Quantas ocorrências esse arquivo (nome do JSON salvo) já tem registradas.
+function _devContarOcorrenciasArquivo(filename) {
+  if (!_devTodosRegistrosCache) return 0;
+  return _devTodosRegistrosCache.filter(r => r.arquivoOrigem === filename).length;
+}
 async function abrirDetalheHistorico(filename) {
   _histDetalheFilenameAtual = filename;
   const modal   = document.getElementById('modal-hist-detalhe');
@@ -10225,6 +10261,7 @@ async function abrirDetalheHistorico(filename) {
     body.innerHTML = '<div class="empty">Permissão negada. Selecione a pasta novamente.</div>';
     return;
   }
+  await _devCarregarCacheRegistros(); // garante que já sabe quais linhas têm ocorrência registrada antes de montar a tabela
   try {
     const fh   = await dirHandleHistorico.getFileHandle(filename);
     const file = await fh.getFile();
@@ -10285,12 +10322,21 @@ async function abrirDetalheHistorico(filename) {
             dataEntregaOriginal: entrega, volumeM3: volumes[i], operacao: operacaoHrr || '',
             produtos: produtosParada,
           });
+          // Essa entrega específica (viagem + pedido) já tem ocorrência
+          // registrada? Muda o botão pra deixar isso óbvio, sem esconder a
+          // opção de registrar outra (ex.: uma reentrega registrada antes,
+          // e agora uma devolução nova na mesma entrega).
+          const jaRegistradas = (_devTodosRegistrosCache || []).filter(r =>
+            r.viagemId === petId && String(r.pedidoId ?? '') === String(pa.pedido?.id ?? ''));
+          const botaoOcorrenciaHtml = jaRegistradas.length
+            ? `<button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;background:rgba(220,38,38,0.1);border-color:rgba(220,38,38,0.35);color:#DC2626;font-weight:700;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="${jaRegistradas.map(r => `${r.tipo === 'reentrega' ? 'Reentrega' : 'Devolução'} — ${r.motivo}`).join(' · ')}">✅ ${jaRegistradas.length} registrada${jaRegistradas.length !== 1 ? 's' : ''}</button>`
+            : `<button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="Registrar devolução ou reentrega dessa entrega">⚠️ Registrar</button>`;
           linhasHtml.push(`<tr>
             ${idCellHtml}
             <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}</td>
             <td style="padding:6px 8px;white-space:nowrap;${bordaGrupo}">${entrega}</td>
             <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">${volumes[i].toFixed(1)} m³</td>
-            <td style="padding:6px 8px;text-align:center;white-space:nowrap;${bordaGrupo}"><button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="Registrar devolução ou reentrega dessa entrega">⚠️ Registrar</button></td>
+            <td style="padding:6px 8px;text-align:center;white-space:nowrap;${bordaGrupo}">${botaoOcorrenciaHtml}</td>
           </tr>`);
         });
       });
@@ -10444,6 +10490,12 @@ async function salvarRegistroDevolucao() {
     await window.fbSetDoc(ref, registro);
     showToast('Ocorrência registrada ✓', true);
     fecharRegistroDevolucao();
+    // Invalida o cache e refaz o detalhe (mesmo arquivo aberto) e a lista —
+    // o selo "✅ registrada" aparece na hora, sem precisar fechar e abrir de
+    // novo o modal nem recarregar a pasta.
+    await _devCarregarCacheRegistros(true);
+    if (_histDetalheFilenameAtual) await abrirDetalheHistorico(_histDetalheFilenameAtual);
+    if (_histEntriesUltimas && _histEntriesUltimas.length) _histRenderLista(_histEntriesUltimas);
   } catch (e) {
     console.error('[Devoluções] falha ao salvar:', e);
     alert('Erro ao salvar: ' + e.message);
