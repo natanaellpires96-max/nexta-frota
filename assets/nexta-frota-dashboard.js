@@ -3594,6 +3594,15 @@ async function dashCarregarDevolucoes() {
     if (_dashTransportadorasSelecionadas) {
       registros = registros.filter(r => _dashTransportadorasSelecionadas.has(r.transportadora || ''));
     }
+    // Filtro por pedido — campo próprio dessa seção (não é um filtro global
+    // do Dashboard), compara com o código SAP e com o id interno do pedido.
+    const filtroPedido = (document.getElementById('dash-dev-filtro-pedido')?.value || '').trim().toLowerCase();
+    if (filtroPedido) {
+      registros = registros.filter(r =>
+        String(r.pedidoId ?? '').toLowerCase().includes(filtroPedido) ||
+        String(r.codigoSAP ?? '').toLowerCase().includes(filtroPedido)
+      );
+    }
     _dashUltimosRegistrosDevolucao = registros; // reaproveitado pelo botão de exportar
     _dashRenderDevolucoes(box, registros, datasSnap);
   } catch (e) {
@@ -3612,6 +3621,7 @@ function _dashAgregarDevolucoes(registros) {
   const porOperacao = {};
   const porMotivo = {};
   const porTransportadora = {};
+  const porProduto = {};
   registros.forEach(r => {
     const op = r.operacao || '(sem operação)';
     porOperacao[op] = (porOperacao[op] || 0) + (r.volumeAfetadoM3 || 0);
@@ -3619,9 +3629,21 @@ function _dashAgregarDevolucoes(registros) {
     porMotivo[mo] = (porMotivo[mo] || 0) + 1;
     const tr = r.transportadora || '(sem transportadora)';
     porTransportadora[tr] = (porTransportadora[tr] || 0) + (r.volumeAfetadoM3 || 0);
+    // produtosAfetados só existe em registros feitos depois dessa
+    // funcionalidade — registros antigos (sem produto discriminado) caem
+    // como "(produto não informado)", não somem do gráfico.
+    if (Array.isArray(r.produtosAfetados) && r.produtosAfetados.length) {
+      r.produtosAfetados.forEach(p => {
+        const nomeProd = p.produto || '(produto não informado)';
+        porProduto[nomeProd] = (porProduto[nomeProd] || 0) + (p.volume || 0);
+      });
+    } else {
+      porProduto['(produto não informado)'] = (porProduto['(produto não informado)'] || 0) + (r.volumeAfetadoM3 || 0);
+    }
   });
   return {
     totalDevolucoes, totalReentregas, volumeTotal,
+    arrProduto: Object.entries(porProduto).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume).slice(0, 12),
     arrOperacao: Object.entries(porOperacao).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume).slice(0, 10),
     arrMotivo: Object.entries(porMotivo).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd),
     arrTransportadora: Object.entries(porTransportadora).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume),
@@ -3632,20 +3654,21 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
     box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma ocorrência registrada nesse período (com os filtros atuais).</div>';
     return;
   }
-  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora } = _dashAgregarDevolucoes(registros);
+  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora, arrProduto } = _dashAgregarDevolucoes(registros);
   const linhasTabela = registros.slice(0, 200).map(r => `
     <tr style="border-top:1px solid var(--border-dk);">
       <td style="padding:6px 8px;">${r.dataEntregaOriginal || '—'}</td>
       <td style="padding:6px 8px;">${r.viagemId || '—'} <span style="color:var(--text-3);">· ${r.placa || '—'}</span></td>
-      <td style="padding:6px 8px;">${r.cliente || '—'}</td>
+      <td style="padding:6px 8px;">${r.cliente || '—'}${r.pedidoId != null && r.pedidoId !== '' ? ` <span style="color:var(--text-3);font-size:10px;">(pedido ${r.pedidoId})</span>` : ''}</td>
       <td style="padding:6px 8px;">${r.tipo === 'reentrega' ? '🔁 Reentrega' : r.tipo === 'devolucao_parcial' ? '↩️ Dev. parcial' : '↩️ Dev. total'}</td>
       <td style="padding:6px 8px;">${r.motivo || '—'}</td>
+      <td style="padding:6px 8px;font-size:10.5px;color:var(--text-2);">${(r.produtosAfetados || []).map(p => p.produto).join(', ') || '—'}</td>
       <td style="padding:6px 8px;text-align:right;">${(r.volumeAfetadoM3 || 0).toFixed(1)} m³</td>
       <td style="padding:6px 8px;">${r.tipo === 'reentrega' ? (r.reentregaLocal === 'outra_viagem' ? `Viagem ${r.reentregaViagemCodigo || '—'}` : 'Mesma viagem') : '—'}</td>
     </tr>`).join('');
   const periodoTxt = datasSnap.length ? `${_dashFmtDataBr(datasSnap[0])} a ${_dashFmtDataBr(datasSnap[datasSnap.length - 1])}` : 'período carregado';
   box.innerHTML = `
-    <div style="font-size:11px;color:var(--text-3);margin-bottom:14px;">Período: <b>${periodoTxt}</b> · respeitando os filtros de Cliente/Operação/Transportadora ativos no topo (Segmento não se aplica aqui).</div>
+    <div style="font-size:11px;color:var(--text-3);margin-bottom:14px;">Período: <b>${periodoTxt}</b> · respeitando os filtros de Cliente/Operação/Transportadora ativos no topo, e o filtro de Pedido desta seção (Segmento não se aplica aqui).</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:18px;">
       <div style="background:rgba(220,38,38,0.06);border:1px solid rgba(220,38,38,0.2);border-radius:10px;padding:12px 14px;">
         <div style="font-size:20px;font-weight:700;color:#DC2626;">${totalDevolucoes}</div>
@@ -3677,16 +3700,21 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
         <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Volume afetado por transportadora</div>
         <div id="dash-dev-chart-transportadora"></div>
       </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Volume afetado por produto</div>
+        <div id="dash-dev-chart-produto"></div>
+      </div>
     </div>
     <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Ocorrências (${registros.length > 200 ? 'últimas 200 de ' + registros.length : registros.length})</div>
     <div style="overflow-x:auto;max-height:360px;overflow-y:auto;border:1px solid var(--border-dk);border-radius:10px;">
-      <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:820px;">
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:900px;">
         <thead style="position:sticky;top:0;background:var(--surface);"><tr style="background:rgba(0,0,0,0.03);">
           <th style="padding:7px 8px;text-align:left;color:var(--text-3);">ENTREGA</th>
           <th style="padding:7px 8px;text-align:left;color:var(--text-3);">VIAGEM</th>
           <th style="padding:7px 8px;text-align:left;color:var(--text-3);">CLIENTE</th>
           <th style="padding:7px 8px;text-align:left;color:var(--text-3);">TIPO</th>
           <th style="padding:7px 8px;text-align:left;color:var(--text-3);">MOTIVO</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">PRODUTOS</th>
           <th style="padding:7px 8px;text-align:right;color:var(--text-3);">VOLUME</th>
           <th style="padding:7px 8px;text-align:left;color:var(--text-3);">REENTREGA</th>
         </tr></thead>
@@ -3696,6 +3724,7 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
   dashBarChart('dash-dev-chart-operacao', arrOperacao, i => i.volume, '#DC2626', 'm³', i => i.nome);
   dashBarChart('dash-dev-chart-motivo', arrMotivo, i => i.qtd, '#D97706', 'ocorr.', i => i.nome);
   dashBarChart('dash-dev-chart-transportadora', arrTransportadora, i => i.volume, '#4F46E5', 'm³', i => i.nome);
+  dashBarChart('dash-dev-chart-produto', arrProduto, i => i.volume, '#059669', 'm³', i => i.nome);
 }
 function dashExportarDevolucoes() {
   if (!_dashUltimosRegistrosDevolucao.length) { alert('Gere o relatório primeiro.'); return; }
@@ -3703,7 +3732,8 @@ function dashExportarDevolucoes() {
   const linhas = _dashUltimosRegistrosDevolucao.map(r => ({
     'Data de Entrega': r.dataEntregaOriginal || '', 'Viagem': r.viagemId || '', 'Placa': r.placa || '',
     'Transportadora': r.transportadora || '', 'Operação': r.operacao || '', 'Cliente': r.cliente || '',
-    'Código SAP': r.codigoSAP || '', 'Tipo': r.tipo || '', 'Motivo': r.motivo || '',
+    'Código SAP': r.codigoSAP || '', 'Pedido': r.pedidoId ?? '', 'Tipo': r.tipo || '', 'Motivo': r.motivo || '',
+    'Produtos afetados': (r.produtosAfetados || []).map(p => `${p.produto} (${(p.volume||0).toFixed(1)} m³)`).join(', '),
     'Volume Afetado (m³)': r.volumeAfetadoM3 || 0, 'Reentrega — Local': r.reentregaLocal || '',
     'Reentrega — Viagem': r.reentregaViagemCodigo || '', 'Nova Data de Entrega': r.novaDataEntrega || '',
     'Observação': r.observacao || '', 'Registrado em': r.criadoEm || '',
@@ -3722,7 +3752,7 @@ function dashExportarDevolucoesPDF() {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF || !window.jspdf) { showToast('jsPDF não carregado.', false); return; }
   const registros = _dashUltimosRegistrosDevolucao;
-  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora } = _dashAgregarDevolucoes(registros);
+  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora, arrProduto } = _dashAgregarDevolucoes(registros);
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
@@ -3816,6 +3846,7 @@ function dashExportarDevolucoesPDF() {
   desenharGrafico('Volume afetado por operação', arrOperacao, [220, 38, 38], 'm³', i => i.volume, 1);
   desenharGrafico('Ocorrências por motivo', arrMotivo, [217, 119, 6], '', i => i.qtd, 0);
   desenharGrafico('Volume afetado por transportadora', arrTransportadora, [79, 70, 229], 'm³', i => i.volume, 1);
+  desenharGrafico('Volume afetado por produto', arrProduto, [5, 150, 105], 'm³', i => i.volume, 1);
 
   // Tabela detalhada — mesmo estilo já usado no relatório de Rotas - Fretes
   if (typeof doc.autoTable !== 'function') {
@@ -3826,11 +3857,11 @@ function dashExportarDevolucoesPDF() {
     doc.text('Ocorrências', marginX, y);
     y += 4;
     doc.autoTable({
-      head: [['Entrega', 'Viagem', 'Placa', 'Cliente', 'Tipo', 'Motivo', 'Volume (m³)', 'Reentrega']],
+      head: [['Entrega', 'Viagem', 'Placa', 'Cliente', 'Tipo', 'Motivo', 'Produtos', 'Volume (m³)', 'Reentrega']],
       body: registros.map(r => [
         r.dataEntregaOriginal || '', r.viagemId || '', r.placa || '', r.cliente || '',
         r.tipo === 'reentrega' ? 'Reentrega' : r.tipo === 'devolucao_parcial' ? 'Dev. parcial' : 'Dev. total',
-        r.motivo || '', (r.volumeAfetadoM3 || 0).toFixed(1),
+        r.motivo || '', (r.produtosAfetados || []).map(p => p.produto).join(', ') || '-', (r.volumeAfetadoM3 || 0).toFixed(1),
         r.tipo === 'reentrega' ? (r.reentregaLocal === 'outra_viagem' ? `Viagem ${r.reentregaViagemCodigo || ''}` : 'Mesma viagem') : '-',
       ]),
       startY: y,

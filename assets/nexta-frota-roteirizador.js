@@ -10276,10 +10276,14 @@ async function abrirDetalheHistorico(filename) {
                </td>`
             : '';
           const ctxIdx = _devContextosHistorico.length;
+          const produtosParada = (pa.itens || []).map(it => ({
+            produto: it.produto || '(sem produto)', volume: it.volume || 0, ordemSAP: it.ordemSAP || '',
+          }));
           _devContextosHistorico.push({
             viagemId: petId, placa: v.placa || '', transportadora: v.transportadora || '',
             cliente, codigoSAP: pa.pedido?.codigoSAP || '', pedidoId: pa.pedido?.id ?? '',
             dataEntregaOriginal: entrega, volumeM3: volumes[i], operacao: operacaoHrr || '',
+            produtos: produtosParada,
           });
           linhasHtml.push(`<tr>
             ${idCellHtml}
@@ -10336,13 +10340,41 @@ function abrirRegistroDevolucao(idx) {
   document.getElementById('dev-tipo').value = 'devolucao_total';
   document.getElementById('dev-motivo').value = '';
   document.getElementById('dev-motivo-outro').value = '';
-  document.getElementById('dev-volume').value = ctx.volumeM3.toFixed(1);
+  _devRenderProdutosLista(ctx.produtos && ctx.produtos.length ? ctx.produtos : [{ produto: 'Volume total da entrega', volume: ctx.volumeM3, ordemSAP: '' }]);
   document.getElementById('dev-reentrega-local').value = 'mesma_viagem';
   document.getElementById('dev-reentrega-viagem-codigo').value = '';
   document.getElementById('dev-nova-data').value = '';
   document.getElementById('dev-observacao').value = '';
   devAtualizarCamposCondicionais();
   document.getElementById('modal-registro-devolucao').classList.add('show');
+}
+// Lista de produtos daquela entrega, cada um com checkbox (afetado ou não)
+// e volume editável (pra devolução PARCIAL de um produto específico) — o
+// volume digitado nunca passa do volume real daquele produto na entrega.
+function _devRenderProdutosLista(produtos) {
+  const box = document.getElementById('dev-produtos-lista');
+  if (!box) return;
+  box.innerHTML = produtos.map((p, i) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+      <input type="checkbox" id="dev-prod-chk-${i}" checked onchange="devAtualizarTotalProdutos()" style="width:16px;height:16px;flex-shrink:0;cursor:pointer;"/>
+      <span style="flex:1;font-size:12.5px;">${p.produto}${p.ordemSAP ? ` <span style="color:var(--text-3);font-size:10.5px;">· OS ${p.ordemSAP}</span>` : ''}</span>
+      <input type="number" id="dev-prod-vol-${i}" value="${(p.volume || 0).toFixed(1)}" min="0" max="${Math.max(0.1, p.volume || 0).toFixed(2)}" step="0.1" oninput="devAtualizarTotalProdutos()" style="width:80px;font-size:12px;padding:4px 6px;text-align:right;"/>
+      <span style="font-size:11px;color:var(--text-3);width:18px;">m³</span>
+    </div>`).join('');
+  devAtualizarTotalProdutos();
+}
+function devAtualizarTotalProdutos() {
+  const idx = parseInt(document.getElementById('dev-ctx-idx').value, 10);
+  const ctx = _devContextosHistorico[idx];
+  const produtos = (ctx && ctx.produtos && ctx.produtos.length) ? ctx.produtos : [{ produto: 'Volume total da entrega' }];
+  let total = 0;
+  produtos.forEach((p, i) => {
+    const chk = document.getElementById(`dev-prod-chk-${i}`);
+    const vol = document.getElementById(`dev-prod-vol-${i}`);
+    if (chk && chk.checked && vol) total += parseFloat(vol.value) || 0;
+  });
+  const totalEl = document.getElementById('dev-volume-total');
+  if (totalEl) totalEl.textContent = total.toFixed(1);
 }
 function fecharRegistroDevolucao(ev = null) {
   if (ev && ev.target && ev.target.id !== 'modal-registro-devolucao') return;
@@ -10373,8 +10405,19 @@ async function salvarRegistroDevolucao() {
     if (!outro) { alert('Descreve o motivo no campo "Outro".'); return; }
     motivo = outro;
   }
-  const volumeAfetadoM3 = parseFloat(document.getElementById('dev-volume').value);
-  if (!(volumeAfetadoM3 > 0)) { alert('Informe o volume afetado (m³).'); return; }
+  // Produtos afetados: só os marcados, com o volume (possivelmente parcial)
+  // que a pessoa deixou em cada linha.
+  const produtosBase = (ctx.produtos && ctx.produtos.length) ? ctx.produtos : [{ produto: 'Volume total da entrega', ordemSAP: '' }];
+  const produtosAfetados = [];
+  produtosBase.forEach((p, i) => {
+    const chk = document.getElementById(`dev-prod-chk-${i}`);
+    const volEl = document.getElementById(`dev-prod-vol-${i}`);
+    if (!chk || !chk.checked) return;
+    const vol = parseFloat(volEl?.value);
+    if (vol > 0) produtosAfetados.push({ produto: p.produto, ordemSAP: p.ordemSAP || '', volume: vol });
+  });
+  if (!produtosAfetados.length) { alert('Selecione pelo menos 1 produto afetado.'); return; }
+  const volumeAfetadoM3 = produtosAfetados.reduce((s, p) => s + p.volume, 0);
   const reentregaLocal = tipo === 'reentrega' ? document.getElementById('dev-reentrega-local').value : null;
   const reentregaViagemCodigo = (tipo === 'reentrega' && reentregaLocal === 'outra_viagem')
     ? document.getElementById('dev-reentrega-viagem-codigo').value.trim() : '';
@@ -10385,7 +10428,7 @@ async function salvarRegistroDevolucao() {
     viagemId: ctx.viagemId, placa: ctx.placa, transportadora: ctx.transportadora,
     cliente: ctx.cliente, codigoSAP: ctx.codigoSAP, pedidoId: ctx.pedidoId,
     dataEntregaOriginal: ctx.dataEntregaOriginal, operacao: ctx.operacao,
-    tipo, motivo, volumeAfetadoM3,
+    tipo, motivo, volumeAfetadoM3, produtosAfetados,
     reentregaLocal, reentregaViagemCodigo,
     novaDataEntrega: tipo === 'reentrega' ? (document.getElementById('dev-nova-data').value || '') : '',
     observacao: document.getElementById('dev-observacao').value.trim(),
@@ -10407,6 +10450,7 @@ async function salvarRegistroDevolucao() {
   }
 }
 window.abrirRegistroDevolucao = abrirRegistroDevolucao;
+window.devAtualizarTotalProdutos = devAtualizarTotalProdutos;
 window.fecharRegistroDevolucao = fecharRegistroDevolucao;
 window.devAtualizarCamposCondicionais = devAtualizarCamposCondicionais;
 window.salvarRegistroDevolucao = salvarRegistroDevolucao;
