@@ -3622,6 +3622,7 @@ function _dashAgregarDevolucoes(registros) {
   const porMotivo = {};
   const porTransportadora = {};
   const porProduto = {};
+  const porCliente = {};
   registros.forEach(r => {
     const op = r.operacao || '(sem operação)';
     porOperacao[op] = (porOperacao[op] || 0) + (r.volumeAfetadoM3 || 0);
@@ -3640,6 +3641,12 @@ function _dashAgregarDevolucoes(registros) {
     } else {
       porProduto['(produto não informado)'] = (porProduto['(produto não informado)'] || 0) + (r.volumeAfetadoM3 || 0);
     }
+    // Ranking de clientes "ofensores" — conta registro + soma volume por
+    // cliente, pra identificar quem gera mais devolução/reentrega.
+    const cli = r.cliente || '(sem cliente)';
+    if (!porCliente[cli]) porCliente[cli] = { qtd: 0, volume: 0 };
+    porCliente[cli].qtd += 1;
+    porCliente[cli].volume += (r.volumeAfetadoM3 || 0);
   });
   return {
     totalDevolucoes, totalReentregas, volumeTotal,
@@ -3647,6 +3654,7 @@ function _dashAgregarDevolucoes(registros) {
     arrOperacao: Object.entries(porOperacao).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume).slice(0, 10),
     arrMotivo: Object.entries(porMotivo).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd),
     arrTransportadora: Object.entries(porTransportadora).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume),
+    arrCliente: Object.entries(porCliente).map(([nome, v]) => ({ nome, qtd: v.qtd, volume: v.volume })).sort((a, b) => b.qtd - a.qtd || b.volume - a.volume),
   };
 }
 function _dashRenderDevolucoes(box, registros, datasSnap) {
@@ -3654,7 +3662,7 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
     box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma ocorrência registrada nesse período (com os filtros atuais).</div>';
     return;
   }
-  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora, arrProduto } = _dashAgregarDevolucoes(registros);
+  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora, arrProduto, arrCliente } = _dashAgregarDevolucoes(registros);
   const linhasTabela = registros.slice(0, 200).map(r => `
     <tr style="border-top:1px solid var(--border-dk);">
       <td style="padding:6px 8px;">${r.dataEntregaOriginal || '—'}</td>
@@ -3705,6 +3713,24 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
         <div id="dash-dev-chart-produto"></div>
       </div>
     </div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Ranking de clientes (ofensores)</div>
+    <div style="overflow-x:auto;max-height:280px;overflow-y:auto;border:1px solid var(--border-dk);border-radius:10px;margin-bottom:18px;">
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:420px;">
+        <thead style="position:sticky;top:0;background:var(--surface);"><tr style="background:rgba(0,0,0,0.03);">
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">#</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">CLIENTE</th>
+          <th style="padding:7px 8px;text-align:right;color:var(--text-3);">REGISTROS</th>
+          <th style="padding:7px 8px;text-align:right;color:var(--text-3);">VOLUME AFETADO</th>
+        </tr></thead>
+        <tbody>${arrCliente.map((c, i) => `
+          <tr style="border-top:1px solid var(--border-dk);">
+            <td style="padding:6px 8px;color:var(--text-3);">${i + 1}</td>
+            <td style="padding:6px 8px;font-weight:600;">${c.nome}</td>
+            <td style="padding:6px 8px;text-align:right;font-weight:700;color:#DC2626;">${c.qtd}</td>
+            <td style="padding:6px 8px;text-align:right;">${c.volume.toFixed(1)} m³</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>
     <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Ocorrências (${registros.length > 200 ? 'últimas 200 de ' + registros.length : registros.length})</div>
     <div style="overflow-x:auto;max-height:360px;overflow-y:auto;border:1px solid var(--border-dk);border-radius:10px;">
       <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:900px;">
@@ -3741,6 +3767,11 @@ function dashExportarDevolucoes() {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(linhas);
   XLSX.utils.book_append_sheet(wb, ws, 'Devoluções e Reentregas');
+  const { arrCliente } = _dashAgregarDevolucoes(_dashUltimosRegistrosDevolucao);
+  const wsRanking = XLSX.utils.json_to_sheet(arrCliente.map((c, i) => ({
+    '#': i + 1, 'Cliente': c.nome, 'Registros': c.qtd, 'Volume Afetado (m³)': parseFloat(c.volume.toFixed(1)),
+  })));
+  XLSX.utils.book_append_sheet(wb, wsRanking, 'Ranking de Clientes');
   XLSX.writeFile(wb, `Devolucoes_Reentregas_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 // ── Exportação em PDF — gráficos desenhados em VETOR direto no PDF (não é
@@ -3752,7 +3783,7 @@ function dashExportarDevolucoesPDF() {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF || !window.jspdf) { showToast('jsPDF não carregado.', false); return; }
   const registros = _dashUltimosRegistrosDevolucao;
-  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora, arrProduto } = _dashAgregarDevolucoes(registros);
+  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora, arrProduto, arrCliente } = _dashAgregarDevolucoes(registros);
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
@@ -3847,6 +3878,25 @@ function dashExportarDevolucoesPDF() {
   desenharGrafico('Ocorrências por motivo', arrMotivo, [217, 119, 6], '', i => i.qtd, 0);
   desenharGrafico('Volume afetado por transportadora', arrTransportadora, [79, 70, 229], 'm³', i => i.volume, 1);
   desenharGrafico('Volume afetado por produto', arrProduto, [5, 150, 105], 'm³', i => i.volume, 1);
+
+  // Ranking de clientes (ofensores) — tabular, mesmo estilo das demais
+  if (typeof doc.autoTable === 'function') {
+    if (y > pageH - 30) { doc.addPage(); y = 15; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+    doc.text('Ranking de clientes (ofensores)', marginX, y);
+    y += 4;
+    doc.autoTable({
+      head: [['#', 'Cliente', 'Registros', 'Volume afetado (m³)']],
+      body: arrCliente.map((c, i) => [String(i + 1), c.nome, String(c.qtd), c.volume.toFixed(1)]),
+      startY: y,
+      styles: { fontSize: 7.5, cellPadding: 1.6 },
+      headStyles: { fillColor: [40, 60, 30], textColor: [255, 255, 255], fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [245, 247, 240] },
+      margin: { left: marginX, right: marginX, bottom: 14 },
+      theme: 'grid',
+    });
+    y = doc.lastAutoTable.finalY + 10;
+  }
 
   // Tabela detalhada — mesmo estilo já usado no relatório de Rotas - Fretes
   if (typeof doc.autoTable !== 'function') {

@@ -10114,7 +10114,7 @@ function _histRenderLista(entries) {
       : '';
     const qtdOcorrencias = _devContarOcorrenciasArquivo(name);
     const ocorrenciaTagHtml = qtdOcorrencias > 0
-      ? `<span class="tag tag-red" title="Essa roteirização tem devolução/reentrega registrada">⚠️ ${qtdOcorrencias} ocorrência${qtdOcorrencias !== 1 ? 's' : ''}</span>`
+      ? `<span class="tag tag-red" style="cursor:pointer;" onclick="abrirOcorrenciasArquivo('${safeNome}', event)" title="Clique pra ver os detalhes desta(s) ocorrência(s)">⚠️ ${qtdOcorrencias} ocorrência${qtdOcorrencias !== 1 ? 's' : ''}</span>`
       : '';
     return `
       <div class="hist-entry"${opts.substituida ? ' style="opacity:0.72;"' : ''}>
@@ -10248,6 +10248,44 @@ function _devContarOcorrenciasArquivo(filename) {
   if (!_devTodosRegistrosCache) return 0;
   return _devTodosRegistrosCache.filter(r => r.arquivoOrigem === filename).length;
 }
+// Popup com o detalhe da(s) ocorrência(s) de devolução/reentrega registrada
+// nesse arquivo específico — aberto clicando no selo "⚠️ N ocorrência(s)"
+// direto no card da lista do Histórico, sem precisar entrar no "Detalhar".
+async function abrirOcorrenciasArquivo(filename, ev) {
+  if (ev) ev.stopPropagation();
+  await _devCarregarCacheRegistros();
+  const registros = (_devTodosRegistrosCache || []).filter(r => r.arquivoOrigem === filename);
+  const modal = document.getElementById('modal-ocorrencias-arquivo');
+  const body  = document.getElementById('ocorrencias-arquivo-body');
+  if (!modal || !body) return;
+  if (!registros.length) {
+    body.innerHTML = '<div class="empty">Nenhuma ocorrência encontrada pra esse arquivo (pode ter sido removida).</div>';
+  } else {
+    body.innerHTML = registros.map(r => `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:6px;">
+          <span style="font-weight:700;font-family:var(--font-cond);">${r.viagemId || '—'} · ${r.placa || '—'}</span>
+          <span class="tag ${r.tipo === 'reentrega' ? 'tag-yellow' : 'tag-red'}">${r.tipo === 'reentrega' ? '🔁 Reentrega' : r.tipo === 'devolucao_parcial' ? '↩️ Devolução parcial' : '↩️ Devolução total'}</span>
+        </div>
+        <div style="font-size:12.5px;color:var(--text-2);margin-bottom:6px;">
+          <b>${r.cliente || '—'}</b>${r.pedidoId != null && r.pedidoId !== '' ? ` (pedido ${r.pedidoId})` : ''} · Entrega prevista: ${r.dataEntregaOriginal || '—'} · Base: ${r.operacao || '—'} · Transportadora: ${r.transportadora || '—'}
+        </div>
+        <div style="font-size:12.5px;margin-bottom:6px;"><b>Motivo:</b> ${r.motivo || '—'}</div>
+        <div style="font-size:12.5px;margin-bottom:6px;"><b>Produtos afetados:</b> ${(r.produtosAfetados || []).map(p => `${p.produto} (${(p.volume||0).toFixed(1)} m³)`).join(', ') || '—'} — total ${(r.volumeAfetadoM3||0).toFixed(1)} m³</div>
+        ${r.tipo === 'reentrega' ? `<div style="font-size:12.5px;margin-bottom:6px;"><b>Reentrega:</b> ${r.reentregaLocal === 'outra_viagem' ? `outra viagem (${r.reentregaViagemCodigo || '—'})` : 'mesma viagem'}${r.novaDataEntrega ? ` · nova data: ${r.novaDataEntrega}` : ''}</div>` : ''}
+        ${r.observacao ? `<div style="font-size:12.5px;color:var(--text-3);"><b>Observação:</b> ${r.observacao}</div>` : ''}
+        <div style="font-size:10.5px;color:var(--text-3);margin-top:6px;">Registrado em ${new Date(r.criadoEm).toLocaleString('pt-BR')}</div>
+      </div>`).join('');
+  }
+  modal.classList.add('show');
+}
+function fecharOcorrenciasArquivo(ev = null) {
+  if (ev && ev.target && ev.target.id !== 'modal-ocorrencias-arquivo') return;
+  const modal = document.getElementById('modal-ocorrencias-arquivo');
+  if (modal) modal.classList.remove('show');
+}
+window.abrirOcorrenciasArquivo = abrirOcorrenciasArquivo;
+window.fecharOcorrenciasArquivo = fecharOcorrenciasArquivo;
 async function abrirDetalheHistorico(filename) {
   _histDetalheFilenameAtual = filename;
   const modal   = document.getElementById('modal-hist-detalhe');
