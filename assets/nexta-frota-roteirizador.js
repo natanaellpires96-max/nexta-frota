@@ -10211,6 +10211,7 @@ function _histRenderLista(entries) {
 // Metadados em cache (_histMetaCache) não guardam `pedidos` (só resumo), por
 // isso relê o arquivo completo aqui, sob demanda, só quando o usuário pede.
 let _histDetalheFilenameAtual = null;
+let _devContextosHistorico = []; // contexto de cada linha do modal de detalhe, indexado — alimenta o botão "⚠️ Registrar" de devolução/reentrega
 async function abrirDetalheHistorico(filename) {
   _histDetalheFilenameAtual = filename;
   const modal   = document.getElementById('modal-hist-detalhe');
@@ -10240,6 +10241,7 @@ async function abrirDetalheHistorico(filename) {
     // vez de repetir o ID linha a linha.
     let totalM3 = 0, totalViagens = 0;
     const linhasHtml = [];
+    _devContextosHistorico = []; // reseta a cada abertura do modal — guarda o contexto de cada linha pro botão "⚠️ Registrar"
     veics.forEach(v => {
       const viagens = (resultado[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
       viagens.forEach((vi, idx) => {
@@ -10256,6 +10258,8 @@ async function abrirDetalheHistorico(filename) {
         // (o dado de origem, "o que vem no pedido") — só cai pro terminal já
         // resolvido da viagem se o pedido não tiver essa informação.
         const baseCarregamento = paradas[0]?.pedido?.terminal || vi.terminalOrigem || '—';
+        const terminalObjHrr = (terminaisCad || []).find(t => t.nome === baseCarregamento);
+        const operacaoHrr = terminalObjHrr?.cidade || baseCarregamento;
         paradas.forEach((pa, i) => {
           const cliente  = pa.pedido?.cliente || '—';
           const entrega  = pa.pedido?.dataEntregaLogistica || '—';
@@ -10271,11 +10275,18 @@ async function abrirDetalheHistorico(filename) {
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
                </td>`
             : '';
+          const ctxIdx = _devContextosHistorico.length;
+          _devContextosHistorico.push({
+            viagemId: petId, placa: v.placa || '', transportadora: v.transportadora || '',
+            cliente, codigoSAP: pa.pedido?.codigoSAP || '', pedidoId: pa.pedido?.id ?? '',
+            dataEntregaOriginal: entrega, volumeM3: volumes[i], operacao: operacaoHrr || '',
+          });
           linhasHtml.push(`<tr>
             ${idCellHtml}
             <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}</td>
             <td style="padding:6px 8px;white-space:nowrap;${bordaGrupo}">${entrega}</td>
             <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">${volumes[i].toFixed(1)} m³</td>
+            <td style="padding:6px 8px;text-align:center;white-space:nowrap;${bordaGrupo}"><button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="Registrar devolução ou reentrega dessa entrega">⚠️ Registrar</button></td>
           </tr>`);
         });
       });
@@ -10296,6 +10307,7 @@ async function abrirDetalheHistorico(filename) {
               <th style="text-align:left;padding:6px 8px;">Cliente</th>
               <th style="text-align:left;padding:6px 8px;">Entrega</th>
               <th style="text-align:right;padding:6px 8px;">Volume</th>
+              <th style="text-align:center;padding:6px 8px;">Ocorrência</th>
             </tr>
           </thead>
           <tbody>${linhasHtml.join('')}</tbody>
@@ -10310,6 +10322,94 @@ function fecharDetalheHistorico(ev = null) {
   const modal = document.getElementById('modal-hist-detalhe');
   if (modal) modal.classList.remove('show');
 }
+// ══════════════════════════════════════════════════════════════════════════
+// DEVOLUÇÃO / REENTREGA — registrado a posteriori (não dá pra saber na hora
+// da programação), a partir do modal de detalhe do Histórico. Salvo no
+// Firestore (coleção própria, cresce com o tempo, acessível de qualquer
+// computador) — mesma decisão já tomada pro Simulador de Frete.
+// ══════════════════════════════════════════════════════════════════════════
+function abrirRegistroDevolucao(idx) {
+  const ctx = _devContextosHistorico[idx];
+  if (!ctx) return;
+  document.getElementById('dev-ctx-idx').value = idx;
+  document.getElementById('dev-info').innerHTML = `<b>${ctx.viagemId}</b> · ${ctx.placa || '—'} · ${ctx.cliente}${ctx.pedidoId !== '' ? ` (pedido ${ctx.pedidoId})` : ''}<br>Entrega prevista: ${ctx.dataEntregaOriginal} · Base: ${ctx.operacao || '—'}`;
+  document.getElementById('dev-tipo').value = 'devolucao_total';
+  document.getElementById('dev-motivo').value = '';
+  document.getElementById('dev-motivo-outro').value = '';
+  document.getElementById('dev-volume').value = ctx.volumeM3.toFixed(1);
+  document.getElementById('dev-reentrega-local').value = 'mesma_viagem';
+  document.getElementById('dev-reentrega-viagem-codigo').value = '';
+  document.getElementById('dev-nova-data').value = '';
+  document.getElementById('dev-observacao').value = '';
+  devAtualizarCamposCondicionais();
+  document.getElementById('modal-registro-devolucao').classList.add('show');
+}
+function fecharRegistroDevolucao(ev = null) {
+  if (ev && ev.target && ev.target.id !== 'modal-registro-devolucao') return;
+  const modal = document.getElementById('modal-registro-devolucao');
+  if (modal) modal.classList.remove('show');
+}
+// Mostra/esconde os campos que só fazem sentido dependendo do Tipo e de
+// onde a reentrega vai acontecer — evita perguntar "nova data" pra uma
+// devolução que não vai ser reentregue, por exemplo.
+function devAtualizarCamposCondicionais() {
+  const tipo = document.getElementById('dev-tipo').value;
+  const ehReentrega = tipo === 'reentrega';
+  document.getElementById('dev-bloco-reentrega').style.display = ehReentrega ? '' : 'none';
+  const local = document.getElementById('dev-reentrega-local').value;
+  document.getElementById('dev-bloco-outra-viagem').style.display = (ehReentrega && local === 'outra_viagem') ? '' : 'none';
+  const motivo = document.getElementById('dev-motivo').value;
+  document.getElementById('dev-motivo-outro').style.display = motivo === 'Outro' ? '' : 'none';
+}
+async function salvarRegistroDevolucao() {
+  const idx = parseInt(document.getElementById('dev-ctx-idx').value, 10);
+  const ctx = _devContextosHistorico[idx];
+  if (!ctx) { alert('Contexto perdido — fecha e tenta de novo a partir do histórico.'); return; }
+  const tipo = document.getElementById('dev-tipo').value;
+  let motivo = document.getElementById('dev-motivo').value;
+  if (!motivo) { alert('Selecione o motivo.'); return; }
+  if (motivo === 'Outro') {
+    const outro = document.getElementById('dev-motivo-outro').value.trim();
+    if (!outro) { alert('Descreve o motivo no campo "Outro".'); return; }
+    motivo = outro;
+  }
+  const volumeAfetadoM3 = parseFloat(document.getElementById('dev-volume').value);
+  if (!(volumeAfetadoM3 > 0)) { alert('Informe o volume afetado (m³).'); return; }
+  const reentregaLocal = tipo === 'reentrega' ? document.getElementById('dev-reentrega-local').value : null;
+  const reentregaViagemCodigo = (tipo === 'reentrega' && reentregaLocal === 'outra_viagem')
+    ? document.getElementById('dev-reentrega-viagem-codigo').value.trim() : '';
+  if (tipo === 'reentrega' && reentregaLocal === 'outra_viagem' && !reentregaViagemCodigo) {
+    alert('Informe o número da viagem em que a reentrega vai acontecer.'); return;
+  }
+  const registro = {
+    viagemId: ctx.viagemId, placa: ctx.placa, transportadora: ctx.transportadora,
+    cliente: ctx.cliente, codigoSAP: ctx.codigoSAP, pedidoId: ctx.pedidoId,
+    dataEntregaOriginal: ctx.dataEntregaOriginal, operacao: ctx.operacao,
+    tipo, motivo, volumeAfetadoM3,
+    reentregaLocal, reentregaViagemCodigo,
+    novaDataEntrega: tipo === 'reentrega' ? (document.getElementById('dev-nova-data').value || '') : '',
+    observacao: document.getElementById('dev-observacao').value.trim(),
+    arquivoOrigem: _histDetalheFilenameAtual || '',
+    criadoEm: new Date().toISOString(),
+  };
+  try {
+    if (!window.fbDb || !window.fbCollection || !window.fbDoc || !window.fbSetDoc) {
+      alert('Firestore indisponível agora — não deu pra salvar. Tenta novamente em alguns segundos.');
+      return;
+    }
+    const ref = window.fbDoc(window.fbCollection(window.fbDb, 'devolucoesReentregas'));
+    await window.fbSetDoc(ref, registro);
+    showToast('Ocorrência registrada ✓', true);
+    fecharRegistroDevolucao();
+  } catch (e) {
+    console.error('[Devoluções] falha ao salvar:', e);
+    alert('Erro ao salvar: ' + e.message);
+  }
+}
+window.abrirRegistroDevolucao = abrirRegistroDevolucao;
+window.fecharRegistroDevolucao = fecharRegistroDevolucao;
+window.devAtualizarCamposCondicionais = devAtualizarCamposCondicionais;
+window.salvarRegistroDevolucao = salvarRegistroDevolucao;
 async function abrirEntradaHistorico(filename) {
   if (!await _histGarantirPermissao()) return;
   try {

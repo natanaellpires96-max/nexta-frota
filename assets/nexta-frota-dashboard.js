@@ -1425,6 +1425,84 @@ function _dashMelhorNomeOperacao(atual, novo) {
   if (atualTemUf && !novoTemUf) return atual;
   return novo.length > atual.length ? novo : atual;
 }
+// ── Apelidos de operação — pra unificar nomes que são GENUINAMENTE
+// diferentes por escrito mas representam o mesmo lugar (ex.: "São Caetano"
+// e "São Caetano do Sul"). Isso é diferente da normalização acima (que só
+// resolve acento/maiúscula/sufixo UF) — aqui não tem como o sistema
+// adivinhar sozinho, por isso é editável por você (⚙️ na seção de
+// Balanceamento de Frota), persistido no navegador, e vale pra sempre a
+// partir de quando cadastrado.
+let _dashOperacaoAliases = {}; // chave normalizada (variante) -> chave normalizada (canônica)
+function _dashCarregarAliasesOperacao() {
+  try {
+    const raw = localStorage.getItem('nexta_dash_aliases_operacao');
+    _dashOperacaoAliases = raw ? JSON.parse(raw) : {};
+  } catch (e) { _dashOperacaoAliases = {}; }
+}
+function _dashSalvarAliasesOperacao() {
+  try { localStorage.setItem('nexta_dash_aliases_operacao', JSON.stringify(_dashOperacaoAliases)); } catch (e) {}
+}
+_dashCarregarAliasesOperacao();
+// Chave de agrupamento DEFINITIVA — normaliza e, se houver apelido
+// cadastrado pra essa variante, resolve pra chave canônica. É isso que deve
+// ser usado em todo lugar que hoje agrupa por operação (nunca chame
+// _dashNormOperacaoKey direto pra fins de agrupamento).
+function _dashChaveOperacaoFinal(nome) {
+  const chave = _dashNormOperacaoKey(nome);
+  return _dashOperacaoAliases[chave] || chave;
+}
+function dashAdicionarAliasOperacao(nomeVariante, nomeCanonico) {
+  const chaveVariante = _dashNormOperacaoKey(nomeVariante);
+  const chaveCanonica = _dashNormOperacaoKey(nomeCanonico);
+  if (!chaveVariante || !chaveCanonica || chaveVariante === chaveCanonica) return false;
+  _dashOperacaoAliases[chaveVariante] = chaveCanonica;
+  _dashSalvarAliasesOperacao();
+  return true;
+}
+function dashRemoverAliasOperacao(chaveVariante) {
+  delete _dashOperacaoAliases[chaveVariante];
+  _dashSalvarAliasesOperacao();
+}
+// ── UI do painel de apelidos (⚙️ Unificar nomes, dentro do Balanceamento de Frota) ──
+function dashToggleAliasesOperacao() {
+  const painel = document.getElementById('dash-aliases-panel');
+  if (!painel) return;
+  const visivel = painel.style.display !== 'none';
+  painel.style.display = visivel ? 'none' : 'block';
+  if (!visivel) _dashRenderAliasesOperacaoLista();
+}
+function _dashRenderAliasesOperacaoLista() {
+  const box = document.getElementById('dash-aliases-lista');
+  if (!box) return;
+  const pares = Object.entries(_dashOperacaoAliases);
+  if (!pares.length) {
+    box.innerHTML = '<div style="font-size:11.5px;color:var(--text-3);">Nenhuma unificação cadastrada ainda.</div>';
+    return;
+  }
+  box.innerHTML = pares.map(([variante, canonica]) => `
+    <div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 0;">
+      <span>"<b>${variante}</b>" é a mesma operação que "<b>${canonica}</b>"</span>
+      <span onclick="dashRemoverAliasOperacaoUI('${variante.replace(/'/g, "\\'")}')" style="cursor:pointer;color:#DC2626;font-size:11px;" title="Remover essa unificação">✕ remover</span>
+    </div>`).join('');
+}
+function dashAdicionarAliasOperacaoUI() {
+  const de = document.getElementById('dash-alias-de').value.trim();
+  const para = document.getElementById('dash-alias-para').value.trim();
+  if (!de || !para) { alert('Preenche os dois nomes.'); return; }
+  const ok = dashAdicionarAliasOperacao(de, para);
+  if (!ok) { alert('Esses dois nomes já apontam pra mesma coisa (ou estão vazios) — nada pra unificar.'); return; }
+  document.getElementById('dash-alias-de').value = '';
+  document.getElementById('dash-alias-para').value = '';
+  _dashRenderAliasesOperacaoLista();
+  showToast('Unificado — gera o relatório de novo pra aplicar.', true);
+}
+function dashRemoverAliasOperacaoUI(chaveVariante) {
+  dashRemoverAliasOperacao(chaveVariante);
+  _dashRenderAliasesOperacaoLista();
+}
+window.dashToggleAliasesOperacao = dashToggleAliasesOperacao;
+window.dashAdicionarAliasOperacaoUI = dashAdicionarAliasOperacaoUI;
+window.dashRemoverAliasOperacaoUI = dashRemoverAliasOperacaoUI;
 // ── Estouro de jornada por OPERAÇÃO (mesma lógica de dashAgregarJornada
 // acima, só que agrupada por cidade da operação em vez de transportadora —
 // usada no relatório de Balanceamento de Frota) ────────────────────────────
@@ -1440,7 +1518,7 @@ function dashAgregarJornadaPorOperacao(entradasTransportadora) {
   });
   const porOperacao = {};
   porVeiculoDia.forEach(reg => {
-    const key = _dashNormOperacaoKey(reg.cidadeOp);
+    const key = _dashChaveOperacaoFinal(reg.cidadeOp);
     if (!porOperacao[key]) porOperacao[key] = { operacao: key, nomeExibido: reg.cidadeOp, veiculosDia: 0, diasComEstouro: 0, minutosEstouroTotal: 0 };
     porOperacao[key].nomeExibido = _dashMelhorNomeOperacao(porOperacao[key].nomeExibido, reg.cidadeOp);
     porOperacao[key].veiculosDia += 1;
@@ -3179,7 +3257,7 @@ function dashColetarDemandaPorOperacao(snapshots) {
       if (totalVol <= 0) return;
       const term = terms.find(t => t.nome === p.terminal);
       const nomeOperacao = term?.cidade || p.terminal || '(sem terminal)';
-      const operacao = _dashNormOperacaoKey(nomeOperacao);
+      const operacao = _dashChaveOperacaoFinal(nomeOperacao);
       const alocado = alocadoPorPedido[p.id] || 0;
       const faltante = Math.max(0, totalVol - alocado - 0.01);
       if (!porOperacao[operacao]) porOperacao[operacao] = { operacao, nomeExibido: nomeOperacao, volumeDemandado: 0, volumeNaoAtendido: 0, datas: new Set(), porDia: {} };
@@ -3227,7 +3305,7 @@ async function dashCarregarBalanceamentoFrota() {
     etapa = 'ocupação por operação';
     const ocupacaoPorOpMap = {};
     (d.operacoes_ocup || []).forEach(o => {
-      const chave = _dashNormOperacaoKey(o.nome);
+      const chave = _dashChaveOperacaoFinal(o.nome);
       if (!ocupacaoPorOpMap[chave]) ocupacaoPorOpMap[chave] = { ...o, nomeExibido: o.nome };
       ocupacaoPorOpMap[chave].nomeExibido = _dashMelhorNomeOperacao(ocupacaoPorOpMap[chave].nomeExibido, o.nome);
     });
@@ -3239,7 +3317,7 @@ async function dashCarregarBalanceamentoFrota() {
     } catch (e) { console.warn('[Balanceamento de Frota] falha ao consultar utilização (Painel de Disponibilidade), seguindo sem esse sinal:', e); }
     const utilPorOpMap = {};
     (ociosidade.porOperacaoUtilizacao || []).forEach(u => {
-      const chave = _dashNormOperacaoKey(u.operacao);
+      const chave = _dashChaveOperacaoFinal(u.operacao);
       if (!utilPorOpMap[chave]) utilPorOpMap[chave] = { ...u, nomeExibido: u.operacao };
       else {
         // Mesma operação apareceu mais de uma vez com grafia diferente
@@ -3276,7 +3354,7 @@ async function dashCarregarBalanceamentoFrota() {
       // cadastrado com essa base (pode ter sido desativado/trocado desde o
       // período analisado), cai pra média geral da frota, só pra não deixar
       // a capacidade acumulada zerada sem necessidade.
-      const veiculosDaOp = (veiculos || []).filter(v => _dashNormOperacaoKey(cidadeBaseVeiculo(v)) === chave);
+      const veiculosDaOp = (veiculos || []).filter(v => _dashChaveOperacaoFinal(cidadeBaseVeiculo(v)) === chave);
       const capMediaGeral = (veiculos || []).length
         ? (veiculos || []).reduce((s, v) => s + (v.capacidade || v.capacidadeTotal || 0), 0) / (veiculos || []).length
         : 20;
@@ -3470,6 +3548,313 @@ function _dashRenderBalanceamentoFrota(box, linhas, recomendacoes, snapshots) {
     </div>`;
 }
 window.dashCarregarBalanceamentoFrota = dashCarregarBalanceamentoFrota;
+
+// ══════════════════════════════════════════════════════════════════════════
+// DEVOLUÇÕES E REENTREGAS — relatório a partir dos registros feitos no
+// Histórico (modal de detalhe → "⚠️ Registrar"). Diferente do resto do
+// Dashboard, a fonte não é o histórico de roteirizações — é a coleção
+// própria no Firestore, então busca é feita à parte e filtrada por aqui
+// pelos mesmos filtros já ativos na tela (Cliente/Operação/Transportadora),
+// pra manter a mesma experiência do resto do Dashboard.
+async function dashCarregarDevolucoes() {
+  const box = document.getElementById('dash-devolucoes-box');
+  if (!box) return;
+  box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Buscando ocorrências registradas...</div>';
+  try {
+    if (!window.fbDb || !window.fbCollection || !window.fbGetDocs || !window.fbQuery || !window.fbOrderBy || !window.fbLimit) {
+      box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Firestore indisponível agora.</div>';
+      return;
+    }
+    const q = window.fbQuery(window.fbCollection(window.fbDb, 'devolucoesReentregas'), window.fbOrderBy('criadoEm', 'desc'), window.fbLimit(3000));
+    const snap = await window.fbGetDocs(q);
+    let registros = snap.docs.map(d => d.data());
+    // Período: mesmo intervalo que está carregado no Dashboard (filtro
+    // "🗓️ Período" no topo), comparando pela data de entrega ORIGINAL do
+    // registro (não a data em que o registro foi criado).
+    const datasSnap = (_dashSnapshotsAtivos || []).map(s => (s.savedAt || '').slice(0, 10)).filter(Boolean).sort();
+    if (datasSnap.length) {
+      const iniISO = datasSnap[0], fimISO = datasSnap[datasSnap.length - 1];
+      registros = registros.filter(r => {
+        const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(r.dataEntregaOriginal || '');
+        if (!m) return false;
+        const iso = `${m[3]}-${m[2]}-${m[1]}`;
+        return iso >= iniISO && iso <= fimISO;
+      });
+    }
+    // Cliente/Operação/Transportadora: mesmos filtros já ativos no topo do
+    // Dashboard — Segmento não é aplicado aqui (o registro não carrega o
+    // segmento do cliente, só o nome).
+    if (_dashClientesSelecionados) {
+      const efNorm = _dashNormalizarSetClientes(_dashClientesSelecionados);
+      registros = registros.filter(r => _dashNomeBateFiltro(r.cliente || '', efNorm));
+    }
+    if (_dashCidadesSelecionadas) {
+      registros = registros.filter(r => _dashCidadesSelecionadas.has(r.operacao));
+    }
+    if (_dashTransportadorasSelecionadas) {
+      registros = registros.filter(r => _dashTransportadorasSelecionadas.has(r.transportadora || ''));
+    }
+    _dashUltimosRegistrosDevolucao = registros; // reaproveitado pelo botão de exportar
+    _dashRenderDevolucoes(box, registros, datasSnap);
+  } catch (e) {
+    console.error('[Devoluções] falha ao gerar relatório:', e);
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:#DC2626;font-size:12px;">Erro ao buscar as ocorrências — tenta de novo em alguns segundos.</div>';
+  }
+}
+let _dashUltimosRegistrosDevolucao = [];
+// Agregados compartilhados entre a tela e a exportação em PDF — calcula uma
+// vez só, os dois consomem o mesmo resultado (evita a tela e o PDF saírem
+// com números diferentes por algum ajuste feito só num dos dois lados).
+function _dashAgregarDevolucoes(registros) {
+  const totalDevolucoes = registros.filter(r => r.tipo !== 'reentrega').length;
+  const totalReentregas  = registros.filter(r => r.tipo === 'reentrega').length;
+  const volumeTotal = registros.reduce((s, r) => s + (r.volumeAfetadoM3 || 0), 0);
+  const porOperacao = {};
+  const porMotivo = {};
+  const porTransportadora = {};
+  registros.forEach(r => {
+    const op = r.operacao || '(sem operação)';
+    porOperacao[op] = (porOperacao[op] || 0) + (r.volumeAfetadoM3 || 0);
+    const mo = r.motivo || '(sem motivo)';
+    porMotivo[mo] = (porMotivo[mo] || 0) + 1;
+    const tr = r.transportadora || '(sem transportadora)';
+    porTransportadora[tr] = (porTransportadora[tr] || 0) + (r.volumeAfetadoM3 || 0);
+  });
+  return {
+    totalDevolucoes, totalReentregas, volumeTotal,
+    arrOperacao: Object.entries(porOperacao).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume).slice(0, 10),
+    arrMotivo: Object.entries(porMotivo).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd),
+    arrTransportadora: Object.entries(porTransportadora).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume),
+  };
+}
+function _dashRenderDevolucoes(box, registros, datasSnap) {
+  if (!registros.length) {
+    box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma ocorrência registrada nesse período (com os filtros atuais).</div>';
+    return;
+  }
+  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora } = _dashAgregarDevolucoes(registros);
+  const linhasTabela = registros.slice(0, 200).map(r => `
+    <tr style="border-top:1px solid var(--border-dk);">
+      <td style="padding:6px 8px;">${r.dataEntregaOriginal || '—'}</td>
+      <td style="padding:6px 8px;">${r.viagemId || '—'} <span style="color:var(--text-3);">· ${r.placa || '—'}</span></td>
+      <td style="padding:6px 8px;">${r.cliente || '—'}</td>
+      <td style="padding:6px 8px;">${r.tipo === 'reentrega' ? '🔁 Reentrega' : r.tipo === 'devolucao_parcial' ? '↩️ Dev. parcial' : '↩️ Dev. total'}</td>
+      <td style="padding:6px 8px;">${r.motivo || '—'}</td>
+      <td style="padding:6px 8px;text-align:right;">${(r.volumeAfetadoM3 || 0).toFixed(1)} m³</td>
+      <td style="padding:6px 8px;">${r.tipo === 'reentrega' ? (r.reentregaLocal === 'outra_viagem' ? `Viagem ${r.reentregaViagemCodigo || '—'}` : 'Mesma viagem') : '—'}</td>
+    </tr>`).join('');
+  const periodoTxt = datasSnap.length ? `${_dashFmtDataBr(datasSnap[0])} a ${_dashFmtDataBr(datasSnap[datasSnap.length - 1])}` : 'período carregado';
+  box.innerHTML = `
+    <div style="font-size:11px;color:var(--text-3);margin-bottom:14px;">Período: <b>${periodoTxt}</b> · respeitando os filtros de Cliente/Operação/Transportadora ativos no topo (Segmento não se aplica aqui).</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:18px;">
+      <div style="background:rgba(220,38,38,0.06);border:1px solid rgba(220,38,38,0.2);border-radius:10px;padding:12px 14px;">
+        <div style="font-size:20px;font-weight:700;color:#DC2626;">${totalDevolucoes}</div>
+        <div style="font-size:10.5px;color:var(--text-3);">Devoluções</div>
+      </div>
+      <div style="background:rgba(217,119,6,0.08);border:1px solid rgba(217,119,6,0.25);border-radius:10px;padding:12px 14px;">
+        <div style="font-size:20px;font-weight:700;color:#D97706;">${totalReentregas}</div>
+        <div style="font-size:10.5px;color:var(--text-3);">Reentregas</div>
+      </div>
+      <div style="background:rgba(0,0,0,0.03);border:1px solid var(--border-dk);border-radius:10px;padding:12px 14px;">
+        <div style="font-size:20px;font-weight:700;">${volumeTotal.toFixed(1)} m³</div>
+        <div style="font-size:10.5px;color:var(--text-3);">Volume afetado no total</div>
+      </div>
+      <div style="background:rgba(0,0,0,0.03);border:1px solid var(--border-dk);border-radius:10px;padding:12px 14px;">
+        <div style="font-size:20px;font-weight:700;">${registros.length}</div>
+        <div style="font-size:10.5px;color:var(--text-3);">Ocorrências no total</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-bottom:18px;">
+      <div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Volume afetado por operação</div>
+        <div id="dash-dev-chart-operacao"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Ocorrências por motivo</div>
+        <div id="dash-dev-chart-motivo"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Volume afetado por transportadora</div>
+        <div id="dash-dev-chart-transportadora"></div>
+      </div>
+    </div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Ocorrências (${registros.length > 200 ? 'últimas 200 de ' + registros.length : registros.length})</div>
+    <div style="overflow-x:auto;max-height:360px;overflow-y:auto;border:1px solid var(--border-dk);border-radius:10px;">
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:820px;">
+        <thead style="position:sticky;top:0;background:var(--surface);"><tr style="background:rgba(0,0,0,0.03);">
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">ENTREGA</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">VIAGEM</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">CLIENTE</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">TIPO</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">MOTIVO</th>
+          <th style="padding:7px 8px;text-align:right;color:var(--text-3);">VOLUME</th>
+          <th style="padding:7px 8px;text-align:left;color:var(--text-3);">REENTREGA</th>
+        </tr></thead>
+        <tbody>${linhasTabela}</tbody>
+      </table>
+    </div>`;
+  dashBarChart('dash-dev-chart-operacao', arrOperacao, i => i.volume, '#DC2626', 'm³', i => i.nome);
+  dashBarChart('dash-dev-chart-motivo', arrMotivo, i => i.qtd, '#D97706', 'ocorr.', i => i.nome);
+  dashBarChart('dash-dev-chart-transportadora', arrTransportadora, i => i.volume, '#4F46E5', 'm³', i => i.nome);
+}
+function dashExportarDevolucoes() {
+  if (!_dashUltimosRegistrosDevolucao.length) { alert('Gere o relatório primeiro.'); return; }
+  if (typeof XLSX === 'undefined') { alert('Biblioteca SheetJS não encontrada.'); return; }
+  const linhas = _dashUltimosRegistrosDevolucao.map(r => ({
+    'Data de Entrega': r.dataEntregaOriginal || '', 'Viagem': r.viagemId || '', 'Placa': r.placa || '',
+    'Transportadora': r.transportadora || '', 'Operação': r.operacao || '', 'Cliente': r.cliente || '',
+    'Código SAP': r.codigoSAP || '', 'Tipo': r.tipo || '', 'Motivo': r.motivo || '',
+    'Volume Afetado (m³)': r.volumeAfetadoM3 || 0, 'Reentrega — Local': r.reentregaLocal || '',
+    'Reentrega — Viagem': r.reentregaViagemCodigo || '', 'Nova Data de Entrega': r.novaDataEntrega || '',
+    'Observação': r.observacao || '', 'Registrado em': r.criadoEm || '',
+  }));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(linhas);
+  XLSX.utils.book_append_sheet(wb, ws, 'Devoluções e Reentregas');
+  XLSX.writeFile(wb, `Devolucoes_Reentregas_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+// ── Exportação em PDF — gráficos desenhados em VETOR direto no PDF (não é
+// print de tela), mesmo padrão de marca já usado no resto do sistema
+// (cabeçalho verde-escuro NEXTA, tabela com o mesmo estilo de "Rotas -
+// Fretes", rodapé "Desenvolvido por..."). ────────────────────────────────
+function dashExportarDevolucoesPDF() {
+  if (!_dashUltimosRegistrosDevolucao.length) { alert('Gere o relatório primeiro.'); return; }
+  const { jsPDF } = window.jspdf || {};
+  if (!jsPDF || !window.jspdf) { showToast('jsPDF não carregado.', false); return; }
+  const registros = _dashUltimosRegistrosDevolucao;
+  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora } = _dashAgregarDevolucoes(registros);
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const marginX = 12;
+  let y = 0;
+
+  // Cabeçalho — mesma paleta verde-escura/lima já usada na marca NEXTA
+  doc.setFillColor(40, 60, 30);
+  doc.rect(0, 0, pageW, 24, 'F');
+  doc.setTextColor(200, 240, 50);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(17);
+  doc.text('NEXTA', marginX, 14);
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Gestão de Frota', marginX + 27, 14);
+  doc.setFontSize(11.5);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Relatório de Devoluções e Reentregas', marginX, 20.5);
+  y = 32;
+
+  doc.setTextColor(100, 100, 100);
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Gerado em ${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} · ${registros.length} ocorrência(s) no período/filtros atuais`, marginX, y);
+  y += 8;
+
+  // KPIs — mesmas 4 caixas da tela, mesmas cores
+  const kpis = [
+    { label: 'Devoluções', valor: String(totalDevolucoes), cor: [220, 38, 38] },
+    { label: 'Reentregas', valor: String(totalReentregas), cor: [217, 119, 6] },
+    { label: 'Volume afetado', valor: volumeTotal.toFixed(1) + ' m³', cor: [55, 65, 81] },
+    { label: 'Ocorrências', valor: String(registros.length), cor: [55, 65, 81] },
+  ];
+  const gap = 4;
+  const boxW = (pageW - marginX * 2 - gap * 3) / 4;
+  kpis.forEach((k, i) => {
+    const x = marginX + i * (boxW + gap);
+    doc.setDrawColor(222, 222, 222);
+    doc.setFillColor(248, 248, 248);
+    doc.roundedRect(x, y, boxW, 20, 2, 2, 'FD');
+    doc.setTextColor(k.cor[0], k.cor[1], k.cor[2]);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.text(k.valor, x + 4, y + 11);
+    doc.setTextColor(120, 120, 120);
+    doc.setFontSize(7.3);
+    doc.setFont('helvetica', 'normal');
+    doc.text(k.label, x + 4, y + 17);
+  });
+  y += 28;
+
+  // Gráficos de barra — desenhados direto no PDF (rect + text), não é
+  // captura de tela: fica nítido em qualquer zoom/impressão.
+  const desenharGrafico = (titulo, itens, cor, sufixo, valorFn, casasDecimais) => {
+    if (y > pageH - 34) { doc.addPage(); y = 15; } // pula de página se não sobrar espaço decente pro título + pelo menos 1 barra
+    doc.setTextColor(30, 30, 30);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.text(titulo, marginX, y);
+    y += 5;
+    if (!itens.length) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(150, 150, 150);
+      doc.text('Sem dados.', marginX, y); y += 7;
+      return;
+    }
+    const maxV = Math.max(...itens.map(valorFn), 1);
+    const rotuloW = 46, valorW = 22;
+    const barW = pageW - marginX * 2 - rotuloW - valorW;
+    itens.forEach(item => {
+      if (y > pageH - 12) { doc.addPage(); y = 15; }
+      const v = valorFn(item);
+      const pct = Math.max(0.01, v / maxV);
+      doc.setFontSize(8);
+      doc.setTextColor(60, 60, 60);
+      doc.setFont('helvetica', 'normal');
+      const nome = String(item.nome || '');
+      doc.text(nome.length > 27 ? nome.slice(0, 25) + '…' : nome, marginX, y + 3);
+      doc.setFillColor(232, 232, 232);
+      doc.roundedRect(marginX + rotuloW, y, barW, 4, 1, 1, 'F');
+      doc.setFillColor(cor[0], cor[1], cor[2]);
+      doc.roundedRect(marginX + rotuloW, y, Math.max(2, barW * pct), 4, 1, 1, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(40, 40, 40);
+      doc.text(`${v.toFixed(casasDecimais)} ${sufixo}`.trim(), marginX + rotuloW + barW + 2, y + 3.3);
+      y += 7;
+    });
+    y += 5;
+  };
+  desenharGrafico('Volume afetado por operação', arrOperacao, [220, 38, 38], 'm³', i => i.volume, 1);
+  desenharGrafico('Ocorrências por motivo', arrMotivo, [217, 119, 6], '', i => i.qtd, 0);
+  desenharGrafico('Volume afetado por transportadora', arrTransportadora, [79, 70, 229], 'm³', i => i.volume, 1);
+
+  // Tabela detalhada — mesmo estilo já usado no relatório de Rotas - Fretes
+  if (typeof doc.autoTable !== 'function') {
+    showToast('jspdf-autotable não carregado — PDF gerado sem a tabela detalhada.', false);
+  } else {
+    if (y > pageH - 30) { doc.addPage(); y = 15; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(30, 30, 30);
+    doc.text('Ocorrências', marginX, y);
+    y += 4;
+    doc.autoTable({
+      head: [['Entrega', 'Viagem', 'Placa', 'Cliente', 'Tipo', 'Motivo', 'Volume (m³)', 'Reentrega']],
+      body: registros.map(r => [
+        r.dataEntregaOriginal || '', r.viagemId || '', r.placa || '', r.cliente || '',
+        r.tipo === 'reentrega' ? 'Reentrega' : r.tipo === 'devolucao_parcial' ? 'Dev. parcial' : 'Dev. total',
+        r.motivo || '', (r.volumeAfetadoM3 || 0).toFixed(1),
+        r.tipo === 'reentrega' ? (r.reentregaLocal === 'outra_viagem' ? `Viagem ${r.reentregaViagemCodigo || ''}` : 'Mesma viagem') : '-',
+      ]),
+      startY: y,
+      styles: { fontSize: 7.3, cellPadding: 1.5 },
+      headStyles: { fillColor: [40, 60, 30], textColor: [255, 255, 255], fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [245, 247, 240] },
+      margin: { left: marginX, right: marginX, bottom: 14 },
+      theme: 'grid',
+      didDrawPage: (dados) => {
+        doc.setFontSize(7.3);
+        doc.setTextColor(150, 150, 150);
+        doc.setFont('helvetica', 'normal');
+        doc.text('Desenvolvido por Natanael Lopes Pires · NEXTA Gestão de Frota', marginX, pageH - 6);
+        doc.text(`Página ${dados.pageNumber}`, pageW - marginX - 16, pageH - 6);
+      },
+    });
+  }
+  doc.save(`Devolucoes_Reentregas_${new Date().toISOString().slice(0, 10)}.pdf`);
+  showToast('PDF gerado ✓', true);
+}
+window.dashCarregarDevolucoes = dashCarregarDevolucoes;
+window.dashExportarDevolucoes = dashExportarDevolucoes;
+window.dashExportarDevolucoesPDF = dashExportarDevolucoesPDF;
+
 
 function dashAgregarProdutos(snapshots, cidadesFiltro, clientesEfetivos) {
   const produtos = {}; // nome do produto -> { volume, porCliente: { chaveNormalizada: { nomeExibido, volume, datas:Set } } }
