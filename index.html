@@ -1239,10 +1239,11 @@
             <div style="font-size:14px;font-weight:700;color:var(--text);">🔄 Devoluções e Reentregas</div>
             <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-top:2px;">Ocorrências registradas no Histórico (⚠️ Registrar, no detalhe de cada roteirização) — no período carregado com o "🗓️ Período" no topo, respeitando Cliente/Operação/Transportadora.</div>
           </div>
-          <div style="display:flex;gap:8px;flex-shrink:0;">
+          <div style="display:flex;gap:8px;flex-shrink:0;align-items:center;">
+            <input id="dash-dev-filtro-pedido" placeholder="Filtrar por pedido (id ou SAP)..." onkeydown="if(event.key==='Enter')dashCarregarDevolucoes()" style="font-size:12px;padding:7px 10px;border:1px solid var(--border-dk);border-radius:8px;background:var(--surface);color:var(--text);width:190px;"/>
             <button class="btn btn-sm" onclick="dashExportarDevolucoes()" title="Exporta as ocorrências do relatório atual em Excel">📥 Exportar Excel</button>
             <button class="btn btn-sm" onclick="dashExportarDevolucoesPDF()" title="Exporta o relatório atual (KPIs, gráficos e tabela) em PDF, com a identidade visual NEXTA">📄 Exportar PDF</button>
-            <button class="btn btn-sm btn-green" style="font-weight:700;" onclick="dashCarregarDevolucoes()" title="Busca de novo as ocorrências registradas pro período atualmente carregado">📊 Gerar Relatório</button>
+            <button class="btn btn-sm btn-green" style="font-weight:700;" onclick="dashCarregarDevolucoes()" title="Busca de novo as ocorrências registradas pro período atualmente carregado, aplicando o filtro de pedido se preenchido">📊 Gerar Relatório</button>
           </div>
         </div>
         <div id="dash-devolucoes-box" style="margin-top:10px;">
@@ -1632,8 +1633,9 @@
           <input id="dev-motivo-outro" placeholder="Descreve o motivo..." style="display:none;margin-top:6px;"/>
         </div>
         <div class="field" style="margin-bottom:10px;">
-          <label>Volume afetado (m³)</label>
-          <input id="dev-volume" type="number" min="0" step="0.1"/>
+          <label>Produtos dessa entrega — desmarque o que não foi afetado, ajuste o volume pra devolução parcial</label>
+          <div id="dev-produtos-lista" style="border:1px solid var(--border);border-radius:8px;padding:4px 10px;max-height:180px;overflow-y:auto;"></div>
+          <div style="text-align:right;font-size:12.5px;font-weight:700;margin-top:6px;">Total selecionado: <span id="dev-volume-total">0.0</span> m³</div>
         </div>
         <div id="dev-bloco-reentrega" style="display:none;border-top:1px dashed var(--border);padding-top:10px;margin-top:6px;">
           <div class="field" style="margin-bottom:10px;">
