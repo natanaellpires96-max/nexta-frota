@@ -1666,6 +1666,18 @@
       </div>
     </div>
   </div>
+  <!-- ── MODAL DETALHE DE OCORRÊNCIA(S) — a partir do selo no card do Histórico ── -->
+  <div id="modal-ocorrencias-arquivo" class="modal-backdrop" onclick="fecharOcorrenciasArquivo(event)">
+    <div class="modal-card" style="max-width:560px;width:94vw;" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <div style="font-family:var(--font-cond);font-size:16px;font-weight:700;">⚠️ Ocorrências registradas</div>
+        <button class="btn btn-sm btn-danger" onclick="fecharOcorrenciasArquivo()">Fechar</button>
+      </div>
+      <div class="modal-body">
+        <div id="ocorrencias-arquivo-body"><div class="empty">Carregando...</div></div>
+      </div>
+    </div>
+  </div>
   <div id="modal-viagem" class="modal-backdrop" onclick="fecharModalViagem(event)">
     <div class="modal-card" style="max-width:860px;width:98vw;">
       <div class="modal-head">
