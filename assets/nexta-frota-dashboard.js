@@ -3567,7 +3567,7 @@ async function dashCarregarDevolucoes() {
     }
     const q = window.fbQuery(window.fbCollection(window.fbDb, 'devolucoesReentregas'), window.fbOrderBy('criadoEm', 'desc'), window.fbLimit(3000));
     const snap = await window.fbGetDocs(q);
-    let registros = snap.docs.map(d => d.data());
+    let registros = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     // Período: mesmo intervalo que está carregado no Dashboard (filtro
     // "🗓️ Período" no topo), comparando pela data de entrega ORIGINAL do
     // registro (não a data em que o registro foi criado).
@@ -3673,6 +3673,7 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
       <td style="padding:6px 8px;font-size:10.5px;color:var(--text-2);">${(r.produtosAfetados || []).map(p => p.produto).join(', ') || '—'}</td>
       <td style="padding:6px 8px;text-align:right;">${(r.volumeAfetadoM3 || 0).toFixed(1)} m³</td>
       <td style="padding:6px 8px;">${r.tipo === 'reentrega' ? (r.reentregaLocal === 'outra_viagem' ? `Viagem ${r.reentregaViagemCodigo || '—'}` : 'Mesma viagem') : '—'}</td>
+      <td style="padding:6px 8px;text-align:center;"><button class="btn btn-sm" style="font-size:10px;padding:2px 7px;color:#DC2626;border-color:rgba(220,38,38,0.3);" onclick="excluirOcorrencia('${r.id}')" title="Excluir esse registro (lançado errado, duplicado, etc.)">🗑</button></td>
     </tr>`).join('');
   const periodoTxt = datasSnap.length ? `${_dashFmtDataBr(datasSnap[0])} a ${_dashFmtDataBr(datasSnap[datasSnap.length - 1])}` : 'período carregado';
   box.innerHTML = `
@@ -3743,6 +3744,7 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
           <th style="padding:7px 8px;text-align:left;color:var(--text-3);">PRODUTOS</th>
           <th style="padding:7px 8px;text-align:right;color:var(--text-3);">VOLUME</th>
           <th style="padding:7px 8px;text-align:left;color:var(--text-3);">REENTREGA</th>
+          <th style="padding:7px 8px;text-align:center;color:var(--text-3);"></th>
         </tr></thead>
         <tbody>${linhasTabela}</tbody>
       </table>
@@ -3852,25 +3854,34 @@ function dashExportarDevolucoesPDF() {
       return;
     }
     const maxV = Math.max(...itens.map(valorFn), 1);
-    const rotuloW = 46, valorW = 22;
+    // Rótulo (nome) QUEBRA em várias linhas em vez de cortar com "…" — a
+    // altura de cada linha do gráfico se ajusta sozinha ao número de linhas
+    // que o nome precisou, pra nunca truncar (ex.: nome de produto do SAP,
+    // ou motivo mais longo).
+    const rotuloW = 58, valorW = 22;
     const barW = pageW - marginX * 2 - rotuloW - valorW;
+    doc.setFontSize(7.6);
     itens.forEach(item => {
-      if (y > pageH - 12) { doc.addPage(); y = 15; }
+      const nome = String(item.nome || '');
+      const linhasNome = doc.splitTextToSize(nome, rotuloW - 2);
+      const alturaLinha = Math.max(7, linhasNome.length * 3.3 + 2);
+      if (y + alturaLinha > pageH - 10) { doc.addPage(); y = 15; }
       const v = valorFn(item);
       const pct = Math.max(0.01, v / maxV);
-      doc.setFontSize(8);
+      doc.setFontSize(7.6);
       doc.setTextColor(60, 60, 60);
       doc.setFont('helvetica', 'normal');
-      const nome = String(item.nome || '');
-      doc.text(nome.length > 27 ? nome.slice(0, 25) + '…' : nome, marginX, y + 3);
+      doc.text(linhasNome, marginX, y + 3);
+      const barY = y + Math.max(0, (alturaLinha - 4) / 2);
       doc.setFillColor(232, 232, 232);
-      doc.roundedRect(marginX + rotuloW, y, barW, 4, 1, 1, 'F');
+      doc.roundedRect(marginX + rotuloW, barY, barW, 4, 1, 1, 'F');
       doc.setFillColor(cor[0], cor[1], cor[2]);
-      doc.roundedRect(marginX + rotuloW, y, Math.max(2, barW * pct), 4, 1, 1, 'F');
+      doc.roundedRect(marginX + rotuloW, barY, Math.max(2, barW * pct), 4, 1, 1, 'F');
       doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
       doc.setTextColor(40, 40, 40);
-      doc.text(`${v.toFixed(casasDecimais)} ${sufixo}`.trim(), marginX + rotuloW + barW + 2, y + 3.3);
-      y += 7;
+      doc.text(`${v.toFixed(casasDecimais)} ${sufixo}`.trim(), marginX + rotuloW + barW + 2, barY + 3.3);
+      y += alturaLinha;
     });
     y += 5;
   };
@@ -3932,7 +3943,17 @@ function dashExportarDevolucoesPDF() {
   doc.save(`Devolucoes_Reentregas_${new Date().toISOString().slice(0, 10)}.pdf`);
   showToast('PDF gerado ✓', true);
 }
+// Chamado pelo excluirOcorrencia() (definido em roteirizador.js — os dois
+// arquivos compartilham o mesmo escopo global) depois de excluir um
+// registro, pra esse relatório se atualizar sozinho se já estiver aberto
+// nessa sessão, sem precisar clicar em "Gerar Relatório" de novo.
+function dashAtualizarAposExclusaoOcorrencia() {
+  if (document.getElementById('dash-devolucoes-box')?.innerHTML.includes('Ocorrências (')) {
+    dashCarregarDevolucoes();
+  }
+}
 window.dashCarregarDevolucoes = dashCarregarDevolucoes;
+window.dashAtualizarAposExclusaoOcorrencia = dashAtualizarAposExclusaoOcorrencia;
 window.dashExportarDevolucoes = dashExportarDevolucoes;
 window.dashExportarDevolucoesPDF = dashExportarDevolucoesPDF;
 

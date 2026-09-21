@@ -10224,6 +10224,7 @@ let _devContextosHistorico = []; // contexto de cada linha do modal de detalhe, 
 // dois lugares; invalidado (= null) depois de salvar um registro novo, pra
 // aparecer na hora sem precisar recarregar a pasta.
 let _devTodosRegistrosCache = null;
+let _devArquivoAtualOcorrencias = null; // filename cujo popup "⚠️ Ocorrências registradas" está aberto — pra reabrir/atualizar depois de excluir
 let _devCacheCarregando = false;
 async function _devCarregarCacheRegistros(forcar = false) {
   if (_devCacheCarregando || (!forcar && _devTodosRegistrosCache)) return;
@@ -10232,7 +10233,7 @@ async function _devCarregarCacheRegistros(forcar = false) {
     if (!window.fbDb || !window.fbCollection || !window.fbGetDocs || !window.fbQuery || !window.fbOrderBy || !window.fbLimit) return;
     const q = window.fbQuery(window.fbCollection(window.fbDb, 'devolucoesReentregas'), window.fbOrderBy('criadoEm', 'desc'), window.fbLimit(3000));
     const snap = await window.fbGetDocs(q);
-    _devTodosRegistrosCache = snap.docs.map(d => d.data());
+    _devTodosRegistrosCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     // Já tem lista de histórico na tela? Re-renderiza pra mostrar os selos
     // sem precisar o usuário recarregar a pasta manualmente.
     if (_histEntriesUltimas && _histEntriesUltimas.length) _histRenderLista(_histEntriesUltimas);
@@ -10253,6 +10254,7 @@ function _devContarOcorrenciasArquivo(filename) {
 // direto no card da lista do Histórico, sem precisar entrar no "Detalhar".
 async function abrirOcorrenciasArquivo(filename, ev) {
   if (ev) ev.stopPropagation();
+  _devArquivoAtualOcorrencias = filename; // guardado pra poder re-renderizar esse popup depois de excluir um registro
   await _devCarregarCacheRegistros();
   const registros = (_devTodosRegistrosCache || []).filter(r => r.arquivoOrigem === filename);
   const modal = document.getElementById('modal-ocorrencias-arquivo');
@@ -10265,7 +10267,10 @@ async function abrirOcorrenciasArquivo(filename, ev) {
       <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:6px;">
           <span style="font-weight:700;font-family:var(--font-cond);">${r.viagemId || '—'} · ${r.placa || '—'}</span>
-          <span class="tag ${r.tipo === 'reentrega' ? 'tag-yellow' : 'tag-red'}">${r.tipo === 'reentrega' ? '🔁 Reentrega' : r.tipo === 'devolucao_parcial' ? '↩️ Devolução parcial' : '↩️ Devolução total'}</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="tag ${r.tipo === 'reentrega' ? 'tag-yellow' : 'tag-red'}">${r.tipo === 'reentrega' ? '🔁 Reentrega' : r.tipo === 'devolucao_parcial' ? '↩️ Devolução parcial' : '↩️ Devolução total'}</span>
+            <button class="btn btn-sm btn-danger" style="font-size:10px;padding:2px 7px;" onclick="excluirOcorrencia('${r.id}')" title="Excluir esse registro (lançado errado, duplicado, etc.)">🗑 Excluir</button>
+          </div>
         </div>
         <div style="font-size:12.5px;color:var(--text-2);margin-bottom:6px;">
           <b>${r.cliente || '—'}</b>${r.pedidoId != null && r.pedidoId !== '' ? ` (pedido ${r.pedidoId})` : ''} · Entrega prevista: ${r.dataEntregaOriginal || '—'} · Base: ${r.operacao || '—'} · Transportadora: ${r.transportadora || '—'}
@@ -10279,10 +10284,39 @@ async function abrirOcorrenciasArquivo(filename, ev) {
   }
   modal.classList.add('show');
 }
+// Exclui um registro de devolução/reentrega lançado errado — usado aqui e
+// também no relatório de Devoluções do Dashboard (dashboard.js chama essa
+// mesma função, já que roteirizador.js/dashboard.js compartilham o mesmo
+// escopo global).
+async function excluirOcorrencia(id) {
+  if (!id) return;
+  if (!confirm('Excluir esse registro de devolução/reentrega? Não tem como desfazer.')) return;
+  try {
+    if (!window.fbDb || !window.fbDoc || !window.fbDeleteDoc) {
+      alert('Firestore indisponível agora — tenta de novo em alguns segundos.');
+      return;
+    }
+    await window.fbDeleteDoc(window.fbDoc(window.fbDb, 'devolucoesReentregas', id));
+    showToast('Registro excluído ✓', true);
+    await _devCarregarCacheRegistros(true);
+    // Atualiza o que estiver na tela: o popup de ocorrências do arquivo (se
+    // aberto), a lista do Histórico, e o relatório de Devoluções do
+    // Dashboard (se essa função já foi carregada nessa sessão).
+    if (_devArquivoAtualOcorrencias) await abrirOcorrenciasArquivo(_devArquivoAtualOcorrencias);
+    if (_histDetalheFilenameAtual) await abrirDetalheHistorico(_histDetalheFilenameAtual);
+    if (_histEntriesUltimas && _histEntriesUltimas.length) _histRenderLista(_histEntriesUltimas);
+    if (typeof window.dashAtualizarAposExclusaoOcorrencia === 'function') window.dashAtualizarAposExclusaoOcorrencia();
+  } catch (e) {
+    console.error('[Devoluções] falha ao excluir:', e);
+    alert('Erro ao excluir: ' + e.message);
+  }
+}
+window.excluirOcorrencia = excluirOcorrencia;
 function fecharOcorrenciasArquivo(ev = null) {
   if (ev && ev.target && ev.target.id !== 'modal-ocorrencias-arquivo') return;
   const modal = document.getElementById('modal-ocorrencias-arquivo');
   if (modal) modal.classList.remove('show');
+  _devArquivoAtualOcorrencias = null;
 }
 window.abrirOcorrenciasArquivo = abrirOcorrenciasArquivo;
 window.fecharOcorrenciasArquivo = fecharOcorrenciasArquivo;
