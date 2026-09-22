@@ -10116,6 +10116,13 @@ function _histRenderLista(entries) {
     const ocorrenciaTagHtml = qtdOcorrencias > 0
       ? `<span class="tag tag-red" style="cursor:pointer;" onclick="abrirOcorrenciasArquivo('${safeNome}', event)" title="Clique pra ver os detalhes desta(s) ocorrência(s)">⚠️ ${qtdOcorrencias} ocorrência${qtdOcorrencias !== 1 ? 's' : ''}</span>`
       : '';
+    // Desconta do "m³" do card a parte já devolvida (total/parcial) — mesmo
+    // princípio aplicado no Dashboard e no modal de detalhe.
+    const volumeDevolvidoArquivo = _devVolumeDevolvidoArquivo(name);
+    const volumeLiquidoArquivo = Math.max(0, totalVolume_m3 - volumeDevolvidoArquivo);
+    const volumeTagTitle = volumeDevolvidoArquivo > 0
+      ? `title="${totalVolume_m3.toFixed(1)} m³ carregados − ${volumeDevolvidoArquivo.toFixed(1)} m³ devolvidos"`
+      : '';
     return `
       <div class="hist-entry"${opts.substituida ? ' style="opacity:0.72;"' : ''}>
         <div class="hist-entry-info">
@@ -10125,7 +10132,7 @@ function _histRenderLista(entries) {
             <span class="tag tag-green">${totalRotas} rota${totalRotas !== 1 ? 's' : ''}</span>
             <span class="tag tag-blue">${totalViagens} ${totalViagens !== 1 ? 'viagens' : 'viagem'}</span>
             <span class="tag tag-gray">${totalPedidos} pedido${totalPedidos !== 1 ? 's' : ''}</span>
-            <span class="tag tag-yellow">${String(totalVolume_m3).replace('.', ',')} m³</span>
+            <span class="tag tag-yellow" ${volumeTagTitle}>${String(volumeLiquidoArquivo.toFixed(1)).replace('.', ',')} m³</span>
             ${substTagHtml}
             ${ocorrenciaTagHtml}
           </div>
@@ -10166,12 +10173,15 @@ function _histRenderLista(entries) {
   // se houver um. Sem filtro, vigentesFiltradas === vigentes, então já sai
   // o total geral.
   if (totais) {
-    const somados = vigentesFiltradas.reduce((s, { data }) => {
+    const somados = vigentesFiltradas.reduce((s, { name, data }) => {
       const r = data.resumo || {};
       s.rotas    += r.totalRotas      || 0;
       s.viagens  += r.totalViagens    || 0;
       s.pedidos  += r.totalPedidos    || 0;
-      s.volume   += r.totalVolume_m3  || 0;
+      // Desconta devolução total/parcial registrada pra esse arquivo — mesmo
+      // princípio já aplicado no card individual, no modal de detalhe e no
+      // Dashboard: produto devolvido nunca volta pro estoque.
+      s.volume   += Math.max(0, (r.totalVolume_m3 || 0) - _devVolumeDevolvidoArquivo(name));
       return s;
     }, { rotas: 0, viagens: 0, pedidos: 0, volume: 0 });
     totais.innerHTML = vigentesFiltradas.length
@@ -10248,6 +10258,17 @@ async function _devCarregarCacheRegistros(forcar = false) {
 function _devContarOcorrenciasArquivo(filename) {
   if (!_devTodosRegistrosCache) return 0;
   return _devTodosRegistrosCache.filter(r => r.arquivoOrigem === filename).length;
+}
+// Volume total de devolução (total/parcial, nunca reentrega) registrado
+// pra esse arquivo — usado pra descontar do "m³" mostrado no card da lista
+// do Histórico, mesmo princípio já aplicado no Dashboard e no modal de
+// detalhe: produto devolvido nunca volta pro estoque, não conta como
+// entregue.
+function _devVolumeDevolvidoArquivo(filename) {
+  if (!_devTodosRegistrosCache) return 0;
+  return _devTodosRegistrosCache
+    .filter(r => r.arquivoOrigem === filename && (r.tipo === 'devolucao_total' || r.tipo === 'devolucao_parcial'))
+    .reduce((s, r) => s + (r.volumeAfetadoM3 || 0), 0);
 }
 // Popup com o detalhe da(s) ocorrência(s) de devolução/reentrega registrada
 // nesse arquivo específico — aberto clicando no selo "⚠️ N ocorrência(s)"
