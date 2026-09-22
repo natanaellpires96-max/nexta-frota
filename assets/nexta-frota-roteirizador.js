@@ -10378,7 +10378,10 @@ async function abrirDetalheHistorico(filename) {
           const bordaGrupo = i === 0 ? 'border-top:2px solid var(--border);' : '';
           const idCellHtml = i === 0
             ? `<td rowspan="${paradas.length}" style="padding:8px;font-weight:700;font-family:var(--font-cond);letter-spacing:.04em;vertical-align:top;white-space:nowrap;border-right:0.5px solid var(--border);background:var(--bg);${bordaGrupo}">
-                 ${petId}<br>
+                 <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                   <span>${petId}</span>
+                   <span onclick="excluirViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Excluir essa viagem (ex.: deu recuo) — cria uma nova revisão sem ela, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;">🗑</span>
+                 </div>
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span>
                  <div style="margin:5px 0;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;user-select:text;">${baseCarregamento}</div>
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
@@ -10393,6 +10396,7 @@ async function abrirDetalheHistorico(filename) {
             cliente, codigoSAP: pa.pedido?.codigoSAP || '', pedidoId: pa.pedido?.id ?? '',
             dataEntregaOriginal: entrega, volumeM3: volumes[i], operacao: operacaoHrr || '',
             produtos: produtosParada,
+            veiculoId: v.id, paradaIndex: i, capacidadeVeiculo: v.capacidade || v.capacidadeTotal || 0,
           });
           // Essa entrega específica (viagem + pedido) já tem ocorrência
           // registrada? Muda o botão pra deixar isso óbvio, sem esconder a
@@ -10407,7 +10411,10 @@ async function abrirDetalheHistorico(filename) {
             ${idCellHtml}
             <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}</td>
             <td style="padding:6px 8px;white-space:nowrap;${bordaGrupo}">${entrega}</td>
-            <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">${volumes[i].toFixed(1)} m³</td>
+            <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">
+              ${volumes[i].toFixed(1)} m³
+              <span onclick="abrirEditarVolumesParada(${ctxIdx})" title="Editar volume dos produtos dessa entrega, sem mexer no resto da viagem" style="cursor:pointer;margin-left:4px;">✏️</span>
+            </td>
             <td style="padding:6px 8px;text-align:center;white-space:nowrap;${bordaGrupo}">${botaoOcorrenciaHtml}</td>
           </tr>`);
         });
@@ -10444,6 +10451,184 @@ function fecharDetalheHistorico(ev = null) {
   const modal = document.getElementById('modal-hist-detalhe');
   if (modal) modal.classList.remove('show');
 }
+// Exclui UMA viagem específica direto do arquivo salvo no Histórico — pra
+// quando "deu recuo" numa viagem já roteirizada e roteirizada e você não
+// quer abrir a programação inteira (Otimização Rotas) só pra tirar ela.
+// Segue o MESMO padrão de correção que já existe no resto do sistema
+// (salvarNoHistorico): nunca sobrescreve o arquivo original — grava uma
+// NOVA revisão sem essa viagem, e marca o arquivo antigo como substituído
+// (substituidoPor/revisaoDe). Nada é apagado de verdade, só deixa de ser a
+// versão vigente.
+// Recalcula resumo (rotas/viagens/pedidos/volume/terminais) do zero a
+// partir de data.resultado — mesma lógica usada em salvarNoHistorico, pra
+// o card da lista continuar batendo certinho depois de qualquer edição
+// feita direto num arquivo salvo (excluir viagem, editar volume, etc.).
+function _histRecalcularResumo(data) {
+  let totalViagens = 0, totalVolume = 0, totalPedidos = 0, totalRotas = 0;
+  const terminaisUsados = new Set();
+  (data.veiculos || []).forEach(v => {
+    const viagens = (data.resultado[v.id] || []).filter(vi => vi && !vi._vazio && vi.paradas && vi.paradas.length > 0);
+    if (!viagens.length) return;
+    totalRotas++;
+    totalViagens += viagens.length;
+    viagens.forEach(vi => {
+      vi.paradas.forEach(p => {
+        totalVolume += (p.volumeTotal != null ? p.volumeTotal : (p.itens || []).reduce((s, it) => s + (it.volume || 0), 0)) || 0;
+        totalPedidos++;
+      });
+      const baseNome = cidadeBaseVeiculo(v);
+      if (baseNome) terminaisUsados.add(baseNome);
+    });
+  });
+  data.resumo = {
+    totalRotas, totalViagens, totalPedidos,
+    totalVolume_m3: Math.round(totalVolume * 10) / 10,
+    terminaisUsados: [...terminaisUsados],
+  };
+}
+// Grava `data` (já editado em memória) como uma NOVA revisão do arquivo
+// `filenameAtual` — o original nunca é sobrescrito, só ganha o vínculo
+// substituidoPor. Devolve o nome do novo arquivo.
+async function _histSalvarRevisao(filenameAtual, data) {
+  const fh = await dirHandleHistorico.getFileHandle(filenameAtual);
+  _histRecalcularResumo(data);
+  const now = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const sufixoAleatorio = Math.random().toString(36).slice(2, 6);
+  const novoFilename = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}_${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}_${sufixoAleatorio}_rotas.json`;
+  data.savedAt = now.toISOString();
+  data.revisaoDe = filenameAtual;
+  delete data.substituidoPor; // essa é a versão vigente agora
+  const fhNovo = await dirHandleHistorico.getFileHandle(novoFilename, { create: true });
+  const wsNovo = await fhNovo.createWritable();
+  await wsNovo.write(JSON.stringify(data, null, 2));
+  await wsNovo.close();
+  // Marca o arquivo antigo como substituído — relê ele de novo (não a
+  // variável `data`, que já foi alterada em memória) pra não gravar por
+  // cima de nada que tenha mudado nele nesse meio tempo.
+  const dataAntiga = JSON.parse(await (await fh.getFile()).text());
+  dataAntiga.substituidoPor = novoFilename;
+  const wsAntigo = await fh.createWritable();
+  await wsAntigo.write(JSON.stringify(dataAntiga, null, 2));
+  await wsAntigo.close();
+  delete _histMetaCache[filenameAtual];
+  delete _histMetaCache[novoFilename];
+  return novoFilename;
+}
+async function excluirViagemHistorico(veiculoId, petId) {
+  if (!_histDetalheFilenameAtual) return;
+  if (!confirm(`Excluir a viagem ${petId} desse arquivo?\n\nIsso salva uma nova revisão sem essa viagem — o arquivo original fica marcado como substituído, preservado no histórico (não é apagado).`)) return;
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  const filenameAtual = _histDetalheFilenameAtual;
+  try {
+    const fh = await dirHandleHistorico.getFileHandle(filenameAtual);
+    const data = JSON.parse(await (await fh.getFile()).text());
+    const lista = data.resultado?.[veiculoId];
+    if (!Array.isArray(lista)) { alert('Não achei essa viagem no arquivo.'); return; }
+    const idx = lista.findIndex(vi => vi && !vi._vazio && vi.petId === petId);
+    if (idx === -1) { alert('Não achei essa viagem no arquivo — talvez já tenha sido removida antes.'); return; }
+    lista.splice(idx, 1);
+    const novoFilename = await _histSalvarRevisao(filenameAtual, data);
+    showToast(`Viagem ${petId} excluída — nova revisão salva.`, true);
+    await abrirDetalheHistorico(novoFilename); // reabre o modal já na revisão nova
+    if (typeof carregarListaHistorico === 'function') carregarListaHistorico(); // recarrega a lista do zero (arquivo novo + selo "Substituída" no antigo)
+  } catch (e) {
+    console.error('[Histórico] falha ao excluir viagem:', e);
+    alert('Erro ao excluir viagem: ' + e.message);
+  }
+}
+window.excluirViagemHistorico = excluirViagemHistorico;
+// Edita o volume de um ou mais produtos de UMA entrega específica, direto no
+// arquivo salvo — sem mexer em mais nada da viagem (outras paradas, outros
+// veículos). Mesmo mecanismo de revisão do excluirViagemHistorico acima.
+function abrirEditarVolumesParada(ctxIdx) {
+  const ctx = _devContextosHistorico[ctxIdx];
+  if (!ctx) return;
+  document.getElementById('edvol-ctx-idx').value = ctxIdx;
+  document.getElementById('edvol-info').innerHTML = `<b>${ctx.viagemId}</b> · ${ctx.placa || '—'} · ${ctx.cliente}${ctx.pedidoId !== '' ? ` (pedido ${ctx.pedidoId})` : ''}<br>Entrega: ${ctx.dataEntregaOriginal} · Base: ${ctx.operacao || '—'}`;
+  const produtos = (ctx.produtos && ctx.produtos.length) ? ctx.produtos : [{ produto: 'Volume total da entrega', volume: ctx.volumeM3, ordemSAP: '' }];
+  const box = document.getElementById('edvol-produtos-lista');
+  box.innerHTML = produtos.map((p, i) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+      <span style="flex:1;font-size:12.5px;">${p.produto}${p.ordemSAP ? ` <span style="color:var(--text-3);font-size:10.5px;">· OS ${p.ordemSAP}</span>` : ''}</span>
+      <input type="number" id="edvol-prod-${i}" value="${(p.volume || 0).toFixed(1)}" min="0" step="0.1" oninput="_edvolAtualizarTotal()" style="width:90px;font-size:12px;padding:4px 6px;text-align:right;"/>
+      <span style="font-size:11px;color:var(--text-3);width:18px;">m³</span>
+    </div>`).join('');
+  document.getElementById('edvol-aviso-capacidade').style.display = 'none';
+  _edvolAtualizarTotal();
+  document.getElementById('modal-editar-volumes').classList.add('show');
+}
+function _edvolAtualizarTotal() {
+  const idx = parseInt(document.getElementById('edvol-ctx-idx').value, 10);
+  const ctx = _devContextosHistorico[idx];
+  const produtos = (ctx?.produtos?.length) ? ctx.produtos : [{ produto: 'Volume total da entrega' }];
+  let total = 0;
+  produtos.forEach((p, i) => {
+    const el = document.getElementById(`edvol-prod-${i}`);
+    if (el) total += parseFloat(el.value) || 0;
+  });
+  const totalEl = document.getElementById('edvol-total');
+  if (totalEl) totalEl.textContent = total.toFixed(1);
+  const aviso = document.getElementById('edvol-aviso-capacidade');
+  // Aviso, não bloqueio: só avisa se esse volume sozinho já passa da
+  // capacidade cadastrada do veículo — a viagem pode ter outras entregas
+  // também, o alerta é só um sinal de "confere antes de confirmar", não uma
+  // simulação completa de ocupação dos compartimentos.
+  if (aviso) {
+    if (ctx && ctx.capacidadeVeiculo > 0 && total > ctx.capacidadeVeiculo) {
+      aviso.style.display = '';
+      aviso.textContent = `⚠️ Esse total (${total.toFixed(1)} m³) já passa da capacidade cadastrada do veículo (${ctx.capacidadeVeiculo} m³) — sozinho, sem contar o resto da viagem. Confere se cabe de verdade antes de salvar.`;
+    } else {
+      aviso.style.display = 'none';
+    }
+  }
+}
+function fecharEditarVolumesParada(ev = null) {
+  if (ev && ev.target && ev.target.id !== 'modal-editar-volumes') return;
+  const modal = document.getElementById('modal-editar-volumes');
+  if (modal) modal.classList.remove('show');
+}
+async function salvarEdicaoVolumesParada() {
+  const idx = parseInt(document.getElementById('edvol-ctx-idx').value, 10);
+  const ctx = _devContextosHistorico[idx];
+  if (!ctx) { alert('Contexto perdido — fecha e tenta de novo a partir do histórico.'); return; }
+  if (!_histDetalheFilenameAtual) return;
+  const produtosBase = (ctx.produtos && ctx.produtos.length) ? ctx.produtos : [{ produto: 'Volume total da entrega', ordemSAP: '' }];
+  const novosVolumes = produtosBase.map((p, i) => ({
+    produto: p.produto, ordemSAP: p.ordemSAP || '',
+    volume: parseFloat(document.getElementById(`edvol-prod-${i}`)?.value) || 0,
+  }));
+  if (!novosVolumes.some(p => p.volume > 0)) { alert('Pelo menos um produto precisa ter volume maior que zero.'); return; }
+  if (!confirm(`Salvar essa edição de volume pra ${ctx.cliente}?\n\nIsso salva uma nova revisão do arquivo — o original fica marcado como substituído, preservado no histórico (não é apagado).`)) return;
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  const filenameAtual = _histDetalheFilenameAtual;
+  try {
+    const fh = await dirHandleHistorico.getFileHandle(filenameAtual);
+    const data = JSON.parse(await (await fh.getFile()).text());
+    const lista = data.resultado?.[ctx.veiculoId];
+    if (!Array.isArray(lista)) { alert('Não achei essa viagem no arquivo.'); return; }
+    const viagem = lista.find(vi => vi && !vi._vazio && vi.petId === ctx.viagemId);
+    if (!viagem) { alert('Não achei essa viagem no arquivo — talvez já tenha mudado nessa revisão.'); return; }
+    const parada = (viagem.paradas || [])[ctx.paradaIndex];
+    if (!parada) { alert('Não achei essa entrega dentro da viagem — talvez a ordem das paradas tenha mudado.'); return; }
+    if (Array.isArray(parada.itens) && parada.itens.length === novosVolumes.length) {
+      parada.itens.forEach((it, i) => { it.volume = novosVolumes[i].volume; });
+    }
+    parada.volumeTotal = novosVolumes.reduce((s, p) => s + p.volume, 0);
+    const novoFilename = await _histSalvarRevisao(filenameAtual, data);
+    showToast('Volume atualizado — nova revisão salva.', true);
+    fecharEditarVolumesParada();
+    await abrirDetalheHistorico(novoFilename);
+    if (typeof carregarListaHistorico === 'function') carregarListaHistorico();
+  } catch (e) {
+    console.error('[Histórico] falha ao editar volume:', e);
+    alert('Erro ao salvar edição: ' + e.message);
+  }
+}
+window.abrirEditarVolumesParada = abrirEditarVolumesParada;
+window._edvolAtualizarTotal = _edvolAtualizarTotal;
+window.fecharEditarVolumesParada = fecharEditarVolumesParada;
+window.salvarEdicaoVolumesParada = salvarEdicaoVolumesParada;
 // ══════════════════════════════════════════════════════════════════════════
 // DEVOLUÇÃO / REENTREGA — registrado a posteriori (não dá pra saber na hora
 // da programação), a partir do modal de detalhe do Histórico. Salvo no
