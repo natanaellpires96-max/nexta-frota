@@ -10348,7 +10348,7 @@ async function abrirDetalheHistorico(filename) {
     // as paradas daquela viagem — assim, quando uma viagem atende dois
     // clientes diferentes, eles ficam visualmente juntos sob o mesmo ID em
     // vez de repetir o ID linha a linha.
-    let totalM3 = 0, totalViagens = 0;
+    let totalM3 = 0, totalViagens = 0, totalM3Devolvido = 0;
     const linhasHtml = [];
     _devContextosHistorico = []; // reseta a cada abertura do modal — guarda o contexto de cada linha pro botão "⚠️ Registrar"
     veics.forEach(v => {
@@ -10404,6 +10404,13 @@ async function abrirDetalheHistorico(filename) {
           // e agora uma devolução nova na mesma entrega).
           const jaRegistradas = (_devTodosRegistrosCache || []).filter(r =>
             r.viagemId === petId && String(r.pedidoId ?? '') === String(pa.pedido?.id ?? ''));
+          // Desconta do total do cabeçalho a parte de devolução total/parcial
+          // dessa entrega — mesmo princípio já aplicado no Dashboard: produto
+          // devolvido nunca volta pro estoque, não pode contar como
+          // entregue. Reentrega não desconta (ainda vai ser entregue).
+          jaRegistradas.forEach(r => {
+            if (r.tipo === 'devolucao_total' || r.tipo === 'devolucao_parcial') totalM3Devolvido += (r.volumeAfetadoM3 || 0);
+          });
           const botaoOcorrenciaHtml = jaRegistradas.length
             ? `<button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;background:rgba(220,38,38,0.1);border-color:rgba(220,38,38,0.35);color:#DC2626;font-weight:700;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="${jaRegistradas.map(r => `${r.tipo === 'reentrega' ? 'Reentrega' : 'Devolução'} — ${r.motivo}`).join(' · ')}">✅ ${jaRegistradas.length} registrada${jaRegistradas.length !== 1 ? 's' : ''}</button>`
             : `<button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="Registrar devolução ou reentrega dessa entrega">⚠️ Registrar</button>`;
@@ -10426,7 +10433,7 @@ async function abrirDetalheHistorico(filename) {
     }
     body.innerHTML = `
       <div style="font-size:12px;color:var(--text-2);margin-bottom:10px;">
-        ${totalViagens} ${totalViagens === 1 ? 'viagem' : 'viagens'} &nbsp;·&nbsp; <strong>${totalM3.toFixed(1)} m³</strong> no total
+        ${totalViagens} ${totalViagens === 1 ? 'viagem' : 'viagens'} &nbsp;·&nbsp; <strong>${(totalM3 - totalM3Devolvido).toFixed(1)} m³</strong> no total${totalM3Devolvido > 0 ? ` <span style="color:var(--text-3);font-size:11px;">(${totalM3.toFixed(1)} m³ carregados − ${totalM3Devolvido.toFixed(1)} m³ devolvidos)</span>` : ''}
       </div>
       <div style="max-height:60vh;overflow:auto;border:0.5px solid var(--border);border-radius:8px;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
