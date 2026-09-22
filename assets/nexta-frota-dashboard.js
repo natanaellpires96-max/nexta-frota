@@ -867,7 +867,32 @@ function dashCidadeOperacaoViagem(vi, v, terms) {
   const term = terms.find(t => t.nome === nomeTerm);
   return term?.cidade || '(sem cidade)';
 }
-function dashAgregar(snapshots, cidadesFiltro = null, transportadorasFiltro = null) {
+// Mapa "petId__pedidoId" -> volume a descontar (só devolução total/parcial,
+// nunca reentrega) — construído a partir do MESMO cache que já alimenta os
+// selos de ocorrência do Histórico (_devTodosRegistrosCache, definido em
+// roteirizador.js — os dois arquivos compartilham o mesmo escopo global).
+// Se ainda não carregou, dispara o carregamento em segundo plano e
+// re-renderiza o Dashboard sozinho quando chegar (mesmo princípio já usado
+// pros selos "⚠️ N ocorrência(s)" do Histórico) — assim o desconto aparece
+// mesmo que a 1ª renderização do Dashboard tenha saído antes de carregar.
+function _dashMapaDevolucoesPorEntrega() {
+  const mapa = new Map();
+  if (typeof _devTodosRegistrosCache === 'undefined' || !_devTodosRegistrosCache) {
+    if (typeof _devCarregarCacheRegistros === 'function') {
+      _devCarregarCacheRegistros().then(() => {
+        if (document.getElementById('dk-volume')) dashRenderComFiltro();
+      });
+    }
+    return mapa; // vazio por enquanto — a re-renderização acima corrige assim que carregar
+  }
+  _devTodosRegistrosCache.forEach(r => {
+    if (r.tipo !== 'devolucao_total' && r.tipo !== 'devolucao_parcial') return; // reentrega não desconta
+    const chave = (r.viagemId || '') + '__' + (r.pedidoId ?? '');
+    mapa.set(chave, (mapa.get(chave) || 0) + (r.volumeAfetadoM3 || 0));
+  });
+  return mapa;
+}
+function dashAgregar(snapshots, cidadesFiltro = null, transportadorasFiltro = null, devolucoesPorEntrega = null) {
   const clientes = {};   // key=nome: {entregas, volume, km, lat, lon, cidade, capTotal}
   const operacoes = {};  // key=cidade da operação: {cidade, volume, capTotal, viagens} — pro gráfico Ocupação vs Volume por Operação
   const viagens_ocup = []; // {label, ocup}
@@ -998,7 +1023,19 @@ function dashAgregar(snapshots, cidadesFiltro = null, transportadorasFiltro = nu
           const ped = par.pedido || {};
           const nome = ped.cliente || ped.nomeCliente || par.nome || '?';
           const cidade = ped.cidade || '-';
-          const vol = par.volumeTotal || 0;
+          // Volume LÍQUIDO — desconta devolução total/parcial já registrada
+          // pra essa entrega específica (viagemId+pedidoId), no combustível
+          // o produto devolvido é sempre repassado pra outro cliente, nunca
+          // volta pro estoque, então não pode contar como entregue aqui.
+          // Reentrega NÃO desconta (ainda vai ser entregue, só depois). Esse
+          // é o ÚNICO ponto onde volume vira `vol` — feito aqui, o desconto
+          // já propaga sozinho pra TODOS os relatórios que dependem disso
+          // (KPI do topo, Ocupação por Operação, Ranking de Transportadoras,
+          // Clientes, Balanceamento de Frota), sem precisar mexer em cada um.
+          const volumeBruto = par.volumeTotal || 0;
+          const chaveDevol = (vi.petId || '') + '__' + (ped.id ?? '');
+          const volumeDevolvido = devolucoesPorEntrega?.get(chaveDevol) || 0;
+          const vol = Math.max(0, volumeBruto - volumeDevolvido);
           const coords = latLonEfetivo ? latLonEfetivo(ped) : { lat: par.lat, lon: par.lon };
           const lat = coords?.lat || par.lat;
           const lon = coords?.lon || par.lon;
@@ -2736,7 +2773,7 @@ function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
   window._dashSnapshotsAtivos = _dashSnapshotsAtivos; // acessível pra funções fora deste IIFE (ex.: dashDiagnosticarPedagioHoje)
   if (!snapshots || !snapshots.length) {
-    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada,#dk-ociosidade,#dk-drop-entregas,#dk-drop-volume,#dk-perc-pedagiadas,#dk-tempo-pedagio')
+    document.querySelectorAll('#dk-viagens,#dk-entregas,#dk-volume,#dk-ocup,#dk-km,#dk-clientes,#dk-jornada,#dk-ociosidade,#dk-drop-entregas,#dk-drop-volume,#dk-drop-cliente,#dk-perc-pedagiadas,#dk-tempo-pedagio')
       .forEach(el => { if(el) el.textContent = '-'; });
     const _elJH = document.getElementById('dk-jornada-horas'); if (_elJH) _elJH.textContent = '';
     const _elOQ = document.getElementById('dk-ociosidade-qtd'); if (_elOQ) _elOQ.textContent = '';
@@ -2781,7 +2818,7 @@ function dashRender(snapshots) {
   // Filtro de cidade da operação aplicado NA FONTE (dentro de dashAgregar) —
   // por isso todo o resto do dashboard (KPIs, gráficos, mapa, ranking) já sai
   // filtrado corretamente, sem precisar re-filtrar depois.
-  const d = dashAgregar(snapshots, _dashCidadesSelecionadas, _dashTransportadorasSelecionadas);
+  const d = dashAgregar(snapshots, _dashCidadesSelecionadas, _dashTransportadorasSelecionadas, _dashMapaDevolucoesPorEntrega());
   _dashAtualizarMapaNomeSAP(d.clientes); // alimenta a busca de Segmento por SAP (ver dashClienteSegmento)
   _dashUltimoAgregado = d; // reaproveitado pelo Histórico por Veículo (km por dia), sem recalcular
   // Atualiza lista global de clientes para o filtro
@@ -2929,10 +2966,22 @@ function dashRender(snapshots) {
   // acima) divididos pelo total de viagens (idem, respeita os mesmos filtros).
   const _kpiDropEntregas = _kpiViagens  > 0 ? _kpiEntregas / _kpiViagens  : 0;
   const _kpiDropVolume   = _kpiEntregas > 0 ? _kpiVol      / _kpiEntregas : 0;
+  // Drop Médio POR CLIENTE (Drop Size da carteira) — diferente do Drop
+  // Médio Operacional acima: aquele pondera pela frequência de entrega
+  // (cliente que entrega toda semana pesa mais na média); esse aqui trata
+  // cada cliente igual, não importa quantas vezes ele apareceu no período —
+  // pra cada cliente calcula (volume do cliente ÷ entregas do cliente), e
+  // tira a média simples desses valores ÷ nº de clientes.
+  const _clientesComEntregaDrop = clientesFiltrados.filter(c => c.entregas > 0);
+  const _kpiDropPorCliente = _clientesComEntregaDrop.length > 0
+    ? _clientesComEntregaDrop.reduce((s, c) => s + (c.volume / c.entregas), 0) / _clientesComEntregaDrop.length
+    : 0;
   set('dk-drop-entregas', _kpiViagens  > 0 ? _kpiDropEntregas.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) : '-');
   set('dk-drop-volume',   _kpiEntregas > 0 ? (_kpiDropVolume.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) + ' m³') : '-');
+  set('dk-drop-cliente',  _clientesComEntregaDrop.length > 0 ? (_kpiDropPorCliente.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) + ' m³') : '-');
   _dashUltimosKPIs.dropEntregas = _kpiViagens > 0 ? _kpiDropEntregas : null;
   _dashUltimosKPIs.dropVolume = _kpiEntregas > 0 ? _kpiDropVolume : null;
+  _dashUltimosKPIs.dropPorCliente = _clientesComEntregaDrop.length > 0 ? _kpiDropPorCliente : null;
   // % de Rotas Pedagiadas: viagens onde a detecção (linha reta terminal→
   // paradas, ver dashAgregar) achou pelo menos 1 pedágio, ÷ total de viagens
   // — mesmos filtros de cliente/cidade/período dos demais KPIs. É uma
@@ -3292,7 +3341,7 @@ async function dashCarregarBalanceamentoFrota() {
     // Deliberadamente SEM filtro de cidade/cliente/segmento/transportadora —
     // esse relatório é justamente sobre comparar operações entre si; filtrar
     // por uma delas ia esconder o resto da comparação.
-    const d = dashAgregar(snapshots, null, null);
+    const d = dashAgregar(snapshots, null, null, _dashMapaDevolucoesPorEntrega());
 
     etapa = 'demanda não atendida (pedidos x resultado)';
     const demanda = dashColetarDemandaPorOperacao(snapshots);
@@ -3618,6 +3667,15 @@ function _dashAgregarDevolucoes(registros) {
   const totalDevolucoes = registros.filter(r => r.tipo !== 'reentrega').length;
   const totalReentregas  = registros.filter(r => r.tipo === 'reentrega').length;
   const volumeTotal = registros.reduce((s, r) => s + (r.volumeAfetadoM3 || 0), 0);
+  // Volume que deve ser DESCONTADO do volume do período — só devolução
+  // (total ou parcial): esse produto não foi entregue de verdade, mesmo que
+  // o veículo tenha rodado. Reentrega NÃO desconta — o produto ainda vai
+  // ser entregue, só que depois (registrar aqui não é perder o volume, é
+  // adiar); se um dia isso precisar contar só no dia da reentrega em vez do
+  // dia original, dá pra evoluir usando o campo novaDataEntrega.
+  const volumeDevolvido = registros
+    .filter(r => r.tipo === 'devolucao_total' || r.tipo === 'devolucao_parcial')
+    .reduce((s, r) => s + (r.volumeAfetadoM3 || 0), 0);
   const porOperacao = {};
   const porMotivo = {};
   const porTransportadora = {};
@@ -3649,7 +3707,7 @@ function _dashAgregarDevolucoes(registros) {
     porCliente[cli].volume += (r.volumeAfetadoM3 || 0);
   });
   return {
-    totalDevolucoes, totalReentregas, volumeTotal,
+    totalDevolucoes, totalReentregas, volumeTotal, volumeDevolvido,
     arrProduto: Object.entries(porProduto).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume).slice(0, 12),
     arrOperacao: Object.entries(porOperacao).map(([nome, volume]) => ({ nome, volume })).sort((a, b) => b.volume - a.volume).slice(0, 10),
     arrMotivo: Object.entries(porMotivo).map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd),
@@ -3657,12 +3715,39 @@ function _dashAgregarDevolucoes(registros) {
     arrCliente: Object.entries(porCliente).map(([nome, v]) => ({ nome, qtd: v.qtd, volume: v.volume })).sort((a, b) => b.qtd - a.qtd || b.volume - a.volume),
   };
 }
+// Bloco "Volume do Período" — agora que o desconto é aplicado NA FONTE
+// (dashAgregar), o card "Volume m³" do topo do Dashboard já sai LÍQUIDO
+// sozinho, e o mesmo vale pra Ocupação por Operação, Ranking de
+// Transportadoras, Clientes e Balanceamento de Frota — todos usam a mesma
+// fonte. Esse bloco só reconstrói o bruto (líquido + devolvido) pra deixar
+// visível quanto já foi descontado, sem fingir que ainda é uma conta à
+// parte.
+function _dashVolumeLiquidoHtml(volumeDevolvido) {
+  const liquido = _dashUltimosKPIs?.volume;
+  if (typeof liquido !== 'number') {
+    return '<div style="font-size:11px;color:var(--text-3);margin-bottom:18px;">Não achei o volume do período (gere o Dashboard principal primeiro, com "🔄 Sincronizar") pra mostrar o desconto aqui.</div>';
+  }
+  const bruto = liquido + volumeDevolvido;
+  const pctDevolvido = bruto > 0 ? (volumeDevolvido / bruto) * 100 : 0;
+  return `
+    <div style="background:rgba(0,0,0,0.02);border:1px solid var(--border-dk);border-radius:10px;padding:14px 16px;margin-bottom:18px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;">Volume do período — já descontando devolução total/parcial</div>
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:13px;">
+        <span>${bruto.toFixed(1)} m³ <span style="color:var(--text-3);font-size:11px;">brutos (antes da devolução)</span></span>
+        <span style="color:var(--text-3);">−</span>
+        <span style="color:#DC2626;font-weight:700;">${volumeDevolvido.toFixed(1)} m³ <span style="font-weight:400;font-size:11px;">devolvidos (${pctDevolvido.toFixed(1)}%)</span></span>
+        <span style="color:var(--text-3);">=</span>
+        <span style="font-weight:700;font-size:16px;">${liquido.toFixed(1)} m³</span>
+      </div>
+      <div style="font-size:10px;color:var(--text-3);margin-top:8px;">Esse valor final é o MESMO que já aparece no card "Volume m³" do topo do Dashboard, na Ocupação por Operação, no Ranking de Transportadoras e no Balanceamento de Frota — o desconto é aplicado uma vez só, na fonte, e propaga pra todos os relatórios automaticamente. Reentrega não desconta (o produto ainda vai ser entregue, só depois).</div>
+    </div>`;
+}
 function _dashRenderDevolucoes(box, registros, datasSnap) {
   if (!registros.length) {
     box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">Nenhuma ocorrência registrada nesse período (com os filtros atuais).</div>';
     return;
   }
-  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora, arrProduto, arrCliente } = _dashAgregarDevolucoes(registros);
+  const { totalDevolucoes, totalReentregas, volumeTotal, volumeDevolvido, arrOperacao, arrMotivo, arrTransportadora, arrProduto, arrCliente } = _dashAgregarDevolucoes(registros);
   const linhasTabela = registros.slice(0, 200).map(r => `
     <tr style="border-top:1px solid var(--border-dk);">
       <td style="padding:6px 8px;">${r.dataEntregaOriginal || '—'}</td>
@@ -3696,6 +3781,7 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
         <div style="font-size:10.5px;color:var(--text-3);">Ocorrências no total</div>
       </div>
     </div>
+    ${_dashVolumeLiquidoHtml(volumeDevolvido)}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-bottom:18px;">
       <div>
         <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Volume afetado por operação</div>
@@ -3785,7 +3871,7 @@ function dashExportarDevolucoesPDF() {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF || !window.jspdf) { showToast('jsPDF não carregado.', false); return; }
   const registros = _dashUltimosRegistrosDevolucao;
-  const { totalDevolucoes, totalReentregas, volumeTotal, arrOperacao, arrMotivo, arrTransportadora, arrProduto, arrCliente } = _dashAgregarDevolucoes(registros);
+  const { totalDevolucoes, totalReentregas, volumeTotal, volumeDevolvido, arrOperacao, arrMotivo, arrTransportadora, arrProduto, arrCliente } = _dashAgregarDevolucoes(registros);
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
@@ -3838,6 +3924,22 @@ function dashExportarDevolucoesPDF() {
     doc.text(k.label, x + 4, y + 17);
   });
   y += 28;
+
+  // Volume do período (bruto reconstruído a partir do líquido + devolvido)
+  // — mesma conta da tela; o desconto já é aplicado na fonte agora, então
+  // _dashUltimosKPIs.volume JÁ é o valor líquido.
+  const liquidoPdf = _dashUltimosKPIs?.volume;
+  if (typeof liquidoPdf === 'number') {
+    const brutoPdf = liquidoPdf + volumeDevolvido;
+    doc.setFillColor(248, 248, 248);
+    doc.setDrawColor(222, 222, 222);
+    doc.roundedRect(marginX, y, pageW - marginX * 2, 14, 2, 2, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(30, 30, 30);
+    doc.text(`Volume do período: ${brutoPdf.toFixed(1)} m³ brutos - ${volumeDevolvido.toFixed(1)} m³ devolvidos = ${liquidoPdf.toFixed(1)} m³`, marginX + 4, y + 6);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(130, 130, 130);
+    doc.text('Reentrega não desconta (produto ainda vai ser entregue, só depois). Esse desconto já é o mesmo aplicado no card "Volume m³" do Dashboard.', marginX + 4, y + 11);
+    y += 18;
+  }
 
   // Gráficos de barra — desenhados direto no PDF (rect + text), não é
   // captura de tela: fica nítido em qualquer zoom/impressão.
@@ -4573,7 +4675,7 @@ window.dashExportarExcel = async function dashExportarExcel() {
   if (btn) { btn.textContent = '⏳ Gerando...'; btn.disabled = true; }
 
   try {
-    const d = dashAgregar(snapshots);
+    const d = dashAgregar(snapshots, null, null, _dashMapaDevolucoesPorEntrega());
     const wb = XLSX.utils.book_new();
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -4887,7 +4989,8 @@ function _dashKpisParaRelatorio() {
     { label: 'Consumo de Jornada', valor: k.jornadaPct != null ? `${k.jornadaPct}% (${_dashFmtHoras(k.jornadaUsadaMin || 0)} / ${_dashFmtHoras(k.jornadaDispMin || 0)})` : '-' },
     { label: 'Ociosidade da Frota', valor: k.ociosidadePct != null ? `${k.ociosidadePct}% (${fmtNum(k.ociosidadeUsados)} usados / ${fmtNum(k.ociosidadeDisponibilizados)} disponibilizados)` : '-' },
     { label: 'Drop Médio (Entregas/Viagem)', valor: k.dropEntregas != null ? fmtNum(k.dropEntregas, 1) : '-' },
-    { label: 'Drop Médio (Volume/Entrega)', valor: k.dropVolume != null ? `${fmtNum(k.dropVolume, 1)} m³` : '-' },
+    { label: 'Drop Médio Operacional (Volume/Entrega)', valor: k.dropVolume != null ? `${fmtNum(k.dropVolume, 1)} m³` : '-' },
+    { label: 'Drop Médio por Cliente (Drop Size da carteira)', valor: k.dropPorCliente != null ? `${fmtNum(k.dropPorCliente, 1)} m³` : '-' },
     { label: '% Rotas Pedagiadas (est.)', valor: k.percPedagiadas != null ? `${Math.round(k.percPedagiadas)}%` : '-' },
     { label: 'Tempo c/ Lançamento Pedágio', valor: k.tempoPedagioMin != null && k.tempoPedagioMin > 0 ? _dashFmtHoras(k.tempoPedagioMin) : '0h' },
   ];
