@@ -3180,6 +3180,9 @@ function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
 // aquele drop size). Toggle Melhores/Piores só reordena e refaz o corte de
 // 15 — não busca dado de novo.
 function dashRenderRankingDropSize(modo) {
+  // Sem argumento (chamado pelo campo "Mín. entregas") → mantém o modo
+  // Melhores/Piores que já estava selecionado, só reaplica o filtro.
+  modo = modo || _dashModoRankingDropSize || 'melhores';
   _dashModoRankingDropSize = modo;
   const box = document.getElementById('dash-ranking-dropsize');
   if (!box) return;
@@ -3187,11 +3190,17 @@ function dashRenderRankingDropSize(modo) {
   const btnPiores = document.getElementById('dash-dropsize-btn-piores');
   if (btnMelhores) { btnMelhores.style.background = modo === 'melhores' ? 'var(--pet-green,#b5e51d)' : 'transparent'; btnMelhores.style.color = modo === 'melhores' ? '#000' : 'var(--text-2)'; }
   if (btnPiores) { btnPiores.style.background = modo === 'piores' ? 'var(--pet-green,#b5e51d)' : 'transparent'; btnPiores.style.color = modo === 'piores' ? '#000' : 'var(--text-2)'; }
-  const lista = (_dashUltimosClientesDropSize || []).slice()
+  // Mínimo de entregas — sem isso, cliente com 1 entrega só (drop size dele
+  // é literalmente o volume daquela entrega, não é uma média de verdade)
+  // dominava as pontas do ranking sem representar um padrão real.
+  const minEntregas = Math.max(1, parseInt(document.getElementById('dash-dropsize-min-entregas')?.value, 10) || 1);
+  const lista = (_dashUltimosClientesDropSize || [])
+    .filter(c => c.entregas >= minEntregas)
+    .slice()
     .sort((a, b) => modo === 'piores' ? a.dropSize - b.dropSize : b.dropSize - a.dropSize)
     .slice(0, 15);
   if (!lista.length) {
-    box.innerHTML = '<div class="empty">Sem clientes com entrega suficiente nesse período/filtro pra montar o ranking.</div>';
+    box.innerHTML = `<div class="empty">Nenhum cliente com pelo menos ${minEntregas} entrega${minEntregas !== 1 ? 's' : ''} nesse período/filtro — tenta baixar o "Mín. entregas".</div>`;
     return;
   }
   box.innerHTML = `<div style="overflow-x:auto;">
