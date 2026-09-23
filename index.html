@@ -897,12 +897,12 @@
         <div class="sum-card" title="Tempo acumulado estimado para lançar os vale-pedágio das viagens pedagiadas (ver % Rotas Pedagiadas) no Sistema Sem Parar: 3 minutos por viagem, em média, × nº de viagens com pedágio detectado no período/filtro selecionado." style="cursor:help;"><div class="sum-num" id="dk-tempo-pedagio" style="color:#fb923c">-</div><div class="sum-label">Tempo c/ Lançamento Pedágio</div><div id="dk-tempo-pedagio-min" style="font-size:10px;color:var(--text-3);margin-top:2px;"></div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-transp')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">🏆 Ranking de Transportadoras</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🏆 Ranking de Transportadoras <span id="dash-secbody-transp-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Quem transporta mais volume, roda mais km e quanto foi pago (baseado nos contratos cadastrados em Frete)</div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
+          <div onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
             <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;">
               <button class="dash-rank-tab active-rank" data-campo="volume" onclick="dashRankingSetOrdem('volume')"
                 style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">Volume</button>
@@ -923,15 +923,15 @@
             </div>
           </div>
         </div>
-        <div id="dash-ranking-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
+        <div class="dash-secbody-transp" style="display:none;"><div id="dash-ranking-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-jornada')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">⏱️ Consumo de Jornada por Transportadora</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">⏱️ Consumo de Jornada por Transportadora <span id="dash-secbody-jornada-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Horas de jornada disponível (nº de veículos × jornada diária) vs. horas efetivamente usadas nas viagens, por veículo/dia — acompanha os mesmos filtros de mês/período e operação (cidade) acima</div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
+          <div onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
             <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;" title="Ordenar do maior pro menor ou do menor pro maior">
               <button class="dash-jornadadir-tab active-rank" data-dir="desc" onclick="dashJornadaSetDirecao('desc')"
                 style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior</button>
@@ -944,15 +944,15 @@
             </div>
           </div>
         </div>
-        <div id="dash-jornada-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
+        <div class="dash-secbody-jornada" style="display:none;"><div id="dash-jornada-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-ociosidade')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">🅿️ Ociosidade da Frota por Transportadora</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🅿️ Ociosidade da Frota por Transportadora <span id="dash-secbody-ociosidade-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Veículos disponibilizados no dia que ficaram sem nenhuma viagem — conta por veículo, não por hora. Ex.: 20 disponibilizados, 10 usados = 50% de ociosidade. Acompanha os mesmos filtros de mês/período e operação (cidade) acima</div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
+          <div onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
             <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;" title="Ordenar do maior pro menor ou do menor pro maior">
               <button class="dash-ociosidadedir-tab active-rank" data-dir="desc" onclick="dashOciosidadeSetDirecao('desc')"
                 style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior</button>
@@ -965,76 +965,78 @@
             </div>
           </div>
         </div>
-        <div id="dash-ociosidade-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
+        <div class="dash-secbody-ociosidade" style="display:none;"><div id="dash-ociosidade-transp"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:20px;overflow:hidden;">
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-opocup')">
           <div>
-            <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:2px;">Ocupação vs Volume por Operação (Cidade)</div>
+            <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:2px;">Ocupação vs Volume por Operação (Cidade) <span id="dash-secbody-opocup-seta" style="font-size:11px;color:var(--text-3);">▼</span></div>
             <div style="font-size:10.5px;color:var(--text-3);">Acompanha o filtro de "🏙️ Operação (Cidade)" acima — filtre pra ver só as operações que interessam</div>
           </div>
-          <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
+          <div onclick="event.stopPropagation()" style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
             <button class="dash-opocup-tab active-rank" data-campo="volume" onclick="dashOpOcupVolSetOrdem('volume')"
               style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior Volume</button>
             <button class="dash-opocup-tab" data-campo="ocup" onclick="dashOpOcupVolSetOrdem('ocup')"
               style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior Ocupação</button>
           </div>
         </div>
-        <div id="dash-chart-op-ocup-vol" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
+        <div class="dash-secbody-opocup" style="display:none;"><div id="dash-chart-op-ocup-vol" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:20px;overflow:hidden;">
-        <div style="margin-bottom:12px;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:2px;">📦 Volume por Produto (m³)</div>
+        <div style="margin-bottom:12px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-produtos')">
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:2px;">📦 Volume por Produto (m³) <span id="dash-secbody-produtos-seta" style="font-size:11px;color:var(--text-3);">▼</span></div>
           <div style="font-size:10.5px;color:var(--text-3);">Soma de todos os produtos com registro de entrega no período/filtro selecionado acima. Clique num produto pra ver o ciclo de compra por cliente.</div>
         </div>
-        <div id="dash-chart-produtos" style="max-height:420px;overflow-y:auto;overflow-x:hidden;margin-bottom:14px;"></div>
-        <div id="dash-ciclo-produto" style="border-top:1px solid var(--border-dk);padding-top:12px;">
-          <div style="color:var(--text-3);font-size:12px;padding:12px;">Clique em um produto acima pra ver o ciclo de compra por cliente.</div>
+        <div class="dash-secbody-produtos" style="display:none;">
+          <div id="dash-chart-produtos" style="max-height:420px;overflow-y:auto;overflow-x:hidden;margin-bottom:14px;"></div>
+          <div id="dash-ciclo-produto" style="border-top:1px solid var(--border-dk);padding-top:12px;">
+            <div style="color:var(--text-3);font-size:12px;padding:12px;">Clique em um produto acima pra ver o ciclo de compra por cliente.</div>
+          </div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <div style="font-size:12px;font-weight:600;color:var(--text-2);">Volume por Cliente (m3)</div>
-            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-vol')">
+            <div style="font-size:12px;font-weight:600;color:var(--text-2);">Volume por Cliente (m3) <span id="dash-secbody-vol-seta" style="font-size:11px;color:var(--text-3);">▼</span></div>
+            <div onclick="event.stopPropagation()" style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
               <button class="dash-ordvol-tab active-rank" data-ordem="desc" onclick="dashSetOrdemVol('desc')"
                 style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior</button>
               <button class="dash-ordvol-tab" data-ordem="asc" onclick="dashSetOrdemVol('asc')"
                 style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Menor</button>
             </div>
           </div>
-          <div id="dash-chart-vol" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
+          <div class="dash-secbody-vol" style="display:none;"><div id="dash-chart-vol" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div></div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <div style="font-size:12px;font-weight:600;color:var(--text-2);">Entregas por Cliente</div>
-            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-ent')">
+            <div style="font-size:12px;font-weight:600;color:var(--text-2);">Entregas por Cliente <span id="dash-secbody-ent-seta" style="font-size:11px;color:var(--text-3);">▼</span></div>
+            <div onclick="event.stopPropagation()" style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;flex-shrink:0;">
               <button class="dash-ordent-tab active-rank" data-ordem="desc" onclick="dashSetOrdemEnt('desc')"
                 style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Maior</button>
               <button class="dash-ordent-tab" data-ordem="asc" onclick="dashSetOrdemEnt('asc')"
                 style="padding:5px 12px;font-size:10.5px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;white-space:nowrap;">Menor</button>
             </div>
           </div>
-          <div id="dash-chart-ent" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
+          <div class="dash-secbody-ent" style="display:none;"><div id="dash-chart-ent" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div></div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:14px;">
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Taxa de Ocupação por Cliente (%)</div>
-          <div id="dash-chart-ocup" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-ocupcli')">Taxa de Ocupação por Cliente (%) <span id="dash-secbody-ocupcli-seta" style="font-size:11px;color:var(--text-3);">▼</span></div>
+          <div class="dash-secbody-ocupcli" style="display:none;"><div id="dash-chart-ocup" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div></div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;overflow:hidden;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Km Rodado vs Volume por Cliente</div>
-          <div id="dash-chart-km" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-km')">Km Rodado vs Volume por Cliente <span id="dash-secbody-km-seta" style="font-size:11px;color:var(--text-3);">▼</span></div>
+          <div class="dash-secbody-km" style="display:none;"><div id="dash-chart-km" style="max-height:480px;overflow-y:auto;overflow-x:hidden;"></div></div>
         </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-dropsize')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">📦 Ranking de Drop Size por Cliente</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">📦 Ranking de Drop Size por Cliente <span id="dash-secbody-dropsize-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Volume médio por entrega (m³) de cada cliente — mesmos filtros de Cliente/Operação/Segmento/Transportadora/Período do topo</div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <div style="display:flex;align-items:center;gap:6px;" title="Esconde clientes com menos entregas do que esse número — drop size de quem entregou só 1-2 vezes não é um padrão confiável">
               <label style="font-size:11px;color:var(--text-3);font-weight:600;white-space:nowrap;">Mín. entregas</label>
               <input id="dash-dropsize-min-entregas" type="number" min="1" step="1" value="3" onchange="dashRenderRankingDropSize()" style="width:56px;font-size:12px;padding:5px 7px;border:1px solid var(--border-dk);border-radius:7px;background:var(--surface);color:var(--text);"/>
@@ -1047,12 +1049,12 @@
             </div>
           </div>
         </div>
-        <div id="dash-ranking-dropsize"><div class="empty">Sincronize o Dashboard pra ver o ranking.</div></div>
+        <div class="dash-secbody-dropsize" style="display:none;"><div id="dash-ranking-dropsize"><div class="empty">Sincronize o Dashboard pra ver o ranking.</div></div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-inativos')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">🔔 Clientes sem comprar</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🔔 Clientes sem comprar <span id="dash-secbody-inativos-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Última entrega de cada cliente no histórico COMPLETO (não muda com o filtro de mês/período acima) — quem passar do limite escolhido entra no alerta</div>
           </div>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;">
@@ -1089,20 +1091,21 @@
             </div>
           </div>
         </div>
-        <div id="dash-clientes-inativos" style="margin-top:10px;"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div>
+        <div class="dash-secbody-inativos" style="display:none;"><div id="dash-clientes-inativos" style="margin-top:10px;"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Carregando...</div></div></div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:14px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-          <div style="font-size:12px;font-weight:600;color:var(--text-2);">Mapa Historico de Viagens</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;cursor:pointer;" onclick="dashToggleSecaoMapa()">
+          <div style="font-size:12px;font-weight:600;color:var(--text-2);">Mapa Historico de Viagens <span id="dash-secbody-mapa-seta" style="font-size:11px;color:var(--text-3);">▼</span></div>
           <div style="display:flex;gap:12px;align-items:center;font-size:11px;color:var(--text-3);">
             <span><span style="display:inline-block;width:10px;height:10px;background:#00A499;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Terminal</span>
             <span><span style="display:inline-block;width:10px;height:10px;background:#4F46E5;border-radius:50%;margin-right:4px;vertical-align:middle;"></span>Cliente</span>
           </div>
         </div>
-        <div id="dash-mapa" style="height:420px;border-radius:8px;background:#E5E7EB;isolation:isolate;position:relative;z-index:0;"></div>
+        <div class="dash-secbody-mapa" style="display:none;"><div id="dash-mapa" style="height:420px;border-radius:8px;background:#E5E7EB;isolation:isolate;position:relative;z-index:0;"></div></div>
       </div>
         <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:16px;margin-bottom:20px;">
-        <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;">Tabela Detalhada por Cliente</div>
+        <div style="font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:12px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-tabcli')">Tabela Detalhada por Cliente <span id="dash-secbody-tabcli-seta" style="font-size:11px;color:var(--text-3);">▼</span></div>
+        <div class="dash-secbody-tabcli" style="display:none;">
         <div class="tscroll">
           <table style="min-width:700px;width:100%;border-collapse:collapse;background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;">
             <thead><tr style="background:#F9FAFB;">
@@ -1118,14 +1121,17 @@
             </tbody>
           </table>
         </div>
+        </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;font-weight:700;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-histveic')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">📅 Histórico por Veículo</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">📅 Histórico por Veículo <span id="dash-secbody-histveic-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-top:2px;">Dia a dia: status marcado no Painel de Disponibilidade e km planejado (ida + volta) nas roteirizações. O calendário abaixo estreita o período só deste relatório, sem afetar o resto do Dashboard</div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        </div>
+        <div class="dash-secbody-histveic" style="display:none;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
             <select id="dash-histveic-transp" onchange="dashFiltrarPlacasHistVeiculo()"
               style="background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;color:var(--text-2);min-width:180px;">
               <option value="">Todas as transportadoras</option>
@@ -1134,7 +1140,6 @@
               style="background:var(--surface);border:1px solid var(--border-dk);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;color:var(--text-2);min-width:220px;">
               <option value="">Carregando placas...</option>
             </select>
-          </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px;padding-top:10px;border-top:1px solid var(--border-dk);">
           <span style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);">Período</span>
@@ -1150,14 +1155,16 @@
           <button class="btn btn-sm" style="font-weight:700;" onclick="dashExportarHistoricoVeiculoXLSX()" title="Baixar esta tabela em Excel">⬇ Excel</button>
         </div>
         <div id="dash-histveic-tabela"><div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;font-weight:700;">Selecione um veículo e um período, depois clique em "Buscar".</div></div>
+        </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-agenda')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">🗓️ Agenda de Fechamento</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🗓️ Agenda de Fechamento <span id="dash-secbody-agenda-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-top:2px;">Em qual dia da semana cada cliente costuma comprar mais — olhando todo o histórico (não só o período selecionado acima). Atualiza junto com o "🔄 Sincronizar" no topo da tela.</div>
           </div>
         </div>
+        <div class="dash-secbody-agenda" style="display:none;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 14px;padding-top:12px;border-top:1px solid var(--border-dk);">
           <span style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);margin-right:2px;">Mín. de pedidos nesse dia</span>
           <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;" title="Só mostra cliente que já comprou pelo menos essa quantidade de vezes NESTE dia da semana — filtra quem comprou um volume grande só uma vez">
@@ -1229,18 +1236,20 @@
         <div id="dash-agenda-fechamento-grid" style="display:grid;grid-template-columns:repeat(6,minmax(160px,1fr));gap:10px;overflow-x:auto;">
           <div style="grid-column:1/-1;color:var(--text-3);text-align:center;padding:32px;font-size:12px;font-weight:700;">Clique em "🔄 Sincronizar" no topo da tela para montar a agenda a partir do histórico completo.</div>
         </div>
+        </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-balfrota')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">⚖️ Balanceamento de Frota</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">⚖️ Balanceamento de Frota <span id="dash-secbody-balfrota-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-top:2px;">Onde falta caminhão (e quanto), onde sobra, e recomendação de realocação — compara a capacidade acumulada da frota com a demanda real, por operação, no período carregado com o "🗓️ Período" no topo.</div>
           </div>
-          <div style="display:flex;gap:8px;flex-shrink:0;">
+          <div onclick="event.stopPropagation()" style="display:flex;gap:8px;flex-shrink:0;">
             <button class="btn btn-sm" onclick="dashToggleAliasesOperacao()" title="Unificar nomes que representam a mesma operação mas vêm escritos diferente (ex.: 'São Caetano' e 'São Caetano do Sul')">⚙️ Unificar nomes</button>
             <button class="btn btn-sm btn-green" style="font-weight:700;" onclick="dashCarregarBalanceamentoFrota()" title="Cruza todos os sinais de novo pro período atualmente carregado">📊 Gerar Relatório</button>
           </div>
         </div>
+        <div class="dash-secbody-balfrota" style="display:none;">
         <div id="dash-aliases-panel" style="display:none;margin:10px 0;padding:12px 14px;background:rgba(0,0,0,0.02);border:1px solid var(--border-dk);border-radius:10px;">
           <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-bottom:8px;">OPERAÇÕES QUE SÃO A MESMA COISA (unifica na hora de gerar o relatório)</div>
           <div id="dash-aliases-lista" style="margin-bottom:10px;"></div>
@@ -1254,22 +1263,25 @@
         <div id="dash-balanceamento-box" style="margin-top:10px;">
           <div style="color:var(--text-3);text-align:center;padding:32px;font-size:12px;font-weight:700;">Clique em "📊 Gerar Relatório" pra cruzar demanda, capacidade da frota, ocupação, utilização e jornada do período carregado.</div>
         </div>
+        </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px;cursor:pointer;" onclick="dashToggleSecaoDash('dash-secbody-dev')">
           <div>
-            <div style="font-size:14px;font-weight:700;color:var(--text);">🔄 Devoluções e Reentregas</div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">🔄 Devoluções e Reentregas <span id="dash-secbody-dev-seta" style="font-size:12px;color:var(--text-3);">▼</span></div>
             <div style="font-size:11px;font-weight:700;color:var(--text-3);margin-top:2px;">Ocorrências registradas no Histórico (⚠️ Registrar, no detalhe de cada roteirização) — no período carregado com o "🗓️ Período" no topo, respeitando Cliente/Operação/Transportadora.</div>
           </div>
-          <div style="display:flex;gap:8px;flex-shrink:0;align-items:center;">
+          <div onclick="event.stopPropagation()" style="display:flex;gap:8px;flex-shrink:0;align-items:center;">
             <input id="dash-dev-filtro-pedido" placeholder="Filtrar por pedido (id ou SAP)..." onkeydown="if(event.key==='Enter')dashCarregarDevolucoes()" style="font-size:12px;padding:7px 10px;border:1px solid var(--border-dk);border-radius:8px;background:var(--surface);color:var(--text);width:190px;"/>
             <button class="btn btn-sm" onclick="dashExportarDevolucoes()" title="Exporta as ocorrências do relatório atual em Excel">📥 Exportar Excel</button>
             <button class="btn btn-sm" onclick="dashExportarDevolucoesPDF()" title="Exporta o relatório atual (KPIs, gráficos e tabela) em PDF, com a identidade visual NEXTA">📄 Exportar PDF</button>
             <button class="btn btn-sm btn-green" style="font-weight:700;" onclick="dashCarregarDevolucoes()" title="Busca de novo as ocorrências registradas pro período atualmente carregado, aplicando o filtro de pedido se preenchido">📊 Gerar Relatório</button>
           </div>
         </div>
+        <div class="dash-secbody-dev" style="display:none;">
         <div id="dash-devolucoes-box" style="margin-top:10px;">
           <div style="color:var(--text-3);text-align:center;padding:32px;font-size:12px;font-weight:700;">Clique em "📊 Gerar Relatório" pra buscar as ocorrências registradas no período carregado.</div>
+        </div>
         </div>
       </div>
     </div>
