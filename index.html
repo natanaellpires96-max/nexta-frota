@@ -1034,11 +1034,17 @@
             <div style="font-size:14px;font-weight:700;color:var(--text);">📦 Ranking de Drop Size por Cliente</div>
             <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Volume médio por entrega (m³) de cada cliente — mesmos filtros de Cliente/Operação/Segmento/Transportadora/Período do topo</div>
           </div>
-          <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;">
-            <button id="dash-dropsize-btn-melhores" onclick="dashRenderRankingDropSize('melhores')"
-              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">🏆 15 Melhores</button>
-            <button id="dash-dropsize-btn-piores" onclick="dashRenderRankingDropSize('piores')"
-              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">📉 15 Piores</button>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:6px;" title="Esconde clientes com menos entregas do que esse número — drop size de quem entregou só 1-2 vezes não é um padrão confiável">
+              <label style="font-size:11px;color:var(--text-3);font-weight:600;white-space:nowrap;">Mín. entregas</label>
+              <input id="dash-dropsize-min-entregas" type="number" min="1" step="1" value="3" onchange="dashRenderRankingDropSize()" style="width:56px;font-size:12px;padding:5px 7px;border:1px solid var(--border-dk);border-radius:7px;background:var(--surface);color:var(--text);"/>
+            </div>
+            <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;">
+              <button id="dash-dropsize-btn-melhores" onclick="dashRenderRankingDropSize('melhores')"
+                style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">🏆 15 Melhores</button>
+              <button id="dash-dropsize-btn-piores" onclick="dashRenderRankingDropSize('piores')"
+                style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">📉 15 Piores</button>
+            </div>
           </div>
         </div>
         <div id="dash-ranking-dropsize"><div class="empty">Sincronize o Dashboard pra ver o ranking.</div></div>
