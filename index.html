@@ -1029,6 +1029,21 @@
         </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">📦 Ranking de Drop Size por Cliente</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Volume médio por entrega (m³) de cada cliente — mesmos filtros de Cliente/Operação/Segmento/Transportadora/Período do topo</div>
+          </div>
+          <div style="display:flex;gap:4px;background:rgba(0,0,0,.15);padding:3px;border-radius:9px;">
+            <button id="dash-dropsize-btn-melhores" onclick="dashRenderRankingDropSize('melhores')"
+              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:var(--pet-green,#b5e51d);color:#000;cursor:pointer;letter-spacing:.02em;">🏆 15 Melhores</button>
+            <button id="dash-dropsize-btn-piores" onclick="dashRenderRankingDropSize('piores')"
+              style="padding:6px 14px;font-size:11px;font-weight:700;border:none;border-radius:7px;background:transparent;color:var(--text-2);cursor:pointer;letter-spacing:.02em;">📉 15 Piores</button>
+          </div>
+        </div>
+        <div id="dash-ranking-dropsize"><div class="empty">Sincronize o Dashboard pra ver o ranking.</div></div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border-dk);border-radius:12px;padding:18px 20px;margin-bottom:20px;">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;">
           <div>
             <div style="font-size:14px;font-weight:700;color:var(--text);">🔔 Clientes sem comprar</div>
