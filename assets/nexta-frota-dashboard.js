@@ -2475,6 +2475,8 @@ let _dashTodosClientes   = [];        // lista completa de clientes do período
 let _dashUltimosProdutos = [];        // último resultado de dashAgregarProdutos() — reaproveitado ao clicar num produto
 window._dashUltimosKPIs = {};         // valores BRUTOS (não formatados) dos KPIs do topo — usado pelo Relatório de Resumo da Operação. Preso em `window` de propósito (não só `let`) pra nunca dar "is not defined" na função de relatório, não importa em que ordem/contexto o script rodar.
 let _dashUltimosKPIs = window._dashUltimosKPIs; // alias local, pros vários "_dashUltimosKPIs.campo = valor" já escritos dentro de dashRender continuarem funcionando sem precisar reescrever cada um
+let _dashUltimosClientesDropSize = []; // {nome, volume, entregas, dropSize} de cada cliente do filtro atual — o toggle Melhores/Piores reaproveita essa lista
+let _dashModoRankingDropSize = 'melhores'; // 'melhores' | 'piores' — lembra o último modo escolhido entre re-renderizações
 let _dashPeriodoAtualDescricao = '';  // texto do período atualmente carregado ("Ago/2026", "Todos os períodos", "Hoje (04/08/2026)") — sempre em sincronia com o que REALMENTE está carregado, ao contrário do rótulo do dropdown sozinho
 let _dashProdutoSelecionado = null;   // nome do produto com o painel de ciclo de compra aberto
 
@@ -3062,6 +3064,12 @@ function dashRender(snapshots) {
   const _itensEnt = [...clientesFiltrados].sort((a, b) => _dashOrdemEnt === 'asc' ? a.entregas - b.entregas : b.entregas - a.entregas);
   dashBarChart('dash-chart-ent', _itensEnt,
     c=>c.entregas, '#70a8f0', 'ent.', c=>c.nome);
+  // Ranking de Drop Size por Cliente — guarda a lista pro toggle
+  // Melhores/Piores reaproveitar sem precisar refazer o filtro.
+  _dashUltimosClientesDropSize = clientesFiltrados
+    .filter(c => c.entregas > 0)
+    .map(c => ({ nome: c.nome, volume: c.volume, entregas: c.entregas, dropSize: c.volume / c.entregas }));
+  dashRenderRankingDropSize(_dashModoRankingDropSize || 'melhores');
   // Gráfico Km vs Volume
   dashKmVolChart('dash-chart-km', clientesFiltrados);
   // Gráfico de ocupação por cliente
@@ -3166,6 +3174,49 @@ function dashBarChart(containerId, itens, valFn, cor, sufixo, labelFn) {
   }).join('');
 }
 // ── Gráfico Km vs Volume ───────────────────────────────────────────────────
+// Ranking de Drop Size por Cliente — tabela simples (não gráfico de barra,
+// já que aqui o que importa é o RANK + os 3 números lado a lado: drop size,
+// volume total e nº de entregas, pra dar contexto de quão confiável é
+// aquele drop size). Toggle Melhores/Piores só reordena e refaz o corte de
+// 15 — não busca dado de novo.
+function dashRenderRankingDropSize(modo) {
+  _dashModoRankingDropSize = modo;
+  const box = document.getElementById('dash-ranking-dropsize');
+  if (!box) return;
+  const btnMelhores = document.getElementById('dash-dropsize-btn-melhores');
+  const btnPiores = document.getElementById('dash-dropsize-btn-piores');
+  if (btnMelhores) { btnMelhores.style.background = modo === 'melhores' ? 'var(--pet-green,#b5e51d)' : 'transparent'; btnMelhores.style.color = modo === 'melhores' ? '#000' : 'var(--text-2)'; }
+  if (btnPiores) { btnPiores.style.background = modo === 'piores' ? 'var(--pet-green,#b5e51d)' : 'transparent'; btnPiores.style.color = modo === 'piores' ? '#000' : 'var(--text-2)'; }
+  const lista = (_dashUltimosClientesDropSize || []).slice()
+    .sort((a, b) => modo === 'piores' ? a.dropSize - b.dropSize : b.dropSize - a.dropSize)
+    .slice(0, 15);
+  if (!lista.length) {
+    box.innerHTML = '<div class="empty">Sem clientes com entrega suficiente nesse período/filtro pra montar o ranking.</div>';
+    return;
+  }
+  box.innerHTML = `<div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:rgba(0,0,0,0.03);">
+        <th style="padding:7px 10px;text-align:left;color:var(--text-3);">#</th>
+        <th style="padding:7px 10px;text-align:left;color:var(--text-3);">CLIENTE</th>
+        <th style="padding:7px 10px;text-align:right;color:var(--text-3);">DROP SIZE</th>
+        <th style="padding:7px 10px;text-align:right;color:var(--text-3);">VOLUME</th>
+        <th style="padding:7px 10px;text-align:right;color:var(--text-3);">ENTREGAS</th>
+      </tr></thead>
+      <tbody>
+        ${lista.map((c, i) => `
+          <tr style="border-top:1px solid var(--border-dk);">
+            <td style="padding:6px 10px;color:var(--text-3);">${i + 1}</td>
+            <td style="padding:6px 10px;font-weight:600;">${c.nome}</td>
+            <td style="padding:6px 10px;text-align:right;font-weight:700;color:${modo === 'piores' ? '#DC2626' : '#16A34A'};">${c.dropSize.toFixed(1)} m³</td>
+            <td style="padding:6px 10px;text-align:right;">${c.volume.toFixed(1)} m³</td>
+            <td style="padding:6px 10px;text-align:right;">${c.entregas}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+window.dashRenderRankingDropSize = dashRenderRankingDropSize;
 function dashKmVolChart(containerId, clientes) {
   const el = document.getElementById(containerId);
   if (!el) return;
