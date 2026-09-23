@@ -3782,6 +3782,37 @@ function _dashAgregarDevolucoes(registros) {
 // fonte. Esse bloco só reconstrói o bruto (líquido + devolvido) pra deixar
 // visível quanto já foi descontado, sem fingir que ainda é uma conta à
 // parte.
+// Percentual de ocorrências sobre as entregas do período — usa o mesmo
+// total de entregas que já alimenta o card "Entregas" do topo do Dashboard
+// (_dashUltimosKPIs.entregas), pra ficar consistente com o resto da tela.
+function _dashPercentualOcorrenciasHtml(totalDevolucoes, totalReentregas) {
+  const totalEntregas = _dashUltimosKPIs?.entregas;
+  if (typeof totalEntregas !== 'number' || totalEntregas <= 0) {
+    return '<div style="font-size:11px;color:var(--text-3);margin-bottom:18px;">Não achei o total de entregas do período (gere o Dashboard principal primeiro, com "🔄 Sincronizar") pra calcular o percentual aqui.</div>';
+  }
+  const totalOcorrencias = totalDevolucoes + totalReentregas;
+  const pctTotal = (totalOcorrencias / totalEntregas) * 100;
+  const pctDevolucao = (totalDevolucoes / totalEntregas) * 100;
+  const pctReentrega = (totalReentregas / totalEntregas) * 100;
+  return `
+    <div style="background:rgba(0,0,0,0.02);border:1px solid var(--border-dk);border-radius:10px;padding:14px 16px;margin-bottom:18px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;">Percentual de ocorrências sobre as entregas do período</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;">
+        <div>
+          <div style="font-size:22px;font-weight:700;">${pctTotal.toFixed(2)}%</div>
+          <div style="font-size:10.5px;color:var(--text-3);">Total — ${totalOcorrencias} ocorrência${totalOcorrencias !== 1 ? 's' : ''} / ${totalEntregas} entrega${totalEntregas !== 1 ? 's' : ''}</div>
+        </div>
+        <div>
+          <div style="font-size:19px;font-weight:700;color:#DC2626;">${pctDevolucao.toFixed(2)}%</div>
+          <div style="font-size:10.5px;color:var(--text-3);">Devolução — ${totalDevolucoes} / ${totalEntregas}</div>
+        </div>
+        <div>
+          <div style="font-size:19px;font-weight:700;color:#D97706;">${pctReentrega.toFixed(2)}%</div>
+          <div style="font-size:10.5px;color:var(--text-3);">Reentrega — ${totalReentregas} / ${totalEntregas}</div>
+        </div>
+      </div>
+    </div>`;
+}
 function _dashVolumeLiquidoHtml(volumeDevolvido) {
   const liquido = _dashUltimosKPIs?.volume;
   if (typeof liquido !== 'number') {
@@ -3842,6 +3873,7 @@ function _dashRenderDevolucoes(box, registros, datasSnap) {
       </div>
     </div>
     ${_dashVolumeLiquidoHtml(volumeDevolvido)}
+    ${_dashPercentualOcorrenciasHtml(totalDevolucoes, totalReentregas)}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;margin-bottom:18px;">
       <div>
         <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">Volume afetado por operação</div>
@@ -3998,6 +4030,23 @@ function dashExportarDevolucoesPDF() {
     doc.text(`Volume do período: ${brutoPdf.toFixed(1)} m³ brutos - ${volumeDevolvido.toFixed(1)} m³ devolvidos = ${liquidoPdf.toFixed(1)} m³`, marginX + 4, y + 6);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(130, 130, 130);
     doc.text('Reentrega não desconta (produto ainda vai ser entregue, só depois). Esse desconto já é o mesmo aplicado no card "Volume m³" do Dashboard.', marginX + 4, y + 11);
+    y += 18;
+  }
+
+  // Percentual de ocorrências sobre as entregas do período — mesma conta da tela
+  const totalEntregasPdf = _dashUltimosKPIs?.entregas;
+  if (typeof totalEntregasPdf === 'number' && totalEntregasPdf > 0) {
+    const totalOcorrenciasPdf = totalDevolucoes + totalReentregas;
+    const pctTotalPdf = (totalOcorrenciasPdf / totalEntregasPdf) * 100;
+    const pctDevolucaoPdf = (totalDevolucoes / totalEntregasPdf) * 100;
+    const pctReentregaPdf = (totalReentregas / totalEntregasPdf) * 100;
+    doc.setFillColor(248, 248, 248);
+    doc.setDrawColor(222, 222, 222);
+    doc.roundedRect(marginX, y, pageW - marginX * 2, 14, 2, 2, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(30, 30, 30);
+    doc.text(`Ocorrências sobre entregas: ${pctTotalPdf.toFixed(2)}% total  ·  Devolução ${pctDevolucaoPdf.toFixed(2)}%  ·  Reentrega ${pctReentregaPdf.toFixed(2)}%`, marginX + 4, y + 6);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(130, 130, 130);
+    doc.text(`${totalOcorrenciasPdf} ocorrência(s) sobre ${totalEntregasPdf} entrega(s) do período (mesmo total do card "Entregas" do Dashboard).`, marginX + 4, y + 11);
     y += 18;
   }
 
