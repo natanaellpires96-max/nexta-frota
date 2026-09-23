@@ -4328,7 +4328,7 @@ async function renderUsers(body, subTabs=''){
     const inativo = u.ativo===false;
     return `
     <tr style="${inativo?'opacity:.55':''}">
-      <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(uid)}${inativo?' <span class="badge b-red" style="margin-left:4px;">Inativo</span>':''}</td>
+      <td style="font-family:'DM Mono',monospace;font-weight:500;word-break:break-word;overflow-wrap:anywhere;">${esc(uid)}${inativo?' <span class="badge b-red" style="margin-left:4px;">Inativo</span>':''}</td>
       <td style="font-size:12px">${esc(u.name)}</td>
       <td><span class="badge ${u.role==='admin'?'b-lime':u.role==='operacional'?'b-amber':'b-blue'}">${u.role==='admin'?'Admin':u.role==='operacional'?'Operacional':'Transportador'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${esc(u.carrier||'—')}</td>
@@ -4397,7 +4397,7 @@ async function renderUsers(body, subTabs=''){
     <p class="sec-title" style="margin-bottom:.75rem">Usuários cadastrados</p>
     <div class="tscroll">
       <table class="table" style="min-width:680px">
-        <thead><tr><th style="width:10%">LOGIN</th><th style="width:16%">NOME</th><th style="width:9%">PERFIL</th><th style="width:16%">TRANSPORTADOR</th><th style="width:18%">E-MAIL</th><th style="width:17%">OPERACOES</th><th style="width:14%">AÇÕES</th></tr></thead>
+        <thead><tr><th style="width:13%">LOGIN</th><th style="width:15%">NOME</th><th style="width:9%">PERFIL</th><th style="width:15%">TRANSPORTADOR</th><th style="width:17%">E-MAIL</th><th style="width:17%">OPERACOES</th><th style="width:14%">AÇÕES</th></tr></thead>
         <tbody>${userRows}</tbody>
       </table>
     </div>`;
