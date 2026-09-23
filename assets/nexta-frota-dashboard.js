@@ -2771,6 +2771,44 @@ window.dashAplicarFiltroCidades   = dashAplicarFiltroCidades;
 window.dashTogglePainelPeriodo    = dashTogglePainelPeriodo;
 window.dashSelecionarTodosMeses   = dashSelecionarTodosMeses;
 
+// ── Recolher/expandir seções do Dashboard — clique no cabeçalho ────────────
+// A tela cresceu muito (12+ blocos empilhados); por padrão TODAS as seções
+// começam recolhidas (só o cabeçalho visível), e cada clique lembra do
+// estado no navegador (localStorage), pra não ter que reabrir tudo de novo
+// toda vez que trocar de aba.
+function dashToggleSecaoDash(classeSecao) {
+  const els = document.querySelectorAll('.' + classeSecao);
+  if (!els.length) return;
+  const abrindo = els[0].style.display === 'none';
+  els.forEach(el => { el.style.display = abrindo ? '' : 'none'; });
+  const seta = document.getElementById(classeSecao + '-seta');
+  if (seta) seta.textContent = abrindo ? '▲' : '▼';
+  try { localStorage.setItem('nexta_dash_sec_' + classeSecao, abrindo ? '1' : '0'); } catch (e) {}
+}
+function dashRestaurarEstadoSecoes() {
+  const classes = new Set();
+  document.querySelectorAll('[class*="dash-secbody-"]').forEach(el => {
+    el.classList.forEach(c => { if (c.startsWith('dash-secbody-')) classes.add(c); });
+  });
+  classes.forEach(classeSecao => {
+    let aberto = null;
+    try { aberto = localStorage.getItem('nexta_dash_sec_' + classeSecao); } catch (e) {}
+    const mostrar = aberto === '1'; // padrão: recolhido, a não ser que já tenha sido aberto antes
+    document.querySelectorAll('.' + classeSecao).forEach(el => { el.style.display = mostrar ? '' : 'none'; });
+    const seta = document.getElementById(classeSecao + '-seta');
+    if (seta) seta.textContent = mostrar ? '▲' : '▼';
+  });
+}
+window.dashToggleSecaoDash = dashToggleSecaoDash;
+// O mapa (Leaflet) fica com o tile quebrado se ele for inicializado — ou
+// ficar escondido e reaparecer — sem chamar invalidateSize() depois que o
+// container volta a ter tamanho de verdade. Um pequeno atraso garante que o
+// display:none já foi desfeito antes de recalcular.
+function dashToggleSecaoMapa() {
+  dashToggleSecaoDash('dash-secbody-mapa');
+  setTimeout(() => { if (typeof _dashMap !== 'undefined' && _dashMap) _dashMap.invalidateSize(); }, 60);
+}
+window.dashToggleSecaoMapa = dashToggleSecaoMapa;
 function dashRender(snapshots) {
   _dashSnapshotsAtivos = snapshots || [];
   window._dashSnapshotsAtivos = _dashSnapshotsAtivos; // acessível pra funções fora deste IIFE (ex.: dashDiagnosticarPedagioHoje)
@@ -3125,6 +3163,7 @@ function dashRender(snapshots) {
   // filtro de Cliente/Segmento em cima do que já foi calculado, pra ficar
   // consistente com o resto da tela sem reler o disco a cada troca de filtro.
   dashRenderClientesInativosUI(_dashUltimaListaInativos);
+  dashRestaurarEstadoSecoes(); // aplica o estado recolhido/expandido lembrado de cada seção
 }
 let _dashOrdemVol = 'desc'; // 'desc' = maior primeiro, 'asc' = menor primeiro
 let _dashOrdemEnt = 'desc';
