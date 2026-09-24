@@ -195,6 +195,7 @@
         </select>
       </div>
       <button class="btn btn-sm" onclick="limparFiltros('clientes')">Limpar</button>
+      <button class="btn btn-sm" id="btn-clientes-mapa-toggle" onclick="toggleClientesMapa()">🗺️ Ver no Mapa</button>
       <div style="position:relative;">
         <button class="btn btn-sm" onclick="toggleMenuExportarClientes()" id="btn-exportar-clientes">📤 Exportar</button>
         <div id="menu-exportar-clientes" style="display:none;position:fixed;z-index:500;background:var(--surface);border:1px solid var(--border-dk);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.16);min-width:170px;overflow:hidden;padding:5px;">
@@ -216,6 +217,13 @@
     </div>
     <div id="clientes-list">
       <div class="empty">Nenhum cliente cadastrado.<br>Clique em "+ Cliente" para começar.</div>
+    </div>
+    <div id="clientes-mapa-wrap" class="hidden" style="margin-top:8px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:8px 10px;background:var(--bg-2,#F4F6F1);border-radius:8px;">
+        <span id="clientes-mapa-contador" style="font-size:12px;font-weight:700;color:var(--text-2);">Carregando...</span>
+        <span style="font-size:11px;color:var(--text-3);margin-left:auto;">Acompanha os filtros acima — clique num pino pra ver os detalhes do cliente.</span>
+      </div>
+      <div id="clientes-mapa" style="width:100%;height:560px;border-radius:10px;overflow:hidden;border:1px solid var(--border);"></div>
     </div>
     <div id="form-cliente" class="card-form hidden" style="margin-top:12px;">
       <div class="sec-title" id="form-cliente-title">Novo cliente</div>
