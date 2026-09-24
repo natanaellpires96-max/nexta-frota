@@ -3306,6 +3306,27 @@ function mostrarClientesIncompletos() {
   const nomes = incompletos.map(c => `• ${c.nome}${c.codigoSAP ? ` (SAP ${c.codigoSAP})` : ''}`).join('\n');
   alert(`Clientes com cadastro incompleto (${incompletos.length}):\n\n${nomes}\n\nForam criados automaticamente a partir de um pedido, sem cadastro prévio. Revise coordenada, tempo de descarga, segmento e restrição de cada um em "Editar".`);
 }
+// Filtro de Clientes — extraído de renderClientes() pra ser reaproveitado
+// também pelo mapa (toggleClientesMapa/renderClientesMapa), que precisa
+// exatamente da mesma lista filtrada, sem duplicar a lógica em dois lugares.
+function _clientesFiltrados() {
+  const filtroCliente = valId('f-cli-cliente');
+  const filtroCidade = valId('f-cli-cidade');
+  const filtroSegmento = valId('f-cli-segmento');
+  const filtroAssessor = valId('f-cli-assessor');
+  const filtroOperacao = valId('f-cli-operacao');
+  const filtroBandeira = valId('f-cli-bandeira');
+  const filtroContrato = valId('f-cli-contrato');
+  return clientes.filter(c =>
+    containsFiltro(c.nome, filtroCliente) &&
+    containsFiltro(c.cidade, filtroCidade) &&
+    containsFiltro(c.segmento, filtroSegmento) &&
+    containsFiltro(c.assessor, filtroAssessor) &&
+    (!filtroOperacao || c.operacao === filtroOperacao) &&
+    _bateFiltroExato(c.bandeira, filtroBandeira) &&
+    _bateFiltroExato(c.tipoContrato, filtroContrato)
+  );
+}
 function renderClientes() {
   // Auto-mescla duplicados (ver _mesclarClientesDuplicadosSilencioso) toda
   // vez que a lista é desenhada — não só nos pontos que carregam do
@@ -3320,22 +3341,12 @@ function renderClientes() {
     return;
   }
   _popularSelectOperacaoCliente('f-cli-operacao');
-  const filtroCliente = valId('f-cli-cliente');
-  const filtroCidade = valId('f-cli-cidade');
-  const filtroSegmento = valId('f-cli-segmento');
-  const filtroAssessor = valId('f-cli-assessor');
-  const filtroOperacao = valId('f-cli-operacao');
-  const filtroBandeira = valId('f-cli-bandeira');
-  const filtroContrato = valId('f-cli-contrato');
-  const lista = clientes.filter(c =>
-    containsFiltro(c.nome, filtroCliente) &&
-    containsFiltro(c.cidade, filtroCidade) &&
-    containsFiltro(c.segmento, filtroSegmento) &&
-    containsFiltro(c.assessor, filtroAssessor) &&
-    (!filtroOperacao || c.operacao === filtroOperacao) &&
-    _bateFiltroExato(c.bandeira, filtroBandeira) &&
-    _bateFiltroExato(c.tipoContrato, filtroContrato)
-  );
+  const lista = _clientesFiltrados();
+  // Se o mapa estiver aberto, atualiza junto — assim trocar um filtro com o
+  // mapa visível já reflete na hora, sem precisar fechar/abrir de novo.
+  if (document.getElementById('clientes-mapa-wrap') && !document.getElementById('clientes-mapa-wrap').classList.contains('hidden')) {
+    renderClientesMapa();
+  }
   if (!lista.length) {
     el.innerHTML = '<div class="empty">Nenhum cliente encontrado para os filtros.</div>';
     return;
@@ -3384,6 +3395,87 @@ function renderClientes() {
     </div>`;
   }).join('');
 }
+// ══════════════════════════════════════════════════════════════════════════
+// MAPA DE CLIENTES — mesmo padrão visual/técnico do mapa de Pedidos
+// (togglePedidosMapa/_pmapaGarantirMapa), adaptado: aqui é só visualização
+// (sem lasso/seleção de carga), mostra os clientes já FILTRADOS pela busca
+// ativa em cima — usa lat/lon já cadastrado, não recalcula nada.
+// ══════════════════════════════════════════════════════════════════════════
+let mapaClientesMap = null;
+let _cmapaMarkers = [];
+function toggleClientesMapa() {
+  const wrap  = document.getElementById('clientes-mapa-wrap');
+  const lista = document.getElementById('clientes-list');
+  const btn   = document.getElementById('btn-clientes-mapa-toggle');
+  if (!wrap || !lista) return;
+  const vaiMostrar = wrap.classList.contains('hidden');
+  wrap.classList.toggle('hidden', !vaiMostrar);
+  lista.classList.toggle('hidden', vaiMostrar);
+  if (btn) btn.textContent = vaiMostrar ? '📋 Ver Lista' : '🗺️ Ver no Mapa';
+  if (vaiMostrar) {
+    setTimeout(() => {
+      try { _cmapaGarantirMapa(); renderClientesMapa(); }
+      catch (e) {
+        console.error('[Mapa de Clientes] erro ao renderizar:', e);
+        const box = document.getElementById('clientes-mapa');
+        if (box) box.innerHTML = `<div style="padding:20px;font-size:13px;color:#B91C1C;">⚠ Erro ao carregar o mapa: ${e.message || e}. Veja o console do navegador (F12) para detalhes.</div>`;
+      }
+    }, 30); // aguarda o container ficar visível (dimensão correta)
+  }
+}
+function _cmapaGarantirMapa() {
+  if (mapaClientesMap) { mapaClientesMap.invalidateSize(); return; }
+  if (typeof L === 'undefined') return;
+  mapaClientesMap = L.map('clientes-mapa');
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png${window.CARTO_API_KEY ? '?key=' + window.CARTO_API_KEY : ''}`, {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap &copy; CARTO'
+  }).addTo(mapaClientesMap);
+  mapaClientesMap.setView([-14.235, -51.925], 4);
+  mapaClientesMap.invalidateSize();
+}
+// Redesenha os marcadores a partir da MESMA lista filtrada que a tela em
+// lista usa (_clientesFiltrados) — troca de filtro com o mapa aberto já
+// atualiza sozinho (chamado de dentro de renderClientes()).
+function renderClientesMapa() {
+  _cmapaGarantirMapa();
+  if (!mapaClientesMap) return;
+  _cmapaMarkers.forEach(m => m.remove());
+  _cmapaMarkers = [];
+  const lista = _clientesFiltrados().filter(c => Number.isFinite(c.lat) && Number.isFinite(c.lon));
+  const semCoordenada = _clientesFiltrados().length - lista.length;
+  const contador = document.getElementById('clientes-mapa-contador');
+  if (contador) {
+    contador.textContent = `${lista.length} cliente${lista.length !== 1 ? 's' : ''} no mapa` +
+      (semCoordenada > 0 ? ` · ${semCoordenada} sem lat/lon cadastrado` : '');
+  }
+  if (!lista.length) {
+    const box = document.getElementById('clientes-mapa');
+    if (box) box.style.opacity = '0.5';
+    return;
+  }
+  const box = document.getElementById('clientes-mapa');
+  if (box) box.style.opacity = '1';
+  const bounds = [];
+  lista.forEach(c => {
+    const marker = L.circleMarker([c.lat, c.lon], {
+      radius: 7, color: '#4F46E5', fillColor: '#818CF8', fillOpacity: 0.85, weight: 2,
+    }).addTo(mapaClientesMap);
+    marker.bindPopup(`
+      <div style="font-size:12.5px;min-width:180px;">
+        <b>${c.nome}</b>${c.codigoSAP ? ` <span style="color:#6B7280;font-size:10.5px;">SAP ${c.codigoSAP}</span>` : ''}<br>
+        <span style="color:#4B5563;">${c.cidade || '—'}</span>${c.operacao ? ` · ${c.operacao}` : ''}<br>
+        ${c.endereco ? `<span style="color:#6B7280;font-size:11px;">${c.endereco}</span><br>` : ''}
+        <span style="color:#9CA3AF;font-size:10.5px;">${c.lat.toFixed(5)}, ${c.lon.toFixed(5)}</span>
+      </div>`);
+    _cmapaMarkers.push(marker);
+    bounds.push([c.lat, c.lon]);
+  });
+  if (bounds.length === 1) mapaClientesMap.setView(bounds[0], 13);
+  else mapaClientesMap.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
+}
+window.toggleClientesMapa = toggleClientesMapa;
+window.renderClientesMapa = renderClientesMapa;
 function toggleMenuExportarClientes() {
   const menu = document.getElementById('menu-exportar-clientes');
   const btn  = document.getElementById('btn-exportar-clientes');
@@ -7557,7 +7649,7 @@ function renderTemplateOperacao() {
     const linhasFinal = linhas;
     const _nexta_svg = `<svg style="height:20px;width:auto;" viewBox="0 0 242 45" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M149.631 0.870612H138.515L127.579 14.6805L116.586 0.870612H105.356L121.715 21.6422L104.148 43.9406H114.999L127.078 28.421L139.156 43.7829L139.279 43.9406H150.833L133.011 21.5161L149.631 0.870612ZM67.2515 43.9437H97.073V35.4805H65.8352V26.5725H86.6225V18.1756H65.8352V9.26758H97.073V0.870612H56.9272V43.9437H67.2515ZM196.417 0.870612H155.382V9.26758H171.479V43.9406H180.324V9.27074H196.42V0.870612H196.417ZM224.4 0.870612H211.811L195.01 43.9437H204.426L208.498 33.1273H227.523L231.658 43.9437H241.2L224.4 0.870612ZM224.453 24.7304H211.618L217.892 8.75657L224.457 24.7304H224.453ZM36.8748 0.870612V34.8938C36.8748 35.2786 36.5719 35.6666 36.1019 35.6666C35.9127 35.6666 35.6729 35.6004 35.4963 35.3764L17.8759 4.82621C17.0305 3.35942 15.8508 2.0882 14.3777 1.25545C13.0718 0.517321 11.4504 1.75258e-06 9.54517 1.75258e-06C4.25526 -0.00315263 0 4.25211 0 9.86061V43.9437H8.93006V9.92054C8.93006 9.53571 9.23288 9.14772 9.70289 9.14772C9.89215 9.14772 10.1319 9.21396 10.3085 9.43792L26.5599 37.9031C27.2097 39.0387 27.8595 40.0828 28.503 40.9755C29.7774 42.7514 32.4586 44.8207 36.2691 44.8207C41.559 44.8207 45.8111 40.5654 45.8111 34.9569V0.870612H36.8811H36.8748Z" fill="#2D6A1B"/></svg>`;
     return `
-      <div class="op-bloco" data-bloco-id="bloco-${v.placa}-${idx}">
+      <div class="op-bloco" data-bloco-id="bloco-${v.placa}-${idx}" data-transportadora="${(v.transportadora || '').replace(/"/g,'')}" data-base="${base.replace(/"/g,'')}">
         <div class="op-head">
           <!-- Barra superior: logo + ID da viagem + botões de exportação -->
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding-bottom:9px;border-bottom:1.5px solid #C8E0B0;">
@@ -11786,6 +11878,22 @@ async function exportarBlocoPNG(blocoId, nomeArq, ev, larguraPx = 1050) {
   }
 }
 
+// Nome de arquivo por bloco — usa TRANSPORTADORA + BASE de carregamento
+// (lidos dos atributos data-transportadora/data-base) no lugar da palavra
+// "bloco", mas mantém a PLACA e o número da viagem que já vinham no nome
+// antigo ("bloco-PLACA-N" → "TRANSPORTADORA_BASE_PLACA-N") — só troca o
+// que não dizia nada, sem perder a placa/viagem que identifica o card.
+// Cai pro blocoId puro só se faltar transportadora/base (ex.: cards
+// especiais como "passagem-turno", que não têm essa info).
+function _nomeArquivoBloco(blocoEl, i, blocoId) {
+  const limpa = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '') // tira acento
+    .replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const transportadora = limpa(blocoEl.getAttribute('data-transportadora'));
+  const base = limpa(blocoEl.getAttribute('data-base'));
+  const placaIdx = blocoId.replace(/^bloco-/, ''); // ex.: "STU0B86-0"
+  if (transportadora && base) return `${transportadora}_${base}_${placaIdx}`.replace(/[^a-zA-Z0-9_-]/g, '');
+  return blocoId.replace(/[^a-zA-Z0-9_-]/g, '');
+}
 /**
  * Exporta TODOS os blocos visíveis como um único PDF multi-página.
  */
@@ -11801,6 +11909,7 @@ async function exportarTodasProgramacoesPDF() {
     i++;
     try {
       const blocoId = blocoEl.getAttribute('data-bloco-id') || `bloco${i}`;
+      const nomeArquivo = _nomeArquivoBloco(blocoEl, i, blocoId);
       const iframe  = _clonarBlocoParaExport(blocoEl);
       await new Promise(r => setTimeout(r, 600));
       const clone  = iframe.contentDocument.querySelector('.op-bloco');
@@ -11819,7 +11928,7 @@ async function exportarTodasProgramacoesPDF() {
       const pageH = Math.max(imgH + margin * 2, pdfHMin);
       const pdf = new jsPDF({ orientation: 'l', unit: 'pt', format: [pdfW, pageH] });
       pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, maxW, imgH);
-      pdf.save(`${prefixo}_${String(i).padStart(2,'0')}_${blocoId.replace(/[^a-zA-Z0-9_-]/g,'')}.pdf`);
+      pdf.save(`${prefixo}_${String(i).padStart(2,'0')}_${nomeArquivo}.pdf`);
       await new Promise(r => setTimeout(r, 400));
     } catch(e) {
       console.warn(`Erro ao exportar bloco ${i}:`, e);
@@ -11844,6 +11953,7 @@ async function exportarTodasProgramacoesPNG() {
     i++;
     try {
       const blocoId  = blocoEl.getAttribute('data-bloco-id') || `bloco${i}`;
+      const nomeArquivo = _nomeArquivoBloco(blocoEl, i, blocoId);
       const iframe   = _clonarBlocoParaExport(blocoEl);
       await new Promise(r => setTimeout(r, 600));
       const clone  = iframe.contentDocument.querySelector('.op-bloco');
@@ -11851,7 +11961,7 @@ async function exportarTodasProgramacoesPNG() {
       document.body.removeChild(iframe);
       const a = document.createElement('a');
       a.href = canvas.toDataURL('image/png');
-      a.download = `${prefixo}_${String(i).padStart(2,'0')}_${blocoId.replace(/[^a-zA-Z0-9_-]/g,'')}.png`;
+      a.download = `${prefixo}_${String(i).padStart(2,'0')}_${nomeArquivo}.png`;
       a.click();
       // Pausa entre downloads para o browser não bloquear
       await new Promise(r => setTimeout(r, 400));
