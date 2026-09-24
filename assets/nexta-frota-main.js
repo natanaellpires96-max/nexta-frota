@@ -379,17 +379,25 @@ async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiur
   const cKey = `status||${carrier}||${plate}||${dateStr}`;
   cacheSet(cKey, { status, time: time||"", motoristaDiurno: motoristaDiurno||"", motoristaNoturno: motoristaNoturno||"", hodometro: hodometro!==undefined?hodometro:null, hodometroFotoUrl: hodometroFotoUrl!==undefined?hodometroFotoUrl:null });
 }
-async function dbGetPreviousHodometro(plate, currentDateStr) {
+async function dbGetPreviousHodometro(carrier, plate, currentDateStr) {
   // Cache curto (mesma janela do resto do app) — evita reconsultar o Firestore
   // toda vez que o mesmo campo de hodômetro é focado/preenchido na mesma sessão.
-  const cKey = `prevHodometro||${plate}||${currentDateStr}`;
+  const cKey = `prevHodometro||${carrier}||${plate}||${currentDateStr}`;
   const cached = cacheGet(cKey);
   if (cached !== undefined) return cached;
   try {
     // Query all availability records for this plate that have a hodômetro value
     // and a dateStr strictly before currentDateStr, ordered descending to get the most recent.
+    // Filtra por "carrier" também — não é só por precisão (uma placa nunca
+    // deveria pertencer a duas transportadoras diferentes, mas garante isso
+    // de qualquer forma): sem esse filtro, a regra de segurança do Firestore
+    // rejeita a consulta inteira pro perfil Transportador, porque ela só
+    // consegue confirmar que o resultado respeita a regra (each doc.carrier
+    // == a própria transportadora) se a query JÁ vier filtrada por esse
+    // mesmo campo — mesmo padrão já usado em dbLoadStatusBulk.
     const q = query(
       collection(db, "availability"),
+      where("carrier",  "==", carrier),
       where("plate", "==", plate),
       where("dateStr", "<", currentDateStr),
       orderBy("dateStr", "desc"),
@@ -415,6 +423,7 @@ async function dbGetPreviousHodometro(plate, currentDateStr) {
       const dataCorteStr = dataCorte.toISOString().slice(0, 10);
       const qFallback = query(
         collection(db, "availability"),
+        where("carrier", "==", carrier),
         where("plate", "==", plate),
         where("dateStr", ">=", dataCorteStr),
         where("dateStr", "<", currentDateStr)
@@ -2003,7 +2012,7 @@ async function saveAll(carrier, ds, btnEl=null){
         row.style.background="rgba(240,96,96,.08)";
         continue;
       }
-      const previousOdo=await dbGetPreviousHodometro(plate, ds);
+      const previousOdo=await dbGetPreviousHodometro(carrier, plate, ds);
       prevOdoCache[plate]=previousOdo;
       if(previousOdo !== null && currentOdo < previousOdo){
         invalidOdoRows.push(plate);
