@@ -10488,11 +10488,15 @@ async function abrirDetalheHistorico(filename) {
         // uniforme (o cadastro mistura "Ribeirão Preto - SP" com "OLIMPIA"
         // tudo maiúsculo) — cada palavra com inicial maiúscula, preposição
         // comum de nome de cidade (de/da/do/dos/das/e) minúscula, e sigla de
-        // estado de 2 letras mantida maiúscula.
-        const _formatarCidadeHrr = nome => {
-          if (!nome) return '';
+        // estado de 2 letras mantida maiúscula. Reconhece tanto "Cidade -
+        // UF" (formato do terminal) quanto "Cidade / UF" (formato do campo
+        // de cadastro do cliente, rotulado "Cidade / UF") — normaliza os
+        // dois pro mesmo padrão final antes de formatar.
+        const _formatarCidadeHrr = nomeBruto => {
+          if (!nomeBruto) return '';
+          const normalizado = nomeBruto.replace(/\s*\/\s*/g, ' - ');
           const preposicoes = new Set(['de', 'da', 'do', 'dos', 'das', 'e']);
-          return nome.trim().split(/\s+/).map((palavra, i) => {
+          return normalizado.trim().split(/\s+/).map((palavra, i) => {
             if (palavra === '-') return '-';
             if (/^[A-Za-zÀ-ÿ]{2}$/.test(palavra)) return palavra.toUpperCase(); // sigla de estado (SP, MG, GO...)
             const minuscula = palavra.toLowerCase();
@@ -10503,14 +10507,27 @@ async function abrirDetalheHistorico(filename) {
         const cidadesRotaHrr = [];
         if (terminalObjHrr?.cidade) cidadesRotaHrr.push(_formatarCidadeHrr(terminalObjHrr.cidade));
         paradas.forEach(pa => {
-          const cidBruta = pa.pedido?.cidade || '';
+          let cidBruta = pa.pedido?.cidade || '';
+          // O pedido guarda a PRÓPRIA cópia da cidade, tirada do cadastro do
+          // cliente no momento em que o pedido foi criado — se o cadastro
+          // foi corrigido DEPOIS (ex.: adicionaram a UF que faltava), o
+          // pedido antigo continua com o retrato velho, sem UF. Se a cidade
+          // do pedido não tiver "-" nem "/" (sinal de que falta a UF), busca
+          // no cadastro ATUAL do cliente (mais confiável) como respaldo,
+          // casando por SAP (mais preciso) ou por nome.
+          if (cidBruta && !/[-/]/.test(cidBruta)) {
+            const clienteAtual = (clientes || []).find(c =>
+              (pa.pedido?.codigoSAP && c.codigoSAP === pa.pedido.codigoSAP) ||
+              (!pa.pedido?.codigoSAP && c.nome === pa.pedido?.cliente)
+            );
+            if (clienteAtual?.cidade && /[-/]/.test(clienteAtual.cidade)) cidBruta = clienteAtual.cidade;
+          }
           const uf = pa.pedido?.uf || '';
-          // Pedido guarda cidade e UF em campos separados (cidade "OLIMPIA",
-          // uf "SP") — junta os dois igual o terminal já vem formatado
-          // ("Ribeirão Preto - SP"), só não duplica o UF se a cidade já
-          // vier com ele embutido por algum motivo.
-          const cidCompleta = (cidBruta && uf && !cidBruta.toUpperCase().includes(uf.toUpperCase()))
-            ? `${cidBruta} - ${uf}` : cidBruta;
+          // Só usa a UF do campo separado (pedido.uf) se a cidade ainda não
+          // vier com ela embutida via "-" ou "/" — evita duplicar
+          // ("Piracicaba / SP - SP").
+          const jaTemUf = /[-/]/.test(cidBruta);
+          const cidCompleta = (cidBruta && uf && !jaTemUf) ? `${cidBruta} - ${uf}` : cidBruta;
           const cid = _formatarCidadeHrr(cidCompleta);
           if (cid && !cidadesRotaHrr.includes(cid)) cidadesRotaHrr.push(cid);
         });
@@ -10528,12 +10545,12 @@ async function abrirDetalheHistorico(filename) {
           }
         } catch (e) { /* não deixa a detecção de pedágio quebrar o modal — só não mostra o aviso */ }
         const pedagioTagHtml = temPedagio
-          ? `<div style="font-size:10.5px;color:#B45309;font-weight:600;margin-top:2px;">🛣️ Tem pedágio — comprar no Sem Parar</div>`
+          ? `<div style="font-size:10.5px;color:#B45309;font-weight:600;margin-top:4px;">🛣️ Tem pedágio — comprar no Sem Parar</div>`
           : '';
         // Origem x destino entra LOGO ABAIXO do aviso de pedágio (dentro da
         // célula do cliente), não mais na célula do ID da viagem.
         const rotaCidadesHtml = rotaCidadesTxt
-          ? `<div style="font-size:10.5px;color:var(--text-3);font-weight:600;margin-top:2px;">${rotaCidadesTxt}</div>`
+          ? `<div style="font-size:11px;color:#000;font-weight:600;margin-top:${temPedagio ? '6' : '4'}px;">${rotaCidadesTxt}</div>`
           : '';
         paradas.forEach((pa, i) => {
           const cliente  = pa.pedido?.cliente || '—';
