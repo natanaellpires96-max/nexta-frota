@@ -10482,6 +10482,34 @@ async function abrirDetalheHistorico(filename) {
         const baseCarregamento = paradas[0]?.pedido?.terminal || vi.terminalOrigem || '—';
         const terminalObjHrr = (terminaisCad || []).find(t => t.nome === baseCarregamento);
         const operacaoHrr = terminalObjHrr?.cidade || baseCarregamento;
+        // Rota em cidades (origem x destino x destino...) — unifica cidades
+        // repetidas (2 pedidos na mesma cidade aparecem uma vez só), na
+        // ordem em que aparecem na viagem.
+        const cidadesRotaHrr = [];
+        if (terminalObjHrr?.cidade) cidadesRotaHrr.push(terminalObjHrr.cidade);
+        paradas.forEach(pa => {
+          const cid = pa.pedido?.cidade;
+          if (cid && !cidadesRotaHrr.includes(cid)) cidadesRotaHrr.push(cid);
+        });
+        const rotaCidadesTxt = cidadesRotaHrr.join(' x ');
+        const rotaCidadesHtml = rotaCidadesTxt
+          ? `<div style="margin-top:3px;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:10.5px;letter-spacing:0;">${rotaCidadesTxt}</div>`
+          : '';
+        // Detecção de pedágio — aproximação rápida por coordenadas (raio
+        // largo, 3km) em vez do traçado real do OSRM: aqui é só um lembrete
+        // simples de "compra no Sem Parar", não precisa da precisão total
+        // que o cálculo de custo usa, e não pode travar o modal esperando
+        // rota carregar pra cada viagem da lista.
+        let temPedagio = false;
+        try {
+          const _pontosRotaHrr = obterPontosRotaComCoords(v, vi);
+          if (_pontosRotaHrr.length >= 2 && window.detectarPedagiosNaRota) {
+            temPedagio = window.detectarPedagiosNaRota(_pontosRotaHrr, v.eixos || 2, 3).length > 0;
+          }
+        } catch (e) { /* não deixa a detecção de pedágio quebrar o modal — só não mostra o aviso */ }
+        const pedagioTagHtml = temPedagio
+          ? `<div style="font-size:10.5px;color:#B45309;font-weight:600;margin-top:2px;">🛣️ Tem pedágio — comprar no Sem Parar</div>`
+          : '';
         paradas.forEach((pa, i) => {
           const cliente  = pa.pedido?.cliente || '—';
           const entrega  = pa.pedido?.dataEntregaLogistica || '—';
@@ -10497,6 +10525,7 @@ async function abrirDetalheHistorico(filename) {
                  </div>
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span>
                  <div style="margin:5px 0;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;user-select:text;">${baseCarregamento}</div>
+                 ${rotaCidadesHtml}
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
                </td>`
             : '';
@@ -10529,7 +10558,7 @@ async function abrirDetalheHistorico(filename) {
             : `<button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="Registrar devolução ou reentrega dessa entrega">⚠️ Registrar</button>`;
           linhasHtml.push(`<tr>
             ${idCellHtml}
-            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}</td>
+            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}${pedagioTagHtml}</td>
             <td style="padding:6px 8px;white-space:nowrap;${bordaGrupo}">${entrega}</td>
             <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">
               ${volumes[i].toFixed(1)} m³
