@@ -10464,6 +10464,23 @@ async function abrirDetalheHistorico(filename) {
     let totalM3 = 0, totalViagens = 0, totalM3Devolvido = 0;
     const linhasHtml = [];
     _devContextosHistorico = []; // reseta a cada abertura do modal — guarda o contexto de cada linha pro botão "⚠️ Registrar"
+    // Tabela cidade → UF, construída uma vez (não por viagem) a partir de
+    // TUDO que já está cadastrado certo no sistema (terminais sempre têm
+    // "Cidade - UF"; clientes cujo cadastro já foi preenchido com a UF
+    // também entram) — serve de respaldo pra completar a UF de pedidos/
+    // clientes que ainda estão sem, sem precisar corrigir cadastro por
+    // cadastro. Chave normalizada (sem acento, minúscula) pra "Ipuiúna" e
+    // "ipuiuna" caírem na mesma entrada.
+    const _semAcento = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const _cidadeParaUF = new Map();
+    const _registrarCidadeUF = cidadeComUF => {
+      const m = /^(.+?)\s*[-/]\s*([A-Za-z]{2})$/.exec((cidadeComUF || '').trim());
+      if (!m) return;
+      const chave = _semAcento(m[1]).toLowerCase().trim();
+      if (chave && !_cidadeParaUF.has(chave)) _cidadeParaUF.set(chave, m[2].toUpperCase());
+    };
+    (terminaisCad || []).forEach(t => _registrarCidadeUF(t.cidade));
+    (clientes || []).forEach(c => _registrarCidadeUF(c.cidade));
     veics.forEach(v => {
       const viagens = (resultado[v.id] || []).filter(vi => !vi._vazio && (vi.paradas||[]).length);
       viagens.forEach((vi, idx) => {
@@ -10498,9 +10515,12 @@ async function abrirDetalheHistorico(filename) {
           const preposicoes = new Set(['de', 'da', 'do', 'dos', 'das', 'e']);
           return normalizado.trim().split(/\s+/).map((palavra, i) => {
             if (palavra === '-') return '-';
-            if (/^[A-Za-zÀ-ÿ]{2}$/.test(palavra)) return palavra.toUpperCase(); // sigla de estado (SP, MG, GO...)
             const minuscula = palavra.toLowerCase();
+            // Preposição checada ANTES da sigla de estado — "de"/"da" têm 2
+            // letras igual "SP"/"MG", e sem essa ordem "Duque de Caxias"
+            // virava "Duque DE Caxias".
             if (i > 0 && preposicoes.has(minuscula)) return minuscula;
+            if (/^[A-Za-zÀ-ÿ]{2}$/.test(palavra)) return palavra.toUpperCase(); // sigla de estado (SP, MG, GO...)
             return minuscula.charAt(0).toUpperCase() + minuscula.slice(1);
           }).join(' ');
         };
@@ -10527,7 +10547,15 @@ async function abrirDetalheHistorico(filename) {
           // vier com ela embutida via "-" ou "/" — evita duplicar
           // ("Piracicaba / SP - SP").
           const jaTemUf = /[-/]/.test(cidBruta);
-          const cidCompleta = (cidBruta && uf && !jaTemUf) ? `${cidBruta} - ${uf}` : cidBruta;
+          let cidCompleta = (cidBruta && uf && !jaTemUf) ? `${cidBruta} - ${uf}` : cidBruta;
+          // Último respaldo: nem o pedido nem o cadastro do cliente têm UF
+          // — busca na tabela cidade→UF montada a partir de tudo que já
+          // está certo no sistema (terminais e outros clientes com a mesma
+          // cidade já cadastrada certinho).
+          if (cidCompleta && !/[-/]/.test(cidCompleta)) {
+            const ufAchada = _cidadeParaUF.get(_semAcento(cidCompleta).toLowerCase().trim());
+            if (ufAchada) cidCompleta = `${cidCompleta} - ${ufAchada}`;
+          }
           const cid = _formatarCidadeHrr(cidCompleta);
           if (cid && !cidadesRotaHrr.includes(cid)) cidadesRotaHrr.push(cid);
         });
@@ -10599,7 +10627,7 @@ async function abrirDetalheHistorico(filename) {
             : `<button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="Registrar devolução ou reentrega dessa entrega">⚠️ Registrar</button>`;
           linhasHtml.push(`<tr>
             ${idCellHtml}
-            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}${pedagioTagHtml}${rotaCidadesHtml}</td>
+            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}${i === 0 ? pedagioTagHtml + rotaCidadesHtml : ''}</td>
             <td style="padding:6px 8px;white-space:nowrap;${bordaGrupo}">${entrega}</td>
             <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">
               ${volumes[i].toFixed(1)} m³
