@@ -10484,17 +10484,37 @@ async function abrirDetalheHistorico(filename) {
         const operacaoHrr = terminalObjHrr?.cidade || baseCarregamento;
         // Rota em cidades (origem x destino x destino...) — unifica cidades
         // repetidas (2 pedidos na mesma cidade aparecem uma vez só), na
-        // ordem em que aparecem na viagem.
+        // ordem em que aparecem na viagem. Formata com capitalização
+        // uniforme (o cadastro mistura "Ribeirão Preto - SP" com "OLIMPIA"
+        // tudo maiúsculo) — cada palavra com inicial maiúscula, preposição
+        // comum de nome de cidade (de/da/do/dos/das/e) minúscula, e sigla de
+        // estado de 2 letras mantida maiúscula.
+        const _formatarCidadeHrr = nome => {
+          if (!nome) return '';
+          const preposicoes = new Set(['de', 'da', 'do', 'dos', 'das', 'e']);
+          return nome.trim().split(/\s+/).map((palavra, i) => {
+            if (palavra === '-') return '-';
+            if (/^[A-Za-zÀ-ÿ]{2}$/.test(palavra)) return palavra.toUpperCase(); // sigla de estado (SP, MG, GO...)
+            const minuscula = palavra.toLowerCase();
+            if (i > 0 && preposicoes.has(minuscula)) return minuscula;
+            return minuscula.charAt(0).toUpperCase() + minuscula.slice(1);
+          }).join(' ');
+        };
         const cidadesRotaHrr = [];
-        if (terminalObjHrr?.cidade) cidadesRotaHrr.push(terminalObjHrr.cidade);
+        if (terminalObjHrr?.cidade) cidadesRotaHrr.push(_formatarCidadeHrr(terminalObjHrr.cidade));
         paradas.forEach(pa => {
-          const cid = pa.pedido?.cidade;
+          const cidBruta = pa.pedido?.cidade || '';
+          const uf = pa.pedido?.uf || '';
+          // Pedido guarda cidade e UF em campos separados (cidade "OLIMPIA",
+          // uf "SP") — junta os dois igual o terminal já vem formatado
+          // ("Ribeirão Preto - SP"), só não duplica o UF se a cidade já
+          // vier com ele embutido por algum motivo.
+          const cidCompleta = (cidBruta && uf && !cidBruta.toUpperCase().includes(uf.toUpperCase()))
+            ? `${cidBruta} - ${uf}` : cidBruta;
+          const cid = _formatarCidadeHrr(cidCompleta);
           if (cid && !cidadesRotaHrr.includes(cid)) cidadesRotaHrr.push(cid);
         });
         const rotaCidadesTxt = cidadesRotaHrr.join(' x ');
-        const rotaCidadesHtml = rotaCidadesTxt
-          ? `<div style="margin-top:3px;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:10.5px;letter-spacing:0;">${rotaCidadesTxt}</div>`
-          : '';
         // Detecção de pedágio — aproximação rápida por coordenadas (raio
         // largo, 3km) em vez do traçado real do OSRM: aqui é só um lembrete
         // simples de "compra no Sem Parar", não precisa da precisão total
@@ -10509,6 +10529,11 @@ async function abrirDetalheHistorico(filename) {
         } catch (e) { /* não deixa a detecção de pedágio quebrar o modal — só não mostra o aviso */ }
         const pedagioTagHtml = temPedagio
           ? `<div style="font-size:10.5px;color:#B45309;font-weight:600;margin-top:2px;">🛣️ Tem pedágio — comprar no Sem Parar</div>`
+          : '';
+        // Origem x destino entra LOGO ABAIXO do aviso de pedágio (dentro da
+        // célula do cliente), não mais na célula do ID da viagem.
+        const rotaCidadesHtml = rotaCidadesTxt
+          ? `<div style="font-size:10.5px;color:var(--text-3);font-weight:600;margin-top:2px;">${rotaCidadesTxt}</div>`
           : '';
         paradas.forEach((pa, i) => {
           const cliente  = pa.pedido?.cliente || '—';
@@ -10525,7 +10550,6 @@ async function abrirDetalheHistorico(filename) {
                  </div>
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span>
                  <div style="margin:5px 0;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;user-select:text;">${baseCarregamento}</div>
-                 ${rotaCidadesHtml}
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
                </td>`
             : '';
@@ -10558,7 +10582,7 @@ async function abrirDetalheHistorico(filename) {
             : `<button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="Registrar devolução ou reentrega dessa entrega">⚠️ Registrar</button>`;
           linhasHtml.push(`<tr>
             ${idCellHtml}
-            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}${pedagioTagHtml}</td>
+            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}${pedagioTagHtml}${rotaCidadesHtml}</td>
             <td style="padding:6px 8px;white-space:nowrap;${bordaGrupo}">${entrega}</td>
             <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">
               ${volumes[i].toFixed(1)} m³
