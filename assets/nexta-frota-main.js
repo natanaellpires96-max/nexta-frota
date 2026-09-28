@@ -506,6 +506,8 @@ function fmtAuditAction(action, details={}) {
       return `🔑 Senha redefinida pelo admin${details.target ? ` — usuário ${details.target}` : ""}`;
     case "admin_unlock":
       return `🔓 Lançamento desbloqueado — ${details.carrier || ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
+    case "hodometro_correcao_lote":
+      return `✏️ Hodômetro corrigido em lote — ${details.plate || ""}${details.carrier ? ` · ${details.carrier}` : ""} (${details.qtd || 0} lançamento(s))`;
     case "admin_unlock_plate":
       return `🔓 Placa desbloqueada — ${details.plate || ""}${details.carrier ? ` · ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
     default:
@@ -2001,6 +2003,7 @@ async function saveAll(carrier, ds, btnEl=null){
   }
   const prevOdoCache = {};
   const invalidOdoRows=[];
+  const suspeitoOdoRows=new Set();
   if(isCarrierUser){
     for (const row of rows){
       const plate=row.dataset.placa||row.cells[0]?.textContent.trim()||"";
@@ -2017,13 +2020,24 @@ async function saveAll(carrier, ds, btnEl=null){
       if(previousOdo !== null && currentOdo < previousOdo){
         invalidOdoRows.push(plate);
         row.style.background="rgba(240,96,96,.08)";
+      } else if(previousOdo !== null && previousOdo >= 500 && currentOdo >= previousOdo*5){
+        // Salto de 5x ou mais em relação ao último registro não acontece na
+        // vida real — é quase sempre um dígito a mais (ex.: digitou também
+        // a casa decimal/centena de metros que aparece no painel do
+        // caminhão: 3113,2 → "31132"). Bloqueia pra corrigir na hora, em
+        // vez de o erro contaminar todos os lançamentos seguintes.
+        invalidOdoRows.push(plate);
+        suspeitoOdoRows.add(plate);
+        row.style.background="rgba(240,96,96,.08)";
       } else {
         row.style.background="";
       }
     }
   }
   if(invalidOdoRows.length>0){
-    const detalhes = invalidOdoRows.map(plate => `${plate} (último: ${prevOdoCache[plate]??'—'})`);
+    const detalhes = invalidOdoRows.map(plate => suspeitoOdoRows.has(plate)
+      ? `${plate} (último: ${prevOdoCache[plate]??'—'} — valor 5x maior, tem dígito a mais? Não digite a casa decimal)`
+      : `${plate} (último: ${prevOdoCache[plate]??'—'})`);
     showToast(`Hodômetro inválido: ${detalhes.join(', ')}`, false);
     return;
   }
@@ -2997,7 +3011,7 @@ async function renderToday(body){
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${esc(p.contrato)}</span></td>
         <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
         <td>${v?`<span class="badge ${st.badge}">${esc(st.label)}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
-        <td style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;white-space:nowrap">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?`<span style="color:var(--dim)">${rec.hodometro}</span>`:'—'}</td>
+        <td style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;white-space:nowrap">${rec&&rec.hodometro!==undefined&&rec.hodometro!==null?`<span style="color:var(--dim)">${rec.hodometro}</span>`:'—'}${isAdmin2?` <span onclick="abrirCorrecaoHodometro('${attr(jsArg(carrier))}','${attr(jsArg(p.placa))}')" title="Corrigir hodômetro dessa placa em lote (todo o histórico)" style="cursor:pointer;font-size:10px;opacity:.7">✏️</span>`:''}</td>
         <td>${rec&&rec.hodometroFotoUrl?`<a href="${attr(rec.hodometroFotoUrl)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--dim);">📷 ver</a>`:isMonday(ds)?`<span style="font-size:10px;color:var(--red)">sem foto</span>`:`<span style="font-size:11px;color:var(--muted)">—</span>`}</td>
         <td style="font-size:12px;color:var(--lime);font-family:'DM Mono',monospace">${rec&&rec.time?fmtTimeValue(rec.time):'—'}</td>
         <td>${renderDriverCell(motDToday,motNToday)}</td>
@@ -4307,6 +4321,161 @@ async function adminUnlockPlate(carrier, plate, ds){
   }
 }
 // ═══════════════════════════════════════════════════════════
+// CORREÇÃO DE HODÔMETRO EM LOTE (admin)
+// ═══════════════════════════════════════════════════════════
+// Caso típico: o transportador passou a digitar o hodômetro com um dígito
+// a mais no final (a casa decimal que aparece no painel: 3113,2 → 31132).
+// Como a validação do lançamento não aceita valor MENOR que o anterior, o
+// erro se autoperpetua — ninguém consegue lançar o valor certo depois.
+// Aqui o admin vê TODO o histórico daquela placa, com o valor proposto
+// (sem o último dígito) editável linha a linha, e grava tudo de uma vez.
+// Só o campo `hodometro` (e updatedAt) muda em cada documento — os valores
+// antigos ficam guardados no Log de Auditoria, pra dar pra desfazer.
+let _corrHodo = null; // { carrier, plate, rows:[{id, dateStr, atual}] }
+
+async function abrirCorrecaoHodometro(carrier, plate){
+  const u = USERS_DB[S.user];
+  if(!u || u.role!=='admin'){ showToast('Só administrador pode corrigir hodômetro em lote.', false); return; }
+  document.getElementById('corr-hodo-modal')?.remove();
+  const modal=document.createElement('div');
+  modal.id='corr-hodo-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem';
+  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
+  modal.innerHTML=`<div style="background:var(--mid);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:1.5rem;width:100%;max-width:620px;max-height:90vh;display:flex;flex-direction:column">
+    <p style="font-size:15px;font-weight:600;color:var(--lime);margin-bottom:.35rem">✏️ Corrigir hodômetro em lote — ${esc(plate)}</p>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:1rem">${esc(carrier)} · carregando histórico...</p>
+    <div id="corr-hodo-body" style="flex:1;overflow:auto"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  try{
+    // Só igualdades (carrier + plate) — não depende de índice composto, e o
+    // filtro por carrier é o mesmo exigido pelas regras do Firestore.
+    const snap = await getDocs(query(collection(db,"availability"), where("carrier","==",carrier), where("plate","==",plate)));
+    const rows = snap.docs
+      .map(d=>({ id:d.id, ...d.data() }))
+      .filter(d=>d.hodometro!==undefined && d.hodometro!==null && d.hodometro!=='' && Number.isFinite(Number(d.hodometro)))
+      .map(d=>({ id:d.id, dateStr:d.dateStr, atual:Number(d.hodometro) }))
+      .sort((a,b)=>String(a.dateStr).localeCompare(String(b.dateStr)));
+    _corrHodo = { carrier, plate, rows };
+    modal.querySelector('p:nth-of-type(2)').textContent = `${carrier} · ${rows.length} lançamento(s) com hodômetro`;
+    if(!rows.length){ document.getElementById('corr-hodo-body').innerHTML='<p style="font-size:13px;color:var(--muted)">Nenhum hodômetro lançado pra essa placa.</p>'; return; }
+    // Linhas muito abaixo da mediana provavelmente JÁ estão certas (ex.: um
+    // dia em que digitaram certo) — começam desmarcadas pra não dividir por
+    // 10 o que não precisa.
+    const ordenados=[...rows.map(r=>r.atual)].sort((a,b)=>a-b);
+    const mediana=ordenados[Math.floor(ordenados.length/2)];
+    const linhas = rows.map((r,i)=>{
+      const pareceCerto = r.atual < mediana/3;
+      const proposto = pareceCerto ? r.atual : Math.floor(r.atual/10);
+      return `<tr data-i="${i}">
+        <td style="padding:5px 8px;font-size:12px;white-space:nowrap">${fmtDateStr(r.dateStr)}</td>
+        <td style="padding:5px 8px;font-size:12px;font-family:'DM Mono',monospace;text-align:right">${r.atual}</td>
+        <td style="padding:5px 8px;text-align:right"><input type="number" class="corr-hodo-novo" min="0" value="${proposto}" oninput="_corrHodoValidar()" style="width:100px;font-size:12px;padding:4px 6px;text-align:right;font-family:'DM Mono',monospace;background:var(--dark);border:1px solid var(--border2);color:var(--text);border-radius:6px"></td>
+        <td style="padding:5px 8px;text-align:center"><input type="checkbox" class="corr-hodo-chk" ${pareceCerto?'':'checked'} onchange="_corrHodoValidar()" style="width:16px;height:16px;cursor:pointer"></td>
+      </tr>`;
+    }).join('');
+    document.getElementById('corr-hodo-body').innerHTML=`
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
+        <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="_corrHodoAplicarRegra()">Recalcular: tirar último dígito das marcadas</button>
+        <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="_corrHodoMarcarTodas(true)">Marcar todas</button>
+        <button class="btn btn-outline" style="font-size:11px;padding:4px 10px" onclick="_corrHodoMarcarTodas(false)">Desmarcar todas</button>
+      </div>
+      <div style="border:1px solid var(--border2);border-radius:8px;overflow:auto;max-height:50vh">
+        <table style="width:100%;border-collapse:collapse">
+          <thead style="position:sticky;top:0;background:var(--mid)"><tr>
+            <th style="text-align:left;padding:6px 8px;font-size:11px">Data</th>
+            <th style="text-align:right;padding:6px 8px;font-size:11px">Atual</th>
+            <th style="text-align:right;padding:6px 8px;font-size:11px">Corrigido</th>
+            <th style="text-align:center;padding:6px 8px;font-size:11px">Corrigir?</th>
+          </tr></thead>
+          <tbody>${linhas}</tbody>
+        </table>
+      </div>
+      <div id="corr-hodo-aviso" style="display:none;margin-top:10px;font-size:11.5px;color:#FCA5A5;background:rgba(240,96,96,.1);border:1px solid rgba(240,96,96,.35);border-radius:8px;padding:8px 10px"></div>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px">Linhas bem abaixo da média começam desmarcadas (parecem já estar certas). Só o hodômetro muda; os valores antigos ficam registrados no Log de Auditoria.</p>
+      <div style="display:flex;gap:10px;margin-top:1rem;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('corr-hodo-modal').remove()">Cancelar</button>
+        <button class="btn btn-lime" id="corr-hodo-salvar" onclick="salvarCorrecaoHodometro()">💾 Salvar correção</button>
+      </div>`;
+    _corrHodoValidar();
+  } catch(e){
+    console.error('[corrHodo] falha ao carregar:', e);
+    document.getElementById('corr-hodo-body').innerHTML=`<p style="font-size:13px;color:var(--red)">Erro ao carregar histórico: ${esc(e.message)}</p>`;
+  }
+}
+function _corrHodoLinhas(){
+  return [...document.querySelectorAll('#corr-hodo-modal tbody tr')].map(tr=>{
+    const i=Number(tr.dataset.i);
+    return { tr, r:_corrHodo.rows[i], chk:tr.querySelector('.corr-hodo-chk'), inp:tr.querySelector('.corr-hodo-novo') };
+  });
+}
+function _corrHodoAplicarRegra(){
+  _corrHodoLinhas().forEach(({r,chk,inp})=>{ inp.value = chk.checked ? Math.floor(r.atual/10) : r.atual; });
+  _corrHodoValidar();
+}
+function _corrHodoMarcarTodas(v){
+  _corrHodoLinhas().forEach(({chk})=>{ chk.checked=v; });
+  _corrHodoAplicarRegra();
+}
+// Confere se a sequência FINAL (corrigidas + não corrigidas) fica sempre
+// crescente — é a mesma regra que o lançamento diário exige, então se
+// ficar alguma queda, o transportador trava de novo no próximo lançamento.
+function _corrHodoValidar(){
+  let anterior=null; const quedas=[];
+  _corrHodoLinhas().forEach(({tr,r,chk,inp})=>{
+    const final = chk.checked ? Number(inp.value) : r.atual;
+    const ruim = !Number.isFinite(final) || (anterior!==null && final<anterior);
+    tr.style.background = ruim ? 'rgba(240,96,96,.12)' : (chk.checked ? 'rgba(163,230,53,.06)' : '');
+    if(ruim) quedas.push(fmtDateStr(r.dateStr));
+    if(Number.isFinite(final)) anterior=final;
+  });
+  const aviso=document.getElementById('corr-hodo-aviso');
+  if(aviso){
+    if(quedas.length){
+      aviso.style.display='';
+      aviso.textContent=`⚠️ O hodômetro diminui em ${quedas.length} data(s): ${quedas.slice(0,6).join(', ')}${quedas.length>6?'...':''}. Confere essas linhas — se salvar assim, o próximo lançamento pode ser recusado.`;
+    } else aviso.style.display='none';
+  }
+  return quedas.length;
+}
+async function salvarCorrecaoHodometro(){
+  if(!_corrHodo) return;
+  const { carrier, plate } = _corrHodo;
+  const mudancas = _corrHodoLinhas()
+    .filter(({chk})=>chk.checked)
+    .map(({r,inp})=>({ id:r.id, dateStr:r.dateStr, de:r.atual, para:Number(inp.value) }))
+    .filter(m=>Number.isFinite(m.para) && m.para>=0 && m.para!==m.de);
+  if(!mudancas.length){ showToast('Nada pra corrigir — nenhuma linha marcada com valor diferente.', false); return; }
+  const quedas=_corrHodoValidar();
+  const ultima=mudancas[mudancas.length-1];
+  if(!confirm(`Corrigir ${mudancas.length} lançamento(s) de hodômetro da placa ${plate}?\n\nExemplo: ${fmtDateStr(ultima.dateStr)}: ${ultima.de} → ${ultima.para}`+
+    (quedas?`\n\nATENÇÃO: a sequência ainda tem ${quedas} queda(s) de hodômetro. Salvar mesmo assim?`:'')+
+    `\n\nOs valores antigos ficam registrados no Log de Auditoria.`)) return;
+  const btn=document.getElementById('corr-hodo-salvar');
+  if(btn){ btn.disabled=true; btn.textContent='Salvando...'; }
+  try{
+    const agora=new Date().toISOString();
+    // writeBatch aceita até 500 operações — divide em blocos de 400.
+    for(let i=0;i<mudancas.length;i+=400){
+      const batch=writeBatch(db);
+      mudancas.slice(i,i+400).forEach(m=>batch.update(doc(db,"availability",m.id), { hodometro:m.para, updatedAt:agora }));
+      await batch.commit();
+    }
+    _cache.clear();
+    await dbAddAudit("hodometro_correcao_lote", {
+      carrier, plate, qtd: mudancas.length,
+      alteracoes: mudancas.map(m=>[m.dateStr, m.de, m.para]), // [data, antes, depois] — pra desfazer se precisar
+    });
+    document.getElementById('corr-hodo-modal')?.remove();
+    showToast(`Hodômetro de ${plate} corrigido em ${mudancas.length} lançamento(s)!`);
+    await renderTabBody();
+  } catch(e){
+    console.error('[corrHodo] falha ao salvar:', e);
+    showToast('Erro ao salvar correção: '+(e.code==='permission-denied'?'sem permissão no Firestore (regras).':e.message), false);
+    if(btn){ btn.disabled=false; btn.textContent='💾 Salvar correção'; }
+  }
+}
+// ═══════════════════════════════════════════════════════════
 // USERS MANAGEMENT
 // ═══════════════════════════════════════════════════════════
 async function renderUsers(body, subTabs=''){
@@ -5469,7 +5638,7 @@ function _mostrarResumoImportacao({ terminais, clientes, veiculos, erros, arquiv
 // para saber qual usuário está logado (ver dashSalvarAtual / exportarRelatorioRoteirizacao).
 window.importarDadosCadastrais = importarDadosCadastrais;
 window.toggleNotif=toggleNotif; window.clearNotifsAndRender=clearNotifsAndRender;
-window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.setReportsSubTab=setReportsSubTab; window.limparFiltroExport=limparFiltroExport; window.setAuditSubTab=setAuditSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal; window.toggleUserAtivo=toggleUserAtivo;
+window.addPlate=addPlate; window.onTimeChange=onTimeChange; window.togglePlate=togglePlate; window.setRegSubTab=setRegSubTab; window.setReportsSubTab=setReportsSubTab; window.limparFiltroExport=limparFiltroExport; window.setAuditSubTab=setAuditSubTab; window.addOp=addOp; window.deleteOp=deleteOp; window.openEditOp=openEditOp; window.saveEditOp=saveEditOp; window.renderRegisterDrivers=renderRegisterDrivers; window.addDriver=addDriver; window.toggleDriver=toggleDriver; window.deleteDriver=deleteDriver; window.openEditDriver=openEditDriver; window.saveEditDriver=saveEditDriver; window.populateDriverSelects=populateDriverSelects; window.delPlate=delPlate; window.openEditModal=openEditModal; window.saveEdit=saveEdit; window.refreshEditDriverOpts=refreshEditDriverOpts; window.renderUsers=renderUsers; window.adminUnlock=adminUnlock; window.adminUnlockPlate=adminUnlockPlate; window.renderArchives=renderArchives; window.manualGenArchive=manualGenArchive; window.regenArchive=regenArchive; window.downloadArchive=downloadArchive; window.downloadArchiveCsv=downloadArchiveCsv; window.addCarrier=addCarrier; window.deleteCarrier=deleteCarrier; window.addUser=addUser; window.deleteUser=deleteUser; window.openEditUser=openEditUser; window.saveEditUser=saveEditUser; window.toggleCarrierField=toggleCarrierField; window.onEditRoleChange=onEditRoleChange; window.renderOpCheckboxes=renderOpCheckboxes; window.getCheckedOps=getCheckedOps; window.openHelpModal=openHelpModal; window.toggleUserAtivo=toggleUserAtivo; window.abrirCorrecaoHodometro=abrirCorrecaoHodometro; window.salvarCorrecaoHodometro=salvarCorrecaoHodometro; window._corrHodoValidar=_corrHodoValidar; window._corrHodoAplicarRegra=_corrHodoAplicarRegra; window._corrHodoMarcarTodas=_corrHodoMarcarTodas;
 window.exportDay=exportDay; window.exportWeek=exportWeek; window.exportMonth=exportMonth; window.exportCustom=exportCustom; window.validateCustomDates=validateCustomDates; window.exportPdf=exportPdf;
 window.renderTabBody=renderTabBody; window.buildStatusBoardAlert=buildStatusBoardAlert; window._debouncedTodaySearch=_debouncedTodaySearch; window._debouncedHistSearch=_debouncedHistSearch; window.toggleHistoryDay=toggleHistoryDay; window.saveCutoffHour=saveCutoffHour; window.saveMetaDisp=saveMetaDisp; window.saveMetaSla=saveMetaSla; window.S=S; window.renderKpisMensais=renderKpisMensais;
 window.showToast=showToast; window.dateStr=dateStr; window.sincronizarDisponibilidadeVeiculos=sincronizarDisponibilidadeVeiculos; window.USERS_DB=USERS_DB; window.dbGetPlates=dbGetPlates; window.dbGetStatus=dbGetStatus;

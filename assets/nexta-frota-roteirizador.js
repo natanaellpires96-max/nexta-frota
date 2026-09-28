@@ -10584,6 +10584,9 @@ async function abrirDetalheHistorico(filename) {
           const cliente  = pa.pedido?.cliente || '—';
           const entrega  = pa.pedido?.dataEntregaLogistica || '—';
           const pedIdTxt = pa.pedido?.id != null ? ` <span style="color:var(--text-3);">(pedido ${pa.pedido.id})</span>` : '';
+          const manualTagHtml = pa._adicionadaManualmente
+            ? ` <span title="Incluída direto no Histórico${pa._adicionadaPor ? ` por ${pa._adicionadaPor}` : ''} — sem recálculo de rota/horário" style="font-size:10px;font-weight:700;color:#3730A3;background:rgba(79,70,229,0.1);border:1px solid rgba(79,70,229,0.3);border-radius:4px;padding:1px 5px;">➕ incluída</span>`
+            : '';
           // Borda clara só no TOPO da primeira linha de cada viagem — separa
           // um ID do outro sem escurecer as linhas internas do mesmo grupo.
           const bordaGrupo = i === 0 ? 'border-top:2px solid var(--border);' : '';
@@ -10591,6 +10594,7 @@ async function abrirDetalheHistorico(filename) {
             ? `<td rowspan="${paradas.length}" style="padding:8px;font-weight:700;font-family:var(--font-cond);letter-spacing:.04em;vertical-align:top;white-space:nowrap;border-right:0.5px solid var(--border);background:var(--bg);${bordaGrupo}">
                  <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
                    <span>${petId}</span>
+                   <span onclick="abrirIncluirPedidoViagem('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Incluir um pedido nessa viagem (entra no fim, sem recalcular rota/horário) — cria uma nova revisão, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;margin-left:auto;">➕</span>
                    <span onclick="excluirViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Excluir essa viagem (ex.: deu recuo) — cria uma nova revisão sem ela, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;">🗑</span>
                  </div>
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span>
@@ -10627,7 +10631,7 @@ async function abrirDetalheHistorico(filename) {
             : `<button class="btn btn-sm" style="font-size:10.5px;padding:3px 8px;" onclick="abrirRegistroDevolucao(${ctxIdx})" title="Registrar devolução ou reentrega dessa entrega">⚠️ Registrar</button>`;
           linhasHtml.push(`<tr>
             ${idCellHtml}
-            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}${i === 0 ? pedagioTagHtml + rotaCidadesHtml : ''}</td>
+            <td style="padding:6px 8px;${bordaGrupo}">${cliente}${pedIdTxt}${manualTagHtml}${i === 0 ? pedagioTagHtml + rotaCidadesHtml : ''}</td>
             <td style="padding:6px 8px;white-space:nowrap;${bordaGrupo}">${entrega}</td>
             <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">
               ${volumes[i].toFixed(1)} m³
@@ -10847,6 +10851,382 @@ window.abrirEditarVolumesParada = abrirEditarVolumesParada;
 window._edvolAtualizarTotal = _edvolAtualizarTotal;
 window.fecharEditarVolumesParada = fecharEditarVolumesParada;
 window.salvarEdicaoVolumesParada = salvarEdicaoVolumesParada;
+// ══════════════════════════════════════════════════════════════════════════
+// INCLUIR PEDIDO NUMA VIAGEM JÁ SALVA (Histórico) — pra quando entrou um
+// pedido de última hora "no mesmo caminhão" e você não quer reabrir a
+// programação inteira na Otimização Rotas só pra isso. Mesmo mecanismo de
+// revisão do excluirViagemHistorico / salvarEdicaoVolumesParada: nunca
+// sobrescreve o original, grava revisão nova + substituidoPor no antigo.
+//
+// De onde vêm os pedidos candidatos (nessa ordem):
+//   1) Pendentes DESSA programação: pedidos que estão em data.pedidos do
+//      próprio arquivo mas não foram alocados (ou só parcialmente) em
+//      nenhuma viagem — o volume sugerido já é o que sobrou.
+//   2) Pedidos carregados AGORA na aba Pedidos (variável `pedidos`) que não
+//      existem nesse arquivo — pedido novo que chegou depois. Esse pedido
+//      também é acrescentado a data.pedidos, pra o snapshot ficar coerente.
+//
+// O que NÃO faz (de propósito): não recalcula rota nem horários. A parada
+// entra no FIM da viagem, marcada com _adicionadaManualmente: true. O
+// retorno ao terminal (deslocVazioMin) passa da antiga última parada pra
+// nova, pra a viagem continuar "voltando pra base" no cálculo de km. O km
+// real (_kmAjustado) da viagem é descartado, porque o trajeto mudou — o
+// recálculo em lote do Dashboard preenche de novo; até lá vale a estimativa
+// por linha reta (distanciaKm da parada nova é calculado aqui).
+// ══════════════════════════════════════════════════════════════════════════
+let _incpedCtx = null; // { veiculoId, petId, veiculo, viagem, terminais, candidatos, selIdx }
+
+function _incpedEsc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function _incpedCoordValida(lat, lon) {
+  if (window.NextaKm?.coordenadaValida) return window.NextaKm.coordenadaValida(lat, lon);
+  const la = parseFloat(lat), lo = parseFloat(lon);
+  return !isNaN(la) && !isNaN(lo) && (Math.abs(la) > 0.001 || Math.abs(lo) > 0.001);
+}
+// Todas as Ordens SAP que já aparecem em alguma parada do arquivo — usado pra
+// não oferecer (nem deixar gravar) um pedido que já está roteirizado.
+function _incpedOrdensNoArquivo(data) {
+  const ordens = new Set();
+  Object.values(data.resultado || {}).forEach(lista => (lista || []).forEach(vi => {
+    if (!vi || vi._vazio) return;
+    (vi.paradas || []).forEach(pa => {
+      (pa.itens || []).forEach(it => { if (it.ordemSAP) ordens.add(String(it.ordemSAP)); });
+    });
+  }));
+  return ordens;
+}
+// Volume já alocado por pedido.id → produto (somando todas as viagens de
+// todos os veículos do arquivo).
+function _incpedVolumeAlocado(data) {
+  const aloc = new Map();
+  Object.values(data.resultado || {}).forEach(lista => (lista || []).forEach(vi => {
+    if (!vi || vi._vazio) return;
+    (vi.paradas || []).forEach(pa => {
+      const id = pa.pedido?.id;
+      if (id == null) return;
+      const porProduto = aloc.get(String(id)) || new Map();
+      (pa.itens || []).forEach(it => {
+        porProduto.set(it.produto, (porProduto.get(it.produto) || 0) + (it.volume || 0));
+      });
+      aloc.set(String(id), porProduto);
+    });
+  }));
+  return aloc;
+}
+function _incpedMontarCandidatos(data) {
+  const candidatos = [];
+  const alocado = _incpedVolumeAlocado(data);
+  const ordensNoArquivo = _incpedOrdensNoArquivo(data);
+  const idsNoArquivo = new Set((data.pedidos || []).map(p => String(p.id)));
+  // 1) Pendentes do próprio arquivo (total ou parcialmente fora de viagem)
+  (data.pedidos || []).forEach(p => {
+    const porProduto = new Map(alocado.get(String(p.id)) || []);
+    const restantes = [];
+    (p.produtos || []).forEach(pr => {
+      const jaAlocado = porProduto.get(pr.produto) || 0;
+      const usa = Math.min(jaAlocado, pr.volume || 0);
+      porProduto.set(pr.produto, jaAlocado - usa); // consome, caso o mesmo produto apareça em 2 linhas
+      const resta = (pr.volume || 0) - usa;
+      if (resta > 0.01) restantes.push({ produto: pr.produto, volume: Math.round(resta * 100) / 100, ordemSAP: pr.ordemSAP || '' });
+    });
+    if (restantes.length) candidatos.push({ origem: 'arquivo', pedido: p, produtos: restantes });
+  });
+  // 2) Carregados agora na aba Pedidos e que não existem no arquivo
+  (typeof pedidos !== 'undefined' ? pedidos : []).forEach(p => {
+    if (idsNoArquivo.has(String(p.id))) return;
+    const ordensPed = (p.produtos || []).map(pr => String(pr.ordemSAP || '')).filter(Boolean);
+    if (ordensPed.some(o => ordensNoArquivo.has(o))) return; // já roteirizado nesse arquivo
+    const produtos = (p.produtos || []).filter(pr => (pr.volume || 0) > 0)
+      .map(pr => ({ produto: pr.produto, volume: pr.volume, ordemSAP: pr.ordemSAP || '' }));
+    if (produtos.length) candidatos.push({ origem: 'memoria', pedido: p, produtos });
+  });
+  return candidatos;
+}
+
+async function abrirIncluirPedidoViagem(veiculoId, petId) {
+  if (!_histDetalheFilenameAtual) return;
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  try {
+    const fh = await dirHandleHistorico.getFileHandle(_histDetalheFilenameAtual);
+    const data = JSON.parse(await (await fh.getFile()).text());
+    const viagem = (data.resultado?.[veiculoId] || []).find(vi => vi && !vi._vazio && vi.petId === petId);
+    if (!viagem) { alert('Não achei essa viagem no arquivo.'); return; }
+    const veiculo = (data.veiculos || []).find(v => v.id === veiculoId) || {};
+    const candidatos = _incpedMontarCandidatos(data);
+    _incpedCtx = { veiculoId, petId, veiculo, viagem, terminais: data.terminais || terminaisCad || [], candidatos, selIdx: null };
+    const volAtual = (viagem.paradas || []).reduce((s, pa) => s + (pa.volumeTotal || 0), 0);
+    const cap = veiculo.capacidade || veiculo.capacidadeTotal || 0;
+    document.getElementById('incped-info').innerHTML =
+      `<b>${_incpedEsc(petId)}</b> · ${_incpedEsc(veiculo.placa || '—')} · Base: ${_incpedEsc(viagem.terminalOrigem || viagem.paradas?.[0]?.pedido?.terminal || '—')}<br>` +
+      `Ocupação atual: <b>${volAtual.toFixed(1)} m³</b>${cap ? ` de ${cap} m³` : ''} · ${(viagem.paradas || []).length} entrega(s)`;
+    document.getElementById('incped-busca').value = '';
+    document.getElementById('incped-produtos-box').style.display = 'none';
+    document.getElementById('incped-aviso').style.display = 'none';
+    _incpedRenderCandidatos();
+    document.getElementById('modal-incluir-pedido').classList.add('show');
+  } catch (e) {
+    console.error('[Histórico] falha ao abrir inclusão de pedido:', e);
+    alert('Erro ao ler o arquivo: ' + e.message);
+  }
+}
+
+function _incpedRenderCandidatos() {
+  const box = document.getElementById('incped-lista');
+  if (!box || !_incpedCtx) return;
+  const termo = (document.getElementById('incped-busca').value || '').toLowerCase().trim();
+  const bate = c => {
+    if (!termo) return true;
+    const p = c.pedido;
+    const campos = [p.cliente, p.codigoSAP, p.cidade, p.terminal, p.id, ...(c.produtos.map(pr => pr.ordemSAP))];
+    return campos.some(x => String(x ?? '').toLowerCase().includes(termo));
+  };
+  const linha = (c, i) => {
+    const p = c.pedido;
+    const vol = c.produtos.reduce((s, pr) => s + (pr.volume || 0), 0);
+    const sel = _incpedCtx.selIdx === i;
+    return `<label style="display:flex;gap:8px;align-items:flex-start;padding:7px 4px;border-bottom:1px solid var(--border);cursor:pointer;${sel ? 'background:rgba(94,154,24,0.08);' : ''}">
+      <input type="radio" name="incped-cand" ${sel ? 'checked' : ''} onchange="_incpedSelecionar(${i})" style="margin-top:2px;flex-shrink:0;"/>
+      <span style="flex:1;font-size:12px;line-height:1.35;">
+        <b>${_incpedEsc(p.cliente || '—')}</b>${p.codigoSAP ? ` <span style="color:var(--text-3);">· SAP ${_incpedEsc(p.codigoSAP)}</span>` : ''}<br>
+        <span style="color:var(--text-2);font-size:11px;">${_incpedEsc(p.cidade || '—')} · ${_incpedEsc(p.terminal || '—')} · entrega ${_incpedEsc(p.dataEntregaLogistica || '—')}</span>
+      </span>
+      <span style="font-size:12px;font-weight:700;white-space:nowrap;">${vol.toFixed(1)} m³</span>
+    </label>`;
+  };
+  const doArquivo = [], daMemoria = [];
+  _incpedCtx.candidatos.forEach((c, i) => {
+    if (!bate(c)) return;
+    (c.origem === 'arquivo' ? doArquivo : daMemoria).push(linha(c, i));
+  });
+  const titulo = t => `<div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);padding:8px 4px 2px;">${t}</div>`;
+  let html = '';
+  if (doArquivo.length) html += titulo(`Ficaram de fora dessa programação (${doArquivo.length})`) + doArquivo.join('');
+  if (daMemoria.length) html += titulo(`Carregados agora na aba Pedidos (${daMemoria.length})`) + daMemoria.join('');
+  if (!html) {
+    html = _incpedCtx.candidatos.length
+      ? '<div class="empty" style="padding:14px;">Nenhum pedido bate com a busca.</div>'
+      : '<div class="empty" style="padding:14px;">Nenhum pedido disponível: todos os pedidos dessa programação já estão em alguma viagem, e não há pedido novo carregado na aba Pedidos. Pra incluir um pedido que chegou depois, carregue a planilha na aba Pedidos primeiro.</div>';
+  }
+  box.innerHTML = html;
+}
+
+function _incpedSelecionar(i) {
+  if (!_incpedCtx) return;
+  _incpedCtx.selIdx = i;
+  const c = _incpedCtx.candidatos[i];
+  const lista = document.getElementById('incped-produtos-lista');
+  lista.innerHTML = c.produtos.map((pr, k) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+      <input type="checkbox" id="incped-prod-chk-${k}" checked onchange="_incpedAtualizarTotal()" style="width:16px;height:16px;flex-shrink:0;cursor:pointer;"/>
+      <span style="flex:1;font-size:12.5px;">${_incpedEsc(pr.produto)}${pr.ordemSAP ? ` <span style="color:var(--text-3);font-size:10.5px;">· OS ${_incpedEsc(pr.ordemSAP)}</span>` : ''}</span>
+      <input type="number" id="incped-prod-vol-${k}" value="${(pr.volume || 0).toFixed(1)}" min="0" max="${(pr.volume || 0).toFixed(2)}" step="0.1" oninput="_incpedAtualizarTotal()" style="width:80px;font-size:12px;padding:4px 6px;text-align:right;"/>
+      <span style="font-size:11px;color:var(--text-3);width:18px;">m³</span>
+    </div>`).join('');
+  document.getElementById('incped-produtos-box').style.display = '';
+  _incpedRenderCandidatos(); // repinta pra destacar a linha selecionada
+  _incpedAtualizarTotal();
+}
+
+// Lê os produtos marcados + volume digitado (nunca passa do volume disponível
+// daquele produto).
+function _incpedLerProdutos() {
+  const c = _incpedCtx?.candidatos?.[_incpedCtx.selIdx];
+  if (!c) return [];
+  const out = [];
+  c.produtos.forEach((pr, k) => {
+    const chk = document.getElementById(`incped-prod-chk-${k}`);
+    const el = document.getElementById(`incped-prod-vol-${k}`);
+    if (!chk?.checked || !el) return;
+    const vol = Math.min(parseFloat(el.value) || 0, pr.volume || 0);
+    if (vol > 0.0001) out.push({ produto: pr.produto, volume: vol, volumeDisponivel: pr.volume || 0, ordemSAP: pr.ordemSAP || '' });
+  });
+  return out;
+}
+
+function _incpedAtualizarTotal() {
+  if (!_incpedCtx) return;
+  const itens = _incpedLerProdutos();
+  const total = itens.reduce((s, it) => s + it.volume, 0);
+  document.getElementById('incped-total').textContent = total.toFixed(1);
+  const avisos = [];
+  const { viagem, veiculo } = _incpedCtx;
+  const c = _incpedCtx.candidatos[_incpedCtx.selIdx];
+  const volAtual = (viagem.paradas || []).reduce((s, pa) => s + (pa.volumeTotal || 0), 0);
+  const cap = veiculo.capacidade || veiculo.capacidadeTotal || 0;
+  if (cap > 0 && volAtual + total > cap + 0.001) {
+    avisos.push(`A viagem passaria a ter <b>${(volAtual + total).toFixed(1)} m³</b>, acima da capacidade cadastrada do veículo (${cap} m³).`);
+  }
+  // Compartimentação: mesma regra de encaixe exato da Otimização Rotas. Aqui
+  // é AVISO, não bloqueio — o Histórico registra o que foi feito de verdade.
+  try {
+    if (itens.length && typeof itensCabemNosCompartimentos === 'function' &&
+        !itensCabemNosCompartimentos([..._itensDeParadas(viagem.paradas), ...itens], veiculo)) {
+      avisos.push('Os produtos não fecham encaixe exato nos compartimentos do veículo junto com o que já está na viagem.');
+    }
+  } catch (e) { /* veículo antigo sem compartimentos no snapshot — não avisa */ }
+  const termViagem = viagem.terminalOrigem || viagem.paradas?.[0]?.pedido?.terminal || '';
+  if (c && c.pedido.terminal && termViagem && c.pedido.terminal !== termViagem) {
+    avisos.push(`O pedido é do terminal <b>${_incpedEsc(c.pedido.terminal)}</b>, mas a viagem carrega em <b>${_incpedEsc(termViagem)}</b>.`);
+  }
+  const dataViagem = viagem.paradas?.[0]?.pedido?.dataEntregaLogistica || '';
+  if (c && c.pedido.dataEntregaLogistica && dataViagem && c.pedido.dataEntregaLogistica !== dataViagem) {
+    avisos.push(`Data de entrega do pedido (${_incpedEsc(c.pedido.dataEntregaLogistica)}) diferente da viagem (${_incpedEsc(dataViagem)}).`);
+  }
+  if (c && !_incpedCoordValida(c.pedido.lat, c.pedido.lon)) {
+    avisos.push('Esse cliente está sem coordenada no cadastro — a parada entra, mas não aparece no mapa nem soma km.');
+  }
+  const aviso = document.getElementById('incped-aviso');
+  if (avisos.length) {
+    aviso.innerHTML = '⚠️ Confere antes de salvar:<br>' + avisos.map(a => `• ${a}`).join('<br>');
+    aviso.style.display = '';
+  } else {
+    aviso.style.display = 'none';
+  }
+}
+
+function fecharIncluirPedidoViagem(ev = null) {
+  if (ev && ev.target && ev.target.id !== 'modal-incluir-pedido') return;
+  const modal = document.getElementById('modal-incluir-pedido');
+  if (modal) modal.classList.remove('show');
+  _incpedCtx = null;
+}
+
+async function salvarIncluirPedidoViagem() {
+  if (!_incpedCtx || _incpedCtx.selIdx == null) { alert('Escolha um pedido da lista.'); return; }
+  if (!_histDetalheFilenameAtual) return;
+  const cand = _incpedCtx.candidatos[_incpedCtx.selIdx];
+  const itensSel = _incpedLerProdutos();
+  if (!itensSel.length) { alert('Marque pelo menos um produto com volume maior que zero.'); return; }
+  const totalSel = itensSel.reduce((s, it) => s + it.volume, 0);
+  const avisoVisivel = document.getElementById('incped-aviso').style.display !== 'none';
+  if (!confirm(`Incluir ${cand.pedido.cliente} (${totalSel.toFixed(1)} m³) na viagem ${_incpedCtx.petId}?` +
+    (avisoVisivel ? '\n\nATENÇÃO: há avisos na tela (capacidade/compartimento/terminal/data). Confirma mesmo assim?' : '') +
+    '\n\nA parada entra no fim da viagem, sem recalcular rota nem horários. Isso salva uma nova revisão do arquivo — o original fica marcado como substituído, preservado no histórico.')) return;
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  const filenameAtual = _histDetalheFilenameAtual;
+  const { veiculoId, petId } = _incpedCtx;
+  try {
+    // Relê o arquivo do disco (não usa o que foi lido ao abrir o modal) —
+    // alguém pode ter mexido nele nesse meio tempo.
+    const fh = await dirHandleHistorico.getFileHandle(filenameAtual);
+    const data = JSON.parse(await (await fh.getFile()).text());
+    if (data.substituidoPor) { alert(`Esse arquivo já foi substituído por outra revisão (${data.substituidoPor}). Fecha e abre a versão mais nova.`); return; }
+    const viagem = (data.resultado?.[veiculoId] || []).find(vi => vi && !vi._vazio && vi.petId === petId);
+    if (!viagem || !Array.isArray(viagem.paradas)) { alert('Não achei essa viagem no arquivo — talvez já tenha mudado.'); return; }
+    // Trava contra duplicidade, checada de novo no arquivo fresco.
+    const ordensNoArquivo = _incpedOrdensNoArquivo(data);
+    const ordensDup = itensSel.map(it => String(it.ordemSAP || '')).filter(o => o && ordensNoArquivo.has(o));
+    if (cand.origem === 'memoria' && ordensDup.length) {
+      alert(`A(s) Ordem(ns) SAP ${ordensDup.join(', ')} já está(ão) em alguma viagem desse arquivo. Nada foi gravado.`);
+      return;
+    }
+    if (cand.origem === 'arquivo') {
+      // Revalida o saldo pendente com o arquivo fresco
+      const frescos = _incpedMontarCandidatos(data).filter(c => c.origem === 'arquivo' && String(c.pedido.id) === String(cand.pedido.id));
+      const saldo = new Map();
+      frescos.forEach(c => c.produtos.forEach(pr => saldo.set(pr.produto, (saldo.get(pr.produto) || 0) + pr.volume)));
+      const excede = itensSel.find(it => it.volume > (saldo.get(it.produto) || 0) + 0.01);
+      if (excede) { alert(`O saldo pendente de "${excede.produto}" mudou nesse meio tempo (agora ${(saldo.get(excede.produto) || 0).toFixed(1)} m³). Fecha e abre de novo.`); return; }
+    }
+    // Pedido: usa o objeto do arquivo quando vem de lá; quando vem da aba
+    // Pedidos, copia e acrescenta em data.pedidos.
+    let pedidoObj;
+    if (cand.origem === 'arquivo') {
+      pedidoObj = (data.pedidos || []).find(p => String(p.id) === String(cand.pedido.id)) || cand.pedido;
+    } else {
+      pedidoObj = JSON.parse(JSON.stringify(cand.pedido));
+      // Completa coordenada pelo cadastro atual do cliente, se o pedido veio sem
+      if (!_incpedCoordValida(pedidoObj.lat, pedidoObj.lon)) {
+        const cli = (clientes || []).find(c => (pedidoObj.codigoSAP && c.codigoSAP === pedidoObj.codigoSAP) || (!pedidoObj.codigoSAP && c.nome === pedidoObj.cliente));
+        if (cli && _incpedCoordValida(cli.lat, cli.lon)) { pedidoObj.lat = cli.lat; pedidoObj.lon = cli.lon; }
+      }
+      data.pedidos = data.pedidos || [];
+      data.pedidos.push(JSON.parse(JSON.stringify(pedidoObj)));
+      if (pedidoObj.dataEntregaLogistica) {
+        data.datasEntrega = data.datasEntrega || [];
+        if (!data.datasEntrega.includes(pedidoObj.dataEntregaLogistica)) data.datasEntrega.push(pedidoObj.dataEntregaLogistica);
+      }
+    }
+    // distanciaKm = terminal → cliente em linha reta, mesmo significado das
+    // outras paradas (é o que alimenta a estimativa antiga de km).
+    const terminalNome = viagem.terminalOrigem || viagem.paradas[0]?.pedido?.terminal || '';
+    const term = (data.terminais || terminaisCad || []).find(t => t.nome === terminalNome);
+    let distanciaKm = 0;
+    if (term && _incpedCoordValida(term.lat, term.lon) && _incpedCoordValida(pedidoObj.lat, pedidoObj.lon)) {
+      distanciaKm = Math.round(haversine(parseFloat(term.lat), parseFloat(term.lon), parseFloat(pedidoObj.lat), parseFloat(pedidoObj.lon)) * 10) / 10;
+    }
+    const usuario = (typeof S !== 'undefined' && S?.user) ? S.user : '';
+    // Mesmo pedido já é uma parada DESSA viagem (saldo de entrega parcial)?
+    // Soma na parada existente em vez de criar outra parada do mesmo cliente
+    // — mesmo comportamento do motor na Otimização Rotas.
+    const paradaExistente = viagem.paradas.find(pa => pa.pedido?.id != null && String(pa.pedido.id) === String(pedidoObj.id));
+    if (paradaExistente) {
+      paradaExistente.itens = paradaExistente.itens || [];
+      itensSel.forEach(it => {
+        const mesmo = paradaExistente.itens.find(x => x.produto === it.produto && String(x.ordemSAP || '') === String(it.ordemSAP || ''));
+        if (mesmo) {
+          mesmo.volume = (mesmo.volume || 0) + it.volume;
+          mesmo._volumeAcrescidoManualmente = (mesmo._volumeAcrescidoManualmente || 0) + it.volume;
+        } else {
+          paradaExistente.itens.push({ produto: it.produto, volume: it.volume, completo: true, ordemSAP: it.ordemSAP, alocacoesCpt: [], _adicionadoManualmente: true });
+        }
+      });
+      paradaExistente.volumeTotal = paradaExistente.itens.reduce((s, x) => s + (x.volume || 0), 0);
+      paradaExistente._adicionadaManualmente = true;
+      paradaExistente._adicionadaPor = usuario;
+      paradaExistente._adicionadaEm = new Date().toISOString();
+      // Mesmo trajeto — _kmAjustado continua valendo.
+      const novoFilename = await _histSalvarRevisao(filenameAtual, data);
+      showToast(`Saldo de ${pedidoObj.cliente} somado na entrega existente da viagem ${petId} — nova revisão salva.`, true);
+      fecharIncluirPedidoViagem();
+      await abrirDetalheHistorico(novoFilename);
+      if (typeof carregarListaHistorico === 'function') carregarListaHistorico();
+      return;
+    }
+    const ultima = viagem.paradas[viagem.paradas.length - 1];
+    const retornoMin = ultima?.deslocVazioMin || 0;
+    if (ultima) ultima.deslocVazioMin = 0; // não é mais a última — o retorno passa pra parada nova
+    viagem.paradas.push({
+      pedido: pedidoObj,
+      itens: itensSel.map(it => ({
+        produto: it.produto, volume: it.volume, completo: it.volume >= it.volumeDisponivel - 0.001,
+        ordemSAP: it.ordemSAP, alocacoesCpt: [],
+      })),
+      volumeTotal: totalSel,
+      cicloMin: 0,
+      distanciaKm,
+      tempoCarregamentoMin: 0,
+      deslocCarregadoMin: 0,
+      tempoDescargaMin: 0,
+      deslocVazioMin: retornoMin,
+      tempoEsperaRestricaoMin: 0,
+      waitAfterLoadingMin: 0,
+      overnight: false,
+      origemDeslocamento: 'Entrega anterior',
+      _adicionadaManualmente: true,
+      _adicionadaEm: new Date().toISOString(),
+      _adicionadaPor: usuario,
+    });
+    // Trajeto mudou → km real antigo deixa de valer.
+    delete viagem._kmAjustado;
+    delete viagem._kmAjustadoAuto;
+    const novoFilename = await _histSalvarRevisao(filenameAtual, data);
+    showToast(`${pedidoObj.cliente} incluído na viagem ${petId} — nova revisão salva.`, true);
+    fecharIncluirPedidoViagem();
+    await abrirDetalheHistorico(novoFilename);
+    if (typeof carregarListaHistorico === 'function') carregarListaHistorico();
+  } catch (e) {
+    console.error('[Histórico] falha ao incluir pedido:', e);
+    alert('Erro ao incluir pedido: ' + e.message);
+  }
+}
+window.abrirIncluirPedidoViagem = abrirIncluirPedidoViagem;
+window._incpedRenderCandidatos = _incpedRenderCandidatos;
+window._incpedSelecionar = _incpedSelecionar;
+window._incpedAtualizarTotal = _incpedAtualizarTotal;
+window.fecharIncluirPedidoViagem = fecharIncluirPedidoViagem;
+window.salvarIncluirPedidoViagem = salvarIncluirPedidoViagem;
 // ══════════════════════════════════════════════════════════════════════════
 // DEVOLUÇÃO / REENTREGA — registrado a posteriori (não dá pra saber na hora
 // da programação), a partir do modal de detalhe do Histórico. Salvo no
