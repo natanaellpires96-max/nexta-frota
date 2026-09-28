@@ -1740,6 +1740,30 @@
       </div>
     </div>
   </div>
+  <!-- ── MODAL INCLUIR PEDIDO NUMA VIAGEM JÁ SALVA (Histórico) ─────────────── -->
+  <div id="modal-incluir-pedido" class="modal-backdrop" onclick="fecharIncluirPedidoViagem(event)">
+    <div class="modal-card" style="max-width:560px;width:94vw;" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <div style="font-family:var(--font-cond);font-size:16px;font-weight:700;">➕ Incluir pedido na viagem</div>
+        <button class="btn btn-sm btn-danger" onclick="fecharIncluirPedidoViagem()">Fechar</button>
+      </div>
+      <div class="modal-body">
+        <div id="incped-info" style="font-size:12px;color:var(--text-2);background:rgba(0,0,0,0.03);border-radius:8px;padding:10px 12px;margin-bottom:12px;"></div>
+        <input type="text" id="incped-busca" placeholder="Buscar por cliente, SAP, cidade, terminal ou Ordem SAP..." oninput="_incpedRenderCandidatos()" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:7px 10px;margin-bottom:8px;"/>
+        <div id="incped-lista" style="border:1px solid var(--border);border-radius:8px;padding:0 8px;max-height:240px;overflow-y:auto;"></div>
+        <div id="incped-produtos-box" style="display:none;margin-top:12px;">
+          <div style="font-size:12px;font-weight:700;margin-bottom:4px;">Produtos a incluir</div>
+          <div id="incped-produtos-lista" style="border:1px solid var(--border);border-radius:8px;padding:4px 10px;max-height:180px;overflow-y:auto;"></div>
+          <div style="text-align:right;font-size:12.5px;font-weight:700;margin-top:6px;">Total a incluir: <span id="incped-total">0.0</span> m³</div>
+        </div>
+        <div id="incped-aviso" style="display:none;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;border-radius:8px;padding:8px 10px;margin-top:10px;font-size:11.5px;line-height:1.45;"></div>
+        <div style="font-size:10.5px;color:var(--text-3);margin-top:10px;">A entrega entra no fim da viagem, sem recalcular rota nem horários. O km real da viagem é descartado e volta a ser calculado no próximo recálculo em lote do Dashboard. Salva como nova revisão do arquivo.</div>
+        <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+          <button class="btn btn-green" onclick="salvarIncluirPedidoViagem()">Incluir na viagem</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="modal-viagem" class="modal-backdrop" onclick="fecharModalViagem(event)">
     <div class="modal-card" style="max-width:860px;width:98vw;">
       <div class="modal-head">
