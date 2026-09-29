@@ -178,6 +178,7 @@
           <option value="__vazio__">Não informado</option>
           <option value="Bandeira branca">Bandeira branca</option>
           <option value="Total Energies">Total Energies</option>
+          <option value="Bravo">Bravo</option>
           <option value="Charrua">Charrua</option>
           <option value="Petronas">Petronas</option>
           <option value="TRR">TRR</option>
@@ -293,7 +294,8 @@
             <option value="">Não informado</option>
             <option value="Bandeira branca">Bandeira branca</option>
             <option value="Total Energies">Total Energies</option>
-            <option value="Charrua">Charrua</option>
+            <option value="Bravo">Bravo</option>
+          <option value="Charrua">Charrua</option>
             <option value="Petronas">Petronas</option>
             <option value="TRR">TRR</option>
             <option value="Sem bandeira (B2B)">Sem bandeira (B2B)</option>
@@ -716,6 +718,28 @@
                   <button onclick="dashSelecionarTodosSegmento('dash-seg-panel', false)"
                     style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;letter-spacing:.02em;">Limpar</button>
                   <button onclick="dashAplicarFiltroSegmento('dash-seg-panel')"
+                    style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:#4F46E5;color:#fff;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
+                </div>
+              </div>
+            </div>
+            <!-- Filtro de Bandeira — mesmo comportamento do Segmento: cruza
+                 com Clientes e Segmento e afeta a tela inteira. Opções vêm
+                 da lista do cadastro de cliente (cl-bandeira). -->
+            <div style="position:relative;border-right:1px solid #D1D5DB;">
+              <button id="dash-band-btn" onclick="dashTogglePainelBandeira()" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'"
+                style="display:flex;align-items:center;gap:5px;background:transparent;border:none;padding:7px 11px;font-size:11px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap;font-family:inherit;height:100%;">
+                <span>🚩 Bandeira</span>
+                <span id="dash-band-badge" style="display:none;background:#4F46E5;color:#fff;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
+              </button>
+              <div id="dash-band-panel" style="display:none;position:absolute;top:calc(100% + 8px);left:0;z-index:500;background:#fff;border:1px solid #D1D5DB;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.16);width:230px;overflow:hidden;flex-direction:column;">
+                <div style="padding:10px 14px 8px;border-bottom:1px solid #D1D5DB;font-size:11px;font-weight:600;color:#6B7280;letter-spacing:.06em;">FILTRAR POR BANDEIRA</div>
+                <div class="dash-band-list-inner" style="padding:4px 0;max-height:300px;overflow-y:auto;"></div>
+                <div style="padding:10px 14px;border-top:1px solid #D1D5DB;display:flex;gap:8px;background:#fff;">
+                  <button onclick="dashSelecionarTodosBandeira(true)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;letter-spacing:.02em;">Todos</button>
+                  <button onclick="dashSelecionarTodosBandeira(false)"
+                    style="flex:1;font-size:11px;font-weight:600;padding:7px 4px;border:1px solid #D1D5DB;border-radius:7px;background:transparent;color:#374151;cursor:pointer;letter-spacing:.02em;">Limpar</button>
+                  <button onclick="dashAplicarFiltroBandeira()"
                     style="flex:2;font-size:12px;font-weight:700;padding:7px 4px;border:none;border-radius:7px;background:#4F46E5;color:#fff;cursor:pointer;letter-spacing:.02em;">✓ Aplicar</button>
                 </div>
               </div>
