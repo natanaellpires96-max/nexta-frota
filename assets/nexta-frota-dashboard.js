@@ -2331,6 +2331,88 @@ function dashClienteSegmento(nome) {
   const key = dashChaveCliente({ codigoSAP: sap, cliente: nome });
   return _dashSegmentoLookup()[key] || '';
 }
+// ── Bandeira do cliente (Petronas, Bravo, Charrua...) — filtro GLOBAL ──────
+// Mesmo princípio do Segmento: o campo vive no CADASTRO do cliente, então
+// vale sempre a bandeira de HOJE, e a identidade do cliente usa a mesma
+// chave de dashChaveCliente() (SAP primeiro, nome normalizado de reserva).
+// As opções do filtro vêm da própria lista do formulário de cadastro
+// (<select id="cl-bandeira">) — incluir uma bandeira nova lá já faz ela
+// aparecer aqui, sem precisar mexer em duas listas. Qualquer valor que
+// exista em cliente cadastrado mas não esteja na lista também entra.
+let _dashBandeirasSelecionadas = null; // null = todas; Set = filtro ativo ('—' = sem bandeira informada)
+function _dashBandeiraLookup() {
+  const arr = (typeof clientes !== 'undefined' && clientes) || window.clientes || [];
+  const map = {};
+  arr.forEach(c => {
+    if (!c || !c.bandeira) return;
+    map[dashChaveCliente({ codigoSAP: c.codigoSAP, cliente: c.nome })] = c.bandeira;
+  });
+  return map;
+}
+function dashClienteBandeira(nome, lookup) {
+  const sap = _dashMapaNomeParaSAP[nome] || '';
+  const key = dashChaveCliente({ codigoSAP: sap, cliente: nome });
+  return (lookup || _dashBandeiraLookup())[key] || '';
+}
+function _dashBandeiraOpcoes() {
+  const valores = [];
+  const sel = document.getElementById('cl-bandeira');
+  if (sel) [...sel.options].forEach(o => { if (o.value && !valores.includes(o.value)) valores.push(o.value); });
+  const arr = (typeof clientes !== 'undefined' && clientes) || window.clientes || [];
+  arr.forEach(c => { if (c && c.bandeira && !valores.includes(c.bandeira)) valores.push(c.bandeira); });
+  return [...valores.map(v => ({ valor: v, label: v })), { valor: '—', label: 'Bandeira não informada' }];
+}
+function _dashBandeiraListHtml() {
+  const estado = _dashBandeirasSelecionadas;
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return _dashBandeiraOpcoes().map(o => {
+    const checked = !estado || estado.has(o.valor);
+    // Reaproveita _dashSegToggleRow (e a classe dash-seg-checkbox) — o
+    // comportamento do checkbox é idêntico ao do Segmento.
+    return `<div data-band="${esc(o.valor)}" data-checked="${checked ? 1 : 0}" onclick="_dashSegToggleRow(this)"
+      style="display:flex;align-items:center;gap:9px;padding:8px 14px;cursor:pointer;font-size:12.5px;color:#111827;"
+      onmouseover="this.style.background='rgba(0,0,0,.03)'" onmouseout="this.style.background='none'">
+      <span class="dash-seg-checkbox" style="width:16px;height:16px;border-radius:4px;border:1.5px solid ${checked ? 'var(--pet-green,#b5e51d)' : '#bbb'};background:${checked ? 'var(--pet-green,#b5e51d)' : 'transparent'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">${checked ? _dashCheckSVG() : ''}</span>
+      ${esc(o.label)}
+    </div>`;
+  }).join('');
+}
+function dashTogglePainelBandeira() {
+  const panel = document.getElementById('dash-band-panel');
+  if (!panel) return;
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : 'flex';
+  if (!visible) {
+    const list = panel.querySelector('.dash-band-list-inner');
+    if (list) list.innerHTML = _dashBandeiraListHtml();
+  }
+}
+function dashSelecionarTodosBandeira(sel) {
+  const panel = document.getElementById('dash-band-panel');
+  if (!panel) return;
+  panel.querySelectorAll('[data-band]').forEach(el => {
+    el.dataset.checked = sel ? '1' : '0';
+    const box = el.querySelector('.dash-seg-checkbox');
+    box.style.borderColor = sel ? 'var(--pet-green,#b5e51d)' : '#bbb';
+    box.style.background  = sel ? 'var(--pet-green,#b5e51d)' : 'transparent';
+    box.innerHTML = sel ? _dashCheckSVG() : '';
+  });
+}
+function dashAplicarFiltroBandeira() {
+  const panel = document.getElementById('dash-band-panel');
+  if (!panel) return;
+  const selecionados = new Set();
+  panel.querySelectorAll('[data-band][data-checked="1"]').forEach(el => selecionados.add(el.dataset.band));
+  const total = panel.querySelectorAll('[data-band]').length;
+  _dashBandeirasSelecionadas = selecionados.size === total ? null : selecionados;
+  panel.style.display = 'none';
+  _dashAtualizarBadgeSegmento('dash-band-badge', _dashBandeirasSelecionadas);
+  dashRenderComFiltro(); // reaplica sobre os snapshots já carregados, sem reler o disco
+  dashRenderClientesInativosUI(_dashUltimaListaInativos);
+}
+window.dashTogglePainelBandeira    = dashTogglePainelBandeira;
+window.dashSelecionarTodosBandeira = dashSelecionarTodosBandeira;
+window.dashAplicarFiltroBandeira   = dashAplicarFiltroBandeira;
 // ── Conjunto efetivo de clientes visíveis (filtro GLOBAL) ──────────────────
 // Combina (E lógico, não OU) o filtro do picker de Clientes com o filtro de
 // Segmento GLOBAL (botão do topo) — os dois se cruzam. Ex.: picker com
@@ -2341,12 +2423,19 @@ function dashClienteSegmento(nome) {
 // "Clientes sem comprar" — esse é aplicado só ali, ver
 // dashRenderClientesInativosUI().
 function dashClientesEfetivos(nomesBase) {
-  if (!_dashClientesSelecionados && !_dashSegmentosSelecionados) return null;
+  if (!_dashClientesSelecionados && !_dashSegmentosSelecionados && !_dashBandeirasSelecionadas) return null;
+  // Lookups montados UMA vez por chamada (não por cliente) — a lista pode ter
+  // centenas de nomes.
+  const lookupBand = _dashBandeirasSelecionadas ? _dashBandeiraLookup() : null;
   const permitido = (nome) => {
     if (_dashClientesSelecionados && !_dashClientesSelecionados.has(nome)) return false;
     if (_dashSegmentosSelecionados) {
       const seg = dashClienteSegmento(nome) || '—';
       if (!_dashSegmentosSelecionados.has(seg)) return false;
+    }
+    if (_dashBandeirasSelecionadas) {
+      const band = dashClienteBandeira(nome, lookupBand) || '—';
+      if (!_dashBandeirasSelecionadas.has(band)) return false;
     }
     return true;
   };
@@ -2454,7 +2543,7 @@ window.dashAplicarFiltroSegmento = dashAplicarFiltroSegmento;
 // Fecha os painéis de Segmento ao clicar fora (mesmo padrão dos outros
 // dropdowns da tela — Clientes, Operação, Ferramentas).
 document.addEventListener('click', function(e) {
-  ['dash-seg-panel', 'dash-seg-inativos-panel'].forEach(painelId => {
+  ['dash-seg-panel', 'dash-seg-inativos-panel', 'dash-band-panel'].forEach(painelId => {
     const btnId = painelId.replace('-panel', '-btn');
     const panel = document.getElementById(painelId);
     const btn   = document.getElementById(btnId);
@@ -4537,11 +4626,13 @@ function _dashResetarTodosFiltros() {
   _dashClientesSelecionados = null;
   _dashCidadesSelecionadas = null;
   _dashSegmentosSelecionados = null;
+  _dashBandeirasSelecionadas = null;
   _dashTransportadorasSelecionadas = null;
   const badgeCli = document.getElementById('dash-cli-badge'); if (badgeCli) badgeCli.style.display = 'none';
   const badgeCid = document.getElementById('dash-cid-badge'); if (badgeCid) badgeCid.style.display = 'none';
   const badgeTransp = document.getElementById('dash-transp-badge'); if (badgeTransp) badgeTransp.style.display = 'none';
   _dashAtualizarBadgeSegmento('dash-seg-badge', null);
+  _dashAtualizarBadgeSegmento('dash-band-badge', null);
   const buscaCli = document.getElementById('dash-cli-search'); if (buscaCli) buscaCli.value = '';
   const buscaCid = document.getElementById('dash-cid-search'); if (buscaCid) buscaCid.value = '';
   const buscaTransp = document.getElementById('dash-transp-search'); if (buscaTransp) buscaTransp.value = '';
@@ -5059,6 +5150,7 @@ function _dashDescricaoFiltroAtual() {
   if (_dashCidadesSelecionadas) partes.push(`${_dashCidadesSelecionadas.size} operação(ões) selecionada(s)`);
   if (_dashTransportadorasSelecionadas) partes.push(`${_dashTransportadorasSelecionadas.size} transportadora${_dashTransportadorasSelecionadas.size === 1 ? '' : 's'} selecionada${_dashTransportadorasSelecionadas.size === 1 ? '' : 's'}`);
   if (_dashSegmentosSelecionados) partes.push(`Segmento: ${[..._dashSegmentosSelecionados].join(', ')}`);
+  if (_dashBandeirasSelecionadas) partes.push(`Bandeira: ${[..._dashBandeirasSelecionadas].map(b => b === '—' ? 'Não informada' : b).join(', ')}`);
   return partes.join(' · ');
 }
 
