@@ -380,21 +380,20 @@ async function dbSaveStatus(carrier, plate, dateStr, status, time, motoristaDiur
   cacheSet(cKey, { status, time: time||"", motoristaDiurno: motoristaDiurno||"", motoristaNoturno: motoristaNoturno||"", hodometro: hodometro!==undefined?hodometro:null, hodometroFotoUrl: hodometroFotoUrl!==undefined?hodometroFotoUrl:null });
 }
 async function dbGetPreviousHodometro(carrier, plate, currentDateStr) {
-  // Cache curto (mesma janela do resto do app) — evita reconsultar o Firestore
-  // toda vez que o mesmo campo de hodômetro é focado/preenchido na mesma sessão.
+  // Retorna o último hodômetro lançado ANTES de currentDateStr, ou null se
+  // de fato não existe nenhum. Se NÃO conseguir consultar (índice ausente,
+  // regra, rede), LANÇA erro em vez de devolver null — antes devolvia null,
+  // e null significa "placa sem histórico" pra validação, que aí liberava
+  // qualquer valor em silêncio (foi assim que 194042 entrou depois de
+  // 218988). Quem chama decide o que fazer com o erro.
   const cKey = `prevHodometro||${carrier}||${plate}||${currentDateStr}`;
   const cached = cacheGet(cKey);
   if (cached !== undefined) return cached;
+  const valido = d => d && d.hodometro !== undefined && d.hodometro !== null && d.hodometro !== "" && Number.isFinite(Number(d.hodometro));
+  // 1) Caminho rápido: query com índice composto (carrier + plate + dateStr
+  //    desc). O filtro por carrier é exigido pelas regras do Firestore pro
+  //    perfil Transportador — e é ele que torna o índice composto obrigatório.
   try {
-    // Query all availability records for this plate that have a hodômetro value
-    // and a dateStr strictly before currentDateStr, ordered descending to get the most recent.
-    // Filtra por "carrier" também — não é só por precisão (uma placa nunca
-    // deveria pertencer a duas transportadoras diferentes, mas garante isso
-    // de qualquer forma): sem esse filtro, a regra de segurança do Firestore
-    // rejeita a consulta inteira pro perfil Transportador, porque ela só
-    // consegue confirmar que o resultado respeita a regra (each doc.carrier
-    // == a própria transportadora) se a query JÁ vier filtrada por esse
-    // mesmo campo — mesmo padrão já usado em dbLoadStatusBulk.
     const q = query(
       collection(db, "availability"),
       where("carrier",  "==", carrier),
@@ -406,43 +405,43 @@ async function dbGetPreviousHodometro(carrier, plate, currentDateStr) {
     const snap = await getDocs(q);
     for (const docSnap of snap.docs) {
       const d = docSnap.data();
-      if (d.hodometro === undefined || d.hodometro === null || d.hodometro === "") continue;
-      const val = Number(d.hodometro);
-      if (Number.isFinite(val)) { cacheSet(cKey, val); return val; }
+      if (valido(d)) { const val = Number(d.hodometro); cacheSet(cKey, val); return val; }
     }
+    // Query funcionou e não achou nos 10 mais recentes com hodômetro? Se
+    // vieram menos de 10 docs, não existe mais nada — é placa sem histórico.
+    if (snap.size < 10) { cacheSet(cKey, null, 15_000); return null; }
   } catch (e) {
-    // Fallback: se o índice composto ainda não existir, NÃO varre a coleção
-    // inteira daquela placa — limita a busca a uma janela de dias anteriores
-    // (evita ler o histórico completo, que pode ser centenas/milhares de
-    // documentos por placa depois de alguns meses de uso).
-    console.warn("dbGetPreviousHodometro: índice ausente, usando busca por janela de dias", e.message);
-    const DIAS_JANELA = 90;
-    try {
-      const dataCorte = new Date(currentDateStr + "T00:00:00");
-      dataCorte.setDate(dataCorte.getDate() - DIAS_JANELA);
-      const dataCorteStr = dataCorte.toISOString().slice(0, 10);
-      const qFallback = query(
-        collection(db, "availability"),
-        where("carrier", "==", carrier),
-        where("plate", "==", plate),
-        where("dateStr", ">=", dataCorteStr),
-        where("dateStr", "<", currentDateStr)
-      );
-      const snap = await getDocs(qFallback);
-      const rows = snap.docs
-        .map(docSnap => docSnap.data())
-        .filter(d => d && d.dateStr &&
-                     d.hodometro !== undefined && d.hodometro !== null && d.hodometro !== "")
-        .sort((a, b) => String(b.dateStr).localeCompare(String(a.dateStr)));
-      for (const row of rows) {
-        const val = Number(row.hodometro);
-        if (Number.isFinite(val)) { cacheSet(cKey, val); return val; }
-      }
-    } catch (e2) {
-      console.error("dbGetPreviousHodometro fallback failed", e2);
-    }
+    console.warn("dbGetPreviousHodometro: consulta indexada falhou — usando leitura dia a dia. Crie o índice composto availability (carrier ↑, plate ↑, dateStr ↓) pelo link que o Firestore mostra neste erro:", e.message);
   }
-  cacheSet(cKey, null, 15_000); // cacheia "não achou" por menos tempo, pra não travar um valor futuro
+  // 2) Fallback SEM índice nenhum: lê direto pelo ID do documento
+  //    (carrier__placa__data), voltando dia a dia, 7 dias por vez em
+  //    paralelo. Leitura por ID não depende de índice, e a regra permite o
+  //    transportador ler os próprios documentos. Normalmente acha no
+  //    primeiro bloco (ontem/anteontem). Limite de 120 dias pra trás.
+  const LIMITE_DIAS = 120, BLOCO = 7;
+  const base = new Date(currentDateStr + "T12:00:00");
+  let algumErro = null;
+  for (let ini = 1; ini <= LIMITE_DIAS; ini += BLOCO) {
+    const dias = [];
+    for (let k = ini; k < ini + BLOCO && k <= LIMITE_DIAS; k++) {
+      const dt = new Date(base); dt.setDate(dt.getDate() - k);
+      dias.push(localDateStr(dt));
+    }
+    const docs = await Promise.all(dias.map(async ds => {
+      try {
+        const snap = await getDoc(doc(db, "availability", `${carrier}__${plate}__${ds}`));
+        return snap.exists() ? snap.data() : null;
+      } catch (e) { algumErro = e; return null; }
+    }));
+    // dias[] está do mais recente pro mais antigo — o primeiro válido é o último lançamento
+    const achado = docs.find(valido);
+    if (achado) { const val = Number(achado.hodometro); cacheSet(cKey, val); return val; }
+  }
+  if (algumErro) {
+    console.error("dbGetPreviousHodometro: não consegui ler o histórico da placa", plate, algumErro);
+    throw new Error(`não foi possível consultar o hodômetro anterior da placa ${plate}`);
+  }
+  cacheSet(cKey, null, 15_000); // sem nenhum lançamento em 120 dias
   return null;
 }
 async function dbGetNotifs() {
@@ -2015,7 +2014,16 @@ async function saveAll(carrier, ds, btnEl=null){
         row.style.background="rgba(240,96,96,.08)";
         continue;
       }
-      const previousOdo=await dbGetPreviousHodometro(carrier, plate, ds);
+      let previousOdo;
+      try {
+        previousOdo=await dbGetPreviousHodometro(carrier, plate, ds);
+      } catch(e) {
+        // Não dá pra validar → não salva. Melhor pedir pra tentar de novo do
+        // que deixar passar um hodômetro menor sem ninguém perceber.
+        showToast(`Não consegui conferir o hodômetro anterior de ${plate}. Verifique a conexão e tente salvar de novo.`, false);
+        row.style.background="rgba(240,96,96,.08)";
+        return;
+      }
       prevOdoCache[plate]=previousOdo;
       if(previousOdo !== null && currentOdo < previousOdo){
         invalidOdoRows.push(plate);
