@@ -3880,6 +3880,17 @@ function abrirFormPedido(id) {
     document.getElementById('p-lat').value       = p.lat;
     document.getElementById('p-lon').value       = p.lon;
     document.getElementById('p-restricao').value = p.restricao || '';
+    {
+      // Turno importado pode não estar na lista fixa (ex.: "Manhã / Tarde",
+      // "Integral") — cria a opção na hora, senão o select zeraria e salvar
+      // o formulário apagaria o turno do pedido.
+      const t = document.getElementById('p-turno');
+      if (t) {
+        const val = p.turnoEntrega || '';
+        if (val && ![...t.options].some(o => o.value === val)) t.add(new Option(val, val));
+        t.value = val;
+      }
+    }
     // dataEntregaLogistica vem como DD/MM/YYYY → converte para YYYY-MM-DD para o input date
     const _dlEdit = p.dataEntregaLogistica || '';
     const _dlPts = _dlEdit.split('/');
@@ -3892,7 +3903,7 @@ function abrirFormPedido(id) {
     if (!p.produtos.length) addProdutoForm();
   } else {
     document.getElementById('form-pedido-title').textContent = 'Novo pedido';
-    ['p-sap','p-cliente','p-cidade','p-lat','p-lon','p-restricao','p-data-entrega'].forEach(fid => { const e=document.getElementById(fid); if(e) e.value=''; });
+    ['p-sap','p-cliente','p-cidade','p-lat','p-lon','p-restricao','p-data-entrega','p-turno'].forEach(fid => { const e=document.getElementById(fid); if(e) e.value=''; });
     document.getElementById('p-identidade-petronas').checked = false;
     document.getElementById('p-terminal').innerHTML = optsTerminais('');
     if (document.getElementById('p-tipos-btns')) renderTipoBtns('p-tipos-btns', []);
@@ -3946,6 +3957,7 @@ function salvarPedido() {
     lon:       parseFloat(document.getElementById('p-lon').value) || 0,
     terminal,
     restricao:     document.getElementById('p-restricao').value || null,
+    turnoEntrega:  document.getElementById('p-turno')?.value.trim() || '',
     tiposCaminhao: lerTiposSelecionados('p-tipos-btns'),
     identidadePetronas: document.getElementById('p-identidade-petronas').checked,
     dataEntregaLogistica: (() => {
@@ -4145,6 +4157,7 @@ function renderPedidos() {
               ? `<span class="tag tag-red" style="font-size:9px;" title="Data bem longe de hoje — confira se o ano está certo">⚠️ 📅 ${p.dataEntregaLogistica}</span>`
               : `<span class="tag tag-blue" style="font-size:9px;">📅 ${p.dataEntregaLogistica}</span>`) : ''}
             ${p.restricao ? `<span class="tag tag-yellow">${p.restricao}</span>` : ''}
+            ${p.turnoEntrega ? `<span class="tag" title="Turno de entrega informado no pedido" style="font-size:9px;background:#FFF7ED;color:#9A3412;border-color:#FDBA74;">${iconeTurnoEntrega(p.turnoEntrega)} Turno: ${p.turnoEntrega}</span>` : ''}
             ${p.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             ${pernoiteTag}
             ${tiposHtml}
@@ -4935,6 +4948,26 @@ function fecharQuebraPedido(event) {
   document.getElementById('modal-quebra-pedido').classList.remove('show');
   _quebraIdAtual = null;
 }
+// ─── Turno de entrega (coluna "Turno Entrega" do relatório de pedidos) ───────
+// Vem como texto livre do portal (MANHA, TARDE...). Guardado no pedido como
+// `turnoEntrega` já formatado ("Manhã", "Tarde"), só pra exibição — NÃO
+// entra no cálculo de janela/horário da roteirização (quem restringe
+// horário continua sendo a `restricao` do cadastro do cliente).
+function fmtTurnoEntrega(v) {
+  const t = String(v ?? '').trim();
+  if (!t) return '';
+  const norm = t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  const mapa = { MANHA: 'Manhã', TARDE: 'Tarde', NOITE: 'Noite', NOTURNO: 'Noite', MADRUGADA: 'Madrugada', INTEGRAL: 'Integral', COMERCIAL: 'Comercial' };
+  if (mapa[norm]) return mapa[norm];
+  return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
+}
+function iconeTurnoEntrega(turno) {
+  const n = String(turno || '').toLowerCase();
+  if (n.startsWith('manh')) return '🌅';
+  if (n.startsWith('tard')) return '🌇';
+  if (n.startsWith('noit') || n.startsWith('madr')) return '🌙';
+  return '🕘';
+}
 // ─── Pedidos Liberados (Excel) ───────────────────────────────────────────────
 function xlsxMapPedidosLiberadosRows(rows) {
   const groups = {};
@@ -4950,6 +4983,7 @@ function xlsxMapPedidosLiberadosRows(rows) {
     const volume   = parseFloat(r['Volume Pedido (m³)'] ?? r['Volume Pedido'] ?? r['Volume'] ?? 0);
     const ordemSAP = String(r['No. Ordem SAP'] ?? r['No Ordem SAP'] ?? r['Ordem SAP'] ?? '').trim();
     const dataEntregaRaw = r['Data Entrega Logística'] ?? r['Data Entrega Logistica'] ?? r['Data Entrega'] ?? '';
+    const turnoEntrega = fmtTurnoEntrega(r['Turno Entrega'] ?? r['Turno de Entrega'] ?? r['Turno'] ?? '');
     const dataEntrega = dataEntregaRaw instanceof Date
       ? dataEntregaRaw.toLocaleDateString('pt-BR')
       : String(dataEntregaRaw).trim().replace(/^(\d{4})-(\d{2})-(\d{2}).*/, '$3/$2/$1');
@@ -5000,11 +5034,18 @@ function xlsxMapPedidosLiberadosRows(rows) {
         tiposCaminhao: cliCad?.tiposCaminhao ?? [],
         identidadePetronas: cliCad?.identidadePetronas ?? false,
         dataEntregaLogistica: dataEntrega,
+        turnoEntrega: '',
         produtos: [],
       };
       order.push(key);
     }
     if (ordemSAP && !groups[key].ordens.includes(ordemSAP)) groups[key].ordens.push(ordemSAP);
+    // Mesmo cliente+terminal com linhas de turnos diferentes → junta os
+    // dois ("Manhã / Tarde") em vez de ficar só com o primeiro.
+    if (turnoEntrega) {
+      const atuais = groups[key].turnoEntrega ? groups[key].turnoEntrega.split(' / ') : [];
+      if (!atuais.includes(turnoEntrega)) groups[key].turnoEntrega = [...atuais, turnoEntrega].join(' / ');
+    }
     if (volume > 0) {
       const prodLabel = PRODUTOS.find(p => p.startsWith(material))
         ?? (material ? `${material} - ${prodNome}` : prodNome);
@@ -5091,7 +5132,7 @@ function baixarModeloPedidos() {
   const headers = [
     'Clientes Id ERP', 'Clientes Razão Social', 'Cidade Entrega',
     'Terminal', 'Material', 'Produto', 'Volume Pedido (m³)',
-    'No. Ordem SAP', 'Data Entrega Logística',
+    'No. Ordem SAP', 'Data Entrega Logística', 'Turno Entrega',
   ];
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([headers]);
@@ -7696,7 +7737,7 @@ function renderTemplateOperacao() {
           ${(() => {
             const paradasComJanela = (viOriginal.paradas || []).filter(p => {
               const obs = encontrarClienteDoPedido(p.pedido)?.observacoes || p.pedido?.observacoes || '';
-              return p.pedido?.restricao || obs;
+              return p.pedido?.restricao || p.pedido?.turnoEntrega || obs;
             });
             // Dedup por cliente: se o mesmo cliente recebe de 2 bases
             // diferentes (2 "paradas" pro mesmo pedido/codigoSAP), a janela
@@ -7715,6 +7756,7 @@ function renderTemplateOperacao() {
               return `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
                 <span style="font-weight:600;font-size:12px;">${p.pedido.cliente}</span>
                 ${p.pedido.restricao ? `<span style="font-size:11px;color:#92400E;background:#FEF3C7;border:1px solid #FCD34D;border-radius:4px;padding:1px 7px;">${dataEnt}${p.pedido.restricao}</span>` : ''}
+                ${p.pedido.turnoEntrega ? `<span style="font-size:11px;font-weight:600;color:#9A3412;background:#FFF7ED;border:1px solid #FDBA74;border-radius:4px;padding:1px 7px;">${iconeTurnoEntrega(p.pedido.turnoEntrega)} ${p.pedido.restricao ? '' : dataEnt}Turno: ${p.pedido.turnoEntrega}</span>` : ''}
                 ${obs ? `<span style="font-size:11px;color:#4A6535;font-style:italic;">${obs}</span>` : ''}
               </div>`;
             }).join('');
