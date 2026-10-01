@@ -413,36 +413,35 @@ async function dbGetPreviousHodometro(carrier, plate, currentDateStr) {
   } catch (e) {
     console.warn("dbGetPreviousHodometro: consulta indexada falhou — usando leitura dia a dia. Crie o índice composto availability (carrier ↑, plate ↑, dateStr ↓) pelo link que o Firestore mostra neste erro:", e.message);
   }
-  // 2) Fallback SEM índice nenhum: lê direto pelo ID do documento
-  //    (carrier__placa__data), voltando dia a dia, 7 dias por vez em
-  //    paralelo. Leitura por ID não depende de índice, e a regra permite o
-  //    transportador ler os próprios documentos. Normalmente acha no
-  //    primeiro bloco (ontem/anteontem). Limite de 120 dias pra trás.
-  const LIMITE_DIAS = 120, BLOCO = 7;
-  const base = new Date(currentDateStr + "T12:00:00");
-  let algumErro = null;
-  for (let ini = 1; ini <= LIMITE_DIAS; ini += BLOCO) {
-    const dias = [];
-    for (let k = ini; k < ini + BLOCO && k <= LIMITE_DIAS; k++) {
-      const dt = new Date(base); dt.setDate(dt.getDate() - k);
-      dias.push(localDateStr(dt));
-    }
-    const docs = await Promise.all(dias.map(async ds => {
-      try {
-        const snap = await getDoc(doc(db, "availability", `${carrier}__${plate}__${ds}`));
-        return snap.exists() ? snap.data() : null;
-      } catch (e) { algumErro = e; return null; }
-    }));
-    // dias[] está do mais recente pro mais antigo — o primeiro válido é o último lançamento
-    const achado = docs.find(valido);
-    if (achado) { const val = Number(achado.hodometro); cacheSet(cKey, val); return val; }
-  }
-  if (algumErro) {
-    console.error("dbGetPreviousHodometro: não consegui ler o histórico da placa", plate, algumErro);
+  // 2) Fallback SEM índice composto: só igualdades (carrier + plate), sem
+  //    range nem orderBy — o Firestore resolve isso com os índices simples
+  //    automáticos. É a mesma consulta da ferramenta ✏️ de correção de
+  //    hodômetro (que já funciona com as regras atuais). Filtra a data e
+  //    ordena aqui no navegador. Lê todo o histórico da placa (algumas
+  //    centenas de docs no máximo) — só acontece enquanto o índice composto
+  //    não existir.
+  //    (Antes o fallback lia dia a dia por ID, mas getDoc de um dia SEM
+  //    lançamento — doc inexistente — volta "permission-denied" pela regra,
+  //    que confere resource.data.carrier; isso travava placas com folga
+  //    nos lançamentos.)
+  try {
+    const snap = await getDocs(query(
+      collection(db, "availability"),
+      where("carrier", "==", carrier),
+      where("plate", "==", plate)
+    ));
+    const anteriores = snap.docs
+      .map(d => d.data())
+      .filter(d => d.dateStr && d.dateStr < currentDateStr && valido(d))
+      .sort((x, y) => String(y.dateStr).localeCompare(String(x.dateStr)));
+    const val = anteriores.length ? Number(anteriores[0].hodometro) : null;
+    cacheSet(cKey, val, val === null ? 15_000 : undefined);
+    return val;
+  } catch (e) {
+    // Aqui sim é falha real (rede, regra) — não dá pra validar.
+    console.error("dbGetPreviousHodometro: não consegui ler o histórico da placa", plate, e);
     throw new Error(`não foi possível consultar o hodômetro anterior da placa ${plate}`);
   }
-  cacheSet(cKey, null, 15_000); // sem nenhum lançamento em 120 dias
-  return null;
 }
 async function dbGetNotifs() {
   const cached = cacheGet("notifs");
