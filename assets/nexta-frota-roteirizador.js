@@ -2089,14 +2089,7 @@ function recalcularTimingViagem(viagem, v) {
     // independente do término da viagem anterior. O usuário assume a responsabilidade.
     // Descobre em qual dia absoluto colocar o horário:
     // usa o clock da viagem anterior como referência de dia, mas não de sequência.
-    const clockAnterior = idx > 0
-      ? inicioViagemAbsMin(viagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1)
-      : jIniMin;
-    const baseDay = Math.floor(clockAnterior / 1440) * 1440;
-    let alvo = baseDay + viagem.horarioCargaManualMin;
-    // Se o horário manual é antes do início calculado, avança para o próximo dia
-    if (alvo < clockAnterior - 0.001) alvo += 1440;
-    clock = alvo;
+    clock = _inicioCargaManualAbsMin(viagens, idx, viagem, jIniMin, v);
     viagem.esperaTerminalMin = 0; // espera já está embutida no clock manual
   } else {
     // Sem override: comportamento normal — clock baseado na sequência de viagens
@@ -2185,6 +2178,24 @@ function doisTurnos(v) {
 //   2 (2 turnos/São Caetano): pausa antes da 2ª E antes da 3ª viagem
 // A pausa de refeição NÃO é armazenada em tempoConsumidoMin das viagens;
 // é adicionada aqui para que o relógio absoluto fique correto.
+// Horário de carga MANUAL → minuto absoluto (0 = 00:00 do dia base).
+// Fonte única pra Herrlog, recalcularTimingViagem e passagem de turno —
+// antes cada um tinha a mesma conta copiada, e ela divergia da tela.
+//  • 1ª viagem do veículo: o horário manual é SEMPRE do dia base, igual
+//    mostram a tela da Otimização Rotas e a OR do Envio Transportador.
+//    Antes comparava com o início da jornada: carga manual 00:30 com
+//    jornada 06:00 era tratada como "já passou" e ia pro dia seguinte —
+//    a Herrlog saía com 03/10 00:30 numa viagem de 02/10 00:30.
+//  • Viagens seguintes: mesmo dia do início calculado (fim da anterior),
+//    avançando 1 dia só se o horário manual cair antes dele.
+function _inicioCargaManualAbsMin(viagens, idx, vi, jIniMin, v) {
+  if (idx <= 0) return vi.horarioCargaManualMin;
+  const clockAnterior = inicioViagemAbsMin(viagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
+  const baseDay = Math.floor(clockAnterior / 1440) * 1440;
+  let alvo = baseDay + vi.horarioCargaManualMin;
+  if (alvo < clockAnterior - 0.001) alvo += 1440;
+  return alvo;
+}
 function inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPerdidoMin = 0, numMaxBreaks = 1) {
   // Tempo de PAREDE (relógio real) que essa viagem consumiu — diferente de
   // tempoConsumidoMin, que de propósito NÃO inclui a espera de pernoite
@@ -7209,13 +7220,7 @@ async function exportarHrrlog(dados = null, { salvarHistorico = true } = {}) {
       relogioMin += vi.esperaTerminalMin || 0;
       const temOverrideCarga = vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin);
       if (temOverrideCarga) {
-        const clockAnterior = idx > 0
-          ? inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1)
-          : jIniMin;
-        const baseDay = Math.floor(clockAnterior / 1440) * 1440;
-        let alvo = baseDay + vi.horarioCargaManualMin;
-        if (alvo < clockAnterior - 0.001) alvo += 1440;
-        relogioMin = alvo;
+        relogioMin = _inicioCargaManualAbsMin(todasViagens, idx, vi, jIniMin, v);
       }
       // Início de carga: usa o valor já calculado pelo render da tela se disponível,
       // senão usa relogioMin puro (sem atrasoP0 — tempoEsperaRestricaoMin é espera no
@@ -10930,7 +10935,7 @@ function _incpedCoordValida(lat, lon) {
 // não oferecer (nem deixar gravar) um pedido que já está roteirizado.
 function _incpedOrdensNoArquivo(data) {
   const ordens = new Set();
-  Object.values(data.resultado || {}).forEach(lista => (lista || []).forEach(vi => {
+  Object.values(data.resultado || {}).filter(Array.isArray).forEach(lista => lista.forEach(vi => {
     if (!vi || vi._vazio) return;
     (vi.paradas || []).forEach(pa => {
       (pa.itens || []).forEach(it => { if (it.ordemSAP) ordens.add(String(it.ordemSAP)); });
@@ -10942,7 +10947,7 @@ function _incpedOrdensNoArquivo(data) {
 // todos os veículos do arquivo).
 function _incpedVolumeAlocado(data) {
   const aloc = new Map();
-  Object.values(data.resultado || {}).forEach(lista => (lista || []).forEach(vi => {
+  Object.values(data.resultado || {}).filter(Array.isArray).forEach(lista => lista.forEach(vi => {
     if (!vi || vi._vazio) return;
     (vi.paradas || []).forEach(pa => {
       const id = pa.pedido?.id;
@@ -12557,13 +12562,7 @@ function _coletarLinhasPassagemTurno(snaps) {
         relogioMin += vi.esperaTerminalMin || 0;
         const temOverrideCarga = vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin);
         if (temOverrideCarga) {
-          const clockAnterior = idx > 0
-            ? inicioViagemAbsMin(todasViagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1)
-            : jIniMin;
-          const baseDay = Math.floor(clockAnterior / 1440) * 1440;
-          let alvo = baseDay + vi.horarioCargaManualMin;
-          if (alvo < clockAnterior - 0.001) alvo += 1440;
-          relogioMin = alvo;
+          relogioMin = _inicioCargaManualAbsMin(todasViagens, idx, vi, jIniMin, v);
         }
         const inicioCargaMin = temOverrideCarga ? relogioMin : (vi._inicioCargaMin ?? relogioMin);
         const p0Hrr = vi.paradas[0];
