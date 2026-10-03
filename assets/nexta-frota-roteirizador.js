@@ -4012,7 +4012,121 @@ function _chaveClientePedido(p) {
   const sap = (p.codigoSAP || '').toString().trim();
   return sap ? 'SAP:' + sap : 'NM:' + (p.cliente || '').toString().trim().toUpperCase();
 }
+// ── Resumo por CLIENTE, separado por base (pra bater com o SAP) ────────────
+// Mesma lista filtrada dos cards. Agrupa base → cliente (chave SAP, senão
+// nome) e soma o volume por produto, com as Ordens SAP — é o que se confere
+// linha a linha contra o SAP. Pedido "quebrado" em cargas conta 1 pedido.
+let _pedidosResumoVisao = 'operacao';          // 'operacao' | 'cliente'
+const _pedidosResumoBasesAbertas = new Set();  // bases expandidas (sobrevive ao re-render)
+let _pedidosResumoUltimaLista = [];
+function _resumoPorClientePorBase(lista) {
+  const bases = new Map();
+  lista.forEach(p => {
+    const base = p.terminal || 'Sem terminal definido';
+    if (!bases.has(base)) bases.set(base, new Map());
+    const clientes = bases.get(base);
+    const k = _chaveClientePedido(p);
+    if (!clientes.has(k)) clientes.set(k, { cliente: p.cliente || '—', sap: p.codigoSAP || '', cidade: p.cidade || '', produtos: new Map(), ordens: new Set(), grupos: new Set(), datas: new Set(), volume: 0 });
+    const c = clientes.get(k);
+    c.grupos.add(p._quebraGrupo || `id:${p.id}`);
+    if (p.dataEntregaLogistica) c.datas.add(p.dataEntregaLogistica);
+    (p.ordens || []).forEach(o => o && c.ordens.add(String(o)));
+    (p.produtos || []).forEach(pr => {
+      const vol = pr.volume || 0;
+      c.produtos.set(pr.produto, (c.produtos.get(pr.produto) || 0) + vol);
+      c.volume += vol;
+      if (pr.ordemSAP) c.ordens.add(String(pr.ordemSAP));
+    });
+  });
+  return [...bases.entries()]
+    .map(([base, clientes]) => ({
+      base,
+      clientes: [...clientes.values()].sort((a, b) => a.cliente.localeCompare(b.cliente, 'pt-BR')),
+      volume: [...clientes.values()].reduce((s, c) => s + c.volume, 0),
+    }))
+    .sort((a, b) => b.volume - a.volume);
+}
+function _htmlResumoPorCliente(lista) {
+  const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const fmtV = v => v.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return _resumoPorClientePorBase(lista).map(b => {
+    const aberto = _pedidosResumoBasesAbertas.has(b.base);
+    const linhas = b.clientes.map(c => `
+      <tr style="border-top:1px solid var(--border-dk);vertical-align:top;">
+        <td style="padding:6px 8px;font-size:12px;font-weight:600;color:var(--text);">${esc(c.cliente)}<div style="font-size:10.5px;font-weight:400;color:var(--text-3);">${esc(c.cidade)}${c.datas.size ? ' · entrega ' + esc([...c.datas].join(', ')) : ''}</div></td>
+        <td style="padding:6px 8px;font-size:11.5px;font-family:'DM Mono',monospace;color:var(--text-2);white-space:nowrap;">${esc(c.sap || '—')}</td>
+        <td style="padding:6px 8px;font-size:11px;color:var(--text-2);">${c.ordens.size ? [...c.ordens].map(esc).join('<br>') : '—'}</td>
+        <td style="padding:6px 8px;font-size:11.5px;color:var(--text-2);">${[...c.produtos.entries()].map(([pr, v]) => `<div style="display:flex;justify-content:space-between;gap:10px;"><span>${esc(pr)}</span><span style="white-space:nowrap;">${fmtV(v)}</span></div>`).join('')}</td>
+        <td style="padding:6px 8px;font-size:12.5px;font-weight:700;color:#4F46E5;text-align:right;white-space:nowrap;">${fmtV(c.volume)} m³</td>
+      </tr>`).join('');
+    return `
+      <div style="border:1px solid var(--border-dk);border-radius:8px;margin-bottom:8px;overflow:hidden;">
+        <div onclick="_pedidosResumoToggleBase(${esc(JSON.stringify(b.base))})" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;background:var(--bg-2,#F4F6F1);">
+          <span style="font-size:12.5px;font-weight:700;color:var(--text);">${aberto ? '▾' : '▸'} 🏭 ${esc(b.base)}</span>
+          <span style="display:flex;gap:12px;align-items:baseline;">
+            <span style="font-size:10.5px;color:var(--text-3);">${b.clientes.length} cliente${b.clientes.length === 1 ? '' : 's'}</span>
+            <span style="font-size:12.5px;font-weight:700;color:#4F46E5;">${fmtV(b.volume)} m³</span>
+          </span>
+        </div>
+        ${aberto ? `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="text-align:left;">
+            <th style="padding:6px 8px;font-size:10px;color:var(--text-3);text-transform:uppercase;">Cliente</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--text-3);text-transform:uppercase;">SAP</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--text-3);text-transform:uppercase;">Ordens SAP</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--text-3);text-transform:uppercase;">Produtos (m³)</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--text-3);text-transform:uppercase;text-align:right;">Total</th>
+          </tr></thead><tbody>${linhas}</tbody></table></div>` : ''}
+      </div>`;
+  }).join('');
+}
+function _pedidosResumoToggleBase(base) {
+  if (_pedidosResumoBasesAbertas.has(base)) _pedidosResumoBasesAbertas.delete(base);
+  else _pedidosResumoBasesAbertas.add(base);
+  _renderPedidosResumo(_pedidosResumoUltimaLista);
+}
+function _pedidosResumoSetVisao(v) {
+  _pedidosResumoVisao = v;
+  _renderPedidosResumo(_pedidosResumoUltimaLista);
+}
+function _pedidosResumoExpandirTodas(abrir) {
+  _pedidosResumoBasesAbertas.clear();
+  if (abrir) _resumoPorClientePorBase(_pedidosResumoUltimaLista).forEach(b => _pedidosResumoBasesAbertas.add(b.base));
+  _renderPedidosResumo(_pedidosResumoUltimaLista);
+}
+// Uma linha por base + cliente + produto — o formato mais fácil de cruzar
+// com relatório do SAP (PROCV / tabela dinâmica).
+function _linhasResumoPorCliente(lista) {
+  const out = [];
+  _resumoPorClientePorBase(lista).forEach(b => b.clientes.forEach(c => c.produtos.forEach((vol, prod) => {
+    out.push({ Base: b.base, 'Código SAP': c.sap, Cliente: c.cliente, Cidade: c.cidade, 'Data Entrega': [...c.datas].join(', '),
+      'Ordens SAP': [...c.ordens].join(', '), Produto: prod, 'Volume (m³)': Math.round(vol * 100) / 100 });
+  })));
+  return out;
+}
+async function copiarResumoPorCliente() {
+  const linhas = _linhasResumoPorCliente(_pedidosResumoUltimaLista);
+  if (!linhas.length) return;
+  const cols = Object.keys(linhas[0]);
+  const tsv = [cols.join('\t'), ...linhas.map(l => cols.map(c => typeof l[c] === 'number' ? String(l[c]).replace('.', ',') : String(l[c] ?? '').replace(/[\t\n]/g, ' ')).join('\t'))].join('\n');
+  try { await navigator.clipboard.writeText(tsv); showToast(`${linhas.length} linha(s) copiadas — é só colar no Excel.`, true); }
+  catch (e) { alert('Não consegui copiar automaticamente. Use o botão Excel.'); }
+}
+function exportarResumoPorClienteExcel() {
+  const linhas = _linhasResumoPorCliente(_pedidosResumoUltimaLista);
+  if (!linhas.length || typeof XLSX === 'undefined') return;
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(linhas);
+  ws['!cols'] = [{ wch: 24 }, { wch: 12 }, { wch: 40 }, { wch: 18 }, { wch: 14 }, { wch: 24 }, { wch: 32 }, { wch: 12 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Pedidos por cliente');
+  XLSX.writeFile(wb, `resumo_pedidos_por_cliente_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+window._pedidosResumoToggleBase = _pedidosResumoToggleBase;
+window._pedidosResumoSetVisao = _pedidosResumoSetVisao;
+window._pedidosResumoExpandirTodas = _pedidosResumoExpandirTodas;
+window.copiarResumoPorCliente = copiarResumoPorCliente;
+window.exportarResumoPorClienteExcel = exportarResumoPorClienteExcel;
 function _renderPedidosResumo(lista) {
+  _pedidosResumoUltimaLista = lista;
   const box = document.getElementById('pedidos-resumo-box');
   if (!box) return;
   if (!lista.length) {
@@ -4066,8 +4180,18 @@ function _renderPedidosResumo(lista) {
           <div style="font-size:19px;font-weight:800;color:var(--text);margin-top:2px;">${Object.keys(porOperacao).length}</div>
         </div>
       </div>
-      <div style="font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);margin-bottom:2px;">Volume por operação</div>
-      ${linhasOperacao}
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <div style="display:flex;background:var(--bg-2,#F4F6F1);border-radius:8px;padding:3px;gap:2px;">
+          ${[['operacao', 'Por operação'], ['cliente', 'Por cliente']].map(([v, l]) => `<button onclick="_pedidosResumoSetVisao('${v}')" style="border:none;border-radius:6px;padding:5px 12px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit;background:${_pedidosResumoVisao === v ? 'var(--pet-green,#b5e51d)' : 'transparent'};color:var(--text);">${l}</button>`).join('')}
+        </div>
+        ${_pedidosResumoVisao === 'cliente' ? `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn btn-sm" onclick="_pedidosResumoExpandirTodas(true)" style="font-size:11px;">Expandir todas</button>
+          <button class="btn btn-sm" onclick="_pedidosResumoExpandirTodas(false)" style="font-size:11px;">Recolher</button>
+          <button class="btn btn-sm" onclick="copiarResumoPorCliente()" title="Copia uma linha por base + cliente + produto, pronta pra colar no Excel" style="font-size:11px;">📋 Copiar</button>
+          <button class="btn btn-sm" onclick="exportarResumoPorClienteExcel()" style="font-size:11px;">📥 Excel</button>
+        </div>` : ''}
+      </div>
+      ${_pedidosResumoVisao === 'cliente' ? _htmlResumoPorCliente(lista) : linhasOperacao}
     </div>`;
 }
 // ── Pernoite planejado (carrega hoje, sai só no início da jornada de amanhã) ──
@@ -4979,6 +5103,28 @@ function iconeTurnoEntrega(turno) {
   if (n.startsWith('noit') || n.startsWith('madr')) return '🌙';
   return '🕘';
 }
+// Data de entrega da planilha → "DD/MM/AAAA", seja qual for o formato:
+//  • célula de data do Excel (Date): o SheetJS pode entregar meia-noite UTC
+//    ou meia-noite local, às vezes com segundos a menos (23:59:32). Ler
+//    direto com toLocaleDateString podia sair 1 dia antes. Arredonda pra
+//    meia-noite UTC mais próxima e lê os componentes UTC.
+//  • texto "DD/MM/AA" (como o relatório mostra) → ano com 4 dígitos.
+//  • texto "AAAA-MM-DD..." → "DD/MM/AAAA".
+function _normDataEntregaImport(raw) {
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
+    const d = new Date(Math.round(raw.getTime() / 86400000) * 86400000);
+    return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+  }
+  const t = String(raw ?? '').trim();
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?!\d)/.exec(t);
+  if (m) {
+    const ano = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
+    return `${m[1].padStart(2, '0')}/${m[2].padStart(2, '0')}/${ano}`;
+  }
+  return t;
+}
 // ─── Pedidos Liberados (Excel) ───────────────────────────────────────────────
 function xlsxMapPedidosLiberadosRows(rows) {
   const groups = {};
@@ -4993,12 +5139,23 @@ function xlsxMapPedidosLiberadosRows(rows) {
     const prodNome = String(r['Produto']               ?? '').trim();
     const volume   = parseFloat(r['Volume Pedido (m³)'] ?? r['Volume Pedido'] ?? r['Volume'] ?? 0);
     const ordemSAP = String(r['No. Ordem SAP'] ?? r['No Ordem SAP'] ?? r['Ordem SAP'] ?? '').trim();
-    const dataEntregaRaw = r['Data Entrega Logística'] ?? r['Data Entrega Logistica'] ?? r['Data Entrega'] ?? '';
+    // Data usada na roteirização: Data Entrega PORTAL (a data que o cliente
+    // pediu). A "Data Entrega Logística" = Portal + "Dias Acréscimo
+    // Política" só entra como reserva, se a coluna Portal vier vazia ou não
+    // existir. Primeiro valor NÃO vazio vence (sheet_to_json com defval ''
+    // devolve '' em célula vazia, e '' passaria pelo ??).
+    // Obs.: o campo interno continua se chamando dataEntregaLogistica (é
+    // usado no sistema inteiro); só mudou de qual coluna ele vem.
+    const dataEntregaRaw = [r['Data Entrega Portal'], r['Data Entrega portal'], r['Dt Entrega Portal'],
+      r['Data Entrega Logística'], r['Data Entrega Logistica'], r['Data Entrega']]
+      .find(x => x !== undefined && x !== null && String(x).trim() !== '') ?? '';
     const turnoEntrega = fmtTurnoEntrega(r['Turno Entrega'] ?? r['Turno de Entrega'] ?? r['Turno'] ?? '');
-    const dataEntrega = dataEntregaRaw instanceof Date
-      ? dataEntregaRaw.toLocaleDateString('pt-BR')
-      : String(dataEntregaRaw).trim().replace(/^(\d{4})-(\d{2})-(\d{2}).*/, '$3/$2/$1');
-    const key = erpId + '||' + terminal;
+    const dataEntrega = _normDataEntregaImport(dataEntregaRaw);
+    // A DATA faz parte da chave: o mesmo cliente no mesmo terminal com
+    // linhas de 03/10 e 05/10 são DOIS pedidos. Antes a chave era só
+    // cliente+terminal, e tudo virava um pedido só com a data da primeira
+    // linha — o volume de 03/10 ia parar numa programação de 05/10.
+    const key = erpId + '||' + terminal + '||' + dataEntrega;
     if (!groups[key]) {
       let cliCad = clientes.find(c => c.codigoSAP === erpId);
       // Fallback por nome (SAP vazio na planilha, ou já cadastrado com
@@ -5143,7 +5300,7 @@ function baixarModeloPedidos() {
   const headers = [
     'Clientes Id ERP', 'Clientes Razão Social', 'Cidade Entrega',
     'Terminal', 'Material', 'Produto', 'Volume Pedido (m³)',
-    'No. Ordem SAP', 'Data Entrega Logística', 'Turno Entrega',
+    'No. Ordem SAP', 'Data Entrega Portal', 'Turno Entrega',
   ];
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet([headers]);
@@ -7175,6 +7332,10 @@ async function exportarHrrlog(dados = null, { salvarHistorico = true } = {}) {
   if (typeof XLSX === 'undefined') { alert('SheetJS não carregado.'); return; }
   const rowsViagens = [];
   const rowsEventos = [];
+  // Conferência final: data de cada descarga na planilha × Data Entrega
+  // Logística do pedido. Qualquer divergência é mostrada ANTES de baixar o
+  // arquivo — nenhuma planilha sai com data diferente do pedido sem alguém ver.
+  const divergenciasData = []; // { codViagem, placa, cliente, dataPlanilha, dataPedido }
   // Formata minuto absoluto + data base → "YYYY-MM-DD HH:MM:00"
   const fmtHrr = (baseDate, absMin) => {
     const m = Math.round(absMin); // arredonda para evitar casas decimais
@@ -7327,6 +7488,14 @@ async function exportarHrrlog(dados = null, { salvarHistorico = true } = {}) {
         const inicioDescMin = chegada + espVis;
         const codCliente = p.pedido?.codigoSAP || `__semSAP_${idxP}`; // sem codigoSAP: não agrupa (chave única por índice, comportamento antigo preservado)
         descargaPorCliente.set(codCliente, { codigoSAP: p.pedido?.codigoSAP || '', inicioDescMin });
+        const _dataPedido = p.pedido?.dataEntregaLogistica || '';
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(_dataPedido)) {
+          const [_y, _m, _d] = fmtHrr(baseDate, inicioDescMin).slice(0, 10).split('-');
+          const _dataPlanilha = `${_d}/${_m}/${_y}`;
+          if (_dataPlanilha !== _dataPedido) {
+            divergenciasData.push({ codViagem, placa: v.placa || '', cliente: p.pedido?.cliente || '', dataPlanilha: _dataPlanilha, dataPedido: _dataPedido });
+          }
+        }
       });
       descargaPorCliente.forEach(d => {
         rowsEventos.push({
@@ -7338,6 +7507,20 @@ async function exportarHrrlog(dados = null, { salvarHistorico = true } = {}) {
       });
     });
   });
+  if (divergenciasData.length) {
+    const porViagem = new Map();
+    divergenciasData.forEach(dv => { if (!porViagem.has(dv.codViagem)) porViagem.set(dv.codViagem, dv); });
+    const linhas = [...porViagem.values()].slice(0, 12).map(dv =>
+      `• ${dv.codViagem} (${dv.placa}) — ${dv.cliente.slice(0, 30)}: planilha ${dv.dataPlanilha.slice(0, 5)}, pedido ${dv.dataPedido.slice(0, 5)}`);
+    if (porViagem.size > 12) linhas.push(`... e mais ${porViagem.size - 12} viagem(ns)`);
+    console.warn('[Herrlog] descargas com data diferente da data de entrega do pedido:', divergenciasData);
+    if (!confirm(`ATENÇÃO: ${porViagem.size} viagem(ns) com data de descarga diferente da data de entrega do pedido:\n\n${linhas.join('\n')}\n\n` +
+      `Pode ser intencional (pernoite, horário de carga ajustado à mão) ou erro na programação. Confira na Otimização Rotas antes de enviar.\n\n` +
+      `OK = exportar mesmo assim · Cancelar = não gerar o arquivo`)) {
+      showToast('Exportação Herrlog cancelada — confira as datas das viagens listadas.', false);
+      return;
+    }
+  }
   const hV = ['Código da Viagem*','Status','Início Previsto*','Placa*','Trailers*','Tipo de atendimento','KM','Produto','Observação','Valor (R$)','Total Planejado (Kg)','Total Carregado (KG)','Peso total (KG)','Prioridade','Ordem de Retirada','Tipo de Viagem'];
   const hE = ['Código da Viagem*','Codigo do Cliente*','Tipo Evento*','Data Planejada*'];
   const wb = XLSX.utils.book_new();
