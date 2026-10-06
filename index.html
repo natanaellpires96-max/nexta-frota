@@ -57,6 +57,7 @@
           onchange="onDataOperacaoChange(this.value)"
           title="Data de carregamento — sincroniza disponibilidade e roteirização"/>
       </div>
+      <button class="btn btn-sm" onclick="abrirCnpjLote()" title="Preencher o CNPJ de terminais e clientes em lote, por planilha" style="background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.70);border:1px solid rgba(255,255,255,0.14);white-space:nowrap;font-size:11px;letter-spacing:0.02em;padding:5px 12px;border-radius:7px;">🪪 CNPJ em lote</button>
       <button class="btn btn-sm" onclick="exportarDadosPainel()" style="background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.70);border:1px solid rgba(255,255,255,0.14);white-space:nowrap;font-size:11px;letter-spacing:0.02em;padding:5px 12px;border-radius:7px;">Exportar cadastrais</button>
       <button class="btn btn-sm" id="btn-reiniciar-rot" onclick="reiniciarRoteirizador()" title="Reinicia o módulo de roteirização mantendo os dados" style="background:rgba(200,240,50,0.09);color:#c8f032;border:1px solid rgba(200,240,50,0.22);white-space:nowrap;font-size:11px;letter-spacing:0.02em;padding:5px 12px;border-radius:7px;">🔄 Reiniciar</button>
       <div style="width:1px;height:20px;background:rgba(200,240,50,0.2);margin:0 4px;flex-shrink:0;"></div>
@@ -100,6 +101,7 @@
         <div class="field"><label>Cidade / UF</label><input id="t-cidade" placeholder="Ex: Paulínia / SP"/></div>
         <div class="field"><label>Distribuidora (CIA)</label><input id="t-distribuidora" placeholder="Ex: PETRONAS"/></div>
         <div class="field"><label>Empresa Local Expedição</label><input id="t-empresa-local" placeholder="Ex: SIM, Nexta, VIBRA"/></div>
+        <div class="field" style="max-width:190px;"><label>CNPJ</label><input id="t-cnpj" placeholder="00.000.000/0000-00" onblur="(r=>{if(r.ok)this.value=r.valor})(normalizarDocumento(this.value))"/></div>
       </div>
       <div class="row">
         <div class="field"><label>Latitude</label><input id="t-lat" type="number" step="0.0001" placeholder="-22.7589"/></div>
@@ -232,6 +234,10 @@
         <div class="field" style="max-width:140px;">
           <label>Código SAP</label>
           <input id="cl-sap" placeholder="Ex: 1003456"/>
+        </div>
+        <div class="field" style="max-width:190px;">
+          <label>CNPJ / CPF</label>
+          <input id="cl-cnpj" placeholder="00.000.000/0000-00" onblur="(r=>{if(r.ok)this.value=r.valor})(normalizarDocumento(this.value))"/>
         </div>
         <div class="field" style="flex:3;">
           <label>Nome do cliente</label>
