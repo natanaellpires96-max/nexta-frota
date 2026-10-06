@@ -5039,6 +5039,21 @@ function _pmapaVeiculosCompativeis(pedidosSel, terminaisNomes) {
     );
   });
 }
+// Horário em que o veículo fica disponível, pra mostrar no seletor do mapa.
+// Mesma regra da roteirização: vale o MAIS TARDE entre o início da jornada
+// e o horário que o transportador preencheu no Painel de Disponibilidade
+// (_horarioDisponivelAPartirDe). Sem preenchimento → mostra a jornada.
+function _pmapaDisponivelAsLabel(v) {
+  const jorn = v.jornadaInicio || '06:00';
+  const disp = v._horarioDisponivelAPartirDe || '';
+  const jMin = parseHoraMin(jorn), dMin = parseHoraMin(disp);
+  const hhmm = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  if (!isNaN(dMin)) {
+    const efetivo = isNaN(jMin) ? dMin : Math.max(jMin, dMin);
+    return `${v._emManutencao ? 'Manutenção, retorno' : 'Disponível'} às ${hhmm(efetivo)}`;
+  }
+  return isNaN(jMin) ? 'Disponível às —' : `Disponível às ${hhmm(jMin)} (jornada)`;
+}
 function pmapaAtualizarPainel() {
   const box = document.getElementById('pmapa-painel');
   if (!box) return;
@@ -5082,7 +5097,7 @@ function pmapaAtualizarPainel() {
     <label style="font-size:11px;font-weight:700;color:var(--text-3);">Veículo</label>
     <select id="pmapa-veiculo" style="width:100%;padding:6px 8px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;margin:4px 0 10px;">
       ${veicsOk.length
-        ? veicsOk.map(v => `<option value="${v.id}">${v.placa} · ${v.tipo} · ${v.capacidade}m³</option>`).join('')
+        ? veicsOk.map(v => `<option value="${v.id}">${v.placa} · ${v.tipo} · ${v.capacidade}m³ · ${_pmapaDisponivelAsLabel(v)}</option>`).join('')
         : '<option value="">Nenhum veículo compatível com o(s) terminal(is)/restrições</option>'}
     </select>
     <button class="btn btn-green btn-sm" style="width:100%;" ${veicsOk.length ? '' : 'disabled'} onclick="pmapaFecharCarga()">🚚 Fechar Carga</button>
