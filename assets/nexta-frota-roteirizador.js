@@ -526,6 +526,205 @@ function xlsxHora(val) {
   return String(val).trim().slice(0, 5);
 }
 // ── Mapeamentos planilha → modelo ────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// CNPJ — validação + preenchimento EM LOTE (Terminais e Clientes)
+// ══════════════════════════════════════════════════════════════════════════
+// Fluxo: 1) baixar modelo (todos os cadastros, com ID interno) → 2) preencher
+// a coluna CNPJ no Excel (PROCV no relatório do SAP) → 3) importar. A volta
+// casa pelo ID interno, NUNCA pelo Código SAP: vários postos da mesma rede
+// compartilham o SAP corporativo, e casar por ele daria o mesmo CNPJ pra
+// postos diferentes. Só o campo `cnpj` é gravado; célula vazia não apaga.
+//
+// Normaliza qualquer formato pra "00.000.000/0000-00". Aceita número
+// (o Excel come os zeros à esquerda: 1234567000190 → completa até 14
+// dígitos) e também CPF válido (cliente pessoa física / produtor rural).
+// Retorna { ok, valor, motivo }.
+function normalizarDocumento(raw) {
+  let dig = String(raw ?? '').replace(/\D/g, '');
+  if (!dig) return { ok: false, valor: '', motivo: 'vazio' };
+  const cnpjValido = d => {
+    if (d.length !== 14 || /^(\d)\1+$/.test(d)) return false;
+    const calc = n => {
+      const pesos = n === 12 ? [5,4,3,2,9,8,7,6,5,4,3,2] : [6,5,4,3,2,9,8,7,6,5,4,3,2];
+      const soma = pesos.reduce((s, p, i) => s + p * Number(d[i]), 0);
+      const r = soma % 11;
+      return r < 2 ? 0 : 11 - r;
+    };
+    return calc(12) === Number(d[12]) && calc(13) === Number(d[13]);
+  };
+  const cpfValido = d => {
+    if (d.length !== 11 || /^(\d)\1+$/.test(d)) return false;
+    const calc = n => {
+      let soma = 0;
+      for (let i = 0; i < n; i++) soma += Number(d[i]) * (n + 1 - i);
+      const r = (soma * 10) % 11;
+      return r === 10 ? 0 : r;
+    };
+    return calc(9) === Number(d[9]) && calc(10) === Number(d[10]);
+  };
+  const fmtCnpj = d => `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;
+  const fmtCpf  = d => `${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`;
+  if (dig.length === 11 && cpfValido(dig)) return { ok: true, valor: fmtCpf(dig), tipo: 'CPF' };
+  if (dig.length > 14) return { ok: false, valor: dig, motivo: 'mais de 14 dígitos' };
+  if (dig.length < 11) return { ok: false, valor: dig, motivo: `só ${dig.length} dígitos` };
+  const d14 = dig.padStart(14, '0');
+  if (cnpjValido(d14)) return { ok: true, valor: fmtCnpj(d14), tipo: 'CNPJ' };
+  return { ok: false, valor: dig, motivo: 'dígito verificador não confere' };
+}
+window.normalizarDocumento = normalizarDocumento;
+
+function abrirCnpjLote() {
+  document.getElementById('cnpj-lote-modal')?.remove();
+  const semTerm = (terminaisCad || []).filter(t => !t.cnpj).length;
+  const semCli  = (clientes || []).filter(c => !c.cnpj).length;
+  const modal = document.createElement('div');
+  modal.id = 'cnpj-lote-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem;';
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+  modal.innerHTML = `
+    <div style="background:#fff;color:#111827;border-radius:14px;padding:22px;width:100%;max-width:640px;max-height:90vh;overflow:auto;box-shadow:0 20px 50px rgba(0,0,0,.3);font-family:inherit;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="font-size:16px;font-weight:800;">🪪 CNPJ em lote</div>
+        <button onclick="document.getElementById('cnpj-lote-modal').remove()" style="border:none;background:none;font-size:18px;cursor:pointer;color:#6B7280;">✕</button>
+      </div>
+      <div style="font-size:12px;color:#6B7280;margin-bottom:16px;">Sem CNPJ hoje: <b>${semTerm}</b> de ${(terminaisCad || []).length} terminais · <b>${semCli}</b> de ${(clientes || []).length} clientes</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="border:1px solid #E5E7EB;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:4px;">1. Baixar o modelo</div>
+          <div style="font-size:12px;color:#4B5563;margin-bottom:8px;">Excel com todos os terminais e clientes cadastrados, já com o CNPJ atual de quem tem. <b>Não altere a coluna ID</b>: é ela que leva cada CNPJ pro cadastro certo.</div>
+          <button class="btn btn-sm" onclick="baixarModeloCnpjLote()">📥 Baixar modelo</button>
+        </div>
+        <div style="border:1px solid #E5E7EB;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:4px;">2. Preencher a coluna CNPJ</div>
+          <div style="font-size:12px;color:#4B5563;">Pode colar com ou sem pontuação. Se o Excel comer zeros à esquerda, o sistema completa. Deixar em branco não apaga o CNPJ que já existe.</div>
+        </div>
+        <div style="border:1px solid #E5E7EB;border-radius:10px;padding:12px 14px;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:4px;">3. Importar a planilha preenchida</div>
+          <div style="font-size:12px;color:#4B5563;margin-bottom:8px;">Você vê uma prévia (atualizações, CNPJs inválidos, repetidos) antes de gravar qualquer coisa.</div>
+          <input type="file" id="cnpj-lote-input" accept=".xlsx,.xls" style="display:none;" onchange="lerPlanilhaCnpjLote(this)"/>
+          <button class="btn btn-green btn-sm" onclick="document.getElementById('cnpj-lote-input').click()">⬆ Importar preenchida</button>
+        </div>
+      </div>
+      <div id="cnpj-lote-previa" style="margin-top:14px;"></div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function baixarModeloCnpjLote() {
+  if (typeof XLSX === 'undefined') { alert('SheetJS não carregado. Recarregue a página.'); return; }
+  const wb = XLSX.utils.book_new();
+  const term = (terminaisCad || []).map(t => ({ 'ID': t.id, 'Nome': t.nome || '', 'Cidade': t.cidade || '', 'Distribuidora': t.distribuidora || '', 'CNPJ': t.cnpj || '' }));
+  const cli = [...(clientes || [])]
+    .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'))
+    .map(c => ({ 'ID': c.id, 'Código SAP': c.codigoSAP || '', 'Nome': c.nome || '', 'Cidade': c.cidade || '', 'Endereço': c.endereco || '', 'CNPJ': c.cnpj || '' }));
+  const wsT = XLSX.utils.json_to_sheet(term.length ? term : [{ 'ID': '', 'Nome': '', 'Cidade': '', 'Distribuidora': '', 'CNPJ': '' }]);
+  wsT['!cols'] = [{ wch: 16 }, { wch: 36 }, { wch: 22 }, { wch: 18 }, { wch: 22 }];
+  const wsC = XLSX.utils.json_to_sheet(cli.length ? cli : [{ 'ID': '', 'Código SAP': '', 'Nome': '', 'Cidade': '', 'Endereço': '', 'CNPJ': '' }]);
+  wsC['!cols'] = [{ wch: 16 }, { wch: 12 }, { wch: 42 }, { wch: 22 }, { wch: 40 }, { wch: 22 }];
+  XLSX.utils.book_append_sheet(wb, wsT, 'Terminais');
+  XLSX.utils.book_append_sheet(wb, wsC, 'Clientes');
+  XLSX.writeFile(wb, `modelo_cnpj_cadastros_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+let _cnpjLotePendente = null; // { terminais: [...], clientes: [...] } com { item, novo }
+
+// Lê uma aba e classifica cada linha. Separada da leitura do arquivo pra
+// poder ser testada sem navegador.
+function _cnpjLoteAnalisar(linhas, lista, rotulo) {
+  const r = { atualizar: [], iguais: 0, vazios: 0, invalidos: [], semId: [], repetidos: [] };
+  const porId = new Map((lista || []).map(x => [String(x.id), x]));
+  const novoPorDoc = new Map(); // doc → nomes (dentro da planilha)
+  (linhas || []).forEach((row, i) => {
+    const id = String(row['ID'] ?? '').trim();
+    const raw = row['CNPJ'] ?? row['CNPJ/CPF'] ?? row['Cnpj'] ?? '';
+    if (String(raw).trim() === '') { r.vazios++; return; }
+    const item = porId.get(id);
+    const nomeLinha = row['Nome'] || `linha ${i + 2}`;
+    if (!item) { r.semId.push(`${nomeLinha} (ID "${id || 'vazio'}")`); return; }
+    const n = normalizarDocumento(raw);
+    if (!n.ok) { r.invalidos.push(`${item.nome || nomeLinha}: "${raw}" — ${n.motivo}`); return; }
+    if (!novoPorDoc.has(n.valor)) novoPorDoc.set(n.valor, []);
+    novoPorDoc.get(n.valor).push(item.nome || nomeLinha);
+    if ((item.cnpj || '') === n.valor) { r.iguais++; return; }
+    r.atualizar.push({ item, novo: n.valor, antigo: item.cnpj || '' });
+  });
+  novoPorDoc.forEach((nomes, docu) => { if (nomes.length > 1) r.repetidos.push(`${docu}: ${nomes.slice(0, 4).join(' · ')}${nomes.length > 4 ? ` +${nomes.length - 4}` : ''}`); });
+  r.rotulo = rotulo;
+  return r;
+}
+
+async function lerPlanilhaCnpjLote(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  const box = document.getElementById('cnpj-lote-previa');
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const aba = nome => {
+      const f = wb.SheetNames.find(n => n.trim().toLowerCase() === nome) || wb.SheetNames.find(n => n.trim().toLowerCase().includes(nome));
+      return f ? XLSX.utils.sheet_to_json(wb.Sheets[f], { defval: '' }) : null;
+    };
+    const rowsT = aba('terminais'), rowsC = aba('clientes');
+    if (!rowsT && !rowsC) { box.innerHTML = '<div style="color:#B91C1C;font-size:12.5px;">Não achei as abas "Terminais" ou "Clientes". Use o modelo baixado no passo 1.</div>'; return; }
+    const aT = _cnpjLoteAnalisar(rowsT, terminaisCad, 'Terminais');
+    const aC = _cnpjLoteAnalisar(rowsC, clientes, 'Clientes');
+    _cnpjLotePendente = { terminais: aT.atualizar, clientes: aC.atualizar };
+    const lista = (titulo, arr, cor) => arr.length ? `
+      <details style="margin-top:6px;"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:${cor};">${titulo} (${arr.length})</summary>
+        <div style="font-size:11.5px;color:#374151;max-height:140px;overflow:auto;padding:6px 0 0 14px;line-height:1.5;">${arr.slice(0, 200).map(x => `• ${String(x).replace(/</g, '&lt;')}`).join('<br>')}</div></details>` : '';
+    const bloco = a => `
+      <div style="border:1px solid #E5E7EB;border-radius:10px;padding:10px 14px;margin-bottom:8px;">
+        <div style="font-size:13px;font-weight:700;">${a.rotulo}</div>
+        <div style="font-size:12px;color:#374151;margin-top:4px;">✅ <b>${a.atualizar.length}</b> a atualizar · ${a.iguais} já iguais · ${a.vazios} em branco (não mexe)</div>
+        ${lista('❌ CNPJ inválido — não será gravado', a.invalidos, '#B91C1C')}
+        ${lista('⚠️ ID não encontrado — não será gravado', a.semId, '#B45309')}
+        ${lista('⚠️ Mesmo CNPJ em mais de um cadastro (confira se não é cadastro duplicado)', a.repetidos, '#B45309')}
+      </div>`;
+    const total = aT.atualizar.length + aC.atualizar.length;
+    box.innerHTML = `
+      <div style="font-size:12px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Prévia — ${file.name.replace(/</g, '&lt;')}</div>
+      ${rowsT ? bloco(aT) : ''}${rowsC ? bloco(aC) : ''}
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">
+        <button class="btn btn-green" ${total ? '' : 'disabled'} onclick="aplicarCnpjLote()">💾 Gravar ${total} CNPJ(s)</button>
+      </div>`;
+  } catch (e) {
+    console.error('[CNPJ lote] leitura:', e);
+    box.innerHTML = `<div style="color:#B91C1C;font-size:12.5px;">Erro ao ler a planilha: ${String(e.message).replace(/</g, '&lt;')}</div>`;
+  }
+}
+
+async function aplicarCnpjLote() {
+  if (!_cnpjLotePendente) return;
+  const { terminais, clientes: cls } = _cnpjLotePendente;
+  if (typeof window.dbAtualizarCadastroLote !== 'function') { alert('Função de gravação indisponível — recarregue a página.'); return; }
+  const btn = document.querySelector('#cnpj-lote-previa .btn-green');
+  if (btn) { btn.disabled = true; btn.textContent = 'Gravando...'; }
+  try {
+    const montar = (tipo, arr) => {
+      const alt = {};
+      arr.forEach(({ item, novo }) => {
+        item.cnpj = novo; // memória desta aba
+        alt[_chavePersistCadastro(tipo, item)] = { campos: { cnpj: novo }, item };
+      });
+      return alt;
+    };
+    if (terminais.length) await window.dbAtualizarCadastroLote('terminais', montar('terminais', terminais));
+    if (cls.length)       await window.dbAtualizarCadastroLote('clientes',  montar('clientes', cls));
+    _cnpjLotePendente = null;
+    if (typeof renderTerminais === 'function') renderTerminais();
+    if (typeof renderClientes === 'function') renderClientes();
+    document.getElementById('cnpj-lote-modal')?.remove();
+    showToast(`CNPJ gravado: ${terminais.length} terminal(is) e ${cls.length} cliente(s).`, true);
+  } catch (e) {
+    console.error('[CNPJ lote] gravação:', e);
+    alert('Erro ao gravar: ' + (e.code === 'permission-denied' ? 'sem permissão no Firestore (regras).' : e.message));
+    if (btn) { btn.disabled = false; btn.textContent = 'Tentar de novo'; }
+  }
+}
+window.abrirCnpjLote = abrirCnpjLote;
+window.baixarModeloCnpjLote = baixarModeloCnpjLote;
+window.lerPlanilhaCnpjLote = lerPlanilhaCnpjLote;
+window.aplicarCnpjLote = aplicarCnpjLote;
 function xlsxMapTerminal(r, i) {
   const diasStr = xlsxStr(r, 'Dias Ativos', 'DiasAtivos');
   const diasAtivos = diasStr
@@ -537,6 +736,7 @@ function xlsxMapTerminal(r, i) {
     cidade:                  xlsxStr(r, 'Cidade'),
     distribuidora:           xlsxStr(r, 'Distribuidora', 'CIA'),
     empresaLocalExpedicao:   xlsxStr(r, 'Empresa Local Expedição', 'Empresa Local Expedicao', 'EmpresaLocalExpedicao'),
+    cnpj:                    (() => { const n = normalizarDocumento(r['CNPJ'] ?? ''); return n.ok ? n.valor : ''; })(),
     lat:                     xlsxNum(r, 0,  'Latitude',  'Lat'),
     lon:                     xlsxNum(r, 0,  'Longitude', 'Lon'),
     fuso:                    xlsxStr(r, 'Fuso') || '-3',
@@ -553,6 +753,7 @@ function xlsxMapCliente(r, i) {
     id: 100 + i,
     codigoSAP:         xlsxStr(r, 'Código SAP', 'CodigoSAP', 'SAP'),
     nome:              xlsxStr(r, 'Nome'),
+    cnpj:              (() => { const n = normalizarDocumento(r['CNPJ'] ?? ''); return n.ok ? n.valor : ''; })(),
     cidade:            xlsxStr(r, 'Cidade'),
     lat:               xlsxNum(r, 0,  'Latitude',  'Lat'),
     lon:               xlsxNum(r, 0,  'Longitude', 'Lon'),
@@ -808,11 +1009,11 @@ function exportarDadosPainel() {
     }
     const wb = XLSX.utils.book_new();
     const termHeaders = [
-      'Nome', 'Cidade', 'Distribuidora', 'Empresa Local Expedição', 'Latitude', 'Longitude', 'Fuso',
+      'Nome', 'CNPJ', 'Cidade', 'Distribuidora', 'Empresa Local Expedição', 'Latitude', 'Longitude', 'Fuso',
       'Tempo Carregamento (min)', 'Abertura Padrão', 'Fechamento Padrão', 'Dias Ativos',
     ];
     const cliHeaders = [
-      'Código SAP', 'Nome', 'Cidade', 'Latitude', 'Longitude', 'Endereço',
+      'Código SAP', 'Nome', 'CNPJ', 'Cidade', 'Latitude', 'Longitude', 'Endereço',
       'Tempo Descarga (min)', 'Restrição Horário', 'Tipos Caminhão', 'Observações', 'Identidade Petronas',
     ];
     const placaHeaders = [
@@ -827,6 +1028,7 @@ function exportarDadosPainel() {
     ];
     const rowsTerm = (terminaisCad || []).map(t => ({
       'Nome': t.nome || '',
+      'CNPJ': t.cnpj || '',
       'Cidade': t.cidade || '',
       'Distribuidora': t.distribuidora || '',
       'Empresa Local Expedição': t.empresaLocalExpedicao || '',
@@ -841,6 +1043,7 @@ function exportarDadosPainel() {
     const rowsCli = (clientes || []).map(c => ({
       'Código SAP': c.codigoSAP || '',
       'Nome': c.nome || '',
+      'CNPJ': c.cnpj || '',
       'Cidade': c.cidade || '',
       'Latitude': c.lat ?? '',
       'Longitude': c.lon ?? '',
@@ -2626,6 +2829,7 @@ function abrirFormTerminal(id=null) {
       document.getElementById('t-cidade').value = t.cidade;
       document.getElementById('t-distribuidora').value = t.distribuidora || '';
       document.getElementById('t-empresa-local').value = t.empresaLocalExpedicao || '';
+      { const e = document.getElementById('t-cnpj'); if (e) e.value = t.cnpj || ''; }
       document.getElementById('t-lat').value    = t.lat;
       document.getElementById('t-lon').value    = t.lon;
       document.getElementById('t-fuso').value   = t.fuso;
@@ -2636,7 +2840,7 @@ function abrirFormTerminal(id=null) {
     }
   } else {
     document.getElementById('form-terminal-title').textContent = 'Novo terminal';
-    ['t-nome','t-cidade','t-distribuidora','t-empresa-local','t-lat','t-lon'].forEach(fid => { const e=document.getElementById(fid); if(e) e.value=''; });
+    ['t-nome','t-cidade','t-distribuidora','t-empresa-local','t-cnpj','t-lat','t-lon'].forEach(fid => { const e=document.getElementById(fid); if(e) e.value=''; });
     document.getElementById('t-fuso').value   = '-3';
     document.getElementById('t-carregamento').value = 60;
     document.getElementById('t-abertura-padrao').value   = '06:00';
@@ -2707,6 +2911,10 @@ function salvarTerminal() {
   const cidade= document.getElementById('t-cidade').value.trim();
   const distribuidora = document.getElementById('t-distribuidora').value.trim();
   const empresaLocalExpedicao = document.getElementById('t-empresa-local').value.trim();
+  const _cnpjRawT = document.getElementById('t-cnpj')?.value.trim() || '';
+  const _cnpjT = normalizarDocumento(_cnpjRawT);
+  if (_cnpjRawT && !_cnpjT.ok) { alert(`CNPJ inválido (${_cnpjT.motivo}). Corrija ou deixe em branco.`); return; }
+  const cnpj = _cnpjT.ok ? _cnpjT.valor : '';
   const lat   = parseFloat(document.getElementById('t-lat').value);
   const lon   = parseFloat(document.getElementById('t-lon').value);
   const fuso  = document.getElementById('t-fuso').value;
@@ -2722,11 +2930,11 @@ function salvarTerminal() {
   if (editandoTerminalId !== null) {
     const idx = terminaisCad.findIndex(t => t.id === editandoTerminalId);
     const antigo = idx !== -1 ? {...terminaisCad[idx]} : null;
-    if (idx !== -1) terminaisCad[idx] = {...terminaisCad[idx], nome, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios};
+    if (idx !== -1) terminaisCad[idx] = {...terminaisCad[idx], nome, cnpj, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios};
     _persistirCadastroManual('terminais', terminaisCad[idx], antigo);
   } else {
     if (terminaisCad.find(t => t.nome.toLowerCase() === nome.toLowerCase())) { alert('Já existe um terminal com esse nome.'); return; }
-    const novo = {id:Date.now(), nome, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios};
+    const novo = {id:Date.now(), nome, cnpj, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios};
     terminaisCad.push(novo);
     _persistirCadastroManual('terminais', novo);
   }
@@ -2811,6 +3019,7 @@ function abrirFormCliente(id) {
     if (!c) return;
     document.getElementById('form-cliente-title').textContent = 'Editar cliente';
     document.getElementById('cl-sap').value      = c.codigoSAP || '';
+    { const e = document.getElementById('cl-cnpj'); if (e) e.value = c.cnpj || ''; }
     document.getElementById('cl-nome').value     = c.nome;
     document.getElementById('cl-cidade').value   = c.cidade;
     document.getElementById('cl-lat').value      = c.lat;
@@ -2834,7 +3043,7 @@ function abrirFormCliente(id) {
     _atualizarThumbFotoCliente();
   } else {
     document.getElementById('form-cliente-title').textContent = 'Novo cliente';
-    ['cl-sap','cl-nome','cl-cidade','cl-lat','cl-lon','cl-restricao','cl-obs','cl-endereco','cl-assessor'].forEach(fid => {
+    ['cl-sap','cl-cnpj','cl-nome','cl-cidade','cl-lat','cl-lon','cl-restricao','cl-obs','cl-endereco','cl-assessor'].forEach(fid => {
       const e = document.getElementById(fid); if (e) e.value = '';
     });
     document.getElementById('cl-descarga').value = 45;
@@ -2862,6 +3071,9 @@ async function salvarCliente() {
   if (!nome) { alert('Informe o nome do cliente.'); return; }
   if (isNaN(lat) || isNaN(lon)) { alert('Informe latitude e longitude válidas.'); return; }
   if (isNaN(tempoDescargaMediaMin) || tempoDescargaMediaMin <= 0) { alert('Informe o tempo médio de descarga do cliente.'); return; }
+  const _cnpjRawC = document.getElementById('cl-cnpj')?.value.trim() || '';
+  const _cnpjC = normalizarDocumento(_cnpjRawC);
+  if (_cnpjRawC && !_cnpjC.ok) { alert(`CNPJ/CPF inválido (${_cnpjC.motivo}). Corrija ou deixe em branco.`); return; }
   // Se a foto ainda estiver subindo pro Cloudinary, espera terminar antes de
   // gravar — sem isso, _clFotoUrlAtual ainda estaria com a URL temporária
   // "blob:" (só existe na memória desta aba) e essa URL quebrada ia parar
@@ -2884,6 +3096,7 @@ async function salvarCliente() {
   }
   const dados = {
     codigoSAP:       document.getElementById('cl-sap').value.trim(),
+    cnpj:            _cnpjC.ok ? _cnpjC.valor : '',
     nome,
     cidade:          document.getElementById('cl-cidade').value.trim(),
     lat, lon,

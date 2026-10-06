@@ -248,6 +248,28 @@ async function dbSalvarCadastroItem(tipo, chave, item) {
     cacheInvalidate(`cadastro||${tipo}`);
   });
 }
+// Atualiza CAMPOS específicos de vários registros de uma vez (ex.: CNPJ em
+// lote) — UMA leitura e UMA gravação do documento, dentro da mesma fila do
+// dbSalvarCadastroItem (não atropela edição manual simultânea).
+// alteracoes: { [chavePersistencia]: { campos: {...}, item: {...} } }
+//   • chave já existe no Firestore → mescla só `campos` (o resto do registro
+//     gravado fica intacto, mesmo que a memória desta aba esteja velha);
+//   • chave não existe (registro que só estava na memória) → grava `item`.
+async function dbAtualizarCadastroLote(tipo, alteracoes) {
+  const chaves = Object.keys(alteracoes || {});
+  if (!chaves.length) return { atualizados: 0 };
+  return _dbCadastroEnfileirar(tipo, async () => {
+    cacheInvalidate(`cadastro||${tipo}`); // lê o estado mais recente, não o cache
+    const atual = await dbGetCadastro(tipo);
+    chaves.forEach(k => {
+      const { campos, item } = alteracoes[k];
+      atual[k] = (k in atual) ? { ...atual[k], ...campos } : item;
+    });
+    await setDoc(doc(db, "config", CADASTRO_DOC_ID[tipo]), { data: atual });
+    cacheInvalidate(`cadastro||${tipo}`);
+    return { atualizados: chaves.length };
+  });
+}
 async function dbRemoverCadastroItem(tipo, chave) {
   if (!chave) return;
   return _dbCadastroEnfileirar(tipo, async () => {
@@ -263,6 +285,7 @@ window.dbGetCadastro            = dbGetCadastro;
 window.dbAdicionarCadastroItens = dbAdicionarCadastroItens;
 window.dbSalvarCadastroItem     = dbSalvarCadastroItem;
 window.dbRemoverCadastroItem    = dbRemoverCadastroItem;
+window.dbAtualizarCadastroLote  = dbAtualizarCadastroLote;
 async function withTimeout(promise, ms, message){
   return Promise.race([
     promise,
