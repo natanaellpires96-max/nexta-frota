@@ -6053,6 +6053,17 @@ function renderPainelJornadaVeiculos() {
           <div style="font-size:9px;color:#6B7280;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${transp}">${transp}</div>
         </div>
         <div style="padding:5px 7px;display:flex;flex-direction:column;gap:2px;">
+          ${(() => {
+            // Capacidade de transporte: soma dos compartimentos (fonte da
+            // verdade), com v.capacidade de reserva. Tooltip mostra a divisão.
+            const comps = (v.compartimentos || []).filter(c => (Number(c.cap) || 0) > 0);
+            const cap = comps.length ? comps.reduce((s, c) => s + Number(c.cap), 0) : (Number(v.capacidade) || 0);
+            const fmt = n => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+            const tip = comps.length ? `${comps.length} compartimento(s): ${comps.map(c => fmt(Number(c.cap))).join(' + ')} m³` : 'Capacidade cadastrada';
+            return `<div title="${tip}" style="display:flex;justify-content:space-between;font-size:10px;color:#374151;border-bottom:1px dashed #E5E7EB;padding-bottom:2px;margin-bottom:1px;">
+              <span>Capac.</span><span style="font-weight:800;color:#4F46E5;white-space:nowrap;">${cap > 0 ? fmt(cap) + ' m³' : '—'}${comps.length > 1 ? ` <span style="font-weight:600;color:#9CA3AF;">(${comps.length}c)</span>` : ''}</span>
+            </div>`;
+          })()}
           <div style="display:flex;justify-content:space-between;font-size:10px;color:#374151;">
             <span>Total</span><span style="font-weight:700;">${totalH.toFixed(totalH % 1 === 0 ? 0 : 1)}h</span>
           </div>
@@ -6110,6 +6121,7 @@ function exportarJornadaVeiculosXLSX() {
     return {
       'Placa': v.placa || '',
       'Transportadora': v.transportadora || '',
+      'Capacidade (m³)': (() => { const c = (v.compartimentos || []).reduce((a, x) => a + (Number(x.cap) || 0), 0); return c || Number(v.capacidade) || ''; })(),
       'Operação': cidadeBaseVeiculo(v) || '',
       'Tipo': v.tipo || '',
       'Contrato': v.contrato || 'Dedicado',
@@ -6125,7 +6137,7 @@ function exportarJornadaVeiculosXLSX() {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(linhas);
   ws['!cols'] = [
-    { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 10 }, { wch: 10 },
+    { wch: 12 }, { wch: 20 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 10 },
     { wch: 11 }, { wch: 15 }, { wch: 15 }, { wch: 18 }, { wch: 16 }, { wch: 18 },
   ];
   XLSX.utils.book_append_sheet(wb, ws, 'Jornada dos Veículos');
