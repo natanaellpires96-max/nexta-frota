@@ -220,6 +220,7 @@ async function uploadPedidosOverlay(input) {
     pedidos = novos;
     renderPedidos();
     _pedidosCarregados = true;
+    conferirProdutosPedidos(pedidos).catch(e => console.warn('[conferência produtos]', e));
     const suspeitos = novos.filter(p => dataEntregaSuspeita(p.dataEntregaLogistica));
     const avisoSuspeitos = suspeitos.length
       ? ` ⚠️ ${suspeitos.length} com data de entrega suspeita (confira o ano) — marcados em vermelho na lista.`
@@ -4142,7 +4143,220 @@ function cancelarFormPedido() {
   editandoPedidoId = null;
   document.getElementById('form-pedido').classList.add('hidden');
 }
-function salvarPedido() {
+// ══════════════════════════════════════════════════════════════════════════
+// CONFERÊNCIA CLIENTE × PRODUTO contra o histórico de roteirizações
+// ══════════════════════════════════════════════════════════════════════════
+// Os pedidos agora são lançados pelos próprios clientes no portal de vendas,
+// então um produto trocado por engano é bem mais provável. Ao importar (ou
+// salvar um pedido manual), cada produto é comparado com o que AQUELE
+// cliente já recebeu nas roteirizações salvas no Histórico:
+//   • "nunca comprou"      → o cliente compra com frequência, mas nunca
+//                            recebeu esse produto;
+//   • "não compra há N dias" → já comprou, mas faz tempo (≥ DIAS_PRODUTO_ANTIGO).
+// NÃO alerta quando o CLIENTE em si está parado (nenhuma compra nos últimos
+// DIAS_CLIENTE_ATIVO dias) ou tem histórico curto demais — o alerta é sobre
+// o PRODUTO fora do padrão, não sobre o cliente sumido.
+// Só conta o que aconteceu ANTES da data de entrega do pedido, então
+// reimportar um lote que já foi roteirizado dá o mesmo resultado.
+const CONF_PROD_DIAS_PRODUTO_ANTIGO = 90; // produto sem compra há ≥ 90 dias → alerta
+const CONF_PROD_DIAS_CLIENTE_ATIVO  = 60; // cliente sem NENHUMA compra há > 60 dias → não alerta
+const CONF_PROD_MIN_ENTREGAS        = 2;  // cliente com menos entregas que isso no histórico → não alerta
+
+// Cache por arquivo (nome → { lastModified, registros }) — só relê o que
+// mudou desde a última conferência da sessão.
+const _confProdCacheArquivos = new Map();
+let _confProdIndice = null; // { porCliente: Map, porSap: Map, primeiraMs }
+
+function _confProdNomeNorm(nome) {
+  return String(nome || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toUpperCase().replace(/&/g, ' E ')
+    .replace(/[^A-Z0-9 ]/g, ' ')
+    .replace(/\b(LTDA|ME|EPP|EIRELI|S ?A|SA|CIA)\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+// Código SAP é do cliente CORPORATIVO (vários postos da mesma rede podem
+// compartilhar) — por isso a chave principal é SAP + nome; o SAP sozinho é
+// só reserva pra posto que ainda não tem histórico próprio.
+function _confProdChaveCliente(p) {
+  const sap = String(p?.codigoSAP || '').trim();
+  return `${sap}|${_confProdNomeNorm(p?.cliente)}`;
+}
+// "2000031 - PETRONAS GASOLINA COMUM" → "2000031" (código do material);
+// sem código, usa o nome normalizado.
+function _confProdChaveProduto(prod) {
+  const m = /^\s*(\d{5,})/.exec(String(prod || ''));
+  return m ? m[1] : _confProdNomeNorm(prod);
+}
+function _confProdDataMs(dataBr) {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(String(dataBr || ''));
+  return m ? new Date(+m[3], +m[2] - 1, +m[1]).getTime() : null;
+}
+const _confProdFmt = ms => { const d = new Date(ms); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; };
+
+// Extrai de UM snapshot do histórico as compras efetivamente roteirizadas
+// (paradas das viagens), não a lista de pedidos — pedido que ficou de fora
+// da programação não conta como compra.
+function _confProdRegistrosDoSnapshot(data) {
+  const out = [];
+  const fallbackMs = data.savedAt ? new Date(data.savedAt).setHours(0, 0, 0, 0) : null;
+  Object.values(data.resultado || {}).filter(Array.isArray).forEach(lista => lista.forEach(vi => {
+    if (!vi || vi._vazio) return;
+    (vi.paradas || []).forEach(pa => {
+      const ped = pa.pedido;
+      if (!ped || !ped.cliente) return;
+      const ms = _confProdDataMs(ped.dataEntregaLogistica) ?? fallbackMs;
+      if (!ms) return;
+      (pa.itens || []).forEach(it => {
+        if (!it.produto || !((it.volume || 0) > 0)) return;
+        out.push({ ck: _confProdChaveCliente(ped), sap: String(ped.codigoSAP || '').trim(), pk: _confProdChaveProduto(it.produto), ms });
+      });
+    });
+  }));
+  return out;
+}
+
+// Monta (ou atualiza) o índice lendo a pasta do Histórico. Retorna null se a
+// pasta não estiver disponível/autorizada — a conferência é pulada, sem erro.
+async function _confProdCarregarIndice({ pedirPermissao = true } = {}) {
+  const dir = window.dirHandleHistorico || (typeof dirHandleHistorico !== 'undefined' ? dirHandleHistorico : null);
+  if (!dir) return null;
+  let ok = false;
+  try { ok = (await dir.queryPermission({ mode: 'read' })) === 'granted'; } catch (e) {}
+  if (!ok && pedirPermissao) { try { ok = (await dir.requestPermission({ mode: 'read' })) === 'granted'; } catch (e) {} }
+  if (!ok) return null;
+  const vistos = new Set();
+  let mudou = !_confProdIndice;
+  for await (const [name, handle] of dir.entries()) {
+    if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+    vistos.add(name);
+    let file;
+    try { file = await handle.getFile(); } catch (e) { continue; }
+    const c = _confProdCacheArquivos.get(name);
+    if (c && c.lastModified === file.lastModified) continue;
+    let registros = [];
+    try {
+      const data = JSON.parse(await file.text());
+      // Revisão substituída não conta — a versão vigente já está em outro arquivo.
+      if (!data.substituidoPor) registros = _confProdRegistrosDoSnapshot(data);
+    } catch (e) { /* arquivo corrompido: ignora */ }
+    _confProdCacheArquivos.set(name, { lastModified: file.lastModified, registros });
+    mudou = true;
+  }
+  [..._confProdCacheArquivos.keys()].forEach(n => { if (!vistos.has(n)) { _confProdCacheArquivos.delete(n); mudou = true; } });
+  if (!mudou) return _confProdIndice;
+  _confProdIndice = _confProdMontarIndice([..._confProdCacheArquivos.values()].flatMap(c => c.registros));
+  return _confProdIndice;
+}
+// Índice: cliente → { datas: Set(ms), produtos: Map(pk → [ms...]) }
+function _confProdMontarIndice(registros) {
+  const porCliente = new Map(), porSap = new Map();
+  let primeiraMs = null;
+  const add = (mapa, chave, r) => {
+    if (!chave) return;
+    if (!mapa.has(chave)) mapa.set(chave, { datas: new Set(), produtos: new Map() });
+    const e = mapa.get(chave);
+    e.datas.add(r.ms);
+    if (!e.produtos.has(r.pk)) e.produtos.set(r.pk, []);
+    e.produtos.get(r.pk).push(r.ms);
+  };
+  registros.forEach(r => {
+    add(porCliente, r.ck, r);
+    add(porSap, r.sap, r);
+    if (primeiraMs === null || r.ms < primeiraMs) primeiraMs = r.ms;
+  });
+  return { porCliente, porSap, primeiraMs };
+}
+
+// Avalia UM pedido contra o índice. Devolve a lista de alertas (vazia = ok).
+function _confProdAvaliarPedido(p, indice) {
+  if (!indice || !p) return [];
+  const refMs = _confProdDataMs(p.dataEntregaLogistica) ?? new Date().setHours(0, 0, 0, 0);
+  const sap = String(p.codigoSAP || '').trim();
+  const hist = indice.porCliente.get(_confProdChaveCliente(p)) || (sap ? indice.porSap.get(sap) : null);
+  if (!hist) return []; // cliente sem histórico nenhum → nada a comparar
+  const datasAntes = [...hist.datas].filter(ms => ms < refMs);
+  if (datasAntes.length < CONF_PROD_MIN_ENTREGAS) return [];
+  const ultimaCliente = Math.max(...datasAntes);
+  const dia = 86400000;
+  if ((refMs - ultimaCliente) / dia > CONF_PROD_DIAS_CLIENTE_ATIVO) return []; // cliente parado → não alerta
+  const alertas = [];
+  const vistos = new Set();
+  (p.produtos || []).forEach(pr => {
+    const pk = _confProdChaveProduto(pr.produto);
+    if (!pk || vistos.has(pk)) return;
+    vistos.add(pk);
+    const compras = (hist.produtos.get(pk) || []).filter(ms => ms < refMs);
+    if (!compras.length) {
+      alertas.push({ produto: pr.produto, tipo: 'nunca', texto: `nunca comprou ${pr.produto}` });
+      return;
+    }
+    const ultima = Math.max(...compras);
+    const dias = Math.round((refMs - ultima) / dia);
+    if (dias >= CONF_PROD_DIAS_PRODUTO_ANTIGO) {
+      alertas.push({ produto: pr.produto, tipo: 'antigo', dias, ultima: _confProdFmt(ultima), texto: `não compra ${pr.produto} há ${dias} dias (última: ${_confProdFmt(ultima)})` });
+    }
+  });
+  return alertas;
+}
+
+// Confere uma lista de pedidos, grava o resultado em p._alertasProduto (usado
+// pelo card) e devolve os pedidos com alerta. `silencioso` = sem toast.
+async function conferirProdutosPedidos(lista, { mostrarResumo = true, automatico = false } = {}) {
+  if (!lista || !lista.length) return [];
+  if (mostrarResumo && !automatico && typeof showToast === 'function') showToast('🔎 Conferindo produtos com o histórico de roteirizações...', true);
+  let indice;
+  try { indice = await _confProdCarregarIndice({ pedirPermissao: !automatico }); } catch (e) { console.warn('[conferência produtos]', e); indice = null; }
+  if (!indice) {
+    if (mostrarResumo && !automatico && typeof showToast === 'function')
+      showToast('Conferência de produtos não feita: a pasta do Histórico não está selecionada/autorizada (aba Histórico).', false);
+    return [];
+  }
+  const comAlerta = [];
+  lista.forEach(p => {
+    const al = _confProdAvaliarPedido(p, indice);
+    if (al.length) { p._alertasProduto = al; comAlerta.push(p); } else delete p._alertasProduto;
+  });
+  if (typeof renderPedidos === 'function') renderPedidos();
+  if (mostrarResumo) {
+    if (comAlerta.length) _confProdMostrarResumo(comAlerta, indice);
+    else if (!automatico && typeof showToast === 'function') showToast('✅ Produtos conferidos: nada fora do padrão de compra dos clientes.', true);
+  }
+  return comAlerta;
+}
+
+function _confProdMostrarResumo(comAlerta, indice) {
+  document.getElementById('conf-prod-modal')?.remove();
+  const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const linhas = comAlerta.map(p => `
+    <tr style="border-top:1px solid #E5E7EB;vertical-align:top;">
+      <td style="padding:7px 8px;font-size:12px;"><b>${esc(p.cliente)}</b><div style="font-size:10.5px;color:#6B7280;">${esc(p.cidade || '')}${p.codigoSAP ? ` · SAP ${esc(p.codigoSAP)}` : ''} · ${esc(p.terminal || '')} · ${esc(p.dataEntregaLogistica || '')}</div></td>
+      <td style="padding:7px 8px;font-size:12px;">${p._alertasProduto.map(a => `<div style="color:${a.tipo === 'nunca' ? '#B91C1C' : '#B45309'};margin-bottom:2px;">${a.tipo === 'nunca' ? '🚫 Nunca comprou' : `🕓 Não compra há ${a.dias} dias`}: <b>${esc(a.produto)}</b>${a.ultima ? ` <span style="color:#6B7280;">(última ${esc(a.ultima)})</span>` : ''}</div>`).join('')}</td>
+    </tr>`).join('');
+  const modal = document.createElement('div');
+  modal.id = 'conf-prod-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem;';
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+  modal.innerHTML = `
+    <div style="background:#fff;color:#111827;border-radius:14px;padding:20px;width:100%;max-width:760px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(0,0,0,.3);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <div style="font-size:16px;font-weight:800;">⚠️ ${comAlerta.length} pedido(s) com produto fora do padrão do cliente</div>
+        <button onclick="document.getElementById('conf-prod-modal').remove()" style="border:none;background:none;font-size:18px;cursor:pointer;color:#6B7280;">✕</button>
+      </div>
+      <div style="font-size:12px;color:#4B5563;margin:6px 0 12px;">Comparado com as roteirizações salvas no Histórico${indice.primeiraMs ? ` (desde ${_confProdFmt(indice.primeiraMs)})` : ''}. Confira com o cliente/vendas antes de roteirizar: pode ser erro de lançamento no portal. Os pedidos continuam na lista, marcados com ⚠️.</div>
+      <div style="overflow:auto;border:1px solid #E5E7EB;border-radius:8px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="background:#F9FAFB;text-align:left;"><th style="padding:7px 8px;font-size:10.5px;color:#6B7280;text-transform:uppercase;">Cliente</th><th style="padding:7px 8px;font-size:10.5px;color:#6B7280;text-transform:uppercase;">Alerta</th></tr></thead>
+          <tbody>${linhas}</tbody>
+        </table>
+      </div>
+      <div style="font-size:10.5px;color:#9CA3AF;margin-top:8px;">Regras: só alerta cliente com pelo menos ${CONF_PROD_MIN_ENTREGAS} entregas e alguma compra nos últimos ${CONF_PROD_DIAS_CLIENTE_ATIVO} dias; "há muito tempo" = ${CONF_PROD_DIAS_PRODUTO_ANTIGO} dias ou mais sem aquele produto.</div>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button class="btn btn-green" onclick="document.getElementById('conf-prod-modal').remove()">Entendi</button></div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+window.conferirProdutosPedidos = conferirProdutosPedidos;
+async function salvarPedido() {
   const terminal = document.getElementById('p-terminal').value;
   const cliente  = document.getElementById('p-cliente').value.trim();
   const cidade   = document.getElementById('p-cidade').value.trim();
@@ -4192,11 +4406,21 @@ function salvarPedido() {
     })(),
     produtos,
   };
+  // Conferência cliente × produto contra o histórico (mesma regra da
+  // importação). Pergunta antes de gravar; se a pasta do Histórico não
+  // estiver disponível, grava sem conferir.
+  let _alertasProd = [];
+  try {
+    const _idx = await _confProdCarregarIndice();
+    _alertasProd = _confProdAvaliarPedido(dados, _idx);
+  } catch (e) { console.warn('[conferência produtos]', e); }
+  if (_alertasProd.length && !confirm(`⚠️ Produto fora do padrão deste cliente (histórico de roteirizações):\n\n${_alertasProd.map(a => '• ' + a.texto).join('\n')}\n\nConfira se não é erro de lançamento. Salvar o pedido assim mesmo?`)) return;
   if (editandoPedidoId !== null) {
     const idx = pedidos.findIndex(p => p.id === editandoPedidoId);
     if (idx !== -1) pedidos[idx] = {...pedidos[idx], ...dados};
+    if (idx !== -1) { if (_alertasProd.length) pedidos[idx]._alertasProduto = _alertasProd; else delete pedidos[idx]._alertasProduto; }
   } else {
-    pedidos.push({id: Date.now(), ...dados});
+    pedidos.push({id: Date.now(), ...dados, ...(_alertasProd.length ? { _alertasProduto: _alertasProd } : {})});
   }
   editandoPedidoId = null;
   cancelarFormPedido();
@@ -4508,10 +4732,16 @@ function renderPedidos() {
             ${p.turnoEntrega ? `<span class="tag" title="Turno de entrega informado no pedido" style="font-size:9px;background:#FFF7ED;color:#9A3412;border-color:#FDBA74;">${iconeTurnoEntrega(p.turnoEntrega)} Turno: ${p.turnoEntrega}</span>` : ''}
             ${p.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             ${pernoiteTag}
+            ${p._alertasProduto?.length ? `<span class="tag" title="${p._alertasProduto.map(a => a.texto).join(' · ').replace(/"/g, '&quot;')}" style="font-size:9px;background:#FEF2F2;color:#B91C1C;border-color:#FCA5A5;font-weight:700;">⚠️ Produto fora do padrão do cliente</span>` : ''}
             ${tiposHtml}
           </div>
           <div class="pills">
-            ${p.produtos.map(pr => `<span class="pill">${pr.produto}: ${pr.volume} m³${pr.ordemSAP ? ` · OS ${pr.ordemSAP}` : ''}</span>`).join('')}
+            ${p.produtos.map(pr => {
+              const _al = (p._alertasProduto || []).find(a => _confProdChaveProduto(a.produto) === _confProdChaveProduto(pr.produto));
+              return _al
+                ? `<span class="pill" title="${_al.texto.replace(/"/g, '&quot;')}" style="background:#FEF2F2;border-color:#F87171;color:#991B1B;font-weight:600;">⚠️ ${pr.produto}: ${pr.volume} m³${pr.ordemSAP ? ` · OS ${pr.ordemSAP}` : ''} · ${_al.tipo === 'nunca' ? 'nunca comprou' : `há ${_al.dias}d sem comprar`}</span>`
+                : `<span class="pill">${pr.produto}: ${pr.volume} m³${pr.ordemSAP ? ` · OS ${pr.ordemSAP}` : ''}</span>`;
+            }).join('')}
             <span class="pill" style="color:var(--pet-green);border-color:#C4E87A;">Total: ${totalVolPedido(p).toFixed(1)} m³</span>
           </div>
         </div>
@@ -5476,6 +5706,7 @@ async function carregarPedidosLiberados() {
       arquivoHistoricoAberto = null;
       ultimoArquivoSalvoSessao = null;
       renderPedidos();
+      conferirProdutosPedidos(pedidos, { automatico: true }).catch(e => console.warn('[conferência produtos]', e));
       const suspeitos = novos.filter(p => dataEntregaSuspeita(p.dataEntregaLogistica));
       if (suspeitos.length && typeof window.showToast === 'function')
         window.showToast(`⚠️ ${suspeitos.length} pedido(s) com data de entrega suspeita (confira o ano) — marcados em vermelho.`, false);
@@ -5504,6 +5735,7 @@ function uploadPedidosLiberados(input) {
       _sincronizarDataOperacaoComPedidos();
       renderPedidos();
       showTab('pedidos');
+      conferirProdutosPedidos(pedidos).catch(e => console.warn('[conferência produtos]', e));
       const suspeitos = novos.filter(p => dataEntregaSuspeita(p.dataEntregaLogistica));
       if (suspeitos.length && typeof window.showToast === 'function')
         window.showToast(`⚠️ ${suspeitos.length} pedido(s) com data de entrega suspeita (confira o ano) — marcados em vermelho.`, false);
