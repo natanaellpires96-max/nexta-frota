@@ -958,6 +958,22 @@ function cidadeDoTerminal(nomeTerminal) {
   const t = terminaisCad.find(x => x.nome === nomeTerminal);
   return t?.cidade || '';
 }
+// CNPJ da base pela OR. Busca tolerante (acento, espaço duplo, maiúscula,
+// Unicode NFC×NFD) e olha TODOS os cadastros com aquele nome, pegando o
+// primeiro que tenha CNPJ — se o terminal ficou duplicado no cadastro (um
+// registro antigo sem CNPJ e outro com), a busca exata pegava o antigo.
+function _nomeTerminalNorm(n) {
+  return String(n || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function cnpjDoTerminal(nomeTerminal) {
+  const alvo = _nomeTerminalNorm(nomeTerminal);
+  if (!alvo) return '';
+  const candidatos = (terminaisCad || []).filter(t => _nomeTerminalNorm(t.nome) === alvo);
+  const comCnpj = candidatos.find(t => t.cnpj);
+  if (!comCnpj && candidatos.length) console.warn(`[OR] terminal "${nomeTerminal}" encontrado no cadastro, mas sem CNPJ preenchido.`);
+  if (!candidatos.length) console.warn(`[OR] terminal "${nomeTerminal}" não encontrado no cadastro de terminais (nomes cadastrados:`, (terminaisCad || []).map(t => t.nome), ')');
+  return comCnpj?.cnpj || '';
+}
 function distribuidoraDoTerminal(nomeTerminal) {
   const t = terminaisCad.find(x => x.nome === nomeTerminal);
   return t?.distribuidora || '';
@@ -8190,7 +8206,7 @@ function renderTemplateOperacao() {
       <tr>
         <td>${ld.ordemSAP || ''}</td>
         <td>${ciaLinha}</td>
-        <td>${baseLinha}${(() => { const c = _terminalPorNomeFlex(baseLinha)?.cnpj; return c ? `<div style="font-size:10px;color:#6B7280;font-family:var(--font-mono,monospace);margin-top:2px;white-space:nowrap;">CNPJ ${c}</div>` : ''; })()}</td>
+        <td>${baseLinha}${(() => { const c = cnpjDoTerminal(ld.terminal) || cnpjDoTerminal(baseLinha); return c ? `<div style="font-size:10px;color:#6B7280;font-family:var(--font-mono,monospace);margin-top:2px;white-space:nowrap;">CNPJ ${c}</div>` : ''; })()}</td>
         <td>${ld.postoCidade}${ld.cnpjCliente ? `<div style="font-size:10px;color:#6B7280;font-family:var(--font-mono,monospace);margin-top:2px;white-space:nowrap;">CNPJ ${ld.cnpjCliente}</div>` : ''}</td>
         <td style="text-align:center;font-weight:700;">${ld.cpt || ''}</td>
         <td><div class="op-prod-codigo">${prodCodigo || '-'}</div>${prodDesc ? `<div class="op-prod-desc">${prodDesc}</div>` : ''}</td>
