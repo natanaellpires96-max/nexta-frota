@@ -756,6 +756,7 @@ async function carregarDadosFixos() {
       if (fsTerm && Object.keys(fsTerm).length) {
         let id = 1;
         terminaisCad = Object.values(fsTerm).map(t => ({ ...t, id: t.id ?? id++ }));
+        _registrarCnpjTerminais(terminaisCad);
         renderTerminais(); atualizarDropdownsTerminais();
       }
       if (fsCli && Object.keys(fsCli).length) {
@@ -965,10 +966,31 @@ function cidadeDoTerminal(nomeTerminal) {
 function _nomeTerminalNorm(n) {
   return String(n || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
+// Abrir uma roteirização salva (Histórico / seletor "Roteirização") troca
+// terminaisCad pela CÓPIA gravada no arquivo — que pode ser de antes do
+// CNPJ existir. Este mapa guarda o CNPJ do cadastro ATUAL (nuvem) por nome,
+// pra OR mostrar o CNPJ certo mesmo com uma programação antiga aberta.
+const _cnpjTerminalVivo = new Map(); // nome normalizado → CNPJ
+function _registrarCnpjTerminais(lista) {
+  (lista || []).forEach(t => { if (t && t.nome && t.cnpj) _cnpjTerminalVivo.set(_nomeTerminalNorm(t.nome), t.cnpj); });
+}
+// Busca o cadastro de terminais na nuvem e completa o CNPJ que faltar na
+// lista em uso (sem mexer em mais nada da cópia do arquivo). Re-renderiza a OR.
+async function _completarCnpjTerminaisDoCadastro() {
+  try {
+    if (typeof window.dbGetCadastro === 'function') _registrarCnpjTerminais(Object.values(await window.dbGetCadastro('terminais') || {}));
+  } catch (e) { console.warn('[CNPJ terminais]', e); }
+  let completou = 0;
+  (terminaisCad || []).forEach(t => {
+    if (t && !t.cnpj) { const c = _cnpjTerminalVivo.get(_nomeTerminalNorm(t.nome)); if (c) { t.cnpj = c; completou++; } }
+  });
+  if (completou && typeof renderTemplateOperacao === 'function') { try { renderTemplateOperacao(); } catch (e) {} }
+}
 function cnpjDoTerminal(nomeTerminal) {
   const alvo = _nomeTerminalNorm(nomeTerminal);
   if (!alvo) return '';
   const candidatos = (terminaisCad || []).filter(t => _nomeTerminalNorm(t.nome) === alvo);
+  if (_cnpjTerminalVivo.has(alvo)) return _cnpjTerminalVivo.get(alvo); // cadastro atual tem prioridade
   const comCnpj = candidatos.find(t => t.cnpj);
   if (!comCnpj && candidatos.length) console.warn(`[OR] terminal "${nomeTerminal}" encontrado no cadastro, mas sem CNPJ preenchido.`);
   if (!candidatos.length) console.warn(`[OR] terminal "${nomeTerminal}" não encontrado no cadastro de terminais (nomes cadastrados:`, (terminaisCad || []).map(t => t.nome), ')');
@@ -2797,10 +2819,12 @@ function salvarTerminal() {
     const antigo = idx !== -1 ? {...terminaisCad[idx]} : null;
     if (idx !== -1) terminaisCad[idx] = {...terminaisCad[idx], nome, cnpj, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios};
     _persistirCadastroManual('terminais', terminaisCad[idx], antigo);
+    if (terminaisCad[idx]) { if (cnpj) _cnpjTerminalVivo.set(_nomeTerminalNorm(nome), cnpj); else _cnpjTerminalVivo.delete(_nomeTerminalNorm(nome)); }
   } else {
     if (terminaisCad.find(t => t.nome.toLowerCase() === nome.toLowerCase())) { alert('Já existe um terminal com esse nome.'); return; }
     const novo = {id:Date.now(), nome, cnpj, cidade, distribuidora, empresaLocalExpedicao, lat, lon, fuso, tempoCarregamentoMedioMin, aberturaPadrao:abPad, fechamentoPadrao:fePad, diasAtivos, horarios};
     terminaisCad.push(novo);
+    if (cnpj) _cnpjTerminalVivo.set(_nomeTerminalNorm(nome), cnpj);
     _persistirCadastroManual('terminais', novo);
   }
   editandoTerminalId = null;
@@ -11935,8 +11959,10 @@ async function abrirEntradaHistorico(filename) {
     const fh   = await dirHandleHistorico.getFileHandle(filename);
     const file = await fh.getFile();
     const data = JSON.parse(await file.text());
+    _registrarCnpjTerminais(terminaisCad); // guarda o CNPJ da lista atual antes de trocar
     pedidos             = data.pedidos      || [];
     terminaisCad        = data.terminais    || [];
+    _completarCnpjTerminaisDoCadastro();
     veiculos            = data.veiculos     || [];
     ultimoResultado     = data.resultado    || null;
     ultimoControleTempo = data.controleTempo || {};
@@ -11997,8 +12023,10 @@ async function popularDropdownRoteirizacoes() {
   });
 }
 function _restaurarEstado(estado) {
+  _registrarCnpjTerminais(terminaisCad); // guarda o CNPJ da lista atual antes de trocar
   pedidos             = estado.pedidos       || [];
   terminaisCad        = estado.terminais     || [];
+  _completarCnpjTerminaisDoCadastro();
   veiculos            = estado.veiculos      || [];
   ultimoResultado     = estado.resultado     || null;
   ultimoControleTempo = estado.controleTempo || {};
