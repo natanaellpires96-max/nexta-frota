@@ -574,158 +574,6 @@ function normalizarDocumento(raw) {
 }
 window.normalizarDocumento = normalizarDocumento;
 
-function abrirCnpjLote() {
-  document.getElementById('cnpj-lote-modal')?.remove();
-  const semTerm = (terminaisCad || []).filter(t => !t.cnpj).length;
-  const semCli  = (clientes || []).filter(c => !c.cnpj).length;
-  const modal = document.createElement('div');
-  modal.id = 'cnpj-lote-modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem;';
-  modal.onclick = e => { if (e.target === modal) modal.remove(); };
-  modal.innerHTML = `
-    <div style="background:#fff;color:#111827;border-radius:14px;padding:22px;width:100%;max-width:640px;max-height:90vh;overflow:auto;box-shadow:0 20px 50px rgba(0,0,0,.3);font-family:inherit;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-        <div style="font-size:16px;font-weight:800;">🪪 CNPJ em lote</div>
-        <button onclick="document.getElementById('cnpj-lote-modal').remove()" style="border:none;background:none;font-size:18px;cursor:pointer;color:#6B7280;">✕</button>
-      </div>
-      <div style="font-size:12px;color:#6B7280;margin-bottom:16px;">Sem CNPJ hoje: <b>${semTerm}</b> de ${(terminaisCad || []).length} terminais · <b>${semCli}</b> de ${(clientes || []).length} clientes</div>
-      <div style="display:flex;flex-direction:column;gap:10px;">
-        <div style="border:1px solid #E5E7EB;border-radius:10px;padding:12px 14px;">
-          <div style="font-size:13px;font-weight:700;margin-bottom:4px;">1. Baixar o modelo</div>
-          <div style="font-size:12px;color:#4B5563;margin-bottom:8px;">Excel com todos os terminais e clientes cadastrados, já com o CNPJ atual de quem tem. <b>Não altere a coluna ID</b>: é ela que leva cada CNPJ pro cadastro certo.</div>
-          <button class="btn btn-sm" onclick="baixarModeloCnpjLote()">📥 Baixar modelo</button>
-        </div>
-        <div style="border:1px solid #E5E7EB;border-radius:10px;padding:12px 14px;">
-          <div style="font-size:13px;font-weight:700;margin-bottom:4px;">2. Preencher a coluna CNPJ</div>
-          <div style="font-size:12px;color:#4B5563;">Pode colar com ou sem pontuação. Se o Excel comer zeros à esquerda, o sistema completa. Deixar em branco não apaga o CNPJ que já existe.</div>
-        </div>
-        <div style="border:1px solid #E5E7EB;border-radius:10px;padding:12px 14px;">
-          <div style="font-size:13px;font-weight:700;margin-bottom:4px;">3. Importar a planilha preenchida</div>
-          <div style="font-size:12px;color:#4B5563;margin-bottom:8px;">Você vê uma prévia (atualizações, CNPJs inválidos, repetidos) antes de gravar qualquer coisa.</div>
-          <input type="file" id="cnpj-lote-input" accept=".xlsx,.xls" style="display:none;" onchange="lerPlanilhaCnpjLote(this)"/>
-          <button class="btn btn-green btn-sm" onclick="document.getElementById('cnpj-lote-input').click()">⬆ Importar preenchida</button>
-        </div>
-      </div>
-      <div id="cnpj-lote-previa" style="margin-top:14px;"></div>
-    </div>`;
-  document.body.appendChild(modal);
-}
-
-function baixarModeloCnpjLote() {
-  if (typeof XLSX === 'undefined') { alert('SheetJS não carregado. Recarregue a página.'); return; }
-  const wb = XLSX.utils.book_new();
-  const term = (terminaisCad || []).map(t => ({ 'ID': t.id, 'Nome': t.nome || '', 'Cidade': t.cidade || '', 'Distribuidora': t.distribuidora || '', 'CNPJ': t.cnpj || '' }));
-  const cli = [...(clientes || [])]
-    .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'))
-    .map(c => ({ 'ID': c.id, 'Código SAP': c.codigoSAP || '', 'Nome': c.nome || '', 'Cidade': c.cidade || '', 'Endereço': c.endereco || '', 'CNPJ': c.cnpj || '' }));
-  const wsT = XLSX.utils.json_to_sheet(term.length ? term : [{ 'ID': '', 'Nome': '', 'Cidade': '', 'Distribuidora': '', 'CNPJ': '' }]);
-  wsT['!cols'] = [{ wch: 16 }, { wch: 36 }, { wch: 22 }, { wch: 18 }, { wch: 22 }];
-  const wsC = XLSX.utils.json_to_sheet(cli.length ? cli : [{ 'ID': '', 'Código SAP': '', 'Nome': '', 'Cidade': '', 'Endereço': '', 'CNPJ': '' }]);
-  wsC['!cols'] = [{ wch: 16 }, { wch: 12 }, { wch: 42 }, { wch: 22 }, { wch: 40 }, { wch: 22 }];
-  XLSX.utils.book_append_sheet(wb, wsT, 'Terminais');
-  XLSX.utils.book_append_sheet(wb, wsC, 'Clientes');
-  XLSX.writeFile(wb, `modelo_cnpj_cadastros_${new Date().toISOString().slice(0, 10)}.xlsx`);
-}
-
-let _cnpjLotePendente = null; // { terminais: [...], clientes: [...] } com { item, novo }
-
-// Lê uma aba e classifica cada linha. Separada da leitura do arquivo pra
-// poder ser testada sem navegador.
-function _cnpjLoteAnalisar(linhas, lista, rotulo) {
-  const r = { atualizar: [], iguais: 0, vazios: 0, invalidos: [], semId: [], repetidos: [] };
-  const porId = new Map((lista || []).map(x => [String(x.id), x]));
-  const novoPorDoc = new Map(); // doc → nomes (dentro da planilha)
-  (linhas || []).forEach((row, i) => {
-    const id = String(row['ID'] ?? '').trim();
-    const raw = row['CNPJ'] ?? row['CNPJ/CPF'] ?? row['Cnpj'] ?? '';
-    if (String(raw).trim() === '') { r.vazios++; return; }
-    const item = porId.get(id);
-    const nomeLinha = row['Nome'] || `linha ${i + 2}`;
-    if (!item) { r.semId.push(`${nomeLinha} (ID "${id || 'vazio'}")`); return; }
-    const n = normalizarDocumento(raw);
-    if (!n.ok) { r.invalidos.push(`${item.nome || nomeLinha}: "${raw}" — ${n.motivo}`); return; }
-    if (!novoPorDoc.has(n.valor)) novoPorDoc.set(n.valor, []);
-    novoPorDoc.get(n.valor).push(item.nome || nomeLinha);
-    if ((item.cnpj || '') === n.valor) { r.iguais++; return; }
-    r.atualizar.push({ item, novo: n.valor, antigo: item.cnpj || '' });
-  });
-  novoPorDoc.forEach((nomes, docu) => { if (nomes.length > 1) r.repetidos.push(`${docu}: ${nomes.slice(0, 4).join(' · ')}${nomes.length > 4 ? ` +${nomes.length - 4}` : ''}`); });
-  r.rotulo = rotulo;
-  return r;
-}
-
-async function lerPlanilhaCnpjLote(input) {
-  const file = input.files[0];
-  input.value = '';
-  if (!file) return;
-  const box = document.getElementById('cnpj-lote-previa');
-  try {
-    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-    const aba = nome => {
-      const f = wb.SheetNames.find(n => n.trim().toLowerCase() === nome) || wb.SheetNames.find(n => n.trim().toLowerCase().includes(nome));
-      return f ? XLSX.utils.sheet_to_json(wb.Sheets[f], { defval: '' }) : null;
-    };
-    const rowsT = aba('terminais'), rowsC = aba('clientes');
-    if (!rowsT && !rowsC) { box.innerHTML = '<div style="color:#B91C1C;font-size:12.5px;">Não achei as abas "Terminais" ou "Clientes". Use o modelo baixado no passo 1.</div>'; return; }
-    const aT = _cnpjLoteAnalisar(rowsT, terminaisCad, 'Terminais');
-    const aC = _cnpjLoteAnalisar(rowsC, clientes, 'Clientes');
-    _cnpjLotePendente = { terminais: aT.atualizar, clientes: aC.atualizar };
-    const lista = (titulo, arr, cor) => arr.length ? `
-      <details style="margin-top:6px;"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:${cor};">${titulo} (${arr.length})</summary>
-        <div style="font-size:11.5px;color:#374151;max-height:140px;overflow:auto;padding:6px 0 0 14px;line-height:1.5;">${arr.slice(0, 200).map(x => `• ${String(x).replace(/</g, '&lt;')}`).join('<br>')}</div></details>` : '';
-    const bloco = a => `
-      <div style="border:1px solid #E5E7EB;border-radius:10px;padding:10px 14px;margin-bottom:8px;">
-        <div style="font-size:13px;font-weight:700;">${a.rotulo}</div>
-        <div style="font-size:12px;color:#374151;margin-top:4px;">✅ <b>${a.atualizar.length}</b> a atualizar · ${a.iguais} já iguais · ${a.vazios} em branco (não mexe)</div>
-        ${lista('❌ CNPJ inválido — não será gravado', a.invalidos, '#B91C1C')}
-        ${lista('⚠️ ID não encontrado — não será gravado', a.semId, '#B45309')}
-        ${lista('⚠️ Mesmo CNPJ em mais de um cadastro (confira se não é cadastro duplicado)', a.repetidos, '#B45309')}
-      </div>`;
-    const total = aT.atualizar.length + aC.atualizar.length;
-    box.innerHTML = `
-      <div style="font-size:12px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Prévia — ${file.name.replace(/</g, '&lt;')}</div>
-      ${rowsT ? bloco(aT) : ''}${rowsC ? bloco(aC) : ''}
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">
-        <button class="btn btn-green" ${total ? '' : 'disabled'} onclick="aplicarCnpjLote()">💾 Gravar ${total} CNPJ(s)</button>
-      </div>`;
-  } catch (e) {
-    console.error('[CNPJ lote] leitura:', e);
-    box.innerHTML = `<div style="color:#B91C1C;font-size:12.5px;">Erro ao ler a planilha: ${String(e.message).replace(/</g, '&lt;')}</div>`;
-  }
-}
-
-async function aplicarCnpjLote() {
-  if (!_cnpjLotePendente) return;
-  const { terminais, clientes: cls } = _cnpjLotePendente;
-  if (typeof window.dbAtualizarCadastroLote !== 'function') { alert('Função de gravação indisponível — recarregue a página.'); return; }
-  const btn = document.querySelector('#cnpj-lote-previa .btn-green');
-  if (btn) { btn.disabled = true; btn.textContent = 'Gravando...'; }
-  try {
-    const montar = (tipo, arr) => {
-      const alt = {};
-      arr.forEach(({ item, novo }) => {
-        item.cnpj = novo; // memória desta aba
-        alt[_chavePersistCadastro(tipo, item)] = { campos: { cnpj: novo }, item };
-      });
-      return alt;
-    };
-    if (terminais.length) await window.dbAtualizarCadastroLote('terminais', montar('terminais', terminais));
-    if (cls.length)       await window.dbAtualizarCadastroLote('clientes',  montar('clientes', cls));
-    _cnpjLotePendente = null;
-    if (typeof renderTerminais === 'function') renderTerminais();
-    if (typeof renderClientes === 'function') renderClientes();
-    document.getElementById('cnpj-lote-modal')?.remove();
-    showToast(`CNPJ gravado: ${terminais.length} terminal(is) e ${cls.length} cliente(s).`, true);
-  } catch (e) {
-    console.error('[CNPJ lote] gravação:', e);
-    alert('Erro ao gravar: ' + (e.code === 'permission-denied' ? 'sem permissão no Firestore (regras).' : e.message));
-    if (btn) { btn.disabled = false; btn.textContent = 'Tentar de novo'; }
-  }
-}
-window.abrirCnpjLote = abrirCnpjLote;
-window.baixarModeloCnpjLote = baixarModeloCnpjLote;
-window.lerPlanilhaCnpjLote = lerPlanilhaCnpjLote;
-window.aplicarCnpjLote = aplicarCnpjLote;
 function xlsxMapTerminal(r, i) {
   const diasStr = xlsxStr(r, 'Dias Ativos', 'DiasAtivos');
   const diasAtivos = diasStr
@@ -8274,6 +8122,8 @@ function renderTemplateOperacao() {
     (viOriginal.paradas || []).forEach(p => {
       const cidadeEntrega = (p.pedido?.cidade || '').toString().trim();
       const postoCidade = cidadeEntrega ? `${p.pedido?.cliente || ''} (${cidadeEntrega.toUpperCase()})` : (p.pedido?.cliente || '');
+      // CNPJ do posto: vem do cadastro ATUAL do cliente (o pedido não guarda).
+      const cnpjCliente = encontrarClienteDoPedido(p.pedido)?.cnpj || p.pedido?.cnpj || '';
       // Mapa produto → ordemSAP individual (vem de xlsxMapPedidosLiberadosRows)
       const produtoOrdemMap = {};
       (p.pedido?.produtos || []).forEach(pr => {
@@ -8299,7 +8149,7 @@ function renderTemplateOperacao() {
         const alocacoes = (it.alocacoesCpt || []).filter(a => (a.volume || 0) > 0);
         if (alocacoes.length) {
           return alocacoes.map(a => ({
-            postoCidade, ordemSAP: ordemSAPIt,
+            postoCidade, cnpjCliente, ordemSAP: ordemSAPIt,
             produto: a.produto || prodKey,
             volumeL: Math.round((a.volume || 0) * 1000),
             cptOrig: a.cpt || '',
@@ -8307,7 +8157,7 @@ function renderTemplateOperacao() {
           }));
         }
         return [{
-          postoCidade, ordemSAP: ordemSAPIt,
+          postoCidade, cnpjCliente, ordemSAP: ordemSAPIt,
           produto: prodKey,
           volumeL: Math.round((it.volume || 0) * 1000),
           cptOrig: '',
@@ -8340,8 +8190,8 @@ function renderTemplateOperacao() {
       <tr>
         <td>${ld.ordemSAP || ''}</td>
         <td>${ciaLinha}</td>
-        <td>${baseLinha}</td>
-        <td>${ld.postoCidade}</td>
+        <td>${baseLinha}${(() => { const c = _terminalPorNomeFlex(baseLinha)?.cnpj; return c ? `<div style="font-size:10px;color:#6B7280;font-family:var(--font-mono,monospace);margin-top:2px;white-space:nowrap;">CNPJ ${c}</div>` : ''; })()}</td>
+        <td>${ld.postoCidade}${ld.cnpjCliente ? `<div style="font-size:10px;color:#6B7280;font-family:var(--font-mono,monospace);margin-top:2px;white-space:nowrap;">CNPJ ${ld.cnpjCliente}</div>` : ''}</td>
         <td style="text-align:center;font-weight:700;">${ld.cpt || ''}</td>
         <td><div class="op-prod-codigo">${prodCodigo || '-'}</div>${prodDesc ? `<div class="op-prod-desc">${prodDesc}</div>` : ''}</td>
         <td style="text-align:right;white-space:nowrap;">${ld.volumeL.toLocaleString('pt-BR')}</td>
