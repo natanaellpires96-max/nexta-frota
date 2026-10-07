@@ -11219,6 +11219,10 @@ async function abrirDetalheHistorico(filename) {
                  })()}</span>
                  <div style="margin:5px 0;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;user-select:text;">${baseCarregamento}</div>
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
+                 <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;font-family:var(--font);letter-spacing:0;">
+                   <button onclick="exportarPNGViagemHistorico('${String(petId).replace(/'/g, "\\'")}', false)" title="${data.revisaoDe ? 'PNG da OR desta viagem como está agora, com as alterações' : 'PNG da OR desta viagem'}" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;border:1px solid rgba(79,70,229,0.35);background:rgba(79,70,229,0.07);color:#4338CA;cursor:pointer;">🖼 PNG</button>
+                   ${data.revisaoDe ? `<button onclick="exportarPNGViagemHistorico('${String(petId).replace(/'/g, "\\'")}', true)" title="PNG da OR desta viagem como era na primeira versão da programação, antes das alterações" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;border:1px solid #D1D5DB;background:#fff;color:#4B5563;cursor:pointer;">🖼 Original</button>` : ''}
+                 </div>
                </td>`
             : '';
           const ctxIdx = _devContextosHistorico.length;
@@ -11287,6 +11291,84 @@ async function abrirDetalheHistorico(filename) {
     body.innerHTML = `<div class="empty" style="color:#ef4444;">Erro ao ler arquivo: ${e.message}</div>`;
   }
 }
+// ── PNG da OR de UMA viagem, direto do Histórico ───────────────────────────
+// Gera exatamente o mesmo card do Envio Transportadora (renderTemplateOperacao
+// + exportarBlocoPNG), mas a partir do ARQUIVO salvo, sem mexer na tela:
+//   • original = false → versão aberta no modal (com as alterações feitas:
+//     pedido incluído, volume editado etc.);
+//   • original = true  → volta a cadeia de revisões (revisaoDe) até a
+//     PRIMEIRA versão daquela programação e gera a viagem como era lá.
+// O render é feito num contêiner escondido, com o estado global trocado só
+// durante a exportação e sempre restaurado no fim (inclusive em erro).
+async function _histLerArquivo(nome) {
+  const fh = await dirHandleHistorico.getFileHandle(nome);
+  return JSON.parse(await (await fh.getFile()).text());
+}
+async function exportarPNGViagemHistorico(petId, original = false) {
+  if (!_histDetalheFilenameAtual) return;
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  let data, nomeArq = _histDetalheFilenameAtual;
+  try {
+    data = await _histLerArquivo(nomeArq);
+    if (original) {
+      const vistos = new Set([nomeArq]);
+      while (data.revisaoDe && !vistos.has(data.revisaoDe) && vistos.size < 50) {
+        let anterior;
+        try { anterior = await _histLerArquivo(data.revisaoDe); } catch (e) { break; } // versão anterior apagada da pasta: para na mais antiga que existir
+        vistos.add(data.revisaoDe);
+        nomeArq = data.revisaoDe;
+        data = anterior;
+      }
+    }
+  } catch (e) { alert('Erro ao ler o arquivo: ' + e.message); return; }
+  // Acha a viagem pelo ID (petId) — o índice dela entre as viagens do veículo
+  // é o mesmo usado no id do card (bloco-PLACA-idx).
+  let alvo = null;
+  for (const v of (data.veiculos || [])) {
+    const viagens = (data.resultado?.[v.id] || []).filter(vi => vi && !vi._vazio && (vi.paradas || []).length);
+    const idx = viagens.findIndex(vi => vi.petId === petId);
+    if (idx !== -1) { alvo = { v, idx }; break; }
+  }
+  if (!alvo) {
+    alert(original
+      ? `A viagem ${petId} não existe na versão original desta programação — ela foi criada numa alteração posterior.`
+      : `Não achei a viagem ${petId} neste arquivo.`);
+    return;
+  }
+  const { v, idx } = alvo;
+  const salvo = { ultimoResultado, veiculos, terminaisCad };
+  const filtrosIds = ['f-op-cliente', 'f-op-cidade', 'f-op-terminal', 'f-op-placa', 'f-op-transp'];
+  const filtrosSalvos = filtrosIds.map(id => { const el = document.getElementById(id); return el ? [el, el.value] : null; }).filter(Boolean);
+  const realEl = document.getElementById('operacao-content');
+  const tmp = document.createElement('div');
+  tmp.style.cssText = 'position:fixed;left:-20000px;top:0;width:1100px;';
+  try {
+    filtrosSalvos.forEach(([el]) => { el.value = ''; });
+    if (realEl) realEl.id = 'operacao-content__real';
+    tmp.id = 'operacao-content';
+    (realEl?.parentNode || document.body).appendChild(tmp);
+    ultimoResultado = { _baseDataEntrega: data.resultado?._baseDataEntrega, [v.id]: data.resultado[v.id] };
+    veiculos = [v];
+    if (Array.isArray(data.terminais) && data.terminais.length) terminaisCad = data.terminais; // CNPJ da base vem do cadastro atual (ver cnpjDoTerminal)
+    renderTemplateOperacao();
+    const bloco = tmp.querySelector(`[data-bloco-id="bloco-${v.placa}-${idx}"]`);
+    if (!bloco) throw new Error('não consegui montar o card dessa viagem');
+    const idUnico = `hist-png-${Date.now()}`;
+    bloco.setAttribute('data-bloco-id', idUnico); // evita confundir com o card da mesma placa na tela principal
+    await exportarBlocoPNG(idUnico, `${petId}${original ? '_original' : (data.revisaoDe ? '_alterada' : '')}`);
+  } catch (e) {
+    console.error('[Histórico] PNG da viagem:', e);
+    alert('Erro ao gerar o PNG: ' + e.message);
+  } finally {
+    ultimoResultado = salvo.ultimoResultado;
+    veiculos = salvo.veiculos;
+    terminaisCad = salvo.terminaisCad;
+    filtrosSalvos.forEach(([el, val]) => { el.value = val; });
+    tmp.remove();
+    if (realEl) realEl.id = 'operacao-content';
+  }
+}
+window.exportarPNGViagemHistorico = exportarPNGViagemHistorico;
 function fecharDetalheHistorico(ev = null) {
   if (ev && ev.target && ev.target.id !== 'modal-hist-detalhe') return;
   const modal = document.getElementById('modal-hist-detalhe');
