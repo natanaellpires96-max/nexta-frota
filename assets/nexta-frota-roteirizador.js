@@ -8299,7 +8299,26 @@ function renderTemplateOperacao() {
               jaVistos.add(chave);
               return true;
             });
-            if (!paradasComJanelaUnicas.length) return '';
+            // Sequência de entrega — ordem das paradas da viagem, uma linha por
+            // cliente (mesmo cliente vindo de 2 bases = 1 entrega só).
+            const _vistosSeq = new Set();
+            const sequencia = (viOriginal.paradas || []).filter(p => {
+              const chave = p.pedido?.codigoSAP || p.pedido?.cliente || '';
+              if (!chave || _vistosSeq.has(chave)) return false;
+              _vistosSeq.add(chave);
+              return true;
+            });
+            // "AUTO POSTO MORAES E MORAES LTDA" → "Auto Posto Moraes e Moraes Ltda"
+            const _titulo = nome => String(nome || '').toLowerCase().replace(/(^|[\s(/-])([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase())
+              .replace(/\s(E|De|Da|Do|Das|Dos)\s/g, m => m.toLowerCase());
+            const blocoSequencia = sequencia.length ? `
+              <div style="flex:0 1 auto;min-width:220px;max-width:46%;margin-left:auto;padding-left:16px;border-left:1px solid #FDE68A;">
+                <div style="font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#92400E;margin-bottom:5px;">Sequência de entrega</div>
+                <div style="display:flex;flex-direction:column;gap:3px;">
+                  ${sequencia.map((p, i) => `<div style="font-size:12px;line-height:1.35;"><span style="font-weight:700;color:#92400E;">Entrega ${i + 1}:</span> <span style="font-weight:600;">${_titulo(p.pedido.cliente)}</span></div>`).join('')}
+                </div>
+              </div>` : '';
+            if (!paradasComJanelaUnicas.length && !blocoSequencia) return '';
             const linhasJanela = paradasComJanelaUnicas.map(p => {
               const dataEnt = p.pedido.dataEntregaLogistica ? `${p.pedido.dataEntregaLogistica} ` : '';
               const obs = encontrarClienteDoPedido(p.pedido)?.observacoes || p.pedido?.observacoes || '';
@@ -8310,9 +8329,12 @@ function renderTemplateOperacao() {
                 ${obs ? `<span style="font-size:11px;color:#4A6535;font-style:italic;">${obs}</span>` : ''}
               </div>`;
             }).join('');
-            return `<div style="padding:8px 14px;border-top:1px solid var(--border);background:#FFFDF0;">
-              <div style="font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#92400E;margin-bottom:5px;">Janelas de recebimento</div>
-              <div style="display:flex;flex-direction:column;gap:4px;">${linhasJanela}</div>
+            return `<div style="padding:8px 14px;border-top:1px solid var(--border);background:#FFFDF0;display:flex;gap:12px;align-items:flex-start;">
+              ${paradasComJanelaUnicas.length ? `<div style="flex:1 1 auto;min-width:0;">
+                <div style="font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#92400E;margin-bottom:5px;">Janelas de recebimento</div>
+                <div style="display:flex;flex-direction:column;gap:4px;">${linhasJanela}</div>
+              </div>` : ''}
+              ${blocoSequencia}
             </div>`;
           })()}
         </div>
