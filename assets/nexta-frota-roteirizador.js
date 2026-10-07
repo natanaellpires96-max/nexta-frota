@@ -2548,7 +2548,10 @@ function posicoesCandidatas(viagem, v, pedido) {
       tempoDeslocamentoMin(haversine(prevC.lat, prevC.lon, cNova.lat, cNova.lon), velC)
     + tempoDeslocamentoMin(haversine(cNova.lat, cNova.lon, nextC.lat, nextC.lon), velNext)
     - tempoDeslocamentoMin(haversine(prevC.lat, prevC.lon, nextC.lat, nextC.lon), velNext);
-    posicoes.push({ idx: i, custo });
+    // Ordem habitual (padrões do histórico, só durante a roteirização): posição
+    // que contraria a sequência em que esses clientes costumam ser atendidos
+    // fica "mais cara" — vence se o desvio geográfico for parecido.
+    posicoes.push({ idx: i, custo: custo + (_padroesAtivo ? _padroesPenalidadeOrdem(_padroesAtivo, pedido, paradas, i) : 0) });
   }
   return posicoes.sort((a, b) => a.custo - b.custo);
 }
@@ -4104,8 +4107,183 @@ function _confProdRegistrosDoSnapshot(data) {
   return out;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// PADRÕES DO HISTÓRICO — o otimizador aprende com as programações salvas
+// ══════════════════════════════════════════════════════════════════════════
+// Lê as viagens do Histórico (mesmo leitor/cache da conferência de produtos)
+// e extrai 3 padrões, todos por cliente (chave SAP + nome normalizado):
+//   • JUNTOS: quantas vezes dois clientes foram na MESMA viagem;
+//   • ORDEM:  quantas vezes A foi entregue ANTES de B quando foram juntos;
+//   • PLACA:  quantas vezes cada placa atendeu cada cliente.
+// O otimizador usa isso como PREFERÊNCIA, nunca como regra dura: janela,
+// compartimento, jornada e terminal continuam mandando. Pode ser desligado
+// na aba 🧠 Aprendizado (chave "Usar padrões do histórico").
+let _padroesHist = null;      // índice montado (ou null)
+let _padroesAtivo = null;     // índice em uso NESTA roteirização (null = desligado)
+const PADROES_MIN_JUNTOS = 2; // abaixo disso, "juntos" é coincidência, não padrão
+
+function padroesHabilitados() {
+  try { return localStorage.getItem('nexta_usar_padroes_hist') !== '0'; } catch (e) { return true; }
+}
+function padroesDefinirHabilitado(on) {
+  try { localStorage.setItem('nexta_usar_padroes_hist', on ? '1' : '0'); } catch (e) {}
+  if (typeof renderAprendizado === 'function') renderAprendizado();
+}
+
+function _padroesViagensDoSnapshot(data) {
+  const out = [];
+  const placaPorId = new Map((data.veiculos || []).map(v => [String(v.id), v.placa || '']));
+  Object.entries(data.resultado || {}).forEach(([vid, lista]) => {
+    if (!Array.isArray(lista)) return;
+    const placa = placaPorId.get(String(vid)) || '';
+    lista.forEach(vi => {
+      if (!vi || vi._vazio) return;
+      const cks = [];
+      (vi.paradas || []).forEach(pa => {
+        if (!pa?.pedido?.cliente) return;
+        const ck = _confProdChaveCliente(pa.pedido);
+        if (!cks.includes(ck)) cks.push(ck);
+      });
+      if (cks.length) out.push({ placa, cks });
+    });
+  });
+  return out;
+}
+function _padroesMontar(viagens) {
+  const pares = new Map(), ordem = new Map(), viagensCli = new Map(), placaCli = new Map();
+  let multi = 0;
+  viagens.forEach(vg => {
+    if (vg.cks.length > 1) multi++;
+    vg.cks.forEach((a, i) => {
+      viagensCli.set(a, (viagensCli.get(a) || 0) + 1);
+      if (vg.placa) { const k = a + '##' + vg.placa; placaCli.set(k, (placaCli.get(k) || 0) + 1); }
+      for (let j = i + 1; j < vg.cks.length; j++) {
+        const b = vg.cks[j];
+        const kp = a < b ? a + '||' + b : b + '||' + a;
+        pares.set(kp, (pares.get(kp) || 0) + 1);
+        const ko = a + '>>' + b;
+        ordem.set(ko, (ordem.get(ko) || 0) + 1);
+      }
+    });
+  });
+  return { pares, ordem, viagensCli, placaCli, totalViagens: viagens.length, viagensMulti: multi };
+}
+function _padroesJuntos(idx, a, b) {
+  if (!idx || !a || !b || a === b) return 0;
+  return idx.pares.get(a < b ? a + '||' + b : b + '||' + a) || 0;
+}
+// Afinidade do cliente do pedido com os clientes JÁ na viagem: a maior fração
+// "das viagens desse cliente, em quantas o outro estava junto" (0..1). Só
+// conta par com pelo menos PADROES_MIN_JUNTOS ocorrências.
+function _padroesAfinidade(idx, pedido, viagem) {
+  if (!idx || !pedido || !viagem) return 0;
+  const a = _confProdChaveCliente(pedido);
+  const totA = idx.viagensCli.get(a) || 0;
+  if (!totA) return 0;
+  let melhor = 0;
+  (viagem.paradas || []).forEach(pa => {
+    const b = _confProdChaveCliente(pa.pedido);
+    const j = _padroesJuntos(idx, a, b);
+    if (j >= PADROES_MIN_JUNTOS) melhor = Math.max(melhor, j / totA);
+  });
+  return melhor;
+}
+// +1 = A costuma vir ANTES de B; -1 = DEPOIS; 0 = sem padrão claro
+// (precisa de 2+ ocorrências e 70%+ num sentido).
+function _padroesAntes(idx, a, b) {
+  if (!idx || !a || !b || a === b) return 0;
+  const ab = idx.ordem.get(a + '>>' + b) || 0, ba = idx.ordem.get(b + '>>' + a) || 0;
+  const tot = ab + ba;
+  if (tot < PADROES_MIN_JUNTOS) return 0;
+  if (ab / tot >= 0.7) return 1;
+  if (ba / tot >= 0.7) return -1;
+  return 0;
+}
+// Fração das viagens do cliente que foram feitas por essa placa.
+function _padroesPlacaFracao(idx, pedido, placa) {
+  if (!idx || !placa) return 0;
+  const a = _confProdChaveCliente(pedido);
+  const tot = idx.viagensCli.get(a) || 0;
+  const n = idx.placaCli.get(a + '##' + placa) || 0;
+  return tot >= PADROES_MIN_JUNTOS && n >= PADROES_MIN_JUNTOS ? n / tot : 0;
+}
+// Penalidade (em minutos-equivalentes) por inserir `pedido` na posição idx
+// contra a ordem habitual dos clientes da viagem.
+const PADROES_PENALIDADE_ORDEM_MIN = 25;
+function _padroesPenalidadeOrdem(idx, pedido, paradas, posicao) {
+  if (!idx || !paradas || !paradas.length) return 0;
+  const a = _confProdChaveCliente(pedido);
+  let pen = 0;
+  paradas.forEach((pa, j) => {
+    const rel = _padroesAntes(idx, a, _confProdChaveCliente(pa.pedido));
+    if (rel === 1 && j < posicao) pen += PADROES_PENALIDADE_ORDEM_MIN;   // devia vir antes, ficou depois
+    if (rel === -1 && j >= posicao) pen += PADROES_PENALIDADE_ORDEM_MIN; // devia vir depois, ficou antes
+  });
+  return pen;
+}
+// Carrega/atualiza o índice (best-effort). Sem pasta/permissão → null.
+async function padroesCarregar({ pedirPermissao = false } = {}) {
+  try { await _confProdCarregarIndice({ pedirPermissao }); } catch (e) { console.warn('[padrões]', e); }
+  return _padroesHist;
+}
+
+// Melhor sequência de visita (fechamento pelo mapa). `pontos` = [{lat, lon,
+// ...}], origem = terminal. Minimiza terminal → … → terminal (linha reta);
+// a ordem habitual do histórico entra como penalidade. Exata até 7 pontos
+// (5.040 permutações), senão vizinho mais próximo + 2-opt.
+function melhorSequenciaEntregas(origem, pontos, custoExtra = null) {
+  const n = pontos.length;
+  if (n <= 1) return pontos.map((_, i) => i);
+  const ok = p => p && Number.isFinite(+p.lat) && Number.isFinite(+p.lon) && (Math.abs(+p.lat) > 0.001 || Math.abs(+p.lon) > 0.001);
+  if (!ok(origem) || !pontos.every(ok)) return pontos.map((_, i) => i); // sem coordenada: mantém como está
+  const d = (p, q) => haversine(+p.lat, +p.lon, +q.lat, +q.lon);
+  const custoRota = ordemIdx => {
+    let c = d(origem, pontos[ordemIdx[0]]);
+    for (let k = 1; k < n; k++) c += d(pontos[ordemIdx[k - 1]], pontos[ordemIdx[k]]);
+    c += d(pontos[ordemIdx[n - 1]], origem);
+    return c + (custoExtra ? custoExtra(ordemIdx) : 0);
+  };
+  // Ida e volta tem o mesmo custo nos dois sentidos — entre eles, começa
+  // pelo cliente MAIS PRÓXIMO do terminal (a não ser que janela/ordem
+  // habitual tornem o outro sentido melhor).
+  const orientar = ordem => {
+    const inv = ordem.slice().reverse();
+    const cO = custoRota(ordem), cI = custoRota(inv);
+    if (cI < cO - 1e-6) return inv;
+    if (Math.abs(cI - cO) <= 1e-6 && d(origem, pontos[inv[0]]) < d(origem, pontos[ordem[0]])) return inv;
+    return ordem;
+  };
+  if (n <= 7) {
+    let melhor = null, melhorC = Infinity;
+    const perm = (arr, l) => {
+      if (l === arr.length) { const c = custoRota(arr); if (c < melhorC - 1e-9) { melhorC = c; melhor = arr.slice(); } return; }
+      for (let i = l; i < arr.length; i++) { [arr[l], arr[i]] = [arr[i], arr[l]]; perm(arr, l + 1); [arr[l], arr[i]] = [arr[i], arr[l]]; }
+    };
+    perm(pontos.map((_, i) => i), 0);
+    return orientar(melhor);
+  }
+  const rest = new Set(pontos.map((_, i) => i));
+  const ordem = [];
+  let atual = origem;
+  while (rest.size) {
+    let best = null, bd = Infinity;
+    rest.forEach(i => { const di = d(atual, pontos[i]); if (di < bd) { bd = di; best = i; } });
+    ordem.push(best); rest.delete(best); atual = pontos[best];
+  }
+  let melhorou = true;
+  while (melhorou) {
+    melhorou = false;
+    for (let i = 0; i < n - 1; i++) for (let k = i + 1; k < n; k++) {
+      const nova = ordem.slice(0, i).concat(ordem.slice(i, k + 1).reverse(), ordem.slice(k + 1));
+      if (custoRota(nova) < custoRota(ordem) - 1e-9) { ordem.splice(0, n, ...nova); melhorou = true; }
+    }
+  }
+  return orientar(ordem);
+}
+window.padroesDefinirHabilitado = padroesDefinirHabilitado;
 // Monta (ou atualiza) o índice lendo a pasta do Histórico. Retorna null se a
 // pasta não estiver disponível/autorizada — a conferência é pulada, sem erro.
+// Também guarda as VIAGENS de cada arquivo, usadas pelos padrões do otimizador.
 async function _confProdCarregarIndice({ pedirPermissao = true } = {}) {
   const dir = window.dirHandleHistorico || (typeof dirHandleHistorico !== 'undefined' ? dirHandleHistorico : null);
   if (!dir) return null;
@@ -4122,18 +4300,19 @@ async function _confProdCarregarIndice({ pedirPermissao = true } = {}) {
     try { file = await handle.getFile(); } catch (e) { continue; }
     const c = _confProdCacheArquivos.get(name);
     if (c && c.lastModified === file.lastModified) continue;
-    let registros = [];
+    let registros = [], viagens = [];
     try {
       const data = JSON.parse(await file.text());
       // Revisão substituída não conta — a versão vigente já está em outro arquivo.
-      if (!data.substituidoPor) registros = _confProdRegistrosDoSnapshot(data);
+      if (!data.substituidoPor) { registros = _confProdRegistrosDoSnapshot(data); viagens = _padroesViagensDoSnapshot(data); }
     } catch (e) { /* arquivo corrompido: ignora */ }
-    _confProdCacheArquivos.set(name, { lastModified: file.lastModified, registros });
+    _confProdCacheArquivos.set(name, { lastModified: file.lastModified, registros, viagens });
     mudou = true;
   }
   [..._confProdCacheArquivos.keys()].forEach(n => { if (!vistos.has(n)) { _confProdCacheArquivos.delete(n); mudou = true; } });
-  if (!mudou) return _confProdIndice;
+  if (!mudou && _padroesHist) return _confProdIndice;
   _confProdIndice = _confProdMontarIndice([..._confProdCacheArquivos.values()].flatMap(c => c.registros));
+  _padroesHist = _padroesMontar([..._confProdCacheArquivos.values()].flatMap(c => c.viagens || []));
   return _confProdIndice;
 }
 // Índice: cliente → { datas: Set(ms), produtos: Map(pk → [ms...]) }
@@ -4766,17 +4945,61 @@ async function _aprendizadoAplicarSugestao(terminal, novoValor) {
     alert('Erro ao aplicar sugestão: ' + e.message);
   }
 }
+// Seção "Padrões do histórico" (topo da aba 🧠 Aprendizado).
+async function _padroesSecaoHtml() {
+  const on = padroesHabilitados();
+  let idx = null;
+  try { idx = await padroesCarregar({ pedirPermissao: true }); } catch (e) {}
+  const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const nomeDe = ck => esc(String(ck).split('|').slice(1).join('|') || ck);
+  let corpo;
+  if (!idx) {
+    corpo = `<div style="font-size:12px;color:#B45309;">Pasta do Histórico não selecionada/autorizada — sem ela não há padrões pra aprender. Selecione a pasta na aba Histórico e clique em Atualizar aqui.</div>`;
+  } else {
+    const pares = [...idx.pares.entries()].filter(([, n]) => n >= PADROES_MIN_JUNTOS).sort((a, b) => b[1] - a[1]);
+    const ordensFortes = [...idx.ordem.keys()].filter(k => { const [a, b] = k.split('>>'); return a < b && _padroesAntes(idx, a, b) !== 0; }).length;
+    const topPares = pares.slice(0, 10).map(([k, n]) => {
+      const [a, b] = k.split('||');
+      const rel = _padroesAntes(idx, a, b);
+      const seta = rel === 1 ? '→' : rel === -1 ? '←' : '+';
+      return `<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11.5px;"><span>${nomeDe(a)} <b>${seta}</b> ${nomeDe(b)}</span><b style="white-space:nowrap;">${n}×</b></div>`;
+    }).join('');
+    const card = (rot, val) => `<div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px 10px;"><div style="font-size:10px;color:var(--text-3);text-transform:uppercase;font-weight:700;">${rot}</div><div style="font-size:18px;font-weight:800;">${val}</div></div>`;
+    corpo = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:10px;">
+        ${card('Viagens analisadas', idx.totalViagens)}${card('Com 2+ entregas', idx.viagensMulti)}${card('Duplas recorrentes', pares.length)}${card('Ordens habituais', ordensFortes)}
+      </div>
+      ${topPares ? `<div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);margin:4px 0;">Clientes que mais vão juntos (→ = o da esquerda costuma ser entregue antes)</div>${topPares}` : '<div style="font-size:12px;color:var(--text-3);">Ainda não há duplas recorrentes (precisam ir juntas pelo menos 2 vezes).</div>'}`;
+  }
+  return `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <div style="font-size:13px;font-weight:800;">📚 Padrões do histórico</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;">
+          <input type="checkbox" ${on ? 'checked' : ''} onchange="padroesDefinirHabilitado(this.checked)" style="width:16px;height:16px;cursor:pointer;"/>
+          Usar padrões do histórico na roteirização
+        </label>
+      </div>
+      <div style="font-size:11.5px;color:var(--text-2);margin-bottom:10px;line-height:1.5;">
+        Ao roteirizar, cada pedido vai para a viagem com <b>menor desvio</b> (não mais para a primeira em que cabe), com preferência por <b>clientes que costumam ir juntos</b>, pela <b>ordem de entrega habitual</b> e pela <b>placa que costuma atender o cliente</b>. Encaixe que custa mais do que ir sozinho só acontece se não houver caminhão livre.
+        Janela, compartimento, jornada e terminal continuam valendo sempre. Desligando a chave, a escolha do melhor encaixe continua; só os padrões deixam de ser usados.
+      </div>
+      ${corpo}
+    </div>`;
+}
 async function renderAprendizado() {
   const box = document.getElementById('aprendizado-conteudo');
   if (!box) return;
+  box.innerHTML = `<div class="empty">Carregando...</div>`;
+  const secaoPadroes = await _padroesSecaoHtml();
+  const _boxSet = html => { box.innerHTML = secaoPadroes + html; };
   if (!_aprendizadoDisponivel()) {
-    box.innerHTML = `<div class="alert alert-warn">⚠ Firestore não está disponível nesta sessão (script do Cadastro ainda não carregou, ou você está sem conexão). Os eventos continuam sendo registrados normalmente durante a roteirização — recarregue a página e volte aqui.</div>`;
+    _boxSet(`<div class="alert alert-warn">⚠ Firestore não está disponível nesta sessão (script do Cadastro ainda não carregou, ou você está sem conexão). Os eventos continuam sendo registrados normalmente durante a roteirização — recarregue a página e volte aqui.</div>`);
     return;
   }
-  box.innerHTML = `<div class="empty">Carregando eventos...</div>`;
   const [eventos, params] = await Promise.all([_aprendizadoCarregarEventos(500), _aprendizadoCarregarParametros()]);
   if (!eventos.length) {
-    box.innerHTML = `<div class="empty">Nenhum evento registrado ainda. Assim que a roteirização automática rodar e algum pedido não conseguir consolidar num veículo já em uso, os motivos vão aparecer aqui.</div>`;
+    _boxSet(`<div class="empty">Nenhum evento registrado ainda. Assim que a roteirização automática rodar e algum pedido não conseguir consolidar num veículo já em uso, os motivos vão aparecer aqui.</div>`);
     return;
   }
   const agregado = _aprendizadoAgregar(eventos);
@@ -4799,7 +5022,7 @@ async function renderAprendizado() {
           <button class="btn btn-green btn-sm" onclick="_aprendizadoAplicarSugestao('${s.terminal.replace(/'/g,"\\'")}', ${s.sugerido})">Aplicar</button>
         </div>`).join('')
     : `<div style="font-size:12px;color:var(--text-3);">Nenhuma sugestão automática no momento — a maioria dos eventos registrados são restrições reais de cadastro (veja a coluna "Motivos" ao lado), não algo que um parâmetro resolva.</div>`;
-  box.innerHTML = `
+  _boxSet(`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);margin-bottom:6px;">Motivos (${agregado.total} eventos, últimos ${eventos.length})</div>
@@ -4813,7 +5036,7 @@ async function renderAprendizado() {
     <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);margin-bottom:6px;">Sugestões de ajuste (revisão manual)</div>
     ${sugestoesHtml}
     <div style="font-size:10.5px;color:var(--text-3);margin-top:14px;">Parâmetro atual — bônus de veículo ativo: ${params.ativoBonus} m³ (usado na priorização de consolidação, não muda por sugestão automática ainda).</div>
-  `;
+  `);
 }
 // ═══════════════════════════════════════════════════════════════════════════
 // MAPA DE PEDIDOS — visualização + fechamento manual de carga
@@ -5257,6 +5480,37 @@ function pmapaFecharCarga() {
     return { pedido: p, produtos: produtosPend };
   }).filter(g => g.produtos.length);
   if (!grupos.length) { alert('Os pedidos selecionados já estão totalmente roteirizados.'); return; }
+  // Sequência de entrega INTELIGENTE — não importa a ordem em que os pedidos
+  // foram clicados no mapa. Menor rota terminal → clientes → terminal, com:
+  //   • janela de recebimento: cliente que fecha antes de outro abrir não
+  //     pode ficar depois dele;
+  //   • ordem habitual do histórico (padrões) como desempate.
+  {
+    const termObj = _terminalPorNomeFlex(terminalSel) || terminaisCad.find(t => t.nome === (v.terminal || ''));
+    const origem = termObj ? { lat: termObj.lat, lon: termObj.lon } : null;
+    const pts = grupos.map(g => latLonEfetivo(g.pedido));
+    const janelas = grupos.map(g => parseJanelaRestricao(g.pedido.restricao));
+    const idxP = padroesHabilitados() ? _padroesHist : null;
+    const cks = grupos.map(g => _confProdChaveCliente(g.pedido));
+    const custoExtra = ordem => {
+      let extra = 0;
+      for (let k = 1; k < ordem.length; k++) {
+        const ant = janelas[ordem[k - 1]], atu = janelas[ordem[k]];
+        if (ant && atu && atu.fimMin < ant.inicioMin) extra += 1000; // inviável: fecha antes do anterior abrir
+      }
+      if (idxP) for (let a = 0; a < ordem.length; a++) for (let b = a + 1; b < ordem.length; b++) {
+        if (_padroesAntes(idxP, cks[ordem[a]], cks[ordem[b]]) === -1) extra += 15; // ~15 km por inversão da ordem habitual
+      }
+      return extra;
+    };
+    if (origem) {
+      const ordem = melhorSequenciaEntregas(origem, pts, custoExtra);
+      const reordenado = ordem.map(i => grupos[i]);
+      const mudou = reordenado.some((g, i) => g !== grupos[i]);
+      grupos.splice(0, grupos.length, ...reordenado);
+      if (mudou) console.log('[Mapa] sequência otimizada:', grupos.map(g => g.pedido.cliente).join(' → '));
+    }
+  }
   // Trava de compartimentação — encaixe EXATO obrigatório, mesma regra de todo o sistema.
   const todosItens = grupos.flatMap(g => g.produtos);
   if (!itensCabemNosCompartimentos(todosItens, v)) {
@@ -5296,7 +5550,7 @@ function pmapaFecharCarga() {
   _pmapaSelecionados.clear();
   renderPedidosMapa();
   try { if (typeof renderResultado === 'function') renderResultado(ultimoResultado, ultimoControleTempo || {}); } catch (e) { /* tela de resultado pode não estar montada ainda */ }
-  if (typeof window.showToast === 'function') window.showToast(`Carga fechada: ${v.placa} (${grupos.length} pedido(s))`, true);
+  if (typeof window.showToast === 'function') window.showToast(`Carga fechada: ${v.placa} (${grupos.length} pedido(s))${grupos.length > 1 ? ' · sequência: ' + grupos.map(g => (g.pedido.cliente || '').split(' ').slice(0, 3).join(' ')).join(' → ') : ''}`, true);
   else alert(`Carga fechada com sucesso no veículo ${v.placa}.`);
 }
 // ─── Quebrar Pedido ────────────────────────────────────────────────────────────
@@ -6488,6 +6742,13 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   // ainda, usa os mesmos valores padrão de sempre (0 mudança de comportamento
   // pra quem nunca usou o painel 🧠 Aprendizado).
   const _aprendizadoParametros = await _aprendizadoCarregarParametros();
+  // Padrões do histórico (🧠 Aprendizado → "Usar padrões do histórico").
+  // Sem pasta do Histórico autorizada, segue como antes, só sem padrões.
+  _padroesAtivo = null;
+  const _padroesStats = { comAfinidade: 0, diferenteDoPrimeiro: 0, desviosEvitados: 0, desvioPorFaltaDeCaminhao: 0 };
+  if (padroesHabilitados()) {
+    try { _padroesAtivo = await padroesCarregar({ pedirPermissao: false }); } catch (e) { _padroesAtivo = null; }
+  }
   Object.keys(_motoristasOverride).forEach(k => delete _motoristasOverride[k]);
   const todosBtn = document.querySelectorAll('.btn-otimizar-ded');
   todosBtn.forEach(b => { b.disabled = true; b.style.opacity = '0.7'; });
@@ -6882,6 +7143,46 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     }
     return null;
   };
+  // ── Melhor encaixe (usado no Passo 1 e na consolidação do Passo 5) ──────
+  // Avalia TODAS as viagens possíveis em `cands` e devolve { opcoes, barradas }:
+  //   opcoes  = aceitáveis, já ordenadas da melhor pra pior;
+  //   barradas = "contramão": o desvio pra encaixar chega perto do custo de
+  //              atender o cliente sozinho (≥ ENCAIXE_RAZAO_CONTRAMAO da ida+
+  //              volta dele) — típico de clientes em direções opostas — e o
+  //              histórico não mostra esses clientes juntos.
+  // Pontuação (menor = melhor): minutos produtivos acrescentados
+  //   − 40 × afinidade histórica − 15 × fração das vezes que a placa atendeu
+  //   o cliente − 60 se a viagem já leva outra parte do mesmo pedido.
+  // Camadas acima da pontuação (regra de negócio): credencial Petronas
+  // quando o pedido pede, e Dedicado antes de Spot.
+  const ENCAIXE_RAZAO_CONTRAMAO = 0.85;
+  const opcoesEncaixe = (pedido, cands, produtosSel = pedido.produtos) => {
+    const opcoes = [], barradas = [];
+    cands.forEach((v, rank) => {
+      let ciclo = null;
+      for (const vi of resultado[v.id]) {
+        if (vi._vazio) continue;
+        const t = tentarEncaixe(pedido, v, vi, produtosSel);
+        if (!t) continue;
+        if (!ciclo) ciclo = dadosCiclo(v, pedido, pedido.terminal || vi.terminalOrigem);
+        const sozinhoMin = (ciclo.deslocCarregadoMin || 0) + (ciclo.deslocVazioMin || 0);
+        const desvioMin = Math.max(0, (t.custoProdutivo || 0) - (ciclo.tempoDescargaMin || 0));
+        const mesmoPedido = vi.paradas.some(pa => pa.pedido?.id === pedido.id);
+        const afin = _padroesAtivo ? _padroesAfinidade(_padroesAtivo, pedido, vi) : 0;
+        const placaFr = _padroesAtivo ? _padroesPlacaFracao(_padroesAtivo, pedido, v.placa) : 0;
+        const opc = {
+          v, vi, t, rank, afin, desvioMin, sozinhoMin,
+          camada: ((pedido.identidadePetronas && !v.identidadePetronas) ? 2 : 0) + ((v.contrato || 'Dedicado') === 'Spot' ? 1 : 0),
+          score: (t.custoProdutivo || 0) - 40 * afin - 15 * placaFr - (mesmoPedido ? 60 : 0),
+        };
+        const contramao = !mesmoPedido && afin < 0.2 && sozinhoMin > 0 && desvioMin >= ENCAIXE_RAZAO_CONTRAMAO * sozinhoMin;
+        (contramao ? barradas : opcoes).push(opc);
+      }
+    });
+    const ord = (a, b) => (a.camada - b.camada) || (a.score - b.score) || (a.rank - b.rank);
+    opcoes.sort(ord); barradas.sort(ord);
+    return { opcoes, barradas };
+  };
   // Tenta iniciar NOVA VIAGEM para o pedido no veículo v (normal ou overnight)
   // Retorna { viagem, detalhe, custoRelogio, custoProdutivo } ou null
   const tentarNovaViagem = (pedido, v, produtosSelecionados = pedido.produtos, opts = {}) => {
@@ -7132,19 +7433,32 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   console.log('[Otimizador] fila:', fila.length, 'pedidos | veículos:', veiculos.length);
   for (const pedido of fila) {
     let alocado = false;
-    // PASSO 1: Encaixar em viagem existente (mesmo terminal, cabem os produtos)
-    outer1:
-    for (const v of candidatos(pedido)) {
-      for (const vi of resultado[v.id]) {
-        const t = tentarEncaixe(pedido, v, vi);
-        if (!t) continue;
-        if (commitPedido(vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
+    // PASSO 1: Encaixar em viagem existente — MELHOR encaixe, não o primeiro.
+    // Antes: a 1ª viagem (na ordem dos candidatos) em que o pedido cabia
+    // levava, mesmo indo pra outro lado do mapa. Agora avalia TODAS as
+    // viagens possíveis e escolhe pela pontuação:
+    //   desvio (min produtivos acrescentados)
+    //   − afinidade histórica (clientes que costumam ir juntos)
+    //   − placa que costuma atender o cliente
+    //   − viagem que já leva outra parte deste mesmo pedido
+    // mantendo as regras de negócio como "camadas" acima da pontuação:
+    // credencial Petronas (se o pedido pede) e Dedicado antes de Spot.
+    // Encaixe "contramão" (ver opcoesEncaixe) fica BARRADO — só volta como
+    // alternativa se não houver viagem nova possível (Passo 2.1).
+    let _encaixesBarrados = [];
+    {
+      const { opcoes, barradas } = opcoesEncaixe(pedido, candidatos(pedido));
+      _encaixesBarrados = barradas;
+      const primeiroAntigo = opcoes.length ? [...opcoes].sort((a, b) => a.rank - b.rank)[0] : null;
+      for (const o of opcoes) {
+        if (commitPedido(o.vi, pedido, o.t.detalhe, o.t.custoRelogio, o.t.custoProdutivo, o.v)) {
           alocado = true;
-          break outer1; // sucesso → para tudo
+          if (o.afin > 0) _padroesStats.comAfinidade++;
+          if (primeiroAntigo && (o.vi !== primeiroAntigo.vi)) _padroesStats.diferenteDoPrimeiro++;
+          break;
         }
-        // commit falhou (compartimento) → tenta próxima viagem/veículo
+        // commit falhou (compartimento) → tenta a próxima opção
       }
-      if (alocado) break;
     }
     if (alocado) continue;
     // Diagnóstico: pedido não coube em NENHUMA viagem já ativa — antes de abrir
@@ -7269,6 +7583,12 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
       const motivosSkip = [];
       console.log(`[P2] ${pedido.cliente} vol=${totalVolPedido(pedido).toFixed(1)}m³ candidatos=${cands2.length}`);
       for (const v of cands2) {
+        // Tem encaixe possível (só que com desvio) → não liga um Spot que
+        // ainda está parado só pra fugir do desvio: aí consolidar compensa.
+        if (_encaixesBarrados.length && (v.contrato || 'Dedicado') === 'Spot' && !(resultado[v.id] || []).some(x => x.paradas?.length)) {
+          motivosSkip.push({ placa: v.placa, contrato: 'Spot', motivo: 'preferiu consolidar a ativar Spot' });
+          continue;
+        }
         const fitOk = podeFitar(pedido.produtos, criarCompsDisp(v));
         if (!fitOk) {
           const comps = criarCompsDisp(v).map(c=>c.cap).join('+');
@@ -7287,6 +7607,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         if (commitPedido(t.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v)) {
           resultado[v.id].push(t.vi);
           alocado = true;
+          if (_encaixesBarrados.length) _padroesStats.desviosEvitados++;
           console.log(`  → ${v.placa} ALOCADO P2`);
           if ((v.contrato||'Dedicado') === 'Spot') {
             const dedSkip = motivosSkip.filter(m => m.contrato !== 'Spot');
@@ -7294,6 +7615,21 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
               console.warn('[⚠ Spot > Dedicado]', pedido.cliente, '|', v.placa,
                 '(Spot) alocado. Dedicados recusados antes:', dedSkip.map(m => `${m.placa}: ${m.motivo}`).join(', '));
           }
+          break;
+        }
+      }
+    }
+    if (!alocado && _encaixesBarrados.length) {
+      // PASSO 2.1: não deu viagem nova — aceita o encaixe com desvio (dentro
+      // da jornada normal), o de menor desvio primeiro. Reavalia na hora
+      // porque o estado pode ter mudado desde o Passo 1.
+      for (const o of _encaixesBarrados) {
+        const t = tentarEncaixe(pedido, o.v, o.vi);
+        if (!t) continue;
+        if (commitPedido(o.vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, o.v)) {
+          alocado = true;
+          _padroesStats.desvioPorFaltaDeCaminhao++;
+          console.log('[Otimizador] PASSO 2.1 (encaixe com desvio, sem viagem nova possível):', pedido.cliente, '→', o.v.placa);
           break;
         }
       }
@@ -7464,15 +7800,14 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
             if (bDedicado !== aDedicado) return bDedicado - aDedicado;
             return (resultado[b.id].length > 0 ? 1 : 0) - (resultado[a.id].length > 0 ? 1 : 0);
           });
-        // 1. Encaixar em viagem existente (só produtos pendentes)
-        for (const v of cands) {
-          for (const vi of resultado[v.id]) {
-            const t = tentarEncaixe(pedido, v, vi, pendProds);
-            if (t && commitPedido(vi, pedido, t.detalhe, t.custoRelogio, t.custoProdutivo, v, pendProds)) {
-              alocado = true; break;
-            }
+        // 1. Encaixar em viagem existente (só produtos pendentes) — MELHOR
+        //    encaixe, e nunca "contramão": se o único jeito de esvaziar o
+        //    veículo é mandar o pedido pra uma viagem que vai pro outro lado,
+        //    não vale a pena esvaziar (o veículo fica como estava).
+        for (const o of opcoesEncaixe(pedido, cands, pendProds).opcoes) {
+          if (commitPedido(o.vi, pedido, o.t.detalhe, o.t.custoRelogio, o.t.custoProdutivo, o.v, pendProds)) {
+            alocado = true; break;
           }
-          if (alocado) break;
         }
         // 2. Nova viagem (só produtos pendentes)
         if (!alocado) {
@@ -7574,6 +7909,17 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   renderMapaGeral();
   renderTemplateOperacao();
   showTab('resultado');
+  {
+    const ps = _padroesStats;
+    console.log('[Otimizador] padrões do histórico:', _padroesAtivo ? `${_padroesAtivo.totalViagens} viagens analisadas` : 'desligado/indisponível', ps);
+    const partes = [];
+    if (ps.diferenteDoPrimeiro) partes.push(`${ps.diferenteDoPrimeiro} encaixe(s) em viagem mais próxima/compatível`);
+    if (ps.comAfinidade) partes.push(`${ps.comAfinidade} seguindo clientes que costumam ir juntos`);
+    if (ps.desviosEvitados) partes.push(`${ps.desviosEvitados} desvio(s) longo(s) evitado(s)`);
+    if (partes.length && typeof showToast === 'function') showToast(`🧠 ${partes.join(' · ')}`, true);
+    else if (padroesHabilitados() && !_padroesAtivo && typeof showToast === 'function')
+      showToast('Padrões do histórico não usados: autorize a pasta do Histórico (aba Histórico).', false);
+  }
   } catch(e) {
     console.error('[otimizar] Erro inesperado:', e);
     alert('Erro ao roteirizar: ' + (e.message || e));
@@ -7581,6 +7927,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
     // Restaura lista completa de veículos (inclui indisponíveis)
     // para que a aba Veículos & Turnos continue mostrando todos
     veiculos = _veiculosTodos;
+    _padroesAtivo = null; // padrões só valem DURANTE a roteirização
     todosBtn.forEach(b => { b.disabled = false; b.style.opacity = ''; });
     if (btn) btn.textContent = txtOriginal;
   }
