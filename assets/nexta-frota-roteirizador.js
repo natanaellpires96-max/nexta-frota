@@ -8230,8 +8230,8 @@ function renderTemplateOperacao() {
       <tr>
         <td>${ld.ordemSAP || ''}</td>
         <td>${ciaLinha}</td>
-        <td>${baseLinha}${(() => { const c = cnpjDoTerminal(ld.terminal) || cnpjDoTerminal(baseLinha); return c ? `<div style="font-size:11px;color:#000;font-weight:700;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;margin-top:3px;white-space:nowrap;">CNPJ ${c}</div>` : ''; })()}</td>
-        <td>${ld.postoCidade}${ld.cnpjCliente ? `<div style="font-size:11px;color:#000;font-weight:700;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;margin-top:3px;white-space:nowrap;">CNPJ ${ld.cnpjCliente}</div>` : ''}</td>
+        <td>${baseLinha}${(() => { const c = cnpjDoTerminal(ld.terminal) || cnpjDoTerminal(baseLinha); return c ? `<div style="font-size:11px;color:#6B7280;font-weight:700;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;margin-top:3px;white-space:nowrap;">CNPJ ${c}</div>` : ''; })()}</td>
+        <td>${ld.postoCidade}${ld.cnpjCliente ? `<div style="font-size:11px;color:#6B7280;font-weight:700;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;margin-top:3px;white-space:nowrap;">CNPJ ${ld.cnpjCliente}</div>` : ''}</td>
         <td style="text-align:center;font-weight:700;">${ld.cpt || ''}</td>
         <td><div class="op-prod-codigo">${prodCodigo || '-'}</div>${prodDesc ? `<div class="op-prod-desc">${prodDesc}</div>` : ''}</td>
         <td style="text-align:right;white-space:nowrap;">${ld.volumeL.toLocaleString('pt-BR')}</td>
