@@ -11211,7 +11211,12 @@ async function abrirDetalheHistorico(filename) {
                    <span onclick="abrirIncluirPedidoViagem('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Incluir um pedido nessa viagem (entra no fim, sem recalcular rota/horário) — cria uma nova revisão, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;margin-left:auto;">➕</span>
                    <span onclick="excluirViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Excluir essa viagem (ex.: deu recuo) — cria uma nova revisão sem ela, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;">🗑</span>
                  </div>
-                 <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}</span>
+                 <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}${(() => {
+                   // Eixos: do veículo gravado na programação; se o arquivo for
+                   // antigo e não tiver, usa o cadastro atual da mesma placa.
+                   const ex = Number(v.eixos) || Number((veiculos || []).find(x => x.placa && x.placa === v.placa)?.eixos) || 0;
+                   return ex ? ` · <b style="color:var(--text-2);">${ex} eixos</b>` : '';
+                 })()}</span>
                  <div style="margin:5px 0;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;user-select:text;">${baseCarregamento}</div>
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
                </td>`
