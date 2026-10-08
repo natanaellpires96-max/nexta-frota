@@ -8587,7 +8587,14 @@ function renderTemplateOperacao() {
     const linhasFinal = linhas;
     const _nexta_svg = `<svg style="height:20px;width:auto;" viewBox="0 0 242 45" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M149.631 0.870612H138.515L127.579 14.6805L116.586 0.870612H105.356L121.715 21.6422L104.148 43.9406H114.999L127.078 28.421L139.156 43.7829L139.279 43.9406H150.833L133.011 21.5161L149.631 0.870612ZM67.2515 43.9437H97.073V35.4805H65.8352V26.5725H86.6225V18.1756H65.8352V9.26758H97.073V0.870612H56.9272V43.9437H67.2515ZM196.417 0.870612H155.382V9.26758H171.479V43.9406H180.324V9.27074H196.42V0.870612H196.417ZM224.4 0.870612H211.811L195.01 43.9437H204.426L208.498 33.1273H227.523L231.658 43.9437H241.2L224.4 0.870612ZM224.453 24.7304H211.618L217.892 8.75657L224.457 24.7304H224.453ZM36.8748 0.870612V34.8938C36.8748 35.2786 36.5719 35.6666 36.1019 35.6666C35.9127 35.6666 35.6729 35.6004 35.4963 35.3764L17.8759 4.82621C17.0305 3.35942 15.8508 2.0882 14.3777 1.25545C13.0718 0.517321 11.4504 1.75258e-06 9.54517 1.75258e-06C4.25526 -0.00315263 0 4.25211 0 9.86061V43.9437H8.93006V9.92054C8.93006 9.53571 9.23288 9.14772 9.70289 9.14772C9.89215 9.14772 10.1319 9.21396 10.3085 9.43792L26.5599 37.9031C27.2097 39.0387 27.8595 40.0828 28.503 40.9755C29.7774 42.7514 32.4586 44.8207 36.2691 44.8207C41.559 44.8207 45.8111 40.5654 45.8111 34.9569V0.870612H36.8811H36.8748Z" fill="#2D6A1B"/></svg>`;
     return `
-      <div class="op-bloco" data-bloco-id="bloco-${v.placa}-${idx}" data-transportadora="${(v.transportadora || '').replace(/"/g,'')}" data-base="${base.replace(/"/g,'')}">
+      <div class="op-bloco" data-bloco-id="bloco-${v.placa}-${idx}" data-transportadora="${(v.transportadora || '').replace(/"/g,'')}" data-base="${base.replace(/"/g,'')}" data-viagem="${String(viOriginal.petId || `V${idx+1}_${v.placa}`).replace(/"/g,'')}" data-legenda="${(() => {
+        // Texto que acompanha a imagem no WhatsApp (o robô usa como legenda).
+        const _cli = [...new Set((viOriginal.paradas || []).map(p => p.pedido?.cliente).filter(Boolean))];
+        const txt = `🚚 *OR ${viOriginal.petId || `Viagem ${idx + 1}`}* · ${v.placa || ''}${v.implemento ? ' / ' + v.implemento : ''}\n` +
+          `📅 Carregamento: ${fmtOpDT(inicioCargaCicloMin)} · Base: ${base}\n` +
+          `📍 ${_cli.map((c, i) => `${i + 1}. ${c}`).join('  ')}`;
+        return txt.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/\n/g, '&#10;');
+      })()}">
         <div class="op-head">
           <!-- Barra superior: logo + ID da viagem + botões de exportação -->
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding-bottom:9px;border-bottom:1.5px solid #C8E0B0;">
@@ -8610,6 +8617,12 @@ function renderTemplateOperacao() {
                 style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;border:1px solid rgba(79,70,229,0.35);background:rgba(79,70,229,0.07);color:#4338CA;font-size:10px;font-weight:700;cursor:pointer;font-family:var(--font-cond);letter-spacing:.05em;white-space:nowrap;transition:all .15s;"
                 onmouseover="this.style.background='rgba(79,70,229,0.15)'" onmouseout="this.style.background='rgba(79,70,229,0.07)'">
                 🖼 PNG
+              </button>
+              <button onclick="enviarBlocoWhatsApp('bloco-${v.placa}-${idx}', '${(viOriginal.petId || `V${idx+1}_${v.placa}`).replace(/'/g,'')}', event)"
+                title="Enviar esta OR para o grupo de WhatsApp da transportadora (robô)"
+                style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;border:1px solid rgba(22,163,74,0.4);background:rgba(22,163,74,0.08);color:#15803D;font-size:10px;font-weight:700;cursor:pointer;font-family:var(--font-cond);letter-spacing:.05em;white-space:nowrap;transition:all .15s;"
+                onmouseover="this.style.background='rgba(22,163,74,0.18)'" onmouseout="this.style.background='rgba(22,163,74,0.08)'">
+                📲 WhatsApp
               </button>
             </div>
           </div>
@@ -11568,6 +11581,7 @@ async function abrirDetalheHistorico(filename) {
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
                  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;font-family:var(--font);letter-spacing:0;">
                    <button onclick="exportarPNGViagemHistorico('${String(petId).replace(/'/g, "\\'")}', false)" title="${data.revisaoDe ? 'PNG da OR desta viagem como está agora, com as alterações' : 'PNG da OR desta viagem'}" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;border:1px solid rgba(79,70,229,0.35);background:rgba(79,70,229,0.07);color:#4338CA;cursor:pointer;">🖼 PNG</button>
+                   <button onclick="exportarPNGViagemHistorico('${String(petId).replace(/'/g, "\\'")}', false, true)" title="Enviar a OR desta viagem (versão atual) para o grupo de WhatsApp da transportadora" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;border:1px solid rgba(22,163,74,0.4);background:rgba(22,163,74,0.08);color:#15803D;cursor:pointer;">📲</button>
                    ${data.revisaoDe ? `<button onclick="exportarPNGViagemHistorico('${String(petId).replace(/'/g, "\\'")}', true)" title="PNG da OR desta viagem como era na primeira versão da programação, antes das alterações" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;border:1px solid #D1D5DB;background:#fff;color:#4B5563;cursor:pointer;">🖼 Original</button>` : ''}
                  </div>
                </td>`
@@ -11651,8 +11665,12 @@ async function _histLerArquivo(nome) {
   const fh = await dirHandleHistorico.getFileHandle(nome);
   return JSON.parse(await (await fh.getFile()).text());
 }
-async function exportarPNGViagemHistorico(petId, original = false) {
+async function exportarPNGViagemHistorico(petId, original = false, enviarWhatsApp = false) {
   if (!_histDetalheFilenameAtual) return;
+  // WhatsApp: confere robô/grupos ANTES de trocar o estado da tela, e só
+  // acompanha o envio DEPOIS de restaurar (o acompanhamento leva até 2 min).
+  let _waMapa = null, _waItem = null;
+  if (enviarWhatsApp) { _waMapa = await _waPreChecagem(1); if (!_waMapa) return; }
   if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
   let data, nomeArq = _histDetalheFilenameAtual;
   try {
@@ -11702,10 +11720,12 @@ async function exportarPNGViagemHistorico(petId, original = false) {
     if (!bloco) throw new Error('não consegui montar o card dessa viagem');
     const idUnico = `hist-png-${Date.now()}`;
     bloco.setAttribute('data-bloco-id', idUnico); // evita confundir com o card da mesma placa na tela principal
-    await exportarBlocoPNG(idUnico, `${petId}${original ? '_original' : (data.revisaoDe ? '_alterada' : '')}`);
+    const _nomeHist = `${petId}${original ? '_original' : (data.revisaoDe ? '_alterada' : '')}`;
+    if (enviarWhatsApp) { showToast('📲 Gerando a imagem e colocando na fila do robô…', true); _waItem = await _waEnfileirarBloco(idUnico, _nomeHist, _waMapa); }
+    else await exportarBlocoPNG(idUnico, _nomeHist);
   } catch (e) {
     console.error('[Histórico] PNG da viagem:', e);
-    alert('Erro ao gerar o PNG: ' + e.message);
+    alert((enviarWhatsApp ? 'Não foi possível enviar: ' : 'Erro ao gerar o PNG: ') + e.message);
   } finally {
     ultimoResultado = salvo.ultimoResultado;
     veiculos = salvo.veiculos;
@@ -11713,6 +11733,10 @@ async function exportarPNGViagemHistorico(petId, original = false) {
     filtrosSalvos.forEach(([el, val]) => { el.value = val; });
     tmp.remove();
     if (realEl) realEl.id = 'operacao-content';
+  }
+  if (_waItem) {
+    showToast(`📲 Na fila → grupo ${_waItem.grupo.nome || _waItem.transp}`, true);
+    await _waAcompanhar([_waItem], { limiteMs: 120000 });
   }
 }
 window.exportarPNGViagemHistorico = exportarPNGViagemHistorico;
@@ -13408,6 +13432,256 @@ async function exportarBlocoPNG(blocoId, nomeArq, ev, larguraPx = 1050) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// ENVIO DA OR PRO WHATSAPP (robô) — fila no Firestore
+// ══════════════════════════════════════════════════════════════════════════
+// O sistema NÃO fala com o WhatsApp direto. Ele:
+//   1) gera o PNG do card (mesmo visual do "🖼 PNG");
+//   2) sobe a imagem no Cloudinary (mesmo serviço das fotos de hodômetro);
+//   3) grava um pedido em whatsapp_fila (status "pendente");
+// e o robô (pasta robo-whatsapp, rodando num PC do escritório com um chip
+// dedicado) envia no grupo da transportadora e devolve "enviado"/"erro".
+// Funciona de qualquer computador que use o sistema.
+//   • whatsapp_robo/status  → publicado pelo robô: conectado, QR, grupos, sinal de vida
+//   • config/whatsapp_grupos → { map: { "Transportadora X": { id, nome } } }
+const WA_ROBO_OFFLINE_MS = 2 * 60 * 1000; // sem sinal de vida há 2 min = fora do ar
+
+function _waFirestoreOk() {
+  return !!(window.fbDb && window.fbDoc && window.fbGetDoc && window.fbSetDoc && window.fbCollection);
+}
+async function _waLerStatusRobo() {
+  try {
+    const s = await window.fbGetDoc(window.fbDoc(window.fbDb, 'whatsapp_robo', 'status'));
+    if (!s.exists()) return { existe: false, online: false };
+    const d = s.data();
+    const idade = Date.now() - new Date(d.heartbeatIso || 0).getTime();
+    return { existe: true, ...d, online: !!d.conectado && idade < WA_ROBO_OFFLINE_MS, vivo: idade < WA_ROBO_OFFLINE_MS };
+  } catch (e) { return { existe: false, online: false, erroLeitura: e.code || e.message }; }
+}
+async function _waLerMapa() {
+  try {
+    const s = await window.fbGetDoc(window.fbDoc(window.fbDb, 'config', 'whatsapp_grupos'));
+    return (s.exists() && s.data().map) || {};
+  } catch (e) { return {}; }
+}
+function _waChaveTransp(t) { return String(t || '').trim(); }
+
+// PNG do card como Blob (escala 2 — nítido no celular e leve pro envio).
+async function _waGerarBlobBloco(blocoId, larguraPx = 1050) {
+  const blocoEl = document.querySelector(`[data-bloco-id="${blocoId}"]`);
+  if (!blocoEl) throw new Error('card não encontrado');
+  const iframe = _clonarBlocoParaExport(blocoEl, larguraPx);
+  try {
+    await new Promise(r => setTimeout(r, 600));
+    const clone = iframe.contentDocument.querySelector('.op-bloco');
+    const canvas = await _capturarCanvas(clone, 2);
+    return await new Promise((ok, falha) => canvas.toBlob(b => b ? ok(b) : falha(new Error('não consegui gerar a imagem')), 'image/png'));
+  } finally {
+    if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+  }
+}
+
+// Coloca UM card na fila. Devolve a referência do pedido (pra acompanhar).
+async function _waEnfileirarBloco(blocoId, nomeArq, mapa) {
+  const blocoEl = document.querySelector(`[data-bloco-id="${blocoId}"]`);
+  if (!blocoEl) throw new Error('card não encontrado');
+  const transp = _waChaveTransp(blocoEl.getAttribute('data-transportadora'));
+  const grupo = mapa[transp];
+  if (!grupo?.id) throw new Error(`a transportadora "${transp || '—'}" não tem grupo configurado (botão 🤖 WhatsApp)`);
+  const blob = await _waGerarBlobBloco(blocoId);
+  if (typeof window.uploadFotoGenerica !== 'function') throw new Error('upload de imagem indisponível — recarregue a página');
+  const arquivo = new File([blob], `${nomeArq}.png`, { type: 'image/png' });
+  const url = await window.uploadFotoGenerica(arquivo, `or_${nomeArq}`);
+  const ref = window.fbDoc(window.fbCollection(window.fbDb, 'whatsapp_fila'));
+  const usuario = (typeof S !== 'undefined' && S?.user) ? S.user : '';
+  await window.fbSetDoc(ref, {
+    status: 'pendente',
+    transportadora: transp,
+    grupoId: grupo.id,
+    grupoNome: grupo.nome || '',
+    imagemUrl: url,
+    legenda: blocoEl.getAttribute('data-legenda') || nomeArq,
+    viagem: blocoEl.getAttribute('data-viagem') || nomeArq,
+    criadoEm: new Date().toISOString(),
+    criadoPor: usuario,
+  });
+  return { ref, transp, grupo };
+}
+
+// Acompanha uma lista de pedidos até todos saírem de "pendente/enviando"
+// (ou o tempo acabar) e mostra o resultado.
+async function _waAcompanhar(itens, { limiteMs = 180000 } = {}) {
+  const fim = Date.now() + limiteMs;
+  let avisouOffline = false;
+  const finais = new Map();
+  while (Date.now() < fim && finais.size < itens.length) {
+    await new Promise(r => setTimeout(r, 3000));
+    for (const it of itens) {
+      if (finais.has(it)) continue;
+      try {
+        const s = await window.fbGetDoc(it.ref);
+        const d = s.data() || {};
+        if (['enviado', 'erro', 'expirado'].includes(d.status)) finais.set(it, d);
+      } catch (e) { /* tenta de novo no próximo ciclo */ }
+    }
+    if (!avisouOffline && Date.now() > fim - limiteMs + 20000 && finais.size < itens.length) {
+      const st = await _waLerStatusRobo();
+      if (!st.online) {
+        avisouOffline = true;
+        showToast('🤖 O robô de WhatsApp está fora do ar — o envio fica na fila e sai quando ele voltar (até 2h).', false);
+        return;
+      }
+    }
+  }
+  const ok = [...finais.values()].filter(d => d.status === 'enviado');
+  const ruins = [...finais.values()].filter(d => d.status !== 'enviado');
+  if (itens.length === 1) {
+    const d = finais.get(itens[0]);
+    if (!d) showToast('📲 Ainda na fila do robô — confira o status no botão 🤖 WhatsApp.', false);
+    else if (d.status === 'enviado') showToast(`✅ OR enviada no grupo ${d.grupoNome || ''}`, true);
+    else alert(`❌ Não foi enviada (${d.viagem || ''}): ${d.erro || d.status}`);
+    return;
+  }
+  const pend = itens.length - finais.size;
+  showToast(`📲 WhatsApp: ${ok.length} enviada(s)${ruins.length ? ` · ${ruins.length} com problema` : ''}${pend ? ` · ${pend} ainda na fila` : ''}`, ruins.length === 0 && pend === 0);
+  if (ruins.length) alert('Não enviadas:\n\n' + ruins.map(d => `• ${d.viagem || ''} (${d.transportadora || ''}): ${d.erro || d.status}`).join('\n'));
+}
+
+async function _waPreChecagem(qtd) {
+  if (!_waFirestoreOk()) { alert('Firestore indisponível nesta sessão — recarregue a página.'); return null; }
+  const [st, mapa] = await Promise.all([_waLerStatusRobo(), _waLerMapa()]);
+  if (st.erroLeitura) { alert(`Sem permissão pra usar o envio por WhatsApp (${st.erroLeitura}). As regras do Firestore precisam liberar whatsapp_fila e whatsapp_robo.`); return null; }
+  if (!Object.keys(mapa).length) { alert('Nenhuma transportadora tem grupo configurado ainda. Abra o botão 🤖 WhatsApp e escolha o grupo de cada uma.'); return null; }
+  if (!st.online && !confirm(`O robô de WhatsApp está ${st.existe ? 'fora do ar' : 'nunca foi ligado'}.\n\nColocar ${qtd > 1 ? 'as ' + qtd + ' ORs' : 'a OR'} na fila mesmo assim? Sai quando o robô voltar (pedido vale por até 2h).`)) return null;
+  return mapa;
+}
+
+// Botão 📲 do card
+async function enviarBlocoWhatsApp(blocoId, nomeArq, ev) {
+  if (ev) ev.stopPropagation();
+  const mapa = await _waPreChecagem(1);
+  if (!mapa) return;
+  showToast('📲 Gerando a imagem e colocando na fila do robô…', true);
+  try {
+    const it = await _waEnfileirarBloco(blocoId, nomeArq, mapa);
+    showToast(`📲 Na fila → grupo ${it.grupo.nome || it.transp}`, true);
+    await _waAcompanhar([it], { limiteMs: 120000 });
+  } catch (e) {
+    console.error('[WhatsApp] envio:', e);
+    alert('Não foi possível enviar: ' + e.message);
+  }
+}
+
+// "📲 WhatsApp — Todas": cada card visível vai pro grupo da SUA transportadora.
+async function enviarTodasProgramacoesWhatsApp() {
+  const blocos = [...document.querySelectorAll('#operacao-content [data-bloco-id]')];
+  if (!blocos.length) { showToast('Nenhuma programação para enviar.', false); return; }
+  const mapa = await _waPreChecagem(blocos.length);
+  if (!mapa) return;
+  const semGrupo = [...new Set(blocos.map(b => _waChaveTransp(b.getAttribute('data-transportadora'))).filter(t => !mapa[t]?.id))];
+  const enviaveis = blocos.filter(b => mapa[_waChaveTransp(b.getAttribute('data-transportadora'))]?.id);
+  const porGrupo = {};
+  enviaveis.forEach(b => { const g = mapa[_waChaveTransp(b.getAttribute('data-transportadora'))].nome; porGrupo[g] = (porGrupo[g] || 0) + 1; });
+  if (!enviaveis.length) { alert(`Nenhuma das transportadoras visíveis tem grupo configurado: ${semGrupo.join(', ')}.`); return; }
+  if (!confirm(`Enviar ${enviaveis.length} OR(s) pelo WhatsApp?\n\n${Object.entries(porGrupo).map(([g, n]) => `• ${g}: ${n}`).join('\n')}` +
+    (semGrupo.length ? `\n\nSem grupo configurado (não vão): ${semGrupo.join(', ')}` : ''))) return;
+  const itens = [], falhas = [];
+  for (let i = 0; i < enviaveis.length; i++) {
+    const b = enviaveis[i];
+    const blocoId = b.getAttribute('data-bloco-id');
+    showToast(`📲 Preparando ${i + 1}/${enviaveis.length}…`, true);
+    try { itens.push(await _waEnfileirarBloco(blocoId, _nomeArquivoBloco(b, i, blocoId), mapa)); }
+    catch (e) { falhas.push(`${b.getAttribute('data-viagem') || blocoId}: ${e.message}`); }
+  }
+  if (falhas.length) alert('Algumas ORs não entraram na fila:\n\n' + falhas.join('\n'));
+  if (itens.length) {
+    showToast(`📲 ${itens.length} OR(s) na fila do robô — acompanhando…`, true);
+    await _waAcompanhar(itens, { limiteMs: Math.max(180000, itens.length * 15000) });
+  }
+}
+
+// ── Tela 🤖 WhatsApp: status do robô, QR, transportadora → grupo, últimos envios
+async function abrirConfigWhatsApp() {
+  document.getElementById('wa-config-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.id = 'wa-config-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem;';
+  modal.onclick = e => { if (e.target === modal) modal.remove(); };
+  modal.innerHTML = `<div id="wa-config-card" style="background:#fff;color:#111827;border-radius:14px;padding:20px;width:100%;max-width:720px;max-height:90vh;overflow:auto;box-shadow:0 20px 50px rgba(0,0,0,.3);"><div class="empty">Carregando…</div></div>`;
+  document.body.appendChild(modal);
+  await _waRenderConfig();
+}
+async function _waRenderConfig() {
+  const card = document.getElementById('wa-config-card');
+  if (!card) return;
+  if (!_waFirestoreOk()) { card.innerHTML = '<div class="empty">Firestore indisponível — recarregue a página.</div>'; return; }
+  const [st, mapa] = await Promise.all([_waLerStatusRobo(), _waLerMapa()]);
+  const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const transps = [...new Set([...(veiculos || []).map(v => _waChaveTransp(v.transportadora)), ...Object.keys(mapa)].filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const grupos = st.grupos || [];
+  const statusHtml = st.erroLeitura
+    ? `<div style="color:#B91C1C;font-size:12.5px;">Sem permissão pra ler o status do robô (${esc(st.erroLeitura)}). Falta liberar nas regras do Firestore.</div>`
+    : !st.existe ? `<div style="font-size:12.5px;color:#B45309;">⚪ O robô nunca foi ligado. Siga o LEIA-ME da pasta <b>robo-whatsapp</b>.</div>`
+    : st.online ? `<div style="font-size:12.5px;color:#15803D;font-weight:700;">🟢 Robô conectado${st.numero ? ` · número ${esc(st.numero)}` : ''} · ${grupos.length} grupo(s)</div>`
+    : !st.vivo ? `<div style="font-size:12.5px;color:#B91C1C;font-weight:700;">🔴 Robô fora do ar (último sinal ${st.heartbeatIso ? new Date(st.heartbeatIso).toLocaleString('pt-BR') : '—'}). Confira se o PC do robô está ligado e a janela do robô aberta.</div>`
+    : `<div style="font-size:12.5px;color:#B45309;font-weight:700;">🟡 Robô ligado, mas o WhatsApp não está conectado.${st.ultimoErro ? ` ${esc(st.ultimoErro)}` : ''}</div>
+       ${st.qrDataUrl ? `<div style="margin-top:8px;font-size:12px;color:#374151;">No celular do <b>chip do robô</b>: WhatsApp → Aparelhos conectados → Conectar aparelho → aponte para o QR:</div><img src="${st.qrDataUrl}" alt="QR code" style="width:220px;height:220px;margin-top:6px;border:1px solid #E5E7EB;border-radius:8px;"/>` : ''}`;
+  const linhas = transps.map(t => {
+    const atual = mapa[t]?.id || '';
+    const opts = [`<option value="">— sem grupo (não envia) —</option>`]
+      .concat(grupos.map(g => `<option value="${esc(g.id)}" ${g.id === atual ? 'selected' : ''}>${esc(g.nome)}</option>`))
+      .concat(atual && !grupos.some(g => g.id === atual) ? [`<option value="${esc(atual)}" selected>${esc(mapa[t].nome || atual)} (robô não está mais nesse grupo)</option>`] : []);
+    return `<tr><td style="padding:6px 8px;font-size:12.5px;font-weight:600;">${esc(t)}</td>
+      <td style="padding:6px 8px;"><select data-wa-transp="${esc(t)}" style="width:100%;font-size:12px;padding:5px 6px;">${opts.join('')}</select></td></tr>`;
+  }).join('');
+  let ultimos = '';
+  try {
+    const q = window.fbQuery(window.fbCollection(window.fbDb, 'whatsapp_fila'), window.fbOrderBy('criadoEm', 'desc'), window.fbLimit(12));
+    const snap = await window.fbGetDocs(q);
+    const cor = { enviado: '#15803D', erro: '#B91C1C', expirado: '#B45309', pendente: '#4338CA', enviando: '#4338CA' };
+    snap.forEach(d => {
+      const x = d.data();
+      ultimos += `<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid #F3F4F6;font-size:11.5px;">
+        <span>${esc(x.viagem || '')} → ${esc(x.grupoNome || x.transportadora || '')} <span style="color:#9CA3AF;">${x.criadoEm ? new Date(x.criadoEm).toLocaleString('pt-BR') : ''}${x.criadoPor ? ' · ' + esc(x.criadoPor) : ''}</span>${x.erro ? `<br><span style="color:#B91C1C;">${esc(x.erro)}</span>` : ''}</span>
+        <b style="color:${cor[x.status] || '#374151'};white-space:nowrap;">${esc(x.status)}</b></div>`;
+    });
+  } catch (e) { ultimos = `<div style="font-size:11.5px;color:#9CA3AF;">Não consegui ler os últimos envios (${esc(e.code || e.message)}).</div>`; }
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <div style="font-size:16px;font-weight:800;">🤖 Envio das ORs pelo WhatsApp</div>
+      <div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="_waRenderConfig()">↻ Atualizar</button><button class="btn btn-sm btn-danger" onclick="document.getElementById('wa-config-modal').remove()">Fechar</button></div>
+    </div>
+    <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:10px;padding:10px 12px;margin-bottom:14px;">${statusHtml}</div>
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#6B7280;margin-bottom:4px;">Grupo de cada transportadora</div>
+    <div style="font-size:11.5px;color:#6B7280;margin-bottom:6px;">A lista mostra os grupos em que o número do robô está. Grupo novo? Adicione o número do robô nele e clique em Atualizar.</div>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #E5E7EB;border-radius:8px;"><tbody>${linhas || '<tr><td style="padding:10px;font-size:12px;color:#9CA3AF;">Nenhuma transportadora nos veículos cadastrados.</td></tr>'}</tbody></table>
+    <div style="display:flex;justify-content:flex-end;margin-top:10px;"><button class="btn btn-green" onclick="_waSalvarMapa()">💾 Salvar grupos</button></div>
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#6B7280;margin:14px 0 4px;">Últimos envios</div>
+    ${ultimos || '<div style="font-size:11.5px;color:#9CA3AF;">Nenhum envio ainda.</div>'}
+    <div style="font-size:10.5px;color:#9CA3AF;margin-top:12px;">Robô não oficial: use um chip dedicado (nunca o número principal) — o WhatsApp pode bloquear números que usam automação.</div>`;
+}
+async function _waSalvarMapa() {
+  const st = await _waLerStatusRobo();
+  const grupos = st.grupos || [];
+  const map = {};
+  document.querySelectorAll('#wa-config-card select[data-wa-transp]').forEach(sel => {
+    if (!sel.value) return;
+    const g = grupos.find(x => x.id === sel.value);
+    map[sel.getAttribute('data-wa-transp')] = { id: sel.value, nome: g?.nome || sel.options[sel.selectedIndex]?.text || sel.value };
+  });
+  try {
+    await window.fbSetDoc(window.fbDoc(window.fbDb, 'config', 'whatsapp_grupos'), { map, atualizadoEm: new Date().toISOString(), atualizadoPor: (typeof S !== 'undefined' && S?.user) || '' });
+    showToast(`Grupos salvos (${Object.keys(map).length} transportadora(s)).`, true);
+    _waRenderConfig();
+  } catch (e) {
+    alert('Erro ao salvar: ' + (e.code === 'permission-denied' ? 'sem permissão no Firestore (config/whatsapp_grupos).' : e.message));
+  }
+}
+window.enviarBlocoWhatsApp = enviarBlocoWhatsApp;
+window.enviarTodasProgramacoesWhatsApp = enviarTodasProgramacoesWhatsApp;
+window.abrirConfigWhatsApp = abrirConfigWhatsApp;
+window._waRenderConfig = _waRenderConfig;
+window._waSalvarMapa = _waSalvarMapa;
 // Nome de arquivo por bloco — usa TRANSPORTADORA + BASE de carregamento
 // (lidos dos atributos data-transportadora/data-base) no lugar da palavra
 // "bloco", mas mantém a PLACA e o número da viagem que já vinham no nome
