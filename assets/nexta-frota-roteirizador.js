@@ -1227,8 +1227,33 @@ function toggleTermFiltroPanel(event) {
   if (!panel) return;
   const aberto = panel.classList.toggle('aberto');
   btn?.classList.toggle('aberto', aberto);
-  if (aberto) renderFiltroTerminaisMapa();
+  if (aberto) { renderFiltroTerminaisMapa(); _posicionarTermFiltroPanel(); }
 }
+// A barra de filtros rola na horizontal (overflow), o que cortava a lista
+// presa dentro dela. Agora a lista abre "solta" na tela (position: fixed),
+// por cima de tudo, logo abaixo do botão — igual a um select nativo.
+function _posicionarTermFiltroPanel() {
+  const panel = document.getElementById('term-filter-panel');
+  const btn   = document.getElementById('term-filter-btn');
+  if (!panel || !btn || !panel.classList.contains('aberto')) return;
+  const r = btn.getBoundingClientRect();
+  const espacoAbaixo = window.innerHeight - r.bottom - 12;
+  const abrirAcima = espacoAbaixo < 180 && r.top > espacoAbaixo;
+  const alturaMax = Math.max(140, Math.min(360, abrirAcima ? r.top - 12 : espacoAbaixo));
+  const largura = Math.max(r.width, 240);
+  Object.assign(panel.style, {
+    position: 'fixed', zIndex: '5000',
+    left: Math.max(8, Math.min(r.left, window.innerWidth - largura - 8)) + 'px',
+    top: abrirAcima ? 'auto' : (r.bottom + 4) + 'px',
+    bottom: abrirAcima ? (window.innerHeight - r.top + 4) + 'px' : 'auto',
+    minWidth: largura + 'px', maxWidth: '420px', maxHeight: alturaMax + 'px',
+  });
+}
+window.addEventListener('resize', _posicionarTermFiltroPanel);
+window.addEventListener('scroll', e => {
+  const panel = document.getElementById('term-filter-panel');
+  if (panel && !panel.contains(e.target)) _posicionarTermFiltroPanel();
+}, true);
 // Fecha ao clicar fora
 document.addEventListener('click', (e) => {
   const wrap = document.querySelector('.term-filter-wrap');
@@ -1589,6 +1614,98 @@ function garantirMapaGeral() {
   camadaMapaGeral = L.layerGroup().addTo(mapaGeral);
   mapaGeral.invalidateSize(); // síncrono — garante tamanho correto antes do fitBounds
 }
+
+// ── Rotas do mapa geral: aparecem NA HORA ───────────────────────────────────
+// O trajeto real (ORS, perfil caminhão) tem limite de ~30 chamadas/min, então
+// com dezenas de viagens as linhas iam surgindo aos poucos. Agora:
+//   1) trecho já conhecido (memória ou cache salvo no navegador) → desenha o
+//      trajeto real imediatamente;
+//   2) trecho novo → desenha na hora uma linha tracejada (provisória) e troca
+//      pelo trajeto real assim que ele chega, em segundo plano;
+//   3) trechos calculados ficam salvos no navegador — na próxima abertura,
+//      mesmo em outro dia, já sobem prontos.
+const ROTA_CACHE_LS = 'nexta_rotas_segmentos_v1';
+const ROTA_CACHE_MAX = 2500;
+let _rotaCacheCarregado = false, _rotaCacheSalvarTimer = null;
+const _rotaRound = n => Math.round(n * 10000) / 10000;
+const _rotaChave = (a, b) => `${_rotaRound(a.lat)},${_rotaRound(a.lon)}|${_rotaRound(b.lat)},${_rotaRound(b.lon)}`;
+function _rotaMemCache() { if (!window._osrmSegmentoCache) window._osrmSegmentoCache = new Map(); return window._osrmSegmentoCache; }
+function _rotaCarregarCache() {
+  if (_rotaCacheCarregado) return;
+  _rotaCacheCarregado = true;
+  try {
+    const raw = localStorage.getItem(ROTA_CACHE_LS);
+    if (!raw) return;
+    const obj = JSON.parse(raw), mem = _rotaMemCache();
+    Object.entries(obj).forEach(([k, [km, flat]]) => {
+      if (mem.has(k) || !Array.isArray(flat)) return;
+      const coords = [];
+      for (let i = 0; i + 1 < flat.length; i += 2) coords.push([flat[i] / 1e5, flat[i + 1] / 1e5]);
+      if (coords.length >= 2) mem.set(k, { coords, distKm: km });
+    });
+  } catch (e) { /* cache corrompido/indisponível: segue sem */ }
+}
+function _rotaSalvarCacheDepois() {
+  clearTimeout(_rotaCacheSalvarTimer);
+  _rotaCacheSalvarTimer = setTimeout(() => {
+    try {
+      const ents = [..._rotaMemCache().entries()].filter(([, r]) => r?.coords?.length > 2).slice(-ROTA_CACHE_MAX);
+      const obj = {};
+      ents.forEach(([k, r]) => {
+        // reduz pontos (máx ~200 por trecho) pra caber no navegador
+        const passo = Math.max(1, Math.ceil(r.coords.length / 200));
+        const flat = [];
+        r.coords.forEach((c, i) => { if (i % passo === 0 || i === r.coords.length - 1) flat.push(Math.round(c[0] * 1e5), Math.round(c[1] * 1e5)); });
+        obj[k] = [Math.round(r.distKm * 100) / 100, flat];
+      });
+      let json = JSON.stringify(obj);
+      try { localStorage.setItem(ROTA_CACHE_LS, json); }
+      catch (e) { // sem espaço: guarda só a metade mais recente
+        const ks = Object.keys(obj); ks.slice(0, Math.floor(ks.length / 2)).forEach(k => delete obj[k]);
+        try { localStorage.setItem(ROTA_CACHE_LS, JSON.stringify(obj)); } catch (e2) {}
+      }
+    } catch (e) {}
+  }, 1500);
+}
+// Fila em segundo plano: um trecho por vez por chave, ignora mapas já trocados.
+const _rotaPendentes = new Map(); // chave → Promise
+function _rotaAtualizarProgresso() {
+  const el = document.getElementById('mapa-geral-rotas-status');
+  if (!el) return;
+  const { total, feitos } = camadaMapaGeral?._rotaProg || { total: 0, feitos: 0 };
+  el.textContent = total && feitos < total ? ` · 🛣 trajetos reais: ${feitos}/${total} (linha tracejada = provisória)` : '';
+}
+function desenharRotaMapaRapido(pontos, layer, cor, peso = 4, opacidade = 0.86) {
+  if (!pontos || pontos.length < 2 || typeof L === 'undefined') return;
+  _rotaCarregarCache();
+  const mem = _rotaMemCache();
+  if (!layer._rotaProg) layer._rotaProg = { total: 0, feitos: 0 };
+  for (let i = 0; i < pontos.length - 1; i++) {
+    const a = pontos[i], b = pontos[i + 1];
+    if (![a.lat, a.lon, b.lat, b.lon].every(Number.isFinite)) continue;
+    const k = _rotaChave(a, b);
+    const pronto = mem.get(k);
+    if (pronto?.coords?.length) { L.polyline(pronto.coords, { color: cor, weight: peso, opacity: opacidade }).addTo(layer); continue; }
+    const provisoria = L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: cor, weight: Math.max(2, peso - 1), opacity: opacidade * 0.75, dashArray: '6 8' }).addTo(layer);
+    if (typeof osrmFetchSegmento !== 'function') continue;
+    layer._rotaProg.total++;
+    let prom = _rotaPendentes.get(k);
+    if (!prom) {
+      prom = osrmFetchSegmento(a, b).finally(() => _rotaPendentes.delete(k));
+      _rotaPendentes.set(k, prom);
+    }
+    prom.then(r => {
+      layer._rotaProg.feitos++;
+      if (!layer._map) return; // mapa já foi redesenhado
+      if (layer === camadaMapaGeral) _rotaAtualizarProgresso();
+      if (!r?.coords?.length || r.coords.length <= 2) return; // só linha reta: mantém a provisória
+      if (!mem.has(k)) mem.set(k, r);
+      layer.removeLayer(provisoria);
+      L.polyline(r.coords, { color: cor, weight: peso, opacity: opacidade }).addTo(layer);
+      _rotaSalvarCacheDepois();
+    }).catch(() => { layer._rotaProg.feitos++; if (layer === camadaMapaGeral) _rotaAtualizarProgresso(); });
+  }
+}
 function renderMapaGeral() {
   const top = document.getElementById('mapa-geral-top');
   const legenda = document.getElementById('mapa-geral-legenda');
@@ -1797,7 +1914,7 @@ function renderMapaGeral() {
     // pontosRota inclui as vias manuais inseridas pelo usuário no mapa da viagem
     // individual; item.pontos são os pontos fixos (terminal + clientes), usados
     // abaixo apenas para posicionar os marcadores, sem as vias intermediárias.
-    osrmRoute(item.pontosRota || item.pontos, camadaMapaGeral, item.cor, 4, 0.86).catch(()=>{});
+    desenharRotaMapaRapido(item.pontosRota || item.pontos, camadaMapaGeral, item.cor, 4, 0.86);
     // Calcula clock de chegada para cada parada desta viagem
     const v_item = item.v;
     const vi_item = item.viagem;
@@ -1912,6 +2029,7 @@ function renderMapaGeral() {
   } else {
     top.textContent = `${_visaoConsolidada ? `📅 Consolidado ${_visaoConsolidada.data} (${_visaoConsolidada.arquivos.length} programação(ões)) · ` : ''}${placasTotais} placa(s) · ${ciclosTotais} viagem(ns) · ${destinosTotais} destino(s)${transpHeader ? ` · ${transpHeader}` : ''}`;
   }
+  { const st = document.createElement('span'); st.id = 'mapa-geral-rotas-status'; st.style.color = '#6B7280'; top.appendChild(st); _rotaAtualizarProgresso(); }
   // Veículos alocados mas sem rota visível (coordenadas ausentes)
   const placasNoMapa = new Set(porPlaca.keys());
   const semCoordenadas = veiculosEscopo.filter(v => {
@@ -9703,7 +9821,7 @@ function abrirMapaVeiculo(veiculoId) {
         pontos.push({ lat: _coord.lat, lon: _coord.lon, isCentroide: _coord.isCentroide, label: `${ti+1}.${i+1}`, nome: p.pedido.cliente, tipo: 'destino' });
     });
     if (pontos.length >= 2)
-      osrmRoute(pontos, camadaViagem, cor, 4, 0.9).catch(()=>{});
+      desenharRotaMapaRapido(pontos, camadaViagem, cor, 4, 0.9);
     pontos.forEach((p, i) => {
       todosLatlngs.push([p.lat, p.lon]);
       const isOrigem = p.tipo === 'origem';
