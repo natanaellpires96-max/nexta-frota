@@ -5308,6 +5308,7 @@ function togglePedidosMapa() {
   lista.classList.toggle('hidden', vaiMostrar);
   if (btn) btn.textContent = vaiMostrar ? '📋 Ver Lista' : '🗺️ Ver no Mapa';
   if (vaiMostrar) {
+    _pmapaAssinaturaFit = null; // ao abrir o mapa, enquadra todos os pedidos
     try {
       _pmapaPopularTerminais();
     } catch (e) {
@@ -5469,9 +5470,40 @@ function pmapaToggleSelecaoPedido(pedidoId, chave) {
 }
 window.pmapaToggleSelecaoPedido = pmapaToggleSelecaoPedido;
 
+// Ids de pedido TÊM que ser únicos — a seleção no mapa é por id, e dois
+// pedidos com o mesmo id eram marcados juntos com um clique só (ids nascem de
+// Date.now(); a quebra de pedido somava só um aleatório de 0–998, o que podia
+// repetir). Gera um id maior que qualquer existente e corrige repetidos.
+function _novoIdPedidoUnico() {
+  let max = Date.now();
+  (pedidos || []).forEach(p => { const n = Number(p?.id); if (Number.isFinite(n) && n >= max) max = n + 1; });
+  return max;
+}
+function _garantirIdsPedidosUnicos() {
+  const vistos = new Set();
+  let corrigidos = 0;
+  (pedidos || []).forEach(p => {
+    if (!p) return;
+    if (p.id == null || vistos.has(String(p.id))) { p.id = _novoIdPedidoUnico(); corrigidos++; }
+    vistos.add(String(p.id));
+  });
+  if (corrigidos) console.warn(`[pedidos] ${corrigidos} pedido(s) com id repetido receberam id novo.`);
+  return corrigidos;
+}
+var _pmapaAssinaturaFit = null; // só reenquadra o mapa quando muda O QUE aparece (não a seleção)
+function _pmapaIconUnico(p) {
+  const totalmenteAlocado = _pmapaVolumePendente(p) <= 0.0001;
+  const bg = _pmapaSelecionados.has(p.id) ? '#F97316' : (totalmenteAlocado ? '#9CA3AF' : '#4A6535');
+  return L.divIcon({
+    className: '',
+    html: `<div style="width:22px;height:22px;border-radius:50%;background:${bg};border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.35);"></div>`,
+    iconSize: [22, 22], iconAnchor: [11, 11]
+  });
+}
 function renderPedidosMapa() {
   _pmapaGarantirMapa();
   if (!mapaPedidosMap) return;
+  _garantirIdsPedidosUnicos();
   Object.values(_pmapaMarkers).forEach(m => m.marker.remove());
   _pmapaMarkers = {};
   const terminalSel     = valId('pmapa-terminal');
@@ -5497,13 +5529,7 @@ function renderPedidosMapa() {
       const { p, c } = grupo.itens[0];
       const volPendente = _pmapaVolumePendente(p);
       const totalmenteAlocado = volPendente <= 0.0001;
-      const selecionado = _pmapaSelecionados.has(p.id);
-      const bg = selecionado ? '#F97316' : (totalmenteAlocado ? '#9CA3AF' : '#4A6535');
-      const icon = L.divIcon({
-        className: '',
-        html: `<div style="width:22px;height:22px;border-radius:50%;background:${bg};border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.35);"></div>`,
-        iconSize: [22, 22], iconAnchor: [11, 11]
-      });
+      const icon = _pmapaIconUnico(p);
       const marker = L.marker([c.lat, c.lon], { icon }).addTo(mapaPedidosMap);
       const produtosHtml = (p.produtos || []).map(pr => `${pr.produto}: ${pr.volume} m³`).join('<br/>');
       marker.bindPopup(`
@@ -5522,7 +5548,11 @@ function renderPedidosMapa() {
           if (_pmapaModoSelecao) return; // durante o desenho, clique não seleciona
           if (_pmapaSelecionados.has(p.id)) _pmapaSelecionados.delete(p.id);
           else _pmapaSelecionados.add(p.id);
-          renderPedidosMapa();
+          // Só repinta ESTE marcador — antes redesenhava o mapa todo e voltava
+          // o zoom pro Brasil inteiro a cada clique (o marcador que estava
+          // embaixo do mouse mudava e o clique seguinte pegava outro pedido).
+          marker.setIcon(_pmapaIconUnico(p));
+          pmapaAtualizarPainel();
         });
       }
       _pmapaMarkers[p.id] = { marker, pedido: p };
@@ -5539,7 +5569,11 @@ function renderPedidosMapa() {
       _pmapaMarkers[chave] = { marker, pedidos: listaPedidos, lat: grupo.lat, lon: grupo.lon, grupo: true };
     }
   });
-  if (bounds.length) mapaPedidosMap.fitBounds(bounds, { padding: [32, 32], maxZoom: 12 });
+  // Reenquadra só quando mudou o conjunto de pedidos no mapa (filtro, terminal,
+  // planilha nova) — selecionar/desmarcar mantém o zoom de quem está usando.
+  const assinatura = `${terminalSel}|${filtroCliente}|${filtroCidade}|` + pedidosFiltrados.map(x => x.p.id).sort().join(',');
+  if (bounds.length && assinatura !== _pmapaAssinaturaFit) mapaPedidosMap.fitBounds(bounds, { padding: [32, 32], maxZoom: 12 });
+  _pmapaAssinaturaFit = assinatura;
   pmapaAtualizarPainel();
 }
 // ── Seleção por área (lasso à mão livre) ─────────────────────────────────────
@@ -5898,7 +5932,7 @@ function confirmarQuebraPedido() {
   p._quebraGrupo = grupo;
   p._quebraParte = parte1;
   pedidos.push({
-    id:                   Date.now() + Math.floor(Math.random() * 999),
+    id:                   _novoIdPedidoUnico(),
     codigoSAP:            p.codigoSAP,
     ordens:               [...(p.ordens || [])],
     cliente:              p.cliente,
