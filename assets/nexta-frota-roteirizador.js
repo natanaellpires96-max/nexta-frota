@@ -273,6 +273,7 @@ var lockedViagens = new Set();
 // pelo seletor de roteirização). Usado para vincular uma correção salva à
 // programação original que ela substitui — ver salvarNoHistorico().
 var arquivoHistoricoAberto = null;
+var _visaoConsolidada = null; // visão "📅 Tudo de uma data de entrega" (só consulta) — { data, arquivos }
 // Último arquivo salvo NESTA sessão de trabalho, mesmo sem ter sido aberto
 // explicitamente do histórico (ex.: salvar → ajustar um detalhe → salvar de
 // novo, tudo na mesma sessão). Só linka como revisão se, além disso, os
@@ -1909,7 +1910,7 @@ function renderMapaGeral() {
     top.innerHTML = `Placa ${placaFiltroAtual} · ${ciclosTotais} viagem(ns) · ${destinosTotais} destino(s)`
       + ` <button class="btn btn-sm" onclick="limparFiltroMapaPlaca()" style="margin-left:6px;">Limpar filtro</button>`;
   } else {
-    top.textContent = `${placasTotais} placa(s) · ${ciclosTotais} viagem(ns) · ${destinosTotais} destino(s)${transpHeader ? ` · ${transpHeader}` : ''}`;
+    top.textContent = `${_visaoConsolidada ? `📅 Consolidado ${_visaoConsolidada.data} (${_visaoConsolidada.arquivos.length} programação(ões)) · ` : ''}${placasTotais} placa(s) · ${ciclosTotais} viagem(ns) · ${destinosTotais} destino(s)${transpHeader ? ` · ${transpHeader}` : ''}`;
   }
   // Veículos alocados mas sem rota visível (coordenadas ausentes)
   const placasNoMapa = new Set(porPlaca.keys());
@@ -5966,6 +5967,7 @@ async function carregarPedidosLiberados() {
       if (!novos.length) continue;
       pedidos = novos;
       arquivoHistoricoAberto = null;
+      _visaoConsolidada = null;
       ultimoArquivoSalvoSessao = null;
       renderPedidos();
       conferirProdutosPedidos(pedidos, { automatico: true }).catch(e => console.warn('[conferência produtos]', e));
@@ -5992,7 +5994,8 @@ function uploadPedidosLiberados(input) {
       const novos = xlsxMapPedidosLiberadosRows(rows);
       if (!novos.length) { alert('Nenhum pedido reconhecido. Verifique se o arquivo segue o modelo correto.'); return; }
       pedidos = novos;
-      arquivoHistoricoAberto = null; // planilha nova = trabalho novo, não continuação do que estava aberto
+      _visaoConsolidada = null;
+  arquivoHistoricoAberto = null; // planilha nova = trabalho novo, não continuação do que estava aberto
       ultimoArquivoSalvoSessao = null;
       _sincronizarDataOperacaoComPedidos();
       renderPedidos();
@@ -6013,6 +6016,7 @@ function limparTodosPedidos() {
   if (!pedidos.length) return;
   if (!confirm('Remover todos os ' + pedidos.length + ' pedido(s) carregados?')) return;
   pedidos = [];
+  _visaoConsolidada = null;
   arquivoHistoricoAberto = null; // lista zerada = trabalho novo
   ultimoArquivoSalvoSessao = null;
   renderPedidos();
@@ -8017,6 +8021,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   resultadoOriginal     = JSON.parse(JSON.stringify(resultado));
   historicoManual       = [];
   atualizarBarraManual();
+  _visaoConsolidada = null; // otimização nova = trabalho novo
   estadoAtual = {
     pedidos:       JSON.parse(JSON.stringify(pedidos)),
     terminais:     JSON.parse(JSON.stringify(terminaisCad)),
@@ -8391,6 +8396,7 @@ async function exportarHrrlog(dados = null, { salvarHistorico = true } = {}) {
   if (!salvarHistorico) return; // reexportação a partir do Histórico: só baixa o arquivo, não mexe em nada salvo
   // Salva automaticamente no histórico do dashboard após exportar
   try {
+    if (_visaoConsolidada) { showToast('Herrlog exportado (visão consolidada — não é salva no histórico)', true); return; }
     await salvarNoHistorico(true);
     showToast('Herrlog exportado e salvo no histórico ✅', true);
   } catch(e) {
@@ -10041,7 +10047,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
     }));
   rotas.forEach(r => {
     if (r.viagens.some(vi=>vi.paradas.length>0)) veicsUsados++;
-    r.viagens.forEach(vi => { vi.paradas.forEach(p=>entregueVol+=p.volumeTotal); totalQuebras+=vi.quebras.length; });
+    r.viagens.forEach(vi => { vi.paradas.forEach(p=>entregueVol+=p.volumeTotal); totalQuebras+=(vi.quebras||[]).length; });
   });
   const totalCapDia = rotas.reduce((s,r) => s + (r.viagens.filter(vi => vi.paradas.length > 0).length * r.v.capacidade), 0);
   const pctUtil = totalCapDia>0 ? Math.round(entregueVol/totalCapDia*100) : 0;
@@ -10948,6 +10954,11 @@ async function selecionarPastaHistorico() {
 }
 async function salvarNoHistorico(silencioso = false) {
   if (!ultimoResultado) { if (!silencioso) alert('Execute a otimização antes de salvar.'); return; }
+  if (_visaoConsolidada) {
+    // Juntar N programações e salvar viraria uma programação nova duplicando as originais.
+    if (!silencioso) alert(`Esta é a visão consolidada de ${_visaoConsolidada.data} (junta ${_visaoConsolidada.arquivos.length} programação(ões)) — é só consulta e não é salva no Histórico.\n\nPara alterar, abra a programação específica no Histórico.`);
+    return false;
+  }
   if (!dirHandleHistorico) {
     if (silencioso) return; // não abre diálogo no modo automático
     showTab('historico');
@@ -12812,6 +12823,7 @@ async function abrirEntradaHistorico(filename) {
     lockedTerminals.clear();
     lockedViagens.clear();
     arquivoHistoricoAberto = filename;
+    _visaoConsolidada = null;
     renderTerminais();
     renderClientes();
     renderPedidos();
@@ -12825,6 +12837,130 @@ async function abrirEntradaHistorico(filename) {
     alert('Erro ao abrir: ' + e.message);
   }
 }
+// ══════════════════════════════════════════════════════════════════════════
+// VISÃO CONSOLIDADA POR DATA DE ENTREGA — "tudo que foi programado pro dia"
+// ══════════════════════════════════════════════════════════════════════════
+// Seletor "Roteirização" (Otimização, Resumo Operação, Envio Transportadora)
+// ganhou a opção "📅 Tudo de DD/MM/AAAA": junta, numa visão só, as viagens
+// daquela data de entrega de TODAS as programações vigentes do Histórico (as
+// substituídas por revisão não entram — a versão nova já está em outro arquivo).
+//   • viagem entra se alguma entrega dela é dessa data;
+//   • o mesmo caminhão em vários arquivos vira UM só (junta pela placa);
+//   • o horário de cada viagem é fixado como estava no arquivo dela, num dia
+//     base comum — juntar não muda horário de ninguém;
+//   • é SÓ CONSULTA: salvar no Histórico fica bloqueado (senão viraria uma
+//     programação nova duplicando as originais).
+
+function _consDataBr(ms) { const d = new Date(ms); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; }
+function _consDataMs(br) { const m = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(br || ''); return m ? new Date(+m[3], +m[2] - 1, +m[1]).getTime() : NaN; }
+
+// Monta o estado consolidado a partir de [{ name, data }] (já filtrados: vigentes).
+function _consolidarArquivos(dataBr, arquivos) {
+  const vivosPorPlaca = new Map((veiculos || []).map(v => [v.placa, v]));
+  const terminaisPorNome = new Map();
+  (terminaisCad || []).forEach(t => t?.nome && terminaisPorNome.set(t.nome, t));
+  const viagensPorPlaca = new Map(); // placa → [{ vi, abs, baseMs, arquivo }]
+  const veicPorPlaca = new Map();
+  const pedidosPorId = new Map();
+  const pedidoArquivos = new Map(); // pedido.id roteirizado → Set(arquivos) (detecta duplicidade)
+  const usados = [];
+  arquivos.forEach(({ name, data }) => {
+    (data.terminais || []).forEach(t => t?.nome && !terminaisPorNome.has(t.nome) && terminaisPorNome.set(t.nome, t));
+    let usou = false;
+    (data.veiculos || []).forEach(v => {
+      const lista = (data.resultado?.[v.id] || []).filter(vi => vi && !vi._vazio && (vi.paradas || []).length);
+      lista.forEach((vi, idx) => {
+        if (!vi.paradas.some(pa => pa.pedido?.dataEntregaLogistica === dataBr)) return;
+        usou = true;
+        const base = _histBaseDate(data, vi);
+        const abs = _histInicioCargaAbs(v, lista, idx);
+        if (!viagensPorPlaca.has(v.placa)) viagensPorPlaca.set(v.placa, []);
+        viagensPorPlaca.get(v.placa).push({ vi, abs, baseMs: base.getTime(), arquivo: name });
+        if (!veicPorPlaca.has(v.placa)) veicPorPlaca.set(v.placa, v);
+        vi.paradas.forEach(pa => {
+          const id = pa.pedido?.id;
+          if (id == null) return;
+          if (!pedidoArquivos.has(id)) pedidoArquivos.set(id, new Set());
+          pedidoArquivos.get(id).add(name);
+        });
+      });
+    });
+    (data.pedidos || []).forEach(p => { if (p?.dataEntregaLogistica === dataBr && !pedidosPorId.has(p.id)) pedidosPorId.set(p.id, p); });
+    if (usou) usados.push(name);
+  });
+  // Dia base comum = o mais cedo entre as viagens (nenhum horário fica negativo).
+  const todas = [...viagensPorPlaca.values()].flat();
+  const baseComumMs = todas.length ? Math.min(...todas.map(x => x.baseMs)) : _consDataMs(dataBr);
+  const resultado = { _baseDataEntrega: new Date(baseComumMs).toISOString() };
+  const controleTempo = {};
+  const veicsOut = [];
+  const idsUsados = new Set();
+  let proxId = Math.max(1000, ...[...vivosPorPlaca.values()].map(v => Number(v.id) || 0)) + 1;
+  viagensPorPlaca.forEach((itens, placa) => {
+    // Cadastro atual tem prioridade (dados vivos); senão o veículo do arquivo.
+    const v = JSON.parse(JSON.stringify(vivosPorPlaca.get(placa) || veicPorPlaca.get(placa)));
+    if (v.id == null || idsUsados.has(String(v.id))) v.id = proxId++;
+    idsUsados.add(String(v.id));
+    veicsOut.push(v);
+    resultado[v.id] = itens
+      .map(({ vi, abs, baseMs, arquivo }) => {
+        const c = JSON.parse(JSON.stringify(vi));
+        c.horarioCargaManualMin = Math.round(abs + (baseMs - baseComumMs) / 86400000 * 1440);
+        c.horarioCargaManualAbs = true;
+        c._origemArquivo = arquivo;
+        delete c._inicioCargaMin;
+        return c;
+      })
+      .sort((a, b) => a.horarioCargaManualMin - b.horarioCargaManualMin);
+    const usadoMin = resultado[v.id].reduce((s, vi) => s + (vi.tempoConsumidoMin || 0), 0);
+    controleTempo[v.id] = { usadoMin, limiteMin: Number(v.jornadaMin) || duracaoJornadaMin(v.jornadaInicio || '06:00', v.jornadaFim || '18:00') || 720 };
+  });
+  // Placas cadastradas sem viagem nesse dia também entram (KPI "placas sem alocação").
+  vivosPorPlaca.forEach((v, placa) => {
+    if (viagensPorPlaca.has(placa)) return;
+    const c = JSON.parse(JSON.stringify(v));
+    if (c.id == null || idsUsados.has(String(c.id))) c.id = proxId++;
+    idsUsados.add(String(c.id));
+    veicsOut.push(c);
+    resultado[c.id] = [];
+    controleTempo[c.id] = { usadoMin: 0, limiteMin: Number(c.jornadaMin) || duracaoJornadaMin(c.jornadaInicio || '06:00', c.jornadaFim || '18:00') || 720 };
+  });
+  const duplicados = [...pedidoArquivos.entries()].filter(([, s]) => s.size > 1).map(([id, s]) => ({ id, arquivos: [...s] }));
+  return {
+    estado: { pedidos: [...pedidosPorId.values()], terminais: [...terminaisPorNome.values()], veiculos: veicsOut, resultado, controleTempo },
+    usados, duplicados, totalViagens: todas.length, placas: viagensPorPlaca.size,
+  };
+}
+
+async function _carregarConsolidadoData(dataBr) {
+  if (!await _histGarantirPermissao()) return false;
+  showToast(`📅 Juntando as programações de ${dataBr}…`, true);
+  const arquivos = [];
+  for await (const [name, handle] of dirHandleHistorico.entries()) {
+    if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+    try {
+      const data = JSON.parse(await (await handle.getFile()).text());
+      if (data.substituidoPor || !data.resultado) continue; // revisão substituída: a nova já está em outro arquivo
+      const temData = (data.datasEntrega || []).includes(dataBr) || (data.pedidos || []).some(p => p?.dataEntregaLogistica === dataBr);
+      if (temData) arquivos.push({ name, data });
+    } catch (e) { /* arquivo ilegível: ignora */ }
+  }
+  if (!arquivos.length) { alert(`Nenhuma programação vigente com entrega em ${dataBr}.`); return false; }
+  arquivos.sort((a, b) => String(a.data.savedAt).localeCompare(String(b.data.savedAt)));
+  const r = _consolidarArquivos(dataBr, arquivos);
+  _restaurarEstado(r.estado);
+  arquivoHistoricoAberto = null;
+  _visaoConsolidada = { data: dataBr, arquivos: r.usados };
+  const pedNome = id => (r.estado.pedidos.find(p => String(p.id) === String(id))?.cliente) || `pedido ${id}`;
+  showToast(`📅 ${dataBr}: ${r.usados.length} programação(ões) · ${r.totalViagens} viagem(ns) · ${r.placas} placa(s) — só consulta`, true);
+  if (r.duplicados.length) {
+    alert(`⚠️ ${r.duplicados.length} pedido(s) aparecem roteirizados em mais de uma programação desta data (pode haver entrega em dobro):\n\n` +
+      r.duplicados.slice(0, 15).map(d => `• ${pedNome(d.id)} — ${d.arquivos.length} programações`).join('\n'));
+  }
+  return true;
+}
+window._carregarConsolidadoData = _carregarConsolidadoData;
+
 async function popularDropdownRoteirizacoes() {
   const selects = document.querySelectorAll('.sel-roteirizacao');
   if (!selects.length) return;
@@ -12857,9 +12993,20 @@ async function popularDropdownRoteirizacoes() {
     const safeNome = name.replace(/"/g, '&quot;');
     return `<option value="${safeNome}">${dtStr}${entrega}</option>`;
   }).join('');
+  // "📅 Tudo de uma data": cada data de entrega das programações vigentes
+  // (as substituídas por revisão não contam).
+  const datasSet = new Set();
+  entries.forEach(({ data }) => { if (!data.substituidoPor) (data.datasEntrega || []).forEach(d => /^\d{2}\/\d{2}\/\d{4}$/.test(d) && datasSet.add(d)); });
+  const datas = [...datasSet].sort((a, b) => _consDataMs(b) - _consDataMs(a)).slice(0, 60);
+  const qtdPorData = d => entries.filter(({ data }) => !data.substituidoPor && (data.datasEntrega || []).includes(d)).length;
+  const dataOpts = datas.length
+    ? `<optgroup label="📅 Tudo de uma data de entrega (junta as programações)">` +
+      datas.map(d => `<option value="data:${d}">📅 Tudo de ${d} — ${qtdPorData(d)} programação(ões)</option>`).join('') + `</optgroup>`
+    : '';
+  const arqOpts = histOpts ? `<optgroup label="🗂 Uma programação do Histórico">${histOpts}</optgroup>` : '';
   selects.forEach(s => {
     const current = s.value;
-    s.innerHTML = opAtual + histOpts;
+    s.innerHTML = opAtual + dataOpts + arqOpts;
     if (current) s.value = current;
   });
 }
@@ -12877,9 +13024,15 @@ function _restaurarEstado(estado) {
 }
 async function onMudarRoteirizacao(val) {
   document.querySelectorAll('.sel-roteirizacao').forEach(s => s.value = val);
-  if (!val) {
+  if (val && val.startsWith('data:')) {
+    if (!await _carregarConsolidadoData(val.slice(5))) {
+      document.querySelectorAll('.sel-roteirizacao').forEach(s => s.value = '');
+      return;
+    }
+  } else if (!val) {
     if (estadoAtual) _restaurarEstado(estadoAtual);
     arquivoHistoricoAberto = null; // "— Atual —" não é nenhuma entrada salva do histórico
+    _visaoConsolidada = null;
   } else {
     if (!await _histGarantirPermissao()) return;
     try {
@@ -12887,6 +13040,7 @@ async function onMudarRoteirizacao(val) {
       const file = await fh.getFile();
       _restaurarEstado(JSON.parse(await file.text()));
       arquivoHistoricoAberto = val;
+      _visaoConsolidada = null;
     } catch(e) {
       alert('Erro ao carregar roteirização: ' + e.message);
       return;
