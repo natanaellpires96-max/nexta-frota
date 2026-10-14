@@ -2279,6 +2279,9 @@ function doisTurnos(v) {
 //  • Viagens seguintes: mesmo dia do início calculado (fim da anterior),
 //    avançando 1 dia só se o horário manual cair antes dele.
 function _inicioCargaManualAbsMin(viagens, idx, vi, jIniMin, v) {
+  // Horário fixado no Histórico (troca de veículo/horário): já é absoluto
+  // (minutos desde 00:00 do dia base), vale como está em qualquer posição.
+  if (vi.horarioCargaManualAbs) return vi.horarioCargaManualMin;
   if (idx <= 0) return vi.horarioCargaManualMin;
   const clockAnterior = inicioViagemAbsMin(viagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1);
   const baseDay = Math.floor(clockAnterior / 1440) * 1440;
@@ -2303,6 +2306,7 @@ function inicioViagemAbsMin(viagensVeiculo, idxViagem, jornadaInicioMin, tempoPe
     // como início, descartando a cadeia de tempoConsumidoMin que viria antes.
     const proxVi = viagensVeiculo[i + 1];
     if (proxVi?.horarioCargaManualMin !== undefined && i + 1 === idxViagem) {
+      if (proxVi.horarioCargaManualAbs) return proxVi.horarioCargaManualMin; // fixado no Histórico (absoluto)
       // Retorna o horário manual absoluto (ajustado para o dia correto)
       const baseDay = Math.floor((t + _tempoParedeViagem(vi)) / 1440) * 1440;
       let alvo = baseDay + proxVi.horarioCargaManualMin;
@@ -4079,6 +4083,24 @@ function _confProdChaveProduto(prod) {
   const m = /^\s*(\d{5,})/.exec(String(prod || ''));
   return m ? m[1] : _confProdNomeNorm(prod);
 }
+// Tipo do produto, ignorando a MARCA mas não o GRAU: "OLEO DIESEL B S10
+// COMUM" e "PETRONAS DIESEL S10" são o mesmo produto pro cliente (diesel S10
+// comum); "PETRONAS DYNAMIC DIESEL S10" é outro (aditivado). Assim, troca de
+// bandeira não vira alerta, mas comum × aditivado (erro típico de portal) sim.
+function _confProdFamilia(prod) {
+  const d = _confProdNomeNorm(String(prod || '').replace(/^\s*\d{5,}\s*-?\s*/, ''));
+  const adit = /\b(ADIT\w*|PRIMAX|DYNAMIC|ALTA OCTANAGEM|PREMIUM|PODIUM|V POWER|GRID)\b/.test(d);
+  if (/\bS ?10\b/.test(d)) return 'DIESEL S10' + (adit ? ' ADITIVADO' : '');
+  if (/\bS ?500\b/.test(d)) return 'DIESEL S500' + (adit ? ' ADITIVADO' : '');
+  if (/DIESEL/.test(d)) return 'DIESEL' + (adit ? ' ADITIVADO' : '');
+  if (/GASOLINA/.test(d)) return 'GASOLINA' + (adit ? ' ADITIVADA' : '');
+  if (/ETANOL|ALCOOL/.test(d)) return 'ETANOL' + (adit ? ' ADITIVADO' : '');
+  if (/ARLA/.test(d)) return 'ARLA 32';
+  return d;
+}
+function _confProdCidade(c) {
+  return typeof normalizarCidade === 'function' ? normalizarCidade(c) : _confProdNomeNorm(c);
+}
 function _confProdDataMs(dataBr) {
   const m = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(String(dataBr || ''));
   return m ? new Date(+m[3], +m[2] - 1, +m[1]).getTime() : null;
@@ -4100,7 +4122,8 @@ function _confProdRegistrosDoSnapshot(data) {
       if (!ms) return;
       (pa.itens || []).forEach(it => {
         if (!it.produto || !((it.volume || 0) > 0)) return;
-        out.push({ ck: _confProdChaveCliente(ped), sap: String(ped.codigoSAP || '').trim(), pk: _confProdChaveProduto(it.produto), ms });
+        out.push({ ck: _confProdChaveCliente(ped), sap: String(ped.codigoSAP || '').trim(), cid: _confProdCidade(ped.cidade),
+          nome: ped.cliente, pk: _confProdChaveProduto(it.produto), fam: _confProdFamilia(it.produto), rot: it.produto, ms });
       });
     });
   }));
@@ -4317,22 +4340,45 @@ async function _confProdCarregarIndice({ pedirPermissao = true } = {}) {
 }
 // Índice: cliente → { datas: Set(ms), produtos: Map(pk → [ms...]) }
 function _confProdMontarIndice(registros) {
-  const porCliente = new Map(), porSap = new Map();
+  const porCliente = new Map(), porSap = new Map(), porSapCid = new Map();
   let primeiraMs = null;
   const add = (mapa, chave, r) => {
     if (!chave) return;
-    if (!mapa.has(chave)) mapa.set(chave, { datas: new Set(), produtos: new Map() });
+    if (!mapa.has(chave)) mapa.set(chave, { datas: new Set(), produtos: new Map(), familias: new Map(), rotulos: new Map(), nomes: new Set() });
     const e = mapa.get(chave);
     e.datas.add(r.ms);
     if (!e.produtos.has(r.pk)) e.produtos.set(r.pk, []);
     e.produtos.get(r.pk).push(r.ms);
+    if (r.fam) { if (!e.familias.has(r.fam)) e.familias.set(r.fam, []); e.familias.get(r.fam).push(r.ms); }
+    if (r.rot && !e.rotulos.has(r.pk)) e.rotulos.set(r.pk, r.rot);
+    if (r.nome) e.nomes.add(r.nome);
   };
   registros.forEach(r => {
     add(porCliente, r.ck, r);
     add(porSap, r.sap, r);
+    if (r.sap && r.cid) add(porSapCid, r.sap + '|' + r.cid, r);
     if (primeiraMs === null || r.ms < primeiraMs) primeiraMs = r.ms;
   });
-  return { porCliente, porSap, primeiraMs };
+  return { porCliente, porSap, porSapCid, primeiraMs };
+}
+// Histórico do cliente do pedido: junta o que achou pelo SAP + nome E pelo
+// SAP + cidade (mesmo posto com variação de nome entre importações). Só se
+// nenhum dos dois achar nada, cai pro SAP sozinho (rede inteira).
+function _confProdHistCliente(indice, p) {
+  const sap = String(p?.codigoSAP || '').trim();
+  const partes = [indice.porCliente.get(_confProdChaveCliente(p)), sap ? indice.porSapCid.get(sap + '|' + _confProdCidade(p.cidade)) : null].filter(Boolean);
+  if (!partes.length && sap && indice.porSap.get(sap)) partes.push(indice.porSap.get(sap));
+  if (!partes.length) return null;
+  if (partes.length === 1) return partes[0];
+  const m = { datas: new Set(), produtos: new Map(), familias: new Map(), rotulos: new Map(), nomes: new Set() };
+  partes.forEach(e => {
+    e.datas.forEach(d => m.datas.add(d));
+    e.produtos.forEach((v, k) => m.produtos.set(k, [...(m.produtos.get(k) || []), ...v]));
+    e.familias.forEach((v, k) => m.familias.set(k, [...(m.familias.get(k) || []), ...v]));
+    e.rotulos.forEach((v, k) => { if (!m.rotulos.has(k)) m.rotulos.set(k, v); });
+    e.nomes.forEach(n => m.nomes.add(n));
+  });
+  return m;
 }
 
 // Avalia UM pedido contra o índice. Devolve a lista de alertas (vazia = ok).
@@ -4340,8 +4386,9 @@ function _confProdAvaliarPedido(p, indice) {
   if (!indice || !p) return [];
   const refMs = _confProdDataMs(p.dataEntregaLogistica) ?? new Date().setHours(0, 0, 0, 0);
   const sap = String(p.codigoSAP || '').trim();
-  const hist = indice.porCliente.get(_confProdChaveCliente(p)) || (sap ? indice.porSap.get(sap) : null);
+  const hist = _confProdHistCliente(indice, p);
   if (!hist) return []; // cliente sem histórico nenhum → nada a comparar
+  if (p._alertaProdutoDispensado) return []; // alguém já conferiu e disse que está certo
   const datasAntes = [...hist.datas].filter(ms => ms < refMs);
   if (datasAntes.length < CONF_PROD_MIN_ENTREGAS) return [];
   const ultimaCliente = Math.max(...datasAntes);
@@ -4353,9 +4400,16 @@ function _confProdAvaliarPedido(p, indice) {
     const pk = _confProdChaveProduto(pr.produto);
     if (!pk || vistos.has(pk)) return;
     vistos.add(pk);
-    const compras = (hist.produtos.get(pk) || []).filter(ms => ms < refMs);
+    // Mesmo código OU mesmo tipo de produto (ver _confProdFamilia).
+    const fam = _confProdFamilia(pr.produto);
+    const compras = [...(hist.produtos.get(pk) || []), ...(hist.familias.get(fam) || [])].filter(ms => ms < refMs);
     if (!compras.length) {
-      alertas.push({ produto: pr.produto, tipo: 'nunca', texto: `nunca comprou ${pr.produto}` });
+      // O que o cliente costuma comprar do mesmo combustível (ex.: pediu
+      // S10 comum, mas sempre comprou S10 aditivado) — ajuda a decidir.
+      const base = fam.replace(/ ADITIVAD[OA]$/, '');
+      const parecidos = [...hist.rotulos.entries()].filter(([k, rot]) => _confProdFamilia(rot).replace(/ ADITIVAD[OA]$/, '') === base).map(([, rot]) => rot);
+      alertas.push({ produto: pr.produto, tipo: 'nunca', costuma: parecidos,
+        texto: `nunca comprou ${pr.produto}${parecidos.length ? ` (costuma comprar ${parecidos.join(', ')})` : ''}` });
       return;
     }
     const ultima = Math.max(...compras);
@@ -4392,13 +4446,79 @@ async function conferirProdutosPedidos(lista, { mostrarResumo = true, automatico
   return comAlerta;
 }
 
+// ── Diagnóstico de UM pedido (clique no alerta ⚠️ do card) ────────────────
+// Mostra o que o histórico tem desse cliente: nomes encontrados, produtos
+// comprados (código, quantas entregas, última) — pra ver na hora se o alerta
+// faz sentido. Botões: reconferir tudo (relê o Histórico do zero) e
+// dispensar o alerta deste pedido.
+async function _confProdDiagnostico(pedidoId) {
+  const p = pedidos.find(x => x.id === pedidoId);
+  if (!p) return;
+  let indice = null;
+  try { indice = await _confProdCarregarIndice(); } catch (e) {}
+  const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const hist = indice ? _confProdHistCliente(indice, p) : null;
+  const refMs = _confProdDataMs(p.dataEntregaLogistica) ?? Date.now();
+  let corpo;
+  if (!indice) corpo = '<div style="color:#B45309;font-size:12.5px;">Pasta do Histórico não autorizada — não dá pra consultar.</div>';
+  else if (!hist) corpo = '<div style="font-size:12.5px;">Nenhuma entrega desse cliente no Histórico.</div>';
+  else {
+    const linhas = [...hist.produtos.entries()].map(([pk, datas]) => {
+      const antes = datas.filter(ms => ms < refMs);
+      const rot = hist.rotulos.get(pk) || pk;
+      const noPedido = (p.produtos || []).some(pr => _confProdChaveProduto(pr.produto) === pk);
+      return { rot, n: new Set(antes).size, ultima: antes.length ? Math.max(...antes) : null, noPedido, fam: _confProdFamilia(rot) };
+    }).sort((a, b) => (b.ultima || 0) - (a.ultima || 0));
+    corpo = `
+      <div style="font-size:12px;color:#4B5563;margin-bottom:8px;">${new Set([...hist.datas].filter(ms => ms < refMs)).size} entrega(s) antes de ${esc(p.dataEntregaLogistica || 'hoje')} · nomes encontrados: ${[...hist.nomes].map(esc).join(' · ')}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="text-align:left;color:#6B7280;"><th style="padding:5px 6px;">Produto já recebido</th><th style="padding:5px 6px;">Tipo</th><th style="padding:5px 6px;text-align:right;">Entregas</th><th style="padding:5px 6px;text-align:right;">Última</th></tr></thead>
+        <tbody>${linhas.map(l => `<tr style="border-top:1px solid #F3F4F6;${l.noPedido ? 'background:#F0FDF4;' : ''}"><td style="padding:5px 6px;">${esc(l.rot)}</td><td style="padding:5px 6px;color:#6B7280;">${esc(l.fam)}</td><td style="padding:5px 6px;text-align:right;">${l.n}</td><td style="padding:5px 6px;text-align:right;">${l.ultima ? _confProdFmt(l.ultima) : '—'}</td></tr>`).join('')}</tbody>
+      </table>`;
+  }
+  const alertas = p._alertasProduto || [];
+  document.getElementById('conf-prod-diag')?.remove();
+  const m = document.createElement('div');
+  m.id = 'conf-prod-diag';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem;';
+  m.onclick = e => { if (e.target === m) m.remove(); };
+  m.innerHTML = `<div style="background:#fff;color:#111827;border-radius:14px;padding:18px;width:100%;max-width:680px;max-height:88vh;overflow:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><div style="font-size:15px;font-weight:800;">🔎 Histórico de compras — ${esc(p.cliente)}</div><button onclick="document.getElementById('conf-prod-diag').remove()" style="border:none;background:none;font-size:18px;cursor:pointer;color:#6B7280;">✕</button></div>
+    <div style="font-size:11.5px;color:#6B7280;margin:2px 0 10px;">SAP ${esc(p.codigoSAP || '—')} · ${esc(p.cidade || '')}</div>
+    ${alertas.length ? `<div style="background:#FEF2F2;border:1px solid #FCA5A5;border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#991B1B;">${alertas.map(a => '⚠️ ' + esc(a.texto)).join('<br>')}</div>` : '<div style="background:#F0FDF4;border:1px solid #86EFAC;border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#166534;">✅ Nenhum alerta para este pedido.</div>'}
+    ${corpo}
+    <div style="font-size:10.5px;color:#9CA3AF;margin-top:8px;">"Tipo" ignora a marca (ex.: OLEO DIESEL B S10 COMUM = PETRONAS DIESEL S10), mas separa comum de aditivado. Linhas em verde = produtos deste pedido.</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;flex-wrap:wrap;">
+      <button class="btn btn-sm" onclick="document.getElementById('conf-prod-diag').remove();reconferirProdutosPedidos()">🔄 Reconferir todos os pedidos</button>
+      ${alertas.length ? `<button class="btn btn-green btn-sm" onclick="_confProdDispensar(${p.id})">✓ Está certo — dispensar alerta</button>` : ''}
+    </div>
+  </div>`;
+  document.body.appendChild(m);
+}
+function _confProdDispensar(pedidoId) {
+  const p = pedidos.find(x => x.id === pedidoId);
+  if (p) { p._alertaProdutoDispensado = true; delete p._alertasProduto; }
+  document.getElementById('conf-prod-diag')?.remove();
+  if (typeof renderPedidos === 'function') renderPedidos();
+  showToast('Alerta dispensado para este pedido.', true);
+}
+// Nova varredura: esquece o que já tinha lido do Histórico e confere tudo de novo.
+async function reconferirProdutosPedidos() {
+  _confProdCacheArquivos.clear();
+  _confProdIndice = null;
+  _padroesHist = null;
+  await conferirProdutosPedidos(pedidos);
+}
+window._confProdDiagnostico = _confProdDiagnostico;
+window._confProdDispensar = _confProdDispensar;
+window.reconferirProdutosPedidos = reconferirProdutosPedidos;
 function _confProdMostrarResumo(comAlerta, indice) {
   document.getElementById('conf-prod-modal')?.remove();
   const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const linhas = comAlerta.map(p => `
     <tr style="border-top:1px solid #E5E7EB;vertical-align:top;">
       <td style="padding:7px 8px;font-size:12px;"><b>${esc(p.cliente)}</b><div style="font-size:10.5px;color:#6B7280;">${esc(p.cidade || '')}${p.codigoSAP ? ` · SAP ${esc(p.codigoSAP)}` : ''} · ${esc(p.terminal || '')} · ${esc(p.dataEntregaLogistica || '')}</div></td>
-      <td style="padding:7px 8px;font-size:12px;">${p._alertasProduto.map(a => `<div style="color:${a.tipo === 'nunca' ? '#B91C1C' : '#B45309'};margin-bottom:2px;">${a.tipo === 'nunca' ? '🚫 Nunca comprou' : `🕓 Não compra há ${a.dias} dias`}: <b>${esc(a.produto)}</b>${a.ultima ? ` <span style="color:#6B7280;">(última ${esc(a.ultima)})</span>` : ''}</div>`).join('')}</td>
+      <td style="padding:7px 8px;font-size:12px;">${p._alertasProduto.map(a => `<div style="color:${a.tipo === 'nunca' ? '#B91C1C' : '#B45309'};margin-bottom:2px;">${a.tipo === 'nunca' ? '🚫 Nunca comprou' : `🕓 Não compra há ${a.dias} dias`}: <b>${esc(a.produto)}</b>${a.ultima ? ` <span style="color:#6B7280;">(última ${esc(a.ultima)})</span>` : ''}${a.costuma?.length ? `<div style="color:#6B7280;font-size:11px;">costuma comprar: ${a.costuma.map(esc).join(', ')}</div>` : ''}</div>`).join('')}<a href="#" onclick="event.preventDefault();_confProdDiagnostico(${p.id})" style="font-size:11px;">ver histórico</a></td>
     </tr>`).join('');
   const modal = document.createElement('div');
   modal.id = 'conf-prod-modal';
@@ -4418,7 +4538,7 @@ function _confProdMostrarResumo(comAlerta, indice) {
         </table>
       </div>
       <div style="font-size:10.5px;color:#9CA3AF;margin-top:8px;">Regras: só alerta cliente com pelo menos ${CONF_PROD_MIN_ENTREGAS} entregas e alguma compra nos últimos ${CONF_PROD_DIAS_CLIENTE_ATIVO} dias; "há muito tempo" = ${CONF_PROD_DIAS_PRODUTO_ANTIGO} dias ou mais sem aquele produto.</div>
-      <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button class="btn btn-green" onclick="document.getElementById('conf-prod-modal').remove()">Entendi</button></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;"><button class="btn" onclick="document.getElementById('conf-prod-modal').remove();reconferirProdutosPedidos()">🔄 Reconferir</button><button class="btn btn-green" onclick="document.getElementById('conf-prod-modal').remove()">Entendi</button></div>
     </div>`;
   document.body.appendChild(modal);
 }
@@ -4799,14 +4919,14 @@ function renderPedidos() {
             ${p.turnoEntrega ? `<span class="tag" title="Turno de entrega informado no pedido" style="font-size:9px;background:#FFF7ED;color:#9A3412;border-color:#FDBA74;">${iconeTurnoEntrega(p.turnoEntrega)} Turno: ${p.turnoEntrega}</span>` : ''}
             ${p.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             ${pernoiteTag}
-            ${p._alertasProduto?.length ? `<span class="tag" title="${p._alertasProduto.map(a => a.texto).join(' · ').replace(/"/g, '&quot;')}" style="font-size:9px;background:#FEF2F2;color:#B91C1C;border-color:#FCA5A5;font-weight:700;">⚠️ Produto fora do padrão do cliente</span>` : ''}
+            ${p._alertasProduto?.length ? `<span class="tag" onclick="_confProdDiagnostico(${p.id})" title="Clique pra ver o histórico de compras do cliente · ${p._alertasProduto.map(a => a.texto).join(' · ').replace(/"/g, '&quot;')}" style="font-size:9px;background:#FEF2F2;color:#B91C1C;border-color:#FCA5A5;font-weight:700;cursor:pointer;">⚠️ Produto fora do padrão do cliente</span>` : ''}
             ${tiposHtml}
           </div>
           <div class="pills">
             ${p.produtos.map(pr => {
               const _al = (p._alertasProduto || []).find(a => _confProdChaveProduto(a.produto) === _confProdChaveProduto(pr.produto));
               return _al
-                ? `<span class="pill" title="${_al.texto.replace(/"/g, '&quot;')}" style="background:#FEF2F2;border-color:#F87171;color:#991B1B;font-weight:600;">⚠️ ${pr.produto}: ${pr.volume} m³${pr.ordemSAP ? ` · OS ${pr.ordemSAP}` : ''} · ${_al.tipo === 'nunca' ? 'nunca comprou' : `há ${_al.dias}d sem comprar`}</span>`
+                ? `<span class="pill" onclick="_confProdDiagnostico(${p.id})" title="${_al.texto.replace(/"/g, '&quot;')} — clique pra ver o histórico" style="background:#FEF2F2;border-color:#F87171;color:#991B1B;font-weight:600;cursor:pointer;">⚠️ ${pr.produto}: ${pr.volume} m³${pr.ordemSAP ? ` · OS ${pr.ordemSAP}` : ''} · ${_al.tipo === 'nunca' ? 'nunca comprou' : `há ${_al.dias}d sem comprar`}</span>`
                 : `<span class="pill">${pr.produto}: ${pr.volume} m³${pr.ordemSAP ? ` · OS ${pr.ordemSAP}` : ''}</span>`;
             }).join('')}
             <span class="pill" style="color:var(--pet-green);border-color:#C4E87A;">Total: ${totalVolPedido(p).toFixed(1)} m³</span>
@@ -9675,6 +9795,7 @@ function editarHorarioCargaDebounced(vid, ti, hhmm) {
   const min = parseHoraMin(hhmm);
   if (isNaN(min)) return;
   viagem.horarioCargaManualMin = min;
+  delete viagem.horarioCargaManualAbs;
   recalcularTimingViagem(viagem, v);
   recalcularControleTempo();
   renderTemplateOperacao();
@@ -9700,11 +9821,13 @@ function editarHorarioCarga(vid, ti, hhmm) {
 
   if (!hhmm) {
     delete viagem.horarioCargaManualMin;
+    delete viagem.horarioCargaManualAbs;
     delete viagem._alertaCargaManual;
   } else {
     const min = parseHoraMin(hhmm);
     if (isNaN(min)) return;
     viagem.horarioCargaManualMin = min;
+    delete viagem.horarioCargaManualAbs;
 
     // Verifica sobreposição com viagem anterior — gera alerta mas NÃO bloqueia
     const idxNaLista = viagens.indexOf(viagem);
@@ -11568,7 +11691,8 @@ async function abrirDetalheHistorico(filename) {
             ? `<td rowspan="${paradas.length}" style="padding:8px;font-weight:700;font-family:var(--font-cond);letter-spacing:.04em;vertical-align:top;white-space:nowrap;border-right:0.5px solid var(--border);background:var(--bg);${bordaGrupo}">
                  <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
                    <span>${petId}</span>
-                   <span onclick="abrirIncluirPedidoViagem('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Incluir um pedido nessa viagem (entra no fim, sem recalcular rota/horário) — cria uma nova revisão, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;margin-left:auto;">➕</span>
+                   <span onclick="abrirTrocaVeiculoHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Trocar o veículo e/ou o horário de carregamento desta viagem (só mostra veículos da mesma operação, com capacidade e compartimentos que servem)" style="cursor:pointer;font-size:11px;flex-shrink:0;margin-left:auto;">🔁</span>
+                   <span onclick="abrirIncluirPedidoViagem('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Incluir um pedido nessa viagem (entra no fim, sem recalcular rota/horário) — cria uma nova revisão, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;">➕</span>
                    <span onclick="excluirViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Excluir essa viagem (ex.: deu recuo) — cria uma nova revisão sem ela, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;">🗑</span>
                  </div>
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}${(() => {
@@ -11579,6 +11703,15 @@ async function abrirDetalheHistorico(filename) {
                  })()}</span>
                  <div style="margin:5px 0;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;user-select:text;">${baseCarregamento}</div>
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
+                 ${(() => {
+                   // Horário de carregamento (mesma conta da OR/Herrlog) — e
+                   // selo se foi trocado à mão (🔁).
+                   try {
+                     const ini = _histInicioCargaAbs(v, viagens, idx);
+                     const alt = (vi._alteracoesManuais || []).slice(-1)[0];
+                     return `<div style="margin-top:3px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;">🕐 ${_fmtAbs(_histBaseDate(data, vi), ini).br}${alt ? ` <span title="Alterado por ${String(alt.por || '').replace(/"/g, '')} em ${new Date(alt.em).toLocaleString('pt-BR')} — antes: ${String(alt.de || '').replace(/"/g, '')}" style="color:#4338CA;font-weight:700;">🔁</span>` : ''}</div>`;
+                   } catch (e) { return ''; }
+                 })()}
                  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;font-family:var(--font);letter-spacing:0;">
                    <button onclick="exportarPNGViagemHistorico('${String(petId).replace(/'/g, "\\'")}', false)" title="${data.revisaoDe ? 'PNG da OR desta viagem como está agora, com as alterações' : 'PNG da OR desta viagem'}" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;border:1px solid rgba(79,70,229,0.35);background:rgba(79,70,229,0.07);color:#4338CA;cursor:pointer;">🖼 PNG</button>
                    <button onclick="exportarPNGViagemHistorico('${String(petId).replace(/'/g, "\\'")}', false, true)" title="Enviar a OR desta viagem (versão atual) para o grupo de WhatsApp da transportadora" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;border:1px solid rgba(22,163,74,0.4);background:rgba(22,163,74,0.08);color:#15803D;cursor:pointer;">📲</button>
@@ -11739,6 +11872,234 @@ async function exportarPNGViagemHistorico(petId, original = false, enviarWhatsAp
     await _waAcompanhar([_waItem], { limiteMs: 120000 });
   }
 }
+// ══════════════════════════════════════════════════════════════════════════
+// TROCAR VEÍCULO / HORÁRIO de uma viagem já salva (modal de detalhe do Histórico)
+// ══════════════════════════════════════════════════════════════════════════
+// Só oferece veículos que dão conta da viagem:
+//   • mesma OPERAÇÃO (cidade da base da viagem — bases da mesma cidade valem);
+//   • capacidade ≥ volume da viagem;
+//   • compartimentos fecham EXATO com os produtos (mesma regra do motor);
+//   • não está "Indisponível" no cadastro.
+// Os que não servem aparecem numa lista à parte, com o motivo.
+// O horário vira "fixo" (dia + hora absolutos → horarioCargaManualAbs), e vale
+// igual no Histórico, na OR (Envio Transportadora/PNG/WhatsApp) e na Herrlog.
+// Ao tirar a viagem de um veículo, as viagens SEGUINTES dele têm o horário
+// congelado — senão elas "andariam pra trás" no tempo sem ninguém mexer.
+// Salva como nova revisão (o original fica preservado), igual às outras
+// edições do Histórico.
+let _trocaCtx = null;
+
+// Data base (dia 0) da viagem — mesma regra da exportação Herrlog.
+function _histBaseDate(data, vi) {
+  if (data.resultado?._baseDataEntrega) {
+    const d = new Date(data.resultado._baseDataEntrega);
+    if (!isNaN(d.getTime())) return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  const fp = vi?.paradas?.[0];
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(fp?.pedido?.dataEntregaLogistica || '');
+  if (m) { const d = new Date(+m[3], +m[2] - 1, +m[1]); if (fp.overnight) d.setDate(d.getDate() - 1); return d; }
+  const s = new Date(data.savedAt || Date.now());
+  return new Date(s.getFullYear(), s.getMonth(), s.getDate());
+}
+// Início de carga (minutos absolutos desde o dia base) — mesma conta da Herrlog.
+function _histInicioCargaAbs(v, viagens, idx) {
+  const vi = viagens[idx];
+  const jIniRaw = parseHoraMin(v.jornadaInicio || '06:00');
+  let jIniMin = isNaN(jIniRaw) ? 360 : jIniRaw;
+  if (v._horarioDisponivelAPartirDe) { const dm = parseHoraMin(v._horarioDisponivelAPartirDe); if (!isNaN(dm) && dm > jIniMin) jIniMin = dm; }
+  const override = vi.horarioCargaManualMin !== undefined && !isNaN(vi.horarioCargaManualMin);
+  let relogio = inicioViagemAbsMin(viagens, idx, jIniMin, v.tempoPerdidoMin || 0, doisTurnos(v) ? 2 : 1) + (vi.esperaTerminalMin || 0);
+  if (override) relogio = _inicioCargaManualAbsMin(viagens, idx, vi, jIniMin, v);
+  const inicio = override ? relogio : (vi._inicioCargaMin ?? relogio);
+  const p0 = vi.paradas?.[0];
+  const esp = p0?.tempoEsperaRestricaoMin || 0;
+  const atraso = (!override && !p0?.overnight && esp > 0 && (p0?.tempoCarregamentoMin || 0) > 0) ? esp : 0;
+  return inicio + atraso;
+}
+// Duração de "relógio" da viagem (pra checar sobreposição) — aproximada.
+function _histDuracaoParedeMin(vi) {
+  return (vi.tempoConsumidoMin || 0) + ((vi.paradas?.[0]?.overnight ? vi.paradas[0].waitAfterLoadingMin : 0) || 0);
+}
+const _fmtAbs = (base, abs) => {
+  const d = new Date(base.getTime() + Math.floor(abs / 1440) * 86400000);
+  const m = ((Math.round(abs) % 1440) + 1440) % 1440;
+  return { data: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+           hora: `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`,
+           br: `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}` };
+};
+// Avalia se o veículo serve pra viagem; devolve null (serve) ou o motivo.
+function _trocaMotivoIncompativel(v, vi) {
+  if ((v.disponibilidade || 'Disponível') === 'Indisponível') return 'indisponível no cadastro';
+  const terms = [...new Set((vi.paradas || []).map(p => p.pedido?.terminal).filter(Boolean))];
+  const termViagem = terms[0] || vi.terminalOrigem || '';
+  const cidV = normalizarCidade(cidadeBaseVeiculo(v));
+  const mesmaOperacao = t => veiculoAtendeTerminal(v, t) || (!!cidV && cidV === normalizarCidade(cidadeDoTerminal(t)));
+  if (termViagem && !(terms.length ? terms : [termViagem]).every(mesmaOperacao)) return `outra operação (${cidadeBaseVeiculo(v) || v.terminal || '—'})`;
+  const vol = (vi.paradas || []).reduce((s, p) => s + (p.volumeTotal || 0), 0);
+  const cap = (v.compartimentos || []).reduce((s, c) => s + (Number(c.cap) || 0), 0) || Number(v.capacidade) || 0;
+  if (cap && vol > cap + 0.001) return `capacidade ${cap} m³ < ${vol.toFixed(1)} m³ da viagem`;
+  if (!itensCabemNosCompartimentos(_itensDeParadas(vi.paradas), v)) return 'compartimentos não fecham com os produtos';
+  return null;
+}
+
+async function abrirTrocaVeiculoHistorico(veiculoId, petId) {
+  if (!_histDetalheFilenameAtual) return;
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  let data;
+  try { data = await _histLerArquivo(_histDetalheFilenameAtual); } catch (e) { alert('Erro ao ler o arquivo: ' + e.message); return; }
+  const vAtual = (data.veiculos || []).find(v => String(v.id) === String(veiculoId));
+  const lista = (data.resultado?.[veiculoId] || []).filter(vi => vi && !vi._vazio && (vi.paradas || []).length);
+  const idx = lista.findIndex(vi => vi.petId === petId);
+  if (!vAtual || idx === -1) { alert('Não achei essa viagem no arquivo.'); return; }
+  const vi = lista[idx];
+  const base = _histBaseDate(data, vi);
+  const inicioAtual = _histInicioCargaAbs(vAtual, lista, idx);
+  const vol = vi.paradas.reduce((s, p) => s + (p.volumeTotal || 0), 0);
+  // Candidatos: cadastro atual (fonte da verdade) + veículos do próprio arquivo.
+  const porPlaca = new Map();
+  (data.veiculos || []).forEach(v => v.placa && porPlaca.set(v.placa, { v, doArquivo: true }));
+  (veiculos || []).forEach(v => v.placa && porPlaca.set(v.placa, { v, doArquivo: porPlaca.has(v.placa) }));
+  const opcoes = [];
+  porPlaca.forEach(({ v }, placa) => {
+    const idArq = (data.veiculos || []).find(x => x.placa === placa)?.id;
+    const viagensArq = idArq != null ? (data.resultado?.[idArq] || []).filter(x => x && !x._vazio && (x.paradas || []).length) : [];
+    const vArq = (data.veiculos || []).find(x => x.placa === placa) || v;
+    const outras = viagensArq.filter(x => x !== vi).map(x => {
+      const ini = _histInicioCargaAbs(vArq, viagensArq, viagensArq.indexOf(x));
+      return { petId: x.petId, ini, fim: ini + _histDuracaoParedeMin(x) };
+    });
+    const cap = (v.compartimentos || []).reduce((s, c) => s + (Number(c.cap) || 0), 0) || Number(v.capacidade) || 0;
+    opcoes.push({ v, placa, cap, motivo: placa === vAtual.placa ? null : _trocaMotivoIncompativel(v, vi), outras, atual: placa === vAtual.placa });
+  });
+  opcoes.sort((a, b) => (b.atual - a.atual) || ((a.motivo ? 1 : 0) - (b.motivo ? 1 : 0)) || (a.cap - b.cap) || a.placa.localeCompare(b.placa));
+  _trocaCtx = { veiculoId, petId, base, inicioAtual, opcoes, duracao: _histDuracaoParedeMin(vi) };
+
+  const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const ok = opcoes.filter(o => !o.motivo), nao = opcoes.filter(o => o.motivo);
+  const optHtml = o => `<option value="${esc(o.placa)}" ${o.atual ? 'selected' : ''}>${esc(o.placa)} · ${esc(o.v.tipo || '')} · ${o.cap} m³ · ${esc(o.v.transportadora || '—')}${o.v.eixos ? ` · ${o.v.eixos} eixos` : ''}${o.atual ? ' (atual)' : (o.outras.length ? ` · já tem ${o.outras.length} viagem(ns) nesta programação` : '')}</option>`;
+  const ini = _fmtAbs(base, inicioAtual);
+  document.getElementById('troca-veic-modal')?.remove();
+  const m = document.createElement('div');
+  m.id = 'troca-veic-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem;';
+  m.onclick = e => { if (e.target === m) m.remove(); };
+  m.innerHTML = `<div style="background:#fff;color:#111827;border-radius:14px;padding:18px;width:100%;max-width:600px;max-height:90vh;overflow:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;"><div style="font-size:15px;font-weight:800;">🔁 Trocar veículo / horário — ${esc(petId)}</div><button onclick="document.getElementById('troca-veic-modal').remove()" style="border:none;background:none;font-size:18px;cursor:pointer;color:#6B7280;">✕</button></div>
+    <div style="font-size:12px;color:#4B5563;background:#F9FAFB;border-radius:8px;padding:8px 10px;margin:8px 0 12px;">
+      Atual: <b>${esc(vAtual.placa)}</b> · ${esc(vAtual.transportadora || '—')} · carregamento <b>${ini.br}</b><br>
+      Viagem: <b>${vol.toFixed(1)} m³</b> · base ${esc(vi.paradas[0]?.pedido?.terminal || vi.terminalOrigem || '—')} · ${vi.paradas.length} entrega(s)
+    </div>
+    <label style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;">Veículo (${ok.length} compatível${ok.length === 1 ? '' : 'is'})</label>
+    <select id="troca-veic-placa" onchange="_trocaAtualizarAvisos()" style="width:100%;font-size:12.5px;padding:7px 8px;margin:4px 0 12px;">${ok.map(optHtml).join('')}</select>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <div><label style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;">Dia do carregamento</label><br><input type="date" id="troca-veic-data" value="${ini.data}" min="${_fmtAbs(base, 0).data}" oninput="_trocaAtualizarAvisos()" style="font-size:12.5px;padding:6px 8px;margin-top:4px;"/></div>
+      <div><label style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;">Horário</label><br><input type="time" id="troca-veic-hora" value="${ini.hora}" oninput="_trocaAtualizarAvisos()" style="font-size:12.5px;padding:6px 8px;margin-top:4px;"/></div>
+    </div>
+    <div id="troca-veic-avisos" style="margin-top:12px;"></div>
+    ${nao.length ? `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:11.5px;color:#6B7280;">Veículos que não servem pra esta viagem (${nao.length})</summary>
+      <div style="font-size:11.5px;color:#6B7280;padding:6px 0 0 12px;line-height:1.6;">${nao.map(o => `• <b>${esc(o.placa)}</b> (${o.cap} m³, ${esc(o.v.transportadora || '—')}): ${esc(o.motivo)}`).join('<br>')}</div></details>` : ''}
+    <div style="font-size:10.5px;color:#9CA3AF;margin-top:10px;">Salva como nova revisão (o original fica preservado). O horário fica fixo e vale na OR, no PNG/WhatsApp e na Herrlog. Rota e km da viagem não mudam.</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button class="btn btn-green" onclick="salvarTrocaVeiculoHistorico()">💾 Salvar</button></div>
+  </div>`;
+  document.body.appendChild(m);
+  _trocaAtualizarAvisos();
+}
+function _trocaInicioDigitadoAbs() {
+  if (!_trocaCtx) return NaN;
+  const dt = document.getElementById('troca-veic-data')?.value, hr = document.getElementById('troca-veic-hora')?.value;
+  if (!dt || !hr) return NaN;
+  const [y, mo, d] = dt.split('-').map(Number);
+  const dias = Math.round((new Date(y, mo - 1, d).getTime() - _trocaCtx.base.getTime()) / 86400000);
+  const hm = parseHoraMin(hr);
+  return isNaN(hm) ? NaN : dias * 1440 + hm;
+}
+function _trocaAtualizarAvisos() {
+  const box = document.getElementById('troca-veic-avisos');
+  if (!box || !_trocaCtx) return;
+  const placa = document.getElementById('troca-veic-placa')?.value;
+  const o = _trocaCtx.opcoes.find(x => x.placa === placa);
+  const ini = _trocaInicioDigitadoAbs();
+  const avisos = [];
+  if (isNaN(ini) || ini < 0) avisos.push({ cor: '#B91C1C', txt: 'Dia/horário inválido (não pode ser antes do dia da programação).' });
+  if (o && !isNaN(ini)) {
+    const fim = ini + _trocaCtx.duracao;
+    const choque = o.outras.filter(x => ini < x.fim && fim > x.ini);
+    if (choque.length) avisos.push({ cor: '#B45309', txt: `⚠️ Choca com ${choque.map(x => `${x.petId} (${_fmtAbs(_trocaCtx.base, x.ini).br}–${_fmtAbs(_trocaCtx.base, x.fim).br})`).join(', ')} do ${placa}. Pode salvar, mas confira.` });
+    else if (o.outras.length) avisos.push({ cor: '#4B5563', txt: `Outras viagens do ${placa} nesta programação: ${o.outras.map(x => `${x.petId} ${_fmtAbs(_trocaCtx.base, x.ini).br}`).join(', ')}.` });
+    if (o.v._horarioDisponivelAPartirDe) {
+      const disp = parseHoraMin(o.v._horarioDisponivelAPartirDe);
+      if (!isNaN(disp) && (ini % 1440) < disp && Math.floor(ini / 1440) === 0) avisos.push({ cor: '#B45309', txt: `⚠️ Transportador informou ${placa} disponível só a partir das ${o.v._horarioDisponivelAPartirDe}.` });
+    }
+  }
+  box.innerHTML = avisos.map(a => `<div style="font-size:12px;color:${a.cor};margin-bottom:4px;">${a.txt}</div>`).join('');
+}
+async function salvarTrocaVeiculoHistorico() {
+  if (!_trocaCtx) return;
+  const { veiculoId, petId } = _trocaCtx;
+  const placa = document.getElementById('troca-veic-placa')?.value;
+  const opc = _trocaCtx.opcoes.find(x => x.placa === placa);
+  const novoIni = _trocaInicioDigitadoAbs();
+  if (!opc) { alert('Escolha um veículo.'); return; }
+  if (isNaN(novoIni) || novoIni < 0) { alert('Dia/horário inválido.'); return; }
+  const mudouVeiculo = !opc.atual;
+  const mudouHora = Math.round(novoIni) !== Math.round(_trocaCtx.inicioAtual);
+  if (!mudouVeiculo && !mudouHora) { document.getElementById('troca-veic-modal')?.remove(); return; }
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  const filenameAtual = _histDetalheFilenameAtual;
+  try {
+    const data = await _histLerArquivo(filenameAtual); // relê fresco
+    if (data.substituidoPor) { alert(`Esse arquivo já foi substituído por outra revisão (${data.substituidoPor}). Abra a versão mais nova.`); return; }
+    const vOrig = (data.veiculos || []).find(v => String(v.id) === String(veiculoId));
+    const listaBruta = data.resultado?.[veiculoId];
+    const listaOrig = (listaBruta || []).filter(vi => vi && !vi._vazio && (vi.paradas || []).length);
+    const idx = listaOrig.findIndex(vi => vi.petId === petId);
+    if (!vOrig || idx === -1) { alert('Não achei essa viagem no arquivo — talvez já tenha mudado.'); return; }
+    const vi = listaOrig[idx];
+    const base = _histBaseDate(data, vi);
+    const deTxt = `${vOrig.placa} ${_fmtAbs(base, _histInicioCargaAbs(vOrig, listaOrig, idx)).br}`;
+    if (mudouVeiculo) {
+      // Congela o horário das viagens SEGUINTES do veículo de origem antes de
+      // tirar esta (senão elas andariam pra trás no tempo).
+      const inicios = listaOrig.map((x, j) => _histInicioCargaAbs(vOrig, listaOrig, j));
+      listaOrig.forEach((x, j) => {
+        if (j > idx && !(x.horarioCargaManualMin !== undefined && x.horarioCargaManualAbs)) {
+          x.horarioCargaManualMin = Math.round(inicios[j]);
+          x.horarioCargaManualAbs = true;
+        }
+      });
+      listaBruta.splice(listaBruta.indexOf(vi), 1);
+      // Veículo de destino: usa o do arquivo se já existir; senão copia do cadastro.
+      let vDest = (data.veiculos || []).find(v => v.placa === placa);
+      if (!vDest) {
+        vDest = JSON.parse(JSON.stringify(opc.v));
+        const ids = new Set((data.veiculos || []).map(v => String(v.id)));
+        if (vDest.id == null || ids.has(String(vDest.id))) vDest.id = Date.now();
+        data.veiculos = [...(data.veiculos || []), vDest];
+      }
+      if (!Array.isArray(data.resultado[vDest.id])) data.resultado[vDest.id] = [];
+      data.resultado[vDest.id].push(vi); // no fim: não mexe no horário das viagens que ele já tinha
+      if (_trocaMotivoIncompativel(vDest, vi)) console.warn('[troca] veículo do arquivo divergente do cadastro:', placa);
+    }
+    vi.horarioCargaManualMin = Math.round(novoIni);
+    vi.horarioCargaManualAbs = true;
+    delete vi._inicioCargaMin;
+    vi._alteracoesManuais = [...(vi._alteracoesManuais || []), {
+      em: new Date().toISOString(), por: (typeof S !== 'undefined' && S?.user) || '',
+      de: deTxt, para: `${placa} ${_fmtAbs(base, novoIni).br}`,
+    }];
+    const novoFilename = await _histSalvarRevisao(filenameAtual, data);
+    document.getElementById('troca-veic-modal')?.remove();
+    showToast(`${petId}: ${mudouVeiculo ? `veículo ${placa}` : ''}${mudouVeiculo && mudouHora ? ' · ' : ''}${mudouHora ? `carregamento ${_fmtAbs(base, novoIni).br}` : ''} — nova revisão salva.`, true);
+    await abrirDetalheHistorico(novoFilename);
+    if (typeof carregarListaHistorico === 'function') carregarListaHistorico();
+  } catch (e) {
+    console.error('[Histórico] troca de veículo/horário:', e);
+    alert('Erro ao salvar: ' + e.message);
+  }
+}
+window.abrirTrocaVeiculoHistorico = abrirTrocaVeiculoHistorico;
+window._trocaAtualizarAvisos = _trocaAtualizarAvisos;
+window.salvarTrocaVeiculoHistorico = salvarTrocaVeiculoHistorico;
 window.exportarPNGViagemHistorico = exportarPNGViagemHistorico;
 function fecharDetalheHistorico(ev = null) {
   if (ev && ev.target && ev.target.id !== 'modal-hist-detalhe') return;
