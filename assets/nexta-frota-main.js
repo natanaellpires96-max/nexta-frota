@@ -620,7 +620,7 @@ async function dbGetCarriers() {
     const value = snap.exists() ? snap.data().list : null;
     cacheSet("cfg_carriers", value, 300_000);
     return value;
-  } catch(e) { return null; }
+  } catch(e) { console.warn('[dbGetCarriers] não consegui ler config/carriers:', e?.code || e); return null; }
 }
 async function dbSaveCarriers(list) {
   await setDoc(doc(db, "config", "carriers"), { list });
@@ -666,7 +666,8 @@ async function loadConfig() {
   ];
   const [fbUsers, fbCarriers, fbOps, fbCutoff, fbMeta, fbMetaSla] = await Promise.all(loaders);
   if(fbUsers) _atualizarUsersDb(fbUsers);
-  if(fbCarriers) CARRIERS = fbCarriers;
+  // Atualiza NO LUGAR (mesmo array) — outros módulos guardam window.CARRIERS.
+  if(Array.isArray(fbCarriers) && fbCarriers.length){ CARRIERS.length = 0; CARRIERS.push(...fbCarriers); }
   if(fbOps) OPERACOES = fbOps;
   if(Number.isFinite(fbCutoff)) ALERT_CUTOFF_HOUR = fbCutoff;
   if(Number.isFinite(fbMeta) && fbMeta > 0) META_DISP = fbMeta;
@@ -5723,6 +5724,18 @@ loadConfig().catch(e=>{ console.error(e); }).then(()=>{
         }
         S.user = uid;
         saveSession(uid);
+        // A config (transportadoras, operações, metas) é lida uma vez ANTES do
+        // login — e as regras do Firestore exigem login, então essa primeira
+        // leitura é recusada e o sistema ficava com a lista FIXA de 5
+        // transportadoras/7 operações do código. O admin só via a lista real
+        // porque a tela Cadastros › Usuários recarrega as transportadoras;
+        // o operacional nunca passava por ali e via placas/transportadoras
+        // faltando no Daily Briefing, KPIs, Disponibilidade, Auditoria e
+        // Relatórios. Agora, com o login confirmado, recarrega tudo de verdade.
+        try {
+          cacheInvalidate('cfg_carriers', 'cfg_operacoes', 'alert_cutoff', 'cfg_meta_disp', 'cfg_meta_sla');
+          await loadConfig();
+        } catch(e) { console.warn('[onAuthStateChanged] falha ao recarregar a configuração:', e); }
       } else {
         // Usuário existe no Auth mas não tem perfil no Firestore → logout
         await signOut(auth);
