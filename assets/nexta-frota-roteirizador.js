@@ -11277,6 +11277,7 @@ async function salvarNoHistorico(silencioso = false) {
     if (!silencioso) alert(`Roteirização salva: ${filename}`);
     await popularDropdownRoteirizacoes();
     popularSeletorResumoDia().catch(()=>{});
+    telaoPublicarDatasDepois(datasEntrega); // telão da sala de operação
     // ── Km real em segundo plano (NÃO bloqueia o salvamento) ────────────────
     // Antes, essa busca (via ORS, trajeto de verdade) rodava ANTES de gravar
     // o arquivo — com o limitador de 30 req/min compartilhado com todo o
@@ -12331,6 +12332,7 @@ async function _histSalvarRevisao(filenameAtual, data) {
   await wsAntigo.close();
   delete _histMetaCache[filenameAtual];
   delete _histMetaCache[novoFilename];
+  telaoPublicarDatasDepois(data.datasEntrega || []); // telão da sala de operação
   return novoFilename;
 }
 async function excluirViagemHistorico(veiculoId, petId) {
@@ -13113,6 +13115,140 @@ async function _carregarConsolidadoData(dataBr) {
 }
 window._carregarConsolidadoData = _carregarConsolidadoData;
 
+// ══════════════════════════════════════════════════════════════════════════
+// TELÃO — publica o resumo da programação de cada data no Firestore
+// ══════════════════════════════════════════════════════════════════════════
+// O Histórico mora numa pasta deste computador; o telão (outro computador)
+// não enxerga essa pasta. Então, sempre que uma programação é salva (ou uma
+// revisão é gravada no Histórico), o sistema junta TODAS as programações
+// vigentes daquela data de entrega (mesma regra do "📅 Tudo de uma data") e
+// grava um resumo pequeno em telao_programacao/{AAAA-MM-DD}. O telão só lê
+// esses documentos. Botão "📺 Atualizar telão" no Resumo Operação republica
+// o mês inteiro (útil na primeira vez ou depois de mexer em arquivos à mão).
+const TELAO_COLECAO = 'telao_programacao';
+function _telaoIso(dataBr) { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dataBr || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; }
+
+function _telaoResumoData(dataBr, consolidado, nArquivos) {
+  const { estado } = consolidado;
+  const baseD = new Date(estado.resultado._baseDataEntrega);
+  const baseMs = new Date(baseD.getFullYear(), baseD.getMonth(), baseD.getDate()).getTime();
+  const viagens = [];
+  const atendidos = new Set();
+  const porBase = new Map(), porTransp = new Map();
+  const add = (map, k, placa, vol, cap, ent) => {
+    if (!map.has(k)) map.set(k, { nome: k, viagens: 0, placas: new Set(), volume: 0, capacidade: 0, entregas: 0 });
+    const o = map.get(k); o.viagens++; o.placas.add(placa); o.volume += vol; o.capacidade += cap; o.entregas += ent;
+  };
+  (estado.veiculos || []).forEach(v => {
+    (estado.resultado[v.id] || []).forEach(vi => {
+      const paradas = (vi.paradas || []).filter(pa => pa.pedido);
+      if (!paradas.length) return;
+      const ini = baseMs + Math.round((vi.horarioCargaManualMin || 0) * 60000);
+      const fim = ini + Math.round(_histDuracaoParedeMin(vi) * 60000);
+      const volume = paradas.reduce((s, pa) => s + (pa.volumeTotal || 0), 0);
+      const cap = Number(v.capacidade) || 0;
+      const base = vi.terminalOrigem || v.terminal || paradas[0].pedido.terminal || '—';
+      const transp = v.transportadora || '—';
+      paradas.forEach(pa => atendidos.add(String(pa.pedido.id)));
+      const cidades = [...new Set(paradas.map(pa => pa.pedido.cidade).filter(Boolean))];
+      viagens.push({ placa: v.placa, transp, base, ini, fim, entregas: paradas.length, volume: Math.round(volume * 10) / 10, cap,
+        cidades: cidades.slice(0, 4), clientes: paradas.map(pa => pa.pedido.cliente || '').slice(0, 4), pet: vi.petId || '' });
+      add(porBase, base, v.placa, volume, cap, paradas.length);
+      add(porTransp, transp, v.placa, volume, cap, paradas.length);
+    });
+  });
+  viagens.sort((a, b) => a.ini - b.ini);
+  const pedidosDia = (estado.pedidos || []).filter(p => p.dataEntregaLogistica === dataBr);
+  const volPed = p => (p.produtos || []).reduce((s, pr) => s + (Number(pr.volume) || 0), 0);
+  const naoAtendidos = pedidosDia.filter(p => !atendidos.has(String(p.id)))
+    .map(p => ({ cliente: p.cliente || '', cidade: p.cidade || '', base: p.terminal || '', volume: Math.round(volPed(p) * 10) / 10 }))
+    .sort((a, b) => b.volume - a.volume);
+  const fecha = m => [...m.values()].map(o => ({ nome: o.nome, viagens: o.viagens, placas: o.placas.size, volume: Math.round(o.volume * 10) / 10,
+    capacidade: Math.round(o.capacidade * 10) / 10, entregas: o.entregas })).sort((a, b) => b.volume - a.volume);
+  const tot = viagens.reduce((t, x) => { t.volume += x.volume; t.capacidade += x.cap; t.entregas += x.entregas; return t; }, { volume: 0, capacidade: 0, entregas: 0 });
+  const iso = _telaoIso(dataBr);
+  return {
+    data: iso, dataBr, mes: iso.slice(0, 7),
+    atualizadoEm: new Date().toISOString(),
+    atualizadoPor: (window.S && window.S.user) || '',
+    programacoes: nArquivos,
+    totais: {
+      viagens: viagens.length, placas: new Set(viagens.map(x => x.placa)).size,
+      volume: Math.round(tot.volume * 10) / 10, capacidade: Math.round(tot.capacidade * 10) / 10, entregas: tot.entregas,
+      pedidos: pedidosDia.length, pedidosAtendidos: pedidosDia.length - naoAtendidos.length,
+      demanda: Math.round(pedidosDia.reduce((s, p) => s + volPed(p), 0) * 10) / 10,
+    },
+    porBase: fecha(porBase), porTransp: fecha(porTransp),
+    viagens: viagens.slice(0, 400),
+    naoAtendidos: naoAtendidos.slice(0, 60),
+  };
+}
+// Lê o Histórico uma vez e devolve, por data, os arquivos vigentes que a contêm.
+async function _telaoArquivosPorData(filtroData) {
+  const porData = new Map();
+  for await (const [name, handle] of dirHandleHistorico.entries()) {
+    if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+    try {
+      const data = JSON.parse(await (await handle.getFile()).text());
+      if (data.substituidoPor || !data.resultado) continue;
+      const datas = new Set(data.datasEntrega || []);
+      (data.pedidos || []).forEach(p => p?.dataEntregaLogistica && datas.add(p.dataEntregaLogistica));
+      datas.forEach(d => {
+        if (!_telaoIso(d) || (filtroData && !filtroData(d))) return;
+        if (!porData.has(d)) porData.set(d, []);
+        porData.get(d).push({ name, data });
+      });
+    } catch (e) { /* arquivo ilegível */ }
+  }
+  return porData;
+}
+async function telaoPublicarDatas(datasBr, { silencioso = true } = {}) {
+  if (!window.fbDb || !window.fbSetDoc || !dirHandleHistorico) return { ok: 0, erros: 0 };
+  const alvo = new Set((datasBr || []).filter(_telaoIso));
+  if (!alvo.size) return { ok: 0, erros: 0 };
+  if (!await _histGarantirPermissao()) return { ok: 0, erros: 0 };
+  const porData = await _telaoArquivosPorData(d => alvo.has(d));
+  let ok = 0, erros = 0, ultimoErro = null;
+  for (const d of alvo) {
+    const arquivos = porData.get(d) || [];
+    try {
+      const ref = window.fbDoc(window.fbDb, TELAO_COLECAO, _telaoIso(d));
+      if (!arquivos.length) { if (window.fbDeleteDoc) await window.fbDeleteDoc(ref); ok++; continue; } // data sem programação vigente
+      arquivos.sort((a, b) => String(a.data.savedAt).localeCompare(String(b.data.savedAt)));
+      const cons = _consolidarArquivos(d, arquivos);
+      await window.fbSetDoc(ref, _telaoResumoData(d, cons, cons.usados.length));
+      ok++;
+    } catch (e) { erros++; ultimoErro = e; console.warn('[telão] falha ao publicar', d, e); }
+  }
+  if (erros && !silencioso) {
+    const semPerm = /permission/i.test(String(ultimoErro?.code || ultimoErro?.message || ''));
+    alert(`📺 Telão: ${ok} data(s) publicada(s), ${erros} com erro.` + (semPerm ? '\n\nO Firestore recusou (sem permissão) — falta o trecho de regras do telão no firestore.rules.' : `\n\n${ultimoErro?.message || ultimoErro}`));
+  }
+  return { ok, erros };
+}
+// Depois de salvar: publica em segundo plano, sem travar nem avisar (só loga).
+function telaoPublicarDatasDepois(datasBr) {
+  const lista = [...new Set(datasBr || [])];
+  if (!lista.length) return;
+  setTimeout(() => { telaoPublicarDatas(lista).catch(e => console.warn('[telão]', e)); }, 300);
+}
+// Botão "📺 Atualizar telão": republica do 1º dia do mês passado em diante.
+async function telaoPublicarMes(btn) {
+  if (!dirHandleHistorico) { alert('Selecione a pasta do Histórico primeiro (aba Histórico).'); return; }
+  if (!await _histGarantirPermissao()) return;
+  const hoje = new Date();
+  const inicio = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1).getTime();
+  const txt = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = '📺 Publicando…'; }
+  try {
+    const porData = await _telaoArquivosPorData(d => { const iso = _telaoIso(d); return iso && new Date(iso + 'T00:00:00').getTime() >= inicio; });
+    const r = await telaoPublicarDatas([...porData.keys()], { silencioso: false });
+    if (!r.erros) showToast(`📺 Telão atualizado: ${r.ok} data(s) de entrega publicada(s).`, true);
+  } finally { if (btn) { btn.disabled = false; btn.textContent = txt; } }
+}
+window.telaoPublicarMes = telaoPublicarMes;
+window.telaoPublicarDatas = telaoPublicarDatas;
+
 async function popularDropdownRoteirizacoes() {
   const selects = document.querySelectorAll('.sel-roteirizacao');
   if (!selects.length) return;
@@ -13254,6 +13390,7 @@ async function excluirEntradaHistorico(filename, btn) {
   delete _histMetaCache[filename];
   if (!confirm(`Excluir "${filename}" do histórico?`)) return;
   if (!await _histGarantirPermissao()) return;
+  let datasDoArquivo = [];
   try {
     // ── Desfaz vínculos de revisão ANTES de excluir ──────────────────────
     // Sem isso: excluir a versão MAIS RECENTE de uma correção (que tem
@@ -13269,6 +13406,7 @@ async function excluirEntradaHistorico(filename, btn) {
       const fh = await dirHandleHistorico.getFileHandle(filename);
       const file = await fh.getFile();
       const data = JSON.parse(await file.text());
+      datasDoArquivo = data.datasEntrega || [];
       if (data.revisaoDe) {
         try {
           const fhAnt = await dirHandleHistorico.getFileHandle(data.revisaoDe);
@@ -13302,6 +13440,7 @@ async function excluirEntradaHistorico(filename, btn) {
       // a exclusão mesmo assim (comportamento anterior), só sem a limpeza.
     }
     await dirHandleHistorico.removeEntry(filename);
+    telaoPublicarDatasDepois(datasDoArquivo); // telão: tira do painel o que foi excluído
     await carregarListaHistorico(); // não só remove a linha — reconstrói a lista pra refletir qualquer vínculo desfeito acima
   } catch(e) {
     alert('Erro ao excluir: ' + e.message);

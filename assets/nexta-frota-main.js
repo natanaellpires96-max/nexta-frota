@@ -1003,6 +1003,7 @@ const STATUS_OPTS = [
 // ═══════════════════════════════════════════════════════════
 let S = {
   user: null, dateOffset: 0, adminTab: "dashboard",
+  telao: new URLSearchParams(location.search).has('telao'), // ?telao=1 abre direto no modo telão
   notifOpen: false, histDays: 45,
   histCarrier:"", histStatus:"", histOp:"", histPlaca:"", todayOp:"", todayPlaca:"",
   // Filtros novos do Painel de Disponibilidade — Transportadora (dropdown
@@ -1470,14 +1471,446 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
   </div>`;
 }
 // ═══════════════════════════════════════════════════════════
+// TELÃO — painel da sala de operação (tela cheia, roda sozinho)
+// ═══════════════════════════════════════════════════════════
+// Abre pelo botão "📺 Telão" (admin/operacional) ou direto pelo endereço
+// com ?telao=1 (pra deixar o computador da TV abrindo sozinho). Gira entre
+// 5 telas a cada 25s, recarrega os dados a cada 5 min e mostra a hora da
+// última atualização — se a internet cair, o relógio de "atualizado às"
+// para de andar e a faixa fica vermelha, pra ninguém confiar em dado velho.
+// Teclas: ← → troca de tela · espaço pausa · R recarrega · Esc sai.
+//   • Disponibilidade (hoje) e Preenchimento (amanhã): Firestore, ao vivo.
+//   • Programação (hoje/amanhã) e Mês: telao_programacao/{AAAA-MM-DD},
+//     publicado pelo Roteirizador a cada programação salva.
+const TELAO_TROCA_MS = 25000;
+const TELAO_DADOS_MS = 5 * 60000;
+const _telao = { ativo: false, idx: 0, pausado: false, dados: null, carregadoEm: 0, erro: null, timers: [], trocaEm: 0 };
+const _TL_COR = { disponivel: '#6ee04a', indisponivel: '#f06060', manutencao: '#f0be40', folga: '#70a8f0', programado: '#b07ef0', pendente: '#5d6b5b' };
+const _tlNum = (n, d = 0) => Number(n || 0).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+const _tlHora = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+const _tlDataBr = iso => iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '';
+const _tlDiaSemana = iso => ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'][new Date(iso + 'T12:00:00').getDay()];
+
+async function _telaoDisponibilidade(ds, allP) {
+  const ativos = CARRIERS.filter(c => (allP[c] || []).some(p => p.ativo !== false));
+  const pairs = [];
+  ativos.forEach(c => (allP[c] || []).filter(p => p.ativo !== false).forEach(p => pairs.push({ carrier: c, plate: p.placa, dateStr: ds })));
+  const [sm, locks] = await Promise.all([dbLoadStatusBulk(pairs), Promise.all(ativos.map(c => dbGetLock(c, ds)))]);
+  const tot = { disponivel: 0, indisponivel: 0, manutencao: 0, folga: 0, programado: 0, pendente: 0, total: 0 };
+  const porTransp = ativos.map((c, i) => {
+    const placas = (allP[c] || []).filter(p => p.ativo !== false);
+    const st = placas.map(p => sm[`${c}||${p.placa}||${ds}`]?.status || null);
+    const r = { nome: c, total: placas.length, disponivel: 0, indisponivel: 0, manutencao: 0, folga: 0, programado: 0, pendente: 0 };
+    st.forEach(s => { if (s && r[s] !== undefined) r[s]++; else r.pendente++; });
+    r.preenchidas = r.total - r.pendente;
+    const denom = r.preenchidas - r.folga - r.programado; // mesma conta do Daily Briefing
+    r.pct = denom > 0 ? Math.round(r.disponivel / denom * 100) : null;
+    r.concluido = !!locks[i] || (r.total > 0 && r.pendente === 0);
+    Object.keys(tot).forEach(k => { if (k !== 'total') tot[k] += r[k]; });
+    tot.total += r.total;
+    return r;
+  });
+  const denomG = tot.total - tot.pendente - tot.folga - tot.programado;
+  tot.pct = denomG > 0 ? Math.round(tot.disponivel / denomG * 100) : null;
+  return { ds, porTransp, tot };
+}
+async function _telaoCarregarDados() {
+  cacheInvalidatePrefix('status||');
+  cacheInvalidate('plates');
+  const hoje = dateStr(0), amanha = dateStr(1), mes = hoje.slice(0, 7);
+  const allP = await dbGetPlates();
+  const lerProg = async iso => { try { const s = await getDoc(doc(db, 'telao_programacao', iso)); return s.exists() ? s.data() : null; } catch (e) { return { _erro: e }; } };
+  const lerMes = async () => {
+    try {
+      const snap = await getDocs(query(collection(db, 'telao_programacao'), where('mes', '==', mes)));
+      const l = []; snap.forEach(d => l.push(d.data())); return l;
+    } catch (e) { return { _erro: e }; }
+  };
+  const [dispHoje, dispAmanha, progHoje, progAmanha, docsMes] = await Promise.all([
+    _telaoDisponibilidade(hoje, allP), _telaoDisponibilidade(amanha, allP), lerProg(hoje), lerProg(amanha), lerMes(),
+  ]);
+  const semPerm = [progHoje, progAmanha, docsMes].some(x => x && x._erro && /permission/i.test(String(x._erro.code || x._erro.message)));
+  return { hoje, amanha, mes, dispHoje, dispAmanha,
+    progHoje: progHoje?._erro ? null : progHoje, progAmanha: progAmanha?._erro ? null : progAmanha,
+    docsMes: Array.isArray(docsMes) ? docsMes : [], semPermProg: semPerm };
+}
+
+// ── Telas ────────────────────────────────────────────────────────────────
+function _tlKpi(valor, rotulo, cor = '', sub = '') {
+  return `<div class="tl-kpi"><div class="tl-kpi-v" style="${cor ? `color:${cor}` : ''}">${valor}</div><div class="tl-kpi-l">${rotulo}</div>${sub ? `<div class="tl-kpi-s">${sub}</div>` : ''}</div>`;
+}
+function _tlCorPct(p) { return p == null ? '#8a9a86' : p >= META_DISP ? '#6ee04a' : p >= 70 ? '#f0be40' : '#f06060'; }
+function _telaoTelaDisponibilidade(D) {
+  const { tot, porTransp } = D.dispHoje;
+  const linhas = [...porTransp].sort((a, b) => (a.pct ?? 999) - (b.pct ?? 999) || b.total - a.total).map(r => {
+    const segs = ['disponivel', 'indisponivel', 'manutencao', 'folga', 'programado', 'pendente']
+      .map(k => r[k] ? `<span style="flex:${r[k]};background:${_TL_COR[k]}"></span>` : '').join('');
+    return `<div class="tl-row">
+      <div class="tl-row-nome">${esc(r.nome)}</div>
+      <div class="tl-stack">${segs}</div>
+      <div class="tl-row-pct" style="color:${_tlCorPct(r.pct)}">${r.pct == null ? '—' : r.pct + '%'}</div>
+      <div class="tl-row-n">${r.disponivel}/${r.total}</div>
+    </div>`;
+  }).join('');
+  const chips = [['disponivel', 'Disponível'], ['indisponivel', 'Indisponível'], ['manutencao', 'Manutenção'], ['folga', 'Folga'], ['programado', 'Programado/Em viagem'], ['pendente', 'Sem resposta']]
+    .map(([k, l]) => `<div class="tl-chip"><span class="tl-dot" style="background:${_TL_COR[k]}"></span><b>${tot[k]}</b> ${l}</div>`).join('');
+  return `<div class="tl-split">
+    <div class="tl-hero">
+      <div class="tl-hero-v" style="color:${_tlCorPct(tot.pct)}">${tot.pct == null ? '—' : tot.pct + '%'}</div>
+      <div class="tl-hero-l">da frota disponível</div>
+      <div class="tl-hero-meta">Meta ${META_DISP}% · ${tot.total} placas ativas</div>
+      <div class="tl-chips">${chips}</div>
+    </div>
+    <div class="tl-panel"><div class="tl-panel-t">Por transportadora <span>pior primeiro · disponíveis/placas</span></div>${linhas || '<div class="tl-vazio">Sem placas cadastradas</div>'}</div>
+  </div>`;
+}
+function _telaoTelaPreenchimento(D) {
+  const { porTransp } = D.dispAmanha;
+  const corte = new Date(); corte.setHours(ALERT_CUTOFF_HOUR, 0, 0, 0);
+  const falta = corte.getTime() - Date.now();
+  const passou = falta <= 0;
+  const h = Math.floor(Math.abs(falta) / 3600000), m = Math.floor(Math.abs(falta) % 3600000 / 60000);
+  const concl = porTransp.filter(r => r.concluido).length;
+  const cards = [...porTransp].sort((a, b) => Number(a.concluido) - Number(b.concluido) || (a.preenchidas / a.total) - (b.preenchidas / b.total)).map(r => {
+    const pct = r.total ? Math.round(r.preenchidas / r.total * 100) : 0;
+    const est = r.concluido ? { t: '✓ Concluído', c: '#6ee04a', bg: 'rgba(110,224,74,.10)' }
+      : r.preenchidas === 0 ? { t: passou ? '✕ Não preencheu' : 'Não iniciou', c: passou ? '#f06060' : '#8a9a86', bg: passou ? 'rgba(240,96,96,.12)' : 'rgba(255,255,255,.03)' }
+      : { t: `${r.preenchidas}/${r.total} placas`, c: passou ? '#f06060' : '#f0be40', bg: passou ? 'rgba(240,96,96,.12)' : 'rgba(240,190,64,.10)' };
+    return `<div class="tl-card" style="border-color:${est.c}55;background:${est.bg}">
+      <div class="tl-card-nome">${esc(r.nome)}</div>
+      <div class="tl-card-st" style="color:${est.c}">${est.t}</div>
+      <div class="tl-bar"><span style="width:${pct}%;background:${est.c}"></span></div>
+    </div>`;
+  }).join('');
+  return `<div class="tl-col">
+    <div class="tl-kpis">
+      ${_tlKpi(`${concl}<small>/${porTransp.length}</small>`, 'transportadoras concluíram', concl === porTransp.length ? '#6ee04a' : '')}
+      ${_tlKpi(`${String(ALERT_CUTOFF_HOUR).padStart(2, '0')}:00`, 'horário de corte (hoje)')}
+      ${_tlKpi(passou ? `há ${h}h${String(m).padStart(2, '0')}` : `${h}h${String(m).padStart(2, '0')}`, passou ? 'o corte já passou' : 'até o corte', passou ? (concl < porTransp.length ? '#f06060' : '#6ee04a') : (h < 2 ? '#f0be40' : ''))}
+    </div>
+    <div class="tl-cards">${cards || '<div class="tl-vazio">Sem transportadoras ativas</div>'}</div>
+  </div>`;
+}
+function _telaoStatusViagem(v, agora) {
+  if (agora < v.ini) return { t: 'Aguardando', c: '#8a9a86', o: 1 };
+  if (agora < v.fim) return { t: 'Em viagem', c: '#70a8f0', o: 0 };
+  return { t: 'Concluída', c: '#6ee04a', o: 2 };
+}
+function _telaoKpisProg(P) {
+  const t = P.totais || {};
+  const ocup = t.capacidade ? Math.round(t.volume / t.capacidade * 100) : null;
+  const atend = t.pedidos ? Math.round(t.pedidosAtendidos / t.pedidos * 100) : null;
+  return `<div class="tl-kpis">
+    ${_tlKpi(_tlNum(t.viagens), 'viagens', '', `${_tlNum(t.placas)} placas`)}
+    ${_tlKpi(`${_tlNum(t.volume)}<small> m³</small>`, 'programado', '', t.demanda ? `de ${_tlNum(t.demanda)} m³ de demanda` : '')}
+    ${_tlKpi(`${_tlNum(t.pedidosAtendidos)}<small>/${_tlNum(t.pedidos)}</small>`, 'pedidos atendidos', atend == null ? '' : atend >= 100 ? '#6ee04a' : atend >= 90 ? '#f0be40' : '#f06060')}
+    ${_tlKpi(_tlNum(t.entregas), 'entregas', '', t.viagens ? `${_tlNum(t.entregas / t.viagens, 1)} por viagem` : '')}
+    ${_tlKpi(ocup == null ? '—' : ocup + '%', 'ocupação média', ocup == null ? '' : ocup >= 90 ? '#6ee04a' : ocup >= 75 ? '#f0be40' : '#f06060')}
+  </div>`;
+}
+function _telaoSemProg(D, quando, iso) {
+  return `<div class="tl-msg"><div class="tl-msg-i">🗓</div>
+    <div class="tl-msg-t">Programação de ${quando} (${_tlDataBr(iso)}) ainda não publicada</div>
+    <div class="tl-msg-s">${D.semPermProg ? 'O Firestore recusou a leitura — falta o trecho de regras do telão no firestore.rules.' : 'Ela aparece aqui sozinha assim que alguém salvar a programação (ou clicar em “📺 Atualizar telão” no Resumo Operação).'}</div></div>`;
+}
+function _telaoTelaHoje(D) {
+  const P = D.progHoje;
+  if (!P) return _telaoSemProg(D, 'hoje', D.hoje);
+  const agora = Date.now();
+  const vs = (P.viagens || []).map(v => ({ ...v, st: _telaoStatusViagem(v, agora) }));
+  const cont = { 0: 0, 1: 0, 2: 0 }; vs.forEach(v => cont[v.st.o]++);
+  const lista = vs.filter(v => v.st.o !== 2).sort((a, b) => a.st.o - b.st.o || a.ini - b.ini);
+  const MAX = 11;
+  const linhas = lista.slice(0, MAX).map(v => `<tr>
+      <td class="tl-mono">${_tlHora(v.ini)}</td>
+      <td class="tl-mono tl-b">${esc(v.placa)}</td>
+      <td>${esc(v.transp)}</td>
+      <td>${esc(v.base)}</td>
+      <td class="tl-dest">${esc((v.cidades || []).join(' · '))}</td>
+      <td class="tl-r">${v.entregas}</td>
+      <td class="tl-r tl-mono">${_tlNum(v.volume)} m³</td>
+      <td class="tl-mono">${_tlHora(v.fim)}</td>
+      <td><span class="tl-pill" style="color:${v.st.c};border-color:${v.st.c}66">${v.st.t}</span></td>
+    </tr>`).join('');
+  return `<div class="tl-col">
+    ${_telaoKpisProg(P)}
+    <div class="tl-panel tl-grow">
+      <div class="tl-panel-t">Quadro de viagens <span><b style="color:#70a8f0">${cont[0]}</b> em viagem · <b>${cont[1]}</b> aguardando · <b style="color:#6ee04a">${cont[2]}</b> concluídas (pelo horário previsto)</span></div>
+      ${lista.length ? `<table class="tl-tab"><thead><tr><th>Carga</th><th>Placa</th><th>Transportadora</th><th>Base</th><th>Destinos</th><th class="tl-r">Entr.</th><th class="tl-r">Volume</th><th>Fim prev.</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>
+        ${lista.length > MAX ? `<div class="tl-mais">+ ${lista.length - MAX} viagem(ns) aguardando depois dessas</div>` : ''}`
+      : '<div class="tl-vazio" style="color:#6ee04a">✓ Todas as viagens de hoje já passaram do horário previsto de término</div>'}
+    </div>
+  </div>`;
+}
+function _telaoTelaAmanha(D) {
+  const P = D.progAmanha;
+  if (!P) return _telaoSemProg(D, 'amanhã', D.amanha);
+  const bases = (P.porBase || []).map(b => {
+    const ocup = b.capacidade ? Math.round(b.volume / b.capacidade * 100) : null;
+    return `<tr><td class="tl-b">${esc(b.nome)}</td><td class="tl-r">${b.viagens}</td><td class="tl-r">${b.placas}</td><td class="tl-r tl-mono">${_tlNum(b.volume)} m³</td><td class="tl-r">${b.entregas}</td><td class="tl-r">${ocup == null ? '—' : ocup + '%'}</td></tr>`;
+  }).join('');
+  const na = (P.naoAtendidos || []);
+  const naHtml = na.length
+    ? na.slice(0, 9).map(p => `<div class="tl-na"><span>${esc(p.cliente)}</span><small>${esc(p.cidade)}${p.base ? ' · ' + esc(p.base) : ''}</small><b>${_tlNum(p.volume)} m³</b></div>`).join('') + (na.length > 9 ? `<div class="tl-mais">+ ${na.length - 9} pedido(s)</div>` : '')
+    : '<div class="tl-vazio" style="color:#6ee04a">✓ Todos os pedidos de amanhã estão programados</div>';
+  return `<div class="tl-col">
+    ${_telaoKpisProg(P)}
+    <div class="tl-split tl-grow" style="grid-template-columns:1.35fr 1fr">
+      <div class="tl-panel"><div class="tl-panel-t">Por base de carregamento</div>
+        <table class="tl-tab"><thead><tr><th>Base</th><th class="tl-r">Viagens</th><th class="tl-r">Placas</th><th class="tl-r">Volume</th><th class="tl-r">Entregas</th><th class="tl-r">Ocupação</th></tr></thead><tbody>${bases}</tbody></table></div>
+      <div class="tl-panel"><div class="tl-panel-t">Pedidos sem programação <span style="color:${na.length ? '#f06060' : '#6ee04a'}">${na.length}</span></div>${naHtml}</div>
+    </div>
+  </div>`;
+}
+function _telaoTelaMes(D) {
+  const docs = D.docsMes.filter(d => d.data && d.data <= D.hoje).sort((a, b) => a.data.localeCompare(b.data));
+  if (!docs.length) return `<div class="tl-msg"><div class="tl-msg-i">📊</div><div class="tl-msg-t">Ainda não há dias deste mês publicados no telão</div><div class="tl-msg-s">Clique em “📺 Atualizar telão” no Resumo Operação para publicar o mês.</div></div>`;
+  const T = { viagens: 0, volume: 0, capacidade: 0, entregas: 0, pedidos: 0, atendidos: 0 };
+  const tr = new Map();
+  docs.forEach(d => {
+    const t = d.totais || {};
+    T.viagens += t.viagens || 0; T.volume += t.volume || 0; T.capacidade += t.capacidade || 0; T.entregas += t.entregas || 0;
+    T.pedidos += t.pedidos || 0; T.atendidos += t.pedidosAtendidos || 0;
+    (d.porTransp || []).forEach(x => {
+      if (!tr.has(x.nome)) tr.set(x.nome, { nome: x.nome, viagens: 0, volume: 0, capacidade: 0, entregas: 0 });
+      const o = tr.get(x.nome); o.viagens += x.viagens; o.volume += x.volume; o.capacidade += x.capacidade; o.entregas += x.entregas;
+    });
+  });
+  const ocup = T.capacidade ? Math.round(T.volume / T.capacidade * 100) : null;
+  const maxVol = Math.max(...docs.map(d => d.totais?.volume || 0), 1);
+  const barras = docs.map(d => {
+    const v = d.totais?.volume || 0;
+    return `<div class="tl-colbar" title="${_tlDataBr(d.data)}"><div class="tl-colbar-v">${v >= 1000 ? _tlNum(v / 1000, 1) + 'k' : _tlNum(v)}</div><div class="tl-colbar-b" style="height:${Math.max(2, v / maxVol * 100)}%"></div><div class="tl-colbar-d">${d.data.slice(8, 10)}</div></div>`;
+  }).join('');
+  const rank = [...tr.values()].sort((a, b) => b.volume - a.volume).slice(0, 10).map((o, i) => {
+    const oc = o.capacidade ? Math.round(o.volume / o.capacidade * 100) : null;
+    return `<tr><td class="tl-mono">${i + 1}</td><td class="tl-b">${esc(o.nome)}</td><td class="tl-r">${_tlNum(o.viagens)}</td><td class="tl-r tl-mono">${_tlNum(o.volume)} m³</td><td class="tl-r" style="color:${oc == null ? '' : oc >= 90 ? '#6ee04a' : oc >= 75 ? '#f0be40' : '#f06060'}">${oc == null ? '—' : oc + '%'}</td></tr>`;
+  }).join('');
+  return `<div class="tl-col">
+    <div class="tl-kpis">
+      ${_tlKpi(_tlNum(T.viagens), 'viagens', '', `${docs.length} dia(s) programado(s)`)}
+      ${_tlKpi(`${_tlNum(T.volume)}<small> m³</small>`, 'volume entregue (prog.)')}
+      ${_tlKpi(_tlNum(T.entregas), 'entregas', '', T.viagens ? `${_tlNum(T.entregas / T.viagens, 1)} por viagem` : '')}
+      ${_tlKpi(T.entregas ? `${_tlNum(T.volume / T.entregas, 1)}<small> m³</small>` : '—', 'volume por entrega')}
+      ${_tlKpi(ocup == null ? '—' : ocup + '%', 'ocupação média', ocup == null ? '' : ocup >= 90 ? '#6ee04a' : ocup >= 75 ? '#f0be40' : '#f06060')}
+    </div>
+    <div class="tl-split tl-grow" style="grid-template-columns:1.25fr 1fr">
+      <div class="tl-panel"><div class="tl-panel-t">Volume programado por dia de entrega <span>m³</span></div><div class="tl-colbars">${barras}</div></div>
+      <div class="tl-panel"><div class="tl-panel-t">Transportadoras no mês <span>por volume</span></div>
+        <table class="tl-tab"><thead><tr><th>#</th><th>Transportadora</th><th class="tl-r">Viagens</th><th class="tl-r">Volume</th><th class="tl-r">Ocup.</th></tr></thead><tbody>${rank}</tbody></table></div>
+    </div>
+  </div>`;
+}
+const _TELAO_TELAS = [
+  { id: 'disp', titulo: D => `Disponibilidade da frota · hoje, ${_tlDataBr(D.hoje)}`, render: _telaoTelaDisponibilidade },
+  { id: 'preench', titulo: D => `Preenchimento de disponibilidade · amanhã, ${_tlDiaSemana(D.amanha)} ${_tlDataBr(D.amanha)}`, render: _telaoTelaPreenchimento },
+  { id: 'hoje', titulo: D => `Programação · entregas de hoje, ${_tlDataBr(D.hoje)}${D.progHoje ? ` · ${D.progHoje.programacoes || 1} programação(ões)` : ''}`, render: _telaoTelaHoje },
+  { id: 'amanha', titulo: D => `Programação · entregas de amanhã, ${_tlDiaSemana(D.amanha)} ${_tlDataBr(D.amanha)}`, render: _telaoTelaAmanha },
+  { id: 'mes', titulo: D => `Resultado do mês · ${['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'][+D.mes.slice(5, 7) - 1]} de ${D.mes.slice(0, 4)}`, render: _telaoTelaMes },
+];
+
+const TELAO_CSS = `
+#telao-root{position:fixed;inset:0;z-index:99999;background:#0b110c;color:#eef3e8;font-family:Inter,'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;padding:1.6vw 2vw 1.1vw;gap:1.2vw;overflow:hidden;font-size:clamp(12px,1.05vw,26px);cursor:none}
+#telao-root.tl-mouse{cursor:default}
+#telao-root *{box-sizing:border-box}
+.tl-top{display:flex;align-items:center;gap:1.6vw}
+.tl-marca{font-weight:800;letter-spacing:.14em;color:#b8e04a;font-size:1.15em}
+.tl-sub{color:#8a9a86;font-size:.85em;letter-spacing:.08em;text-transform:uppercase}
+.tl-titulo{flex:1;font-size:1.75em;font-weight:700;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-relogio{text-align:right;line-height:1.05}
+.tl-relogio b{display:block;font-size:2.3em;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.tl-relogio span{color:#8a9a86;font-size:.85em}
+.tl-corpo{flex:1;min-height:0;display:flex;flex-direction:column}
+.tl-col{display:flex;flex-direction:column;gap:1.2vw;flex:1;min-height:0}
+.tl-grow{flex:1;min-height:0}
+.tl-split{display:grid;grid-template-columns:1fr 1.6fr;gap:1.2vw;flex:1;min-height:0}
+.tl-panel{background:#131c14;border:1px solid #223024;border-radius:1vw;padding:1.2vw 1.4vw;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.tl-panel-t{font-size:1em;font-weight:700;color:#cfe0c8;margin-bottom:.9vw;display:flex;justify-content:space-between;gap:1vw;text-transform:uppercase;letter-spacing:.06em}
+.tl-panel-t span{font-weight:500;color:#8a9a86;text-transform:none;letter-spacing:0}
+.tl-hero{background:#131c14;border:1px solid #223024;border-radius:1vw;padding:2vw;display:flex;flex-direction:column;justify-content:center}
+.tl-hero-v{font-size:8.5em;font-weight:800;line-height:.95;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.tl-hero-l{font-size:1.7em;font-weight:600;margin-top:.3vw}
+.tl-hero-meta{color:#8a9a86;font-size:1.05em;margin:.4vw 0 1.6vw}
+.tl-chips{display:grid;grid-template-columns:1fr 1fr;gap:.6vw 1.2vw}
+.tl-chip{font-size:1.05em;color:#cfe0c8;display:flex;align-items:center;gap:.5vw}
+.tl-chip b{font-size:1.3em;color:#eef3e8;font-variant-numeric:tabular-nums;min-width:2.2em;text-align:right}
+.tl-dot{width:.8em;height:.8em;border-radius:50%;flex-shrink:0}
+.tl-row{display:grid;grid-template-columns:14em 1fr 4.2em 4.6em;align-items:center;gap:1vw;padding:.55vw 0;border-bottom:1px solid #1d291f}
+.tl-row:last-child{border-bottom:none}
+.tl-row-nome{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-row-pct{font-weight:800;font-size:1.35em;text-align:right;font-variant-numeric:tabular-nums}
+.tl-row-n{color:#8a9a86;text-align:right;font-variant-numeric:tabular-nums}
+.tl-stack{display:flex;height:1.2em;border-radius:99px;overflow:hidden;gap:2px;background:#1d291f}
+.tl-stack span{display:block;height:100%}
+.tl-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:1.2vw}
+.tl-kpi{background:#131c14;border:1px solid #223024;border-radius:1vw;padding:1.1vw 1.4vw}
+.tl-kpi-v{font-size:3.3em;font-weight:800;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.tl-kpi-v small{font-size:.45em;font-weight:600;color:#8a9a86;letter-spacing:0}
+.tl-kpi-l{margin-top:.45vw;color:#cfe0c8;font-weight:600;text-transform:uppercase;letter-spacing:.05em;font-size:.85em}
+.tl-kpi-s{color:#8a9a86;font-size:.85em;margin-top:.2vw}
+.tl-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(19em,1fr));gap:1vw;align-content:start;flex:1;min-height:0;overflow:hidden}
+.tl-card{border:1.5px solid;border-radius:.9vw;padding:1vw 1.2vw}
+.tl-card-nome{font-weight:700;font-size:1.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-card-st{font-weight:800;font-size:1.4em;margin:.35vw 0 .6vw}
+.tl-bar{height:.5em;background:#1d291f;border-radius:99px;overflow:hidden}
+.tl-bar span{display:block;height:100%}
+.tl-tab{width:100%;border-collapse:collapse;font-size:1em}
+.tl-tab th{text-align:left;color:#8a9a86;font-weight:600;font-size:.8em;text-transform:uppercase;letter-spacing:.06em;padding:0 .6vw .5vw;border-bottom:1px solid #223024}
+.tl-tab td{padding:.5vw .6vw;border-bottom:1px solid #1a251c;white-space:nowrap}
+.tl-tab .tl-r{text-align:right}
+.tl-dest{max-width:22em;overflow:hidden;text-overflow:ellipsis;color:#cfe0c8}
+.tl-mono{font-variant-numeric:tabular-nums}
+.tl-b{font-weight:700}
+.tl-pill{border:1.5px solid;border-radius:99px;padding:.15em .7em;font-weight:700;font-size:.85em}
+.tl-mais{color:#8a9a86;margin-top:.6vw;font-size:.9em}
+.tl-na{display:grid;grid-template-columns:1fr auto;gap:0 1vw;padding:.45vw 0;border-bottom:1px solid #1a251c}
+.tl-na span{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-na small{color:#8a9a86;grid-column:1}
+.tl-na b{grid-column:2;grid-row:1/3;align-self:center;color:#f0be40;font-variant-numeric:tabular-nums}
+.tl-colbars{flex:1;display:flex;align-items:flex-end;gap:.35vw;min-height:0;padding-top:1.4em}
+.tl-colbar{flex:1;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end;min-width:0}
+.tl-colbar-b{width:100%;background:#b8e04a;border-radius:.3vw .3vw 0 0;opacity:.85}
+.tl-colbar-v{font-size:.7em;color:#cfe0c8;margin-bottom:.2vw;white-space:nowrap}
+.tl-colbar-d{font-size:.75em;color:#8a9a86;margin-top:.3vw}
+.tl-vazio{color:#8a9a86;padding:1vw 0;font-size:1.1em}
+.tl-msg{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.8vw}
+.tl-msg-i{font-size:5em}
+.tl-msg-t{font-size:2.1em;font-weight:700}
+.tl-msg-s{color:#8a9a86;font-size:1.2em;max-width:50em}
+.tl-rod{display:flex;align-items:center;gap:1.2vw;color:#8a9a86;font-size:.85em}
+.tl-dots{display:flex;gap:.5vw}
+.tl-dots span{padding:.2em .8em;border-radius:99px;background:#131c14;border:1px solid #223024}
+.tl-dots span.on{color:#0b110c;background:#b8e04a;border-color:#b8e04a;font-weight:700}
+.tl-prog{flex:1;height:3px;background:#1d291f;border-radius:99px;overflow:hidden}
+.tl-prog span{display:block;height:100%;background:#b8e04a;width:0}
+.tl-upd.velho{color:#f06060;font-weight:700}
+.tl-sair{position:absolute;top:.8vw;right:50%;transform:translateX(50%);display:none;gap:.5vw}
+#telao-root.tl-mouse .tl-sair{display:flex}
+.tl-sair button{background:#223024;color:#eef3e8;border:1px solid #33463a;border-radius:.5vw;padding:.4em 1em;font:inherit;font-size:.9em;cursor:pointer}
+`;
+
+function _telaoPintar() {
+  const root = document.getElementById('telao-root');
+  if (!root) return;
+  const D = _telao.dados;
+  const tela = _TELAO_TELAS[_telao.idx % _TELAO_TELAS.length];
+  const corpo = root.querySelector('.tl-corpo'), titulo = root.querySelector('.tl-titulo');
+  if (!D) {
+    titulo.textContent = 'Carregando…';
+    corpo.innerHTML = `<div class="tl-msg"><div class="tl-msg-t">${_telao.erro ? 'Não consegui carregar os dados' : 'Carregando dados…'}</div>${_telao.erro ? `<div class="tl-msg-s">${esc(_telao.erro)} — tento de novo em instantes.</div>` : ''}</div>`;
+  } else {
+    titulo.textContent = tela.titulo(D);
+    try { corpo.innerHTML = tela.render(D); }
+    catch (e) { console.error('[telão]', e); corpo.innerHTML = `<div class="tl-msg"><div class="tl-msg-t">Erro ao montar esta tela</div><div class="tl-msg-s">${esc(e.message || e)}</div></div>`; }
+  }
+  root.querySelector('.tl-dots').innerHTML = _TELAO_TELAS.map((t, i) => `<span class="${i === _telao.idx % _TELAO_TELAS.length ? 'on' : ''}">${['Disponibilidade', 'Preenchimento', 'Hoje', 'Amanhã', 'Mês'][i]}</span>`).join('');
+  _telaoRodape();
+}
+function _telaoRodape() {
+  const root = document.getElementById('telao-root');
+  if (!root) return;
+  const agora = new Date();
+  root.querySelector('.tl-relogio b').textContent = _tlHora(agora.getTime());
+  root.querySelector('.tl-relogio span').textContent = agora.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' });
+  const upd = root.querySelector('.tl-upd');
+  const velho = !_telao.carregadoEm || Date.now() - _telao.carregadoEm > TELAO_DADOS_MS * 2.5;
+  upd.textContent = _telao.carregadoEm ? `${velho ? '⚠ dados de ' : 'atualizado às '}${_tlHora(_telao.carregadoEm)}${velho ? ' — sem conexão?' : ''}` : 'carregando…';
+  upd.classList.toggle('velho', !!(_telao.carregadoEm && velho));
+  const prog = root.querySelector('.tl-prog span');
+  prog.style.width = _telao.pausado ? '100%' : Math.min(100, (Date.now() - _telao.trocaEm) / TELAO_TROCA_MS * 100) + '%';
+  root.querySelector('.tl-pausa').textContent = _telao.pausado ? '⏸ pausado (espaço continua)' : '';
+}
+async function _telaoAtualizarDados() {
+  try {
+    _telao.dados = await _telaoCarregarDados();
+    _telao.carregadoEm = Date.now();
+    _telao.erro = null;
+  } catch (e) {
+    console.error('[telão] falha ao carregar', e);
+    _telao.erro = e.message || String(e);
+  }
+  _telaoPintar();
+}
+function _telaoTrocar(passo = 1) {
+  _telao.idx = (_telao.idx + passo + _TELAO_TELAS.length) % _TELAO_TELAS.length;
+  _telao.trocaEm = Date.now();
+  _telaoPintar();
+}
+function _telaoTecla(e) {
+  if (!_telao.ativo) return;
+  if (e.key === 'ArrowRight') _telaoTrocar(1);
+  else if (e.key === 'ArrowLeft') _telaoTrocar(-1);
+  else if (e.key === ' ') { e.preventDefault(); _telao.pausado = !_telao.pausado; _telao.trocaEm = Date.now(); _telaoRodape(); }
+  else if (e.key === 'r' || e.key === 'R') _telaoAtualizarDados();
+  else if (e.key === 'Escape' && !document.fullscreenElement) sairTelao();
+}
+let _telaoMouseTimer = null;
+function _telaoMouse() {
+  const root = document.getElementById('telao-root');
+  if (!root) return;
+  root.classList.add('tl-mouse');
+  clearTimeout(_telaoMouseTimer);
+  _telaoMouseTimer = setTimeout(() => root.classList.remove('tl-mouse'), 3000);
+}
+async function _telaoWakeLock() {
+  try { if (navigator.wakeLock && document.visibilityState === 'visible') _telao.wake = await navigator.wakeLock.request('screen'); } catch (e) { /* sem suporte: ok */ }
+}
+function _telaoVisivel() { if (_telao.ativo && document.visibilityState === 'visible') _telaoWakeLock(); }
+async function renderTelao() {
+  const app = document.getElementById('app');
+  if (_telao.ativo && document.getElementById('telao-root')) return; // já está rodando
+  app.innerHTML = `<style>${TELAO_CSS}</style>
+    <div id="telao-root">
+      <div class="tl-sair"><button onclick="telaoTelaCheia()">⛶ Tela cheia</button><button onclick="sairTelao()">✕ Sair do telão</button></div>
+      <div class="tl-top"><div><div class="tl-marca">NEXTA</div><div class="tl-sub">Sala de operação</div></div><div class="tl-titulo"></div><div class="tl-relogio"><b></b><span></span></div></div>
+      <div class="tl-corpo"></div>
+      <div class="tl-rod"><div class="tl-dots"></div><div class="tl-prog"><span></span></div><span class="tl-pausa"></span><span class="tl-upd"></span></div>
+    </div>`;
+  _telao.ativo = true;
+  _telao.trocaEm = Date.now();
+  _telao.timers.forEach(clearInterval);
+  _telao.timers = [
+    setInterval(() => { if (!_telao.pausado && Date.now() - _telao.trocaEm >= TELAO_TROCA_MS) _telaoTrocar(1); else _telaoRodape(); }, 1000),
+    setInterval(_telaoAtualizarDados, TELAO_DADOS_MS),
+  ];
+  document.addEventListener('keydown', _telaoTecla);
+  document.addEventListener('mousemove', _telaoMouse);
+  document.addEventListener('visibilitychange', _telaoVisivel);
+  _telaoWakeLock();
+  _telaoPintar();
+  await _telaoAtualizarDados();
+}
+function telaoTelaCheia() { document.documentElement.requestFullscreen?.().catch(() => {}); }
+function abrirTelao() {
+  S.telao = true;
+  telaoTelaCheia(); // precisa ser no clique (o navegador só deixa assim)
+  render();
+}
+function sairTelao() {
+  S.telao = false;
+  _telao.ativo = false;
+  _telao.timers.forEach(clearInterval); _telao.timers = [];
+  document.removeEventListener('keydown', _telaoTecla);
+  document.removeEventListener('mousemove', _telaoMouse);
+  document.removeEventListener('visibilitychange', _telaoVisivel);
+  try { _telao.wake?.release(); } catch (e) {}
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  if (new URLSearchParams(location.search).has('telao')) history.replaceState(null, '', location.pathname);
+  render();
+}
+window.abrirTelao = abrirTelao; window.sairTelao = sairTelao; window.telaoTelaCheia = telaoTelaCheia;
+// ═══════════════════════════════════════════════════════════
 // RENDER ROOT
 // ═══════════════════════════════════════════════════════════
 async function render(){
   const app=document.getElementById("app");
   // Sempre salva o shell antes de qualquer innerHTML para não perdê-lo
   parkRoteirizadorShell();
-  if(!S.user){ app.innerHTML=renderLogin(); return; }
+  if(!S.user){ _telao.ativo=false; app.innerHTML=renderLogin(); return; }
   const u=USERS_DB[S.user];
+  // Telão (sala de operação): tela cheia, sem menu — só admin/operacional.
+  if(S.telao && (u.role==="admin"||u.role==="operacional")){ await renderTelao(); return; }
+  _telao.ativo=false;
   const notifs=await dbGetNotifs();
   const hasNotif=notifs.length>0;
   const helpRole = u.role==="operacional" ? "operacional" : u.role==="carrier" ? "transportador" : "";
@@ -1492,6 +1925,7 @@ async function render(){
       </div>
       <div class="topbar-right">
         ${(u.role==="admin"||u.role==="operacional")?`<button class="notif-btn" onclick="toggleNotif()" title="Notificações">🔔${hasNotif?'<span class="notif-dot"></span>':''}</button>`:""}
+        ${(u.role==="admin"||u.role==="operacional")?`<button class="help-btn" onclick="abrirTelao()" title="Painel em tela cheia para o telão da sala de operação (gira sozinho entre as telas)">📺 Telão</button>`:""}
         <button class="help-btn" onclick="refreshSystem()" title="Atualizar dados">🔄 Atualizar</button>
         ${helpRole?`<button class="help-btn" onclick="openHelpModal('${helpRole}')" title="${helpTitle}">❓ ${helpLabel}</button>`:""}
         <div class="avatar ${u.role==="admin"||u.role==="operacional"?"admin":""}">${esc(u.initials)}</div>
