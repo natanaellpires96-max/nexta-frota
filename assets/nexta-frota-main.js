@@ -1471,339 +1471,536 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
   </div>`;
 }
 // ═══════════════════════════════════════════════════════════
-// TELÃO — painel da sala de operação (tela cheia, roda sozinho)
+// TELÃO — Centro de Operações (tela cheia, roda sozinho)
 // ═══════════════════════════════════════════════════════════
 // Abre pelo botão "📺 Telão" (admin/operacional) ou direto pelo endereço
-// com ?telao=1 (pra deixar o computador da TV abrindo sozinho). Gira entre
-// 5 telas a cada 25s, recarrega os dados a cada 5 min e mostra a hora da
-// última atualização — se a internet cair, o relógio de "atualizado às"
-// para de andar e a faixa fica vermelha, pra ninguém confiar em dado velho.
-// Teclas: ← → troca de tela · espaço pausa · R recarrega · Esc sai.
-//   • Disponibilidade (hoje) e Preenchimento (amanhã): Firestore, ao vivo.
-//   • Programação (hoje/amanhã) e Mês: telao_programacao/{AAAA-MM-DD},
-//     publicado pelo Roteirizador a cada programação salva.
-const TELAO_TROCA_MS = 25000;
-const TELAO_DADOS_MS = 5 * 60000;
-const _telao = { ativo: false, idx: 0, pausado: false, dados: null, carregadoEm: 0, erro: null, timers: [], trocaEm: 0 };
-const _TL_COR = { disponivel: '#6ee04a', indisponivel: '#f06060', manutencao: '#f0be40', folga: '#70a8f0', programado: '#b07ef0', pendente: '#5d6b5b' };
+// com ?telao=1. Gira entre 7 painéis a cada 20s. Teclas: ← → troca ·
+// espaço pausa · R recarrega · Esc sai.
+//   • Frota (disponibilidade hoje / preenchimento amanhã): Firestore ao vivo,
+//     recarregado a cada 5 min.
+//   • Programação, Mês, Clientes: telao_programacao/{AAAA-MM-DD}, publicado
+//     pelo Roteirizador a cada programação salva — recarregado a cada 15 min.
+//   • Ocorrências: devolucoesReentregas (mesmo registro do Histórico/Dashboard)
+//     — recarregado a cada 15 min.
+// Comparações "vs mês anterior" são sempre no MESMO PERÍODO (do dia 1 até o
+// mesmo dia do mês anterior), pra não comparar mês parcial com mês fechado.
+const TELAO_TROCA_MS = 20000;
+const TELAO_FROTA_MS = 5 * 60000;
+const TELAO_LENTO_MS = 15 * 60000;
+const _telao = { ativo: false, idx: 0, pausado: false, dados: null, carregadoEm: 0, lentoEm: 0, lento: null, erro: null, timers: [], trocaEm: 0 };
+// Cores validadas (dataviz validator, superfície escura): ordem dos segmentos
+// da barra empilhada é a ordem que passa no teste de daltonismo.
+const _TL_ST = [
+  ['disponivel', 'Disponível', '#0ca30c'], ['folga', 'Folga', '#3987e5'], ['programado', 'Programado/Em viagem', '#d55181'],
+  ['manutencao', 'Manutenção', '#c98500'], ['indisponivel', 'Indisponível', '#d03b3b'], ['pendente', 'Sem resposta', '#3a463c'],
+];
+const _TL_TIPO = { reentrega: ['Reentrega', '#3987e5'], devolucao_parcial: ['Devolução parcial', '#d95926'], devolucao_total: ['Devolução total', '#199e70'] };
+const _TL_BOM = '#2fbf2f', _TL_ATENCAO = '#e3a21a', _TL_CRITICO = '#e05252', _TL_SERIE = '#3987e5';
+const _TL_MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 const _tlNum = (n, d = 0) => Number(n || 0).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const _tlHora = ms => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const _tlDataBr = iso => iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '';
 const _tlDiaSemana = iso => ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'][new Date(iso + 'T12:00:00').getDay()];
+const _tlMesAnterior = mes => { const [a, m] = mes.split('-').map(Number); return m === 1 ? `${a - 1}-12` : `${a}-${String(m - 1).padStart(2, '0')}`; };
+const _tlMesCurto = mes => _TL_MESES[+mes.slice(5, 7) - 1].slice(0, 3);
+const _tlIsoDeBr = br => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(br || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : ''; };
+const _tlPct = (a, b) => b ? a / b * 100 : null;
 
+// ── Dados ────────────────────────────────────────────────────────────────
 async function _telaoDisponibilidade(ds, allP) {
   const ativos = CARRIERS.filter(c => (allP[c] || []).some(p => p.ativo !== false));
   const pairs = [];
   ativos.forEach(c => (allP[c] || []).filter(p => p.ativo !== false).forEach(p => pairs.push({ carrier: c, plate: p.placa, dateStr: ds })));
   const [sm, locks] = await Promise.all([dbLoadStatusBulk(pairs), Promise.all(ativos.map(c => dbGetLock(c, ds)))]);
-  const tot = { disponivel: 0, indisponivel: 0, manutencao: 0, folga: 0, programado: 0, pendente: 0, total: 0 };
+  const novo = nome => ({ nome, total: 0, disponivel: 0, indisponivel: 0, manutencao: 0, folga: 0, programado: 0, pendente: 0 });
+  const tot = novo('Total'), porOp = new Map();
+  const fechar = r => { r.preenchidas = r.total - r.pendente; const den = r.preenchidas - r.folga - r.programado; r.pct = den > 0 ? Math.round(r.disponivel / den * 100) : null; return r; };
   const porTransp = ativos.map((c, i) => {
-    const placas = (allP[c] || []).filter(p => p.ativo !== false);
-    const st = placas.map(p => sm[`${c}||${p.placa}||${ds}`]?.status || null);
-    const r = { nome: c, total: placas.length, disponivel: 0, indisponivel: 0, manutencao: 0, folga: 0, programado: 0, pendente: 0 };
-    st.forEach(s => { if (s && r[s] !== undefined) r[s]++; else r.pendente++; });
-    r.preenchidas = r.total - r.pendente;
-    const denom = r.preenchidas - r.folga - r.programado; // mesma conta do Daily Briefing
-    r.pct = denom > 0 ? Math.round(r.disponivel / denom * 100) : null;
+    const r = novo(c);
+    (allP[c] || []).filter(p => p.ativo !== false).forEach(p => {
+      const s = sm[`${c}||${p.placa}||${ds}`]?.status;
+      const k = s && r[s] !== undefined ? s : 'pendente';
+      const op = p.operacao || 'Sem operação';
+      if (!porOp.has(op)) porOp.set(op, novo(op));
+      [r, tot, porOp.get(op)].forEach(o => { o[k]++; o.total++; });
+    });
+    fechar(r);
     r.concluido = !!locks[i] || (r.total > 0 && r.pendente === 0);
-    Object.keys(tot).forEach(k => { if (k !== 'total') tot[k] += r[k]; });
-    tot.total += r.total;
     return r;
   });
-  const denomG = tot.total - tot.pendente - tot.folga - tot.programado;
-  tot.pct = denomG > 0 ? Math.round(tot.disponivel / denomG * 100) : null;
-  return { ds, porTransp, tot };
+  fechar(tot);
+  return { ds, porTransp, tot, porOp: [...porOp.values()].map(fechar).sort((a, b) => b.total - a.total) };
+}
+async function _telaoCarregarLento(hoje) {
+  const mes = hoje.slice(0, 7), mesAnt = _tlMesAnterior(mes);
+  const ini = new Date(+mesAnt.slice(0, 4), +mesAnt.slice(5, 7) - 1, 1).toISOString();
+  const [progs, ocorr] = await Promise.all([
+    getDocs(query(collection(db, 'telao_programacao'), where('mes', 'in', [mes, mesAnt])))
+      .then(s => { const l = []; s.forEach(d => l.push(d.data())); return l; }).catch(e => ({ _erro: e })),
+    getDocs(query(collection(db, 'devolucoesReentregas'), where('criadoEm', '>=', ini), orderBy('criadoEm', 'desc'), limit(1500)))
+      .then(s => { const l = []; s.forEach(d => l.push({ id: d.id, ...d.data() })); return l; }).catch(e => ({ _erro: e })),
+  ]);
+  const semPerm = x => x && x._erro && /permission/i.test(String(x._erro.code || x._erro.message));
+  return { progs: Array.isArray(progs) ? progs : [], ocorr: Array.isArray(ocorr) ? ocorr : [], semPermProg: semPerm(progs), erroOcorr: ocorr?._erro ? String(ocorr._erro.code || ocorr._erro.message) : null };
 }
 async function _telaoCarregarDados() {
   cacheInvalidatePrefix('status||');
   cacheInvalidate('plates');
-  const hoje = dateStr(0), amanha = dateStr(1), mes = hoje.slice(0, 7);
+  const hoje = dateStr(0), amanha = dateStr(1);
   const allP = await dbGetPlates();
-  const lerProg = async iso => { try { const s = await getDoc(doc(db, 'telao_programacao', iso)); return s.exists() ? s.data() : null; } catch (e) { return { _erro: e }; } };
-  const lerMes = async () => {
-    try {
-      const snap = await getDocs(query(collection(db, 'telao_programacao'), where('mes', '==', mes)));
-      const l = []; snap.forEach(d => l.push(d.data())); return l;
-    } catch (e) { return { _erro: e }; }
-  };
-  const [dispHoje, dispAmanha, progHoje, progAmanha, docsMes] = await Promise.all([
-    _telaoDisponibilidade(hoje, allP), _telaoDisponibilidade(amanha, allP), lerProg(hoje), lerProg(amanha), lerMes(),
+  const precisaLento = !_telao.lento || Date.now() - _telao.lentoEm > TELAO_LENTO_MS || _telao.lento.hoje !== hoje;
+  const [dispHoje, dispAmanha, lento] = await Promise.all([
+    _telaoDisponibilidade(hoje, allP), _telaoDisponibilidade(amanha, allP),
+    precisaLento ? _telaoCarregarLento(hoje) : Promise.resolve(null),
   ]);
-  const semPerm = [progHoje, progAmanha, docsMes].some(x => x && x._erro && /permission/i.test(String(x._erro.code || x._erro.message)));
-  return { hoje, amanha, mes, dispHoje, dispAmanha,
-    progHoje: progHoje?._erro ? null : progHoje, progAmanha: progAmanha?._erro ? null : progAmanha,
-    docsMes: Array.isArray(docsMes) ? docsMes : [], semPermProg: semPerm };
+  if (lento) { _telao.lento = { ...lento, hoje }; _telao.lentoEm = Date.now(); }
+  const L = _telao.lento;
+  const porData = new Map(L.progs.map(d => [d.data, d]));
+  return { hoje, amanha, mes: hoje.slice(0, 7), dispHoje, dispAmanha,
+    progHoje: porData.get(hoje) || null, progAmanha: porData.get(amanha) || null,
+    progs: L.progs, ocorr: L.ocorr, semPermProg: L.semPermProg, erroOcorr: L.erroOcorr };
+}
+// Agrega dias publicados (do dia 1 até `ateDia`) — base dos painéis do mês.
+function _telaoAgregar(docs, mes, ateDia) {
+  const ds = docs.filter(d => d.mes === mes && d.data && +d.data.slice(8, 10) <= ateDia).sort((a, b) => a.data.localeCompare(b.data));
+  const T = { dias: ds.length, viagens: 0, volume: 0, capacidade: 0, entregas: 0, pedidos: 0, atendidos: 0 };
+  const tr = new Map(), cl = new Map();
+  ds.forEach(d => {
+    const t = d.totais || {};
+    T.viagens += t.viagens || 0; T.volume += t.volume || 0; T.capacidade += t.capacidade || 0; T.entregas += t.entregas || 0;
+    T.pedidos += t.pedidos || 0; T.atendidos += t.pedidosAtendidos || 0;
+    (d.porTransp || []).forEach(x => {
+      if (!tr.has(x.nome)) tr.set(x.nome, { nome: x.nome, viagens: 0, volume: 0, capacidade: 0, entregas: 0 });
+      const o = tr.get(x.nome); o.viagens += x.viagens || 0; o.volume += x.volume || 0; o.capacidade += x.capacidade || 0; o.entregas += x.entregas || 0;
+    });
+    (d.porCliente || []).forEach(c => {
+      if (!cl.has(c.k)) cl.set(c.k, { k: c.k, nome: c.nome, cidade: c.cidade, volume: 0, entregas: 0, dias: 0 });
+      const o = cl.get(c.k); o.volume += c.volume || 0; o.entregas += c.entregas || 0; o.dias++; if (c.nome) o.nome = c.nome;
+    });
+  });
+  const clientes = [...cl.values()].map(c => ({ ...c, drop: c.entregas ? c.volume / c.entregas : 0 })).sort((a, b) => b.volume - a.volume);
+  const temClientes = ds.some(d => Array.isArray(d.porCliente));
+  return { dias: ds, T, transp: [...tr.values()].sort((a, b) => b.volume - a.volume), clientes, temClientes };
+}
+function _telaoOcorrMes(ocorr, mes, ateDia) {
+  return ocorr.filter(r => {
+    const iso = _tlIsoDeBr(r.dataEntregaOriginal) || String(r.criadoEm || '').slice(0, 10);
+    return iso.slice(0, 7) === mes && +iso.slice(8, 10) <= ateDia;
+  });
 }
 
-// ── Telas ────────────────────────────────────────────────────────────────
-function _tlKpi(valor, rotulo, cor = '', sub = '') {
-  return `<div class="tl-kpi"><div class="tl-kpi-v" style="${cor ? `color:${cor}` : ''}">${valor}</div><div class="tl-kpi-l">${rotulo}</div>${sub ? `<div class="tl-kpi-s">${sub}</div>` : ''}</div>`;
+// ── Peças visuais ────────────────────────────────────────────────────────
+// Variação vs mesmo período do mês anterior. maiorMelhor=false → subir é ruim.
+function _tlDelta(atual, ant, { maiorMelhor = true, pp = false, mesAnt = '' } = {}) {
+  if (atual == null || ant == null || (!pp && !ant)) return `<div class="tl-delta tl-neutro">sem base de comparação</div>`;
+  const v = pp ? atual - ant : (atual - ant) / ant * 100;
+  if (Math.abs(v) < 0.05) return `<div class="tl-delta tl-neutro">= estável vs ${mesAnt}</div>`;
+  const bom = (v > 0) === maiorMelhor;
+  return `<div class="tl-delta" style="color:${bom ? _TL_BOM : _TL_CRITICO}">${v > 0 ? '▲' : '▼'} ${_tlNum(Math.abs(v), 1)}${pp ? ' p.p.' : '%'} <span>vs ${mesAnt} (mesmo período)</span></div>`;
 }
-function _tlCorPct(p) { return p == null ? '#8a9a86' : p >= META_DISP ? '#6ee04a' : p >= 70 ? '#f0be40' : '#f06060'; }
+function _tlKpi(rotulo, valor, { cor = '', sub = '', delta = '' } = {}) {
+  return `<div class="tl-kpi"><div class="tl-kpi-l">${rotulo}</div><div class="tl-kpi-v"${cor ? ` style="color:${cor}"` : ''}>${valor}</div>${delta}${sub ? `<div class="tl-kpi-s">${sub}</div>` : ''}</div>`;
+}
+function _tlPainel(titulo, sub, corpo, extra = '') {
+  return `<section class="tl-panel ${extra}"><header class="tl-panel-h"><h3>${titulo}</h3>${sub ? `<span>${sub}</span>` : ''}</header><div class="tl-panel-b">${corpo}</div></section>`;
+}
+function _tlCorPct(p, meta = META_DISP) { return p == null ? 'var(--tl-t3)' : p >= meta ? _TL_BOM : p >= meta - 15 ? _TL_ATENCAO : _TL_CRITICO; }
+function _tlCorOcup(p) { return p == null ? 'var(--tl-t3)' : p >= 90 ? _TL_BOM : p >= 75 ? _TL_ATENCAO : _TL_CRITICO; }
+// Barra horizontal fina (série única), valor em tinta de texto ao lado.
+function _tlBarra(valor, max, cor = _TL_SERIE) {
+  return `<div class="tl-hbar"><span style="width:${max ? Math.max(0.6, valor / max * 100) : 0}%;background:${cor}"></span></div>`;
+}
+function _tlVazio(titulo, sub, icone = '—') {
+  return `<div class="tl-msg"><div class="tl-msg-i">${icone}</div><div class="tl-msg-t">${titulo}</div>${sub ? `<div class="tl-msg-s">${sub}</div>` : ''}</div>`;
+}
+
+// ── Painéis ──────────────────────────────────────────────────────────────
 function _telaoTelaDisponibilidade(D) {
-  const { tot, porTransp } = D.dispHoje;
-  const linhas = [...porTransp].sort((a, b) => (a.pct ?? 999) - (b.pct ?? 999) || b.total - a.total).map(r => {
-    const segs = ['disponivel', 'indisponivel', 'manutencao', 'folga', 'programado', 'pendente']
-      .map(k => r[k] ? `<span style="flex:${r[k]};background:${_TL_COR[k]}"></span>` : '').join('');
-    return `<div class="tl-row">
-      <div class="tl-row-nome">${esc(r.nome)}</div>
-      <div class="tl-stack">${segs}</div>
-      <div class="tl-row-pct" style="color:${_tlCorPct(r.pct)}">${r.pct == null ? '—' : r.pct + '%'}</div>
-      <div class="tl-row-n">${r.disponivel}/${r.total}</div>
-    </div>`;
-  }).join('');
-  const chips = [['disponivel', 'Disponível'], ['indisponivel', 'Indisponível'], ['manutencao', 'Manutenção'], ['folga', 'Folga'], ['programado', 'Programado/Em viagem'], ['pendente', 'Sem resposta']]
-    .map(([k, l]) => `<div class="tl-chip"><span class="tl-dot" style="background:${_TL_COR[k]}"></span><b>${tot[k]}</b> ${l}</div>`).join('');
-  return `<div class="tl-split">
-    <div class="tl-hero">
-      <div class="tl-hero-v" style="color:${_tlCorPct(tot.pct)}">${tot.pct == null ? '—' : tot.pct + '%'}</div>
-      <div class="tl-hero-l">da frota disponível</div>
-      <div class="tl-hero-meta">Meta ${META_DISP}% · ${tot.total} placas ativas</div>
-      <div class="tl-chips">${chips}</div>
+  const { tot, porTransp, porOp } = D.dispHoje;
+  const legenda = _TL_ST.map(([, l, c]) => `<span class="tl-leg"><i style="background:${c}"></i>${l}</span>`).join('');
+  const linhas = [...porTransp].sort((a, b) => (a.pct ?? 999) - (b.pct ?? 999) || b.total - a.total).map(r => `
+    <div class="tl-trow">
+      <div class="tl-ell tl-b">${esc(r.nome)}</div>
+      <div class="tl-stack">${_TL_ST.map(([k, , c]) => r[k] ? `<span style="flex:${r[k]};background:${c}" title="${r[k]}"></span>` : '').join('')}</div>
+      <div class="tl-num tl-r tl-big" style="color:${_tlCorPct(r.pct)}">${r.pct == null ? '—' : r.pct + '%'}</div>
+      <div class="tl-num tl-r tl-t3">${r.disponivel} de ${r.total}</div>
+    </div>`).join('');
+  const ops = porOp.slice(0, 8).map(o => `<div class="tl-oprow"><span class="tl-ell">${esc(o.nome)}</span><b class="tl-num" style="color:${_tlCorPct(o.pct)}">${o.pct == null ? '—' : o.pct + '%'}</b><small class="tl-num">${o.disponivel}/${o.total}</small></div>`).join('');
+  const den = tot.preenchidas - tot.folga - tot.programado;
+  return `<div class="tl-grid" style="grid-template-columns:minmax(0,0.9fr) minmax(0,2fr)">
+    <div class="tl-col">
+      <section class="tl-panel tl-hero">
+        <div class="tl-kpi-l">Disponibilidade da frota</div>
+        <div class="tl-hero-v tl-num" style="color:${_tlCorPct(tot.pct)}">${tot.pct == null ? '—' : tot.pct + '%'}</div>
+        <div class="tl-hero-s">Meta <b>${META_DISP}%</b> · ${tot.disponivel} disponíveis de ${den > 0 ? den : 0} escaláveis</div>
+        <div class="tl-hero-n"><span><b class="tl-num">${tot.total}</b> placas ativas</span><span><b class="tl-num">${tot.folga + tot.programado}</b> folga/em viagem</span><span><b class="tl-num" style="color:${tot.pendente ? _TL_ATENCAO : 'inherit'}">${tot.pendente}</b> sem resposta</span></div>
+      </section>
+      ${_tlPainel('Por operação', 'disponíveis / placas', ops, 'tl-grow')}
     </div>
-    <div class="tl-panel"><div class="tl-panel-t">Por transportadora <span>pior primeiro · disponíveis/placas</span></div>${linhas || '<div class="tl-vazio">Sem placas cadastradas</div>'}</div>
+    ${_tlPainel('Por transportadora', 'pior resultado primeiro · % sobre placas escaláveis (sem folga e em viagem)', `<div class="tl-legenda">${legenda}</div>${linhas || '<div class="tl-t3">Sem placas cadastradas</div>'}`)}
   </div>`;
 }
 function _telaoTelaPreenchimento(D) {
-  const { porTransp } = D.dispAmanha;
+  const { porTransp, tot } = D.dispAmanha;
   const corte = new Date(); corte.setHours(ALERT_CUTOFF_HOUR, 0, 0, 0);
-  const falta = corte.getTime() - Date.now();
-  const passou = falta <= 0;
+  const falta = corte.getTime() - Date.now(), passou = falta <= 0;
   const h = Math.floor(Math.abs(falta) / 3600000), m = Math.floor(Math.abs(falta) % 3600000 / 60000);
   const concl = porTransp.filter(r => r.concluido).length;
-  const cards = [...porTransp].sort((a, b) => Number(a.concluido) - Number(b.concluido) || (a.preenchidas / a.total) - (b.preenchidas / b.total)).map(r => {
+  const pctPlacas = tot.total ? Math.round(tot.preenchidas / tot.total * 100) : 0;
+  const cards = [...porTransp].sort((a, b) => Number(a.concluido) - Number(b.concluido) || (a.preenchidas / (a.total || 1)) - (b.preenchidas / (b.total || 1))).map(r => {
     const pct = r.total ? Math.round(r.preenchidas / r.total * 100) : 0;
-    const est = r.concluido ? { t: '✓ Concluído', c: '#6ee04a', bg: 'rgba(110,224,74,.10)' }
-      : r.preenchidas === 0 ? { t: passou ? '✕ Não preencheu' : 'Não iniciou', c: passou ? '#f06060' : '#8a9a86', bg: passou ? 'rgba(240,96,96,.12)' : 'rgba(255,255,255,.03)' }
-      : { t: `${r.preenchidas}/${r.total} placas`, c: passou ? '#f06060' : '#f0be40', bg: passou ? 'rgba(240,96,96,.12)' : 'rgba(240,190,64,.10)' };
-    return `<div class="tl-card" style="border-color:${est.c}55;background:${est.bg}">
-      <div class="tl-card-nome">${esc(r.nome)}</div>
-      <div class="tl-card-st" style="color:${est.c}">${est.t}</div>
-      <div class="tl-bar"><span style="width:${pct}%;background:${est.c}"></span></div>
+    const est = r.concluido ? ['Concluído', _TL_BOM, '✓']
+      : r.preenchidas === 0 ? [passou ? 'Não preencheu' : 'Não iniciado', passou ? _TL_CRITICO : h < 2 ? _TL_ATENCAO : 'var(--tl-t3)', passou ? '✕' : '○']
+      : [`Em andamento · ${r.preenchidas}/${r.total}`, passou ? _TL_CRITICO : _TL_ATENCAO, '▸'];
+    return `<div class="tl-card${r.concluido ? ' tl-card-ok' : ''}">
+      <div class="tl-card-h"><span class="tl-ell tl-b">${esc(r.nome)}</span><span class="tl-num tl-t3">${r.total} placas</span></div>
+      <div class="tl-card-st" style="color:${est[1]}">${est[2]} ${est[0]}</div>
+      <div class="tl-hbar tl-hbar-full"><span style="width:${pct}%;background:${est[1]}"></span></div>
     </div>`;
   }).join('');
   return `<div class="tl-col">
     <div class="tl-kpis">
-      ${_tlKpi(`${concl}<small>/${porTransp.length}</small>`, 'transportadoras concluíram', concl === porTransp.length ? '#6ee04a' : '')}
-      ${_tlKpi(`${String(ALERT_CUTOFF_HOUR).padStart(2, '0')}:00`, 'horário de corte (hoje)')}
-      ${_tlKpi(passou ? `há ${h}h${String(m).padStart(2, '0')}` : `${h}h${String(m).padStart(2, '0')}`, passou ? 'o corte já passou' : 'até o corte', passou ? (concl < porTransp.length ? '#f06060' : '#6ee04a') : (h < 2 ? '#f0be40' : ''))}
+      ${_tlKpi('Transportadoras concluídas', `${concl}<small> de ${porTransp.length}</small>`, { cor: concl === porTransp.length ? _TL_BOM : '' })}
+      ${_tlKpi('Placas com status informado', `${pctPlacas}<small>%</small>`, { sub: `${tot.preenchidas} de ${tot.total} placas` })}
+      ${_tlKpi('Horário de corte', `${String(ALERT_CUTOFF_HOUR).padStart(2, '0')}:00`, { sub: 'hoje, para a frota de amanhã' })}
+      ${_tlKpi(passou ? 'Corte encerrado há' : 'Tempo até o corte', `${h}<small>h</small> ${String(m).padStart(2, '0')}<small>min</small>`, { cor: passou ? (concl < porTransp.length ? _TL_CRITICO : _TL_BOM) : (h < 2 ? _TL_ATENCAO : '') })}
     </div>
-    <div class="tl-cards">${cards || '<div class="tl-vazio">Sem transportadoras ativas</div>'}</div>
+    <div class="tl-cards">${cards || '<div class="tl-t3">Sem transportadoras ativas</div>'}</div>
   </div>`;
 }
 function _telaoStatusViagem(v, agora) {
-  if (agora < v.ini) return { t: 'Aguardando', c: '#8a9a86', o: 1 };
-  if (agora < v.fim) return { t: 'Em viagem', c: '#70a8f0', o: 0 };
-  return { t: 'Concluída', c: '#6ee04a', o: 2 };
+  if (agora < v.ini) return ['Aguardando', 'var(--tl-t3)', 1];
+  if (agora < v.fim) return ['Em viagem', _TL_SERIE, 0];
+  return ['Concluída', _TL_BOM, 2];
 }
 function _telaoKpisProg(P) {
   const t = P.totais || {};
-  const ocup = t.capacidade ? Math.round(t.volume / t.capacidade * 100) : null;
-  const atend = t.pedidos ? Math.round(t.pedidosAtendidos / t.pedidos * 100) : null;
+  const ocup = _tlPct(t.volume, t.capacidade), atend = _tlPct(t.pedidosAtendidos, t.pedidos), cob = _tlPct(t.volume, t.demanda);
   return `<div class="tl-kpis">
-    ${_tlKpi(_tlNum(t.viagens), 'viagens', '', `${_tlNum(t.placas)} placas`)}
-    ${_tlKpi(`${_tlNum(t.volume)}<small> m³</small>`, 'programado', '', t.demanda ? `de ${_tlNum(t.demanda)} m³ de demanda` : '')}
-    ${_tlKpi(`${_tlNum(t.pedidosAtendidos)}<small>/${_tlNum(t.pedidos)}</small>`, 'pedidos atendidos', atend == null ? '' : atend >= 100 ? '#6ee04a' : atend >= 90 ? '#f0be40' : '#f06060')}
-    ${_tlKpi(_tlNum(t.entregas), 'entregas', '', t.viagens ? `${_tlNum(t.entregas / t.viagens, 1)} por viagem` : '')}
-    ${_tlKpi(ocup == null ? '—' : ocup + '%', 'ocupação média', ocup == null ? '' : ocup >= 90 ? '#6ee04a' : ocup >= 75 ? '#f0be40' : '#f06060')}
+    ${_tlKpi('Viagens', _tlNum(t.viagens), { sub: `${_tlNum(t.placas)} placas · ${P.programacoes || 1} programação(ões)` })}
+    ${_tlKpi('Volume programado', `${_tlNum(t.volume)}<small> m³</small>`, { sub: t.demanda ? `${_tlNum(cob, 0)}% da demanda de ${_tlNum(t.demanda)} m³` : '' })}
+    ${_tlKpi('Pedidos atendidos', `${_tlNum(t.pedidosAtendidos)}<small> de ${_tlNum(t.pedidos)}</small>`, { cor: atend == null ? '' : atend >= 100 ? _TL_BOM : atend >= 95 ? _TL_ATENCAO : _TL_CRITICO, sub: atend == null ? '' : `${_tlNum(atend, 1)}% de atendimento` })}
+    ${_tlKpi('Entregas', _tlNum(t.entregas), { sub: t.viagens ? `${_tlNum(t.entregas / t.viagens, 1)} por viagem · ${_tlNum(t.volume / (t.entregas || 1), 1)} m³ por entrega` : '' })}
+    ${_tlKpi('Ocupação média', ocup == null ? '—' : `${_tlNum(ocup, 0)}<small>%</small>`, { cor: _tlCorOcup(ocup), sub: `${_tlNum(t.volume)} de ${_tlNum(t.capacidade)} m³ de capacidade` })}
   </div>`;
 }
 function _telaoSemProg(D, quando, iso) {
-  return `<div class="tl-msg"><div class="tl-msg-i">🗓</div>
-    <div class="tl-msg-t">Programação de ${quando} (${_tlDataBr(iso)}) ainda não publicada</div>
-    <div class="tl-msg-s">${D.semPermProg ? 'O Firestore recusou a leitura — falta o trecho de regras do telão no firestore.rules.' : 'Ela aparece aqui sozinha assim que alguém salvar a programação (ou clicar em “📺 Atualizar telão” no Resumo Operação).'}</div></div>`;
+  return _tlVazio(`Programação de ${quando} (${_tlDataBr(iso)}) ainda não publicada`,
+    D.semPermProg ? 'O Firestore recusou a leitura — falta o trecho de regras do telão no firestore.rules.' : 'Aparece aqui sozinha quando a programação for salva (ou ao clicar em “📺 Atualizar telão” no Resumo Operação).', '◷');
 }
 function _telaoTelaHoje(D) {
   const P = D.progHoje;
   if (!P) return _telaoSemProg(D, 'hoje', D.hoje);
   const agora = Date.now();
   const vs = (P.viagens || []).map(v => ({ ...v, st: _telaoStatusViagem(v, agora) }));
-  const cont = { 0: 0, 1: 0, 2: 0 }; vs.forEach(v => cont[v.st.o]++);
-  const lista = vs.filter(v => v.st.o !== 2).sort((a, b) => a.st.o - b.st.o || a.ini - b.ini);
+  const cont = [0, 0, 0]; vs.forEach(v => cont[v.st[2]]++);
+  const lista = vs.filter(v => v.st[2] !== 2).sort((a, b) => a.st[2] - b.st[2] || a.ini - b.ini);
   const MAX = 11;
   const linhas = lista.slice(0, MAX).map(v => `<tr>
-      <td class="tl-mono">${_tlHora(v.ini)}</td>
-      <td class="tl-mono tl-b">${esc(v.placa)}</td>
-      <td>${esc(v.transp)}</td>
-      <td>${esc(v.base)}</td>
-      <td class="tl-dest">${esc((v.cidades || []).join(' · '))}</td>
-      <td class="tl-r">${v.entregas}</td>
-      <td class="tl-r tl-mono">${_tlNum(v.volume)} m³</td>
-      <td class="tl-mono">${_tlHora(v.fim)}</td>
-      <td><span class="tl-pill" style="color:${v.st.c};border-color:${v.st.c}66">${v.st.t}</span></td>
+      <td class="tl-num">${_tlHora(v.ini)}</td><td class="tl-num tl-b">${esc(v.placa)}</td><td class="tl-ell" style="max-width:13em">${esc(v.transp)}</td>
+      <td class="tl-ell" style="max-width:12em">${esc(v.base)}</td><td class="tl-ell tl-t2" style="max-width:20em">${esc((v.cidades || []).join(' · '))}</td>
+      <td class="tl-r tl-num">${v.entregas}</td><td class="tl-r tl-num">${_tlNum(v.volume)} m³</td><td class="tl-r tl-num tl-t2">${v.cap ? _tlNum(v.volume / v.cap * 100) + '%' : '—'}</td>
+      <td class="tl-num">${_tlHora(v.fim)}</td><td><span class="tl-tag" style="color:${v.st[1]}"><i style="background:${v.st[1]}"></i>${v.st[0]}</span></td>
     </tr>`).join('');
+  const prog = vs.length ? cont[2] / vs.length * 100 : 0;
   return `<div class="tl-col">
     ${_telaoKpisProg(P)}
-    <div class="tl-panel tl-grow">
-      <div class="tl-panel-t">Quadro de viagens <span><b style="color:#70a8f0">${cont[0]}</b> em viagem · <b>${cont[1]}</b> aguardando · <b style="color:#6ee04a">${cont[2]}</b> concluídas (pelo horário previsto)</span></div>
-      ${lista.length ? `<table class="tl-tab"><thead><tr><th>Carga</th><th>Placa</th><th>Transportadora</th><th>Base</th><th>Destinos</th><th class="tl-r">Entr.</th><th class="tl-r">Volume</th><th>Fim prev.</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>
-        ${lista.length > MAX ? `<div class="tl-mais">+ ${lista.length - MAX} viagem(ns) aguardando depois dessas</div>` : ''}`
-      : '<div class="tl-vazio" style="color:#6ee04a">✓ Todas as viagens de hoje já passaram do horário previsto de término</div>'}
-    </div>
+    ${_tlPainel('Quadro de viagens', `<b class="tl-num" style="color:${_TL_SERIE}">${cont[0]}</b> em viagem · <b class="tl-num">${cont[1]}</b> aguardando · <b class="tl-num" style="color:${_TL_BOM}">${cont[2]}</b> concluídas · status pelo horário previsto da programação`,
+      `<div class="tl-hbar tl-hbar-full" style="margin-bottom:.8vw"><span style="width:${prog}%;background:${_TL_BOM}"></span></div>
+      ${lista.length ? `<table class="tl-tab"><thead><tr><th>Carga</th><th>Placa</th><th>Transportadora</th><th>Base</th><th>Destinos</th><th class="tl-r">Entr.</th><th class="tl-r">Volume</th><th class="tl-r">Ocup.</th><th>Fim prev.</th><th>Status</th></tr></thead><tbody>${linhas}</tbody></table>
+      ${lista.length > MAX ? `<div class="tl-rodape-p">+ ${lista.length - MAX} viagem(ns) aguardando na sequência</div>` : ''}`
+      : `<div class="tl-t2" style="color:${_TL_BOM}">✓ Todas as viagens de hoje já passaram do horário previsto de término.</div>`}`, 'tl-grow')}
   </div>`;
 }
 function _telaoTelaAmanha(D) {
   const P = D.progAmanha;
   if (!P) return _telaoSemProg(D, 'amanhã', D.amanha);
-  const bases = (P.porBase || []).map(b => {
-    const ocup = b.capacidade ? Math.round(b.volume / b.capacidade * 100) : null;
-    return `<tr><td class="tl-b">${esc(b.nome)}</td><td class="tl-r">${b.viagens}</td><td class="tl-r">${b.placas}</td><td class="tl-r tl-mono">${_tlNum(b.volume)} m³</td><td class="tl-r">${b.entregas}</td><td class="tl-r">${ocup == null ? '—' : ocup + '%'}</td></tr>`;
+  const bases = (P.porBase || []);
+  const maxV = Math.max(...bases.map(b => b.volume), 1);
+  const bHtml = bases.map(b => {
+    const oc = _tlPct(b.volume, b.capacidade);
+    return `<tr><td class="tl-b tl-ell" style="max-width:14em">${esc(b.nome)}</td><td style="width:30%">${_tlBarra(b.volume, maxV)}</td><td class="tl-r tl-num">${_tlNum(b.volume)} m³</td><td class="tl-r tl-num">${b.viagens}</td><td class="tl-r tl-num">${b.placas}</td><td class="tl-r tl-num">${b.entregas}</td><td class="tl-r tl-num" style="color:${_tlCorOcup(oc)}">${oc == null ? '—' : _tlNum(oc) + '%'}</td></tr>`;
   }).join('');
-  const na = (P.naoAtendidos || []);
+  const na = P.naoAtendidos || [];
+  const volNa = na.reduce((s, p) => s + (p.volume || 0), 0);
   const naHtml = na.length
-    ? na.slice(0, 9).map(p => `<div class="tl-na"><span>${esc(p.cliente)}</span><small>${esc(p.cidade)}${p.base ? ' · ' + esc(p.base) : ''}</small><b>${_tlNum(p.volume)} m³</b></div>`).join('') + (na.length > 9 ? `<div class="tl-mais">+ ${na.length - 9} pedido(s)</div>` : '')
-    : '<div class="tl-vazio" style="color:#6ee04a">✓ Todos os pedidos de amanhã estão programados</div>';
+    ? na.slice(0, 8).map(p => `<div class="tl-li"><div><div class="tl-ell tl-b">${esc(p.cliente)}</div><small>${esc(p.cidade)}${p.base ? ' · ' + esc(p.base) : ''}</small></div><b class="tl-num" style="color:${_TL_ATENCAO}">${_tlNum(p.volume)} m³</b></div>`).join('') + (na.length > 8 ? `<div class="tl-rodape-p">+ ${na.length - 8} pedido(s)</div>` : '')
+    : `<div style="color:${_TL_BOM}">✓ Todos os pedidos de amanhã estão programados.</div>`;
   return `<div class="tl-col">
     ${_telaoKpisProg(P)}
-    <div class="tl-split tl-grow" style="grid-template-columns:1.35fr 1fr">
-      <div class="tl-panel"><div class="tl-panel-t">Por base de carregamento</div>
-        <table class="tl-tab"><thead><tr><th>Base</th><th class="tl-r">Viagens</th><th class="tl-r">Placas</th><th class="tl-r">Volume</th><th class="tl-r">Entregas</th><th class="tl-r">Ocupação</th></tr></thead><tbody>${bases}</tbody></table></div>
-      <div class="tl-panel"><div class="tl-panel-t">Pedidos sem programação <span style="color:${na.length ? '#f06060' : '#6ee04a'}">${na.length}</span></div>${naHtml}</div>
+    <div class="tl-grid tl-grow" style="grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)">
+      ${_tlPainel('Carregamento por base', 'volume programado, viagens, placas, entregas e ocupação',
+        `<table class="tl-tab"><thead><tr><th>Base</th><th></th><th class="tl-r">Volume</th><th class="tl-r">Viagens</th><th class="tl-r">Placas</th><th class="tl-r">Entregas</th><th class="tl-r">Ocup.</th></tr></thead><tbody>${bHtml}</tbody></table>`)}
+      ${_tlPainel('Pedidos sem programação', na.length ? `<b style="color:${_TL_CRITICO}">${na.length}</b> pedido(s) · ${_tlNum(volNa)} m³` : '', naHtml)}
     </div>
   </div>`;
 }
 function _telaoTelaMes(D) {
-  const docs = D.docsMes.filter(d => d.data && d.data <= D.hoje).sort((a, b) => a.data.localeCompare(b.data));
-  if (!docs.length) return `<div class="tl-msg"><div class="tl-msg-i">📊</div><div class="tl-msg-t">Ainda não há dias deste mês publicados no telão</div><div class="tl-msg-s">Clique em “📺 Atualizar telão” no Resumo Operação para publicar o mês.</div></div>`;
-  const T = { viagens: 0, volume: 0, capacidade: 0, entregas: 0, pedidos: 0, atendidos: 0 };
-  const tr = new Map();
-  docs.forEach(d => {
-    const t = d.totais || {};
-    T.viagens += t.viagens || 0; T.volume += t.volume || 0; T.capacidade += t.capacidade || 0; T.entregas += t.entregas || 0;
-    T.pedidos += t.pedidos || 0; T.atendidos += t.pedidosAtendidos || 0;
-    (d.porTransp || []).forEach(x => {
-      if (!tr.has(x.nome)) tr.set(x.nome, { nome: x.nome, viagens: 0, volume: 0, capacidade: 0, entregas: 0 });
-      const o = tr.get(x.nome); o.viagens += x.viagens; o.volume += x.volume; o.capacidade += x.capacidade; o.entregas += x.entregas;
-    });
-  });
-  const ocup = T.capacidade ? Math.round(T.volume / T.capacidade * 100) : null;
-  const maxVol = Math.max(...docs.map(d => d.totais?.volume || 0), 1);
-  const barras = docs.map(d => {
+  const dia = +D.hoje.slice(8, 10), mesAnt = _tlMesAnterior(D.mes), mA = _tlMesCurto(mesAnt);
+  const A = _telaoAgregar(D.progs, D.mes, dia), B = _telaoAgregar(D.progs, mesAnt, dia);
+  if (!A.dias.length) return _tlVazio('Ainda não há dias deste mês publicados no telão', 'Clique em “📺 Atualizar telão” no Resumo Operação para publicar o mês.', '◷');
+  const ocA = _tlPct(A.T.volume, A.T.capacidade), ocB = _tlPct(B.T.volume, B.T.capacidade);
+  const atA = _tlPct(A.T.atendidos, A.T.pedidos), atB = _tlPct(B.T.atendidos, B.T.pedidos);
+  const temB = B.dias.length > 0;
+  const dl = (a, b, o = {}) => temB ? _tlDelta(a, b, { ...o, mesAnt: mA }) : '';
+  const vols = A.dias.map(d => d.totais?.volume || 0);
+  const maxVol = Math.max(...vols, 1), media = vols.reduce((s, v) => s + v, 0) / vols.length;
+  // Rótulo de valor só no maior dia e no último (não em toda barra).
+  const iMax = vols.indexOf(Math.max(...vols)), iUlt = vols.length - 1;
+  const barras = A.dias.map((d, i) => {
     const v = d.totais?.volume || 0;
-    return `<div class="tl-colbar" title="${_tlDataBr(d.data)}"><div class="tl-colbar-v">${v >= 1000 ? _tlNum(v / 1000, 1) + 'k' : _tlNum(v)}</div><div class="tl-colbar-b" style="height:${Math.max(2, v / maxVol * 100)}%"></div><div class="tl-colbar-d">${d.data.slice(8, 10)}</div></div>`;
+    const rot = i === iMax || i === iUlt ? `<div class="tl-vb-v tl-num">${_tlNum(v)}</div>` : '';
+    return `<div class="tl-vb"><div class="tl-vb-b" style="height:${Math.max(1, v / maxVol * 100)}%">${rot}</div><div class="tl-vb-d">${d.data.slice(8, 10)}<small>${_tlDiaSemana(d.data).slice(0, 3)}</small></div></div>`;
   }).join('');
-  const rank = [...tr.values()].sort((a, b) => b.volume - a.volume).slice(0, 10).map((o, i) => {
-    const oc = o.capacidade ? Math.round(o.volume / o.capacidade * 100) : null;
-    return `<tr><td class="tl-mono">${i + 1}</td><td class="tl-b">${esc(o.nome)}</td><td class="tl-r">${_tlNum(o.viagens)}</td><td class="tl-r tl-mono">${_tlNum(o.volume)} m³</td><td class="tl-r" style="color:${oc == null ? '' : oc >= 90 ? '#6ee04a' : oc >= 75 ? '#f0be40' : '#f06060'}">${oc == null ? '—' : oc + '%'}</td></tr>`;
+  const maxT = Math.max(...A.transp.map(t => t.volume), 1);
+  const rank = A.transp.slice(0, 10).map((t, i) => {
+    const oc = _tlPct(t.volume, t.capacidade), part = _tlPct(t.volume, A.T.volume);
+    return `<tr><td class="tl-num tl-t3">${i + 1}</td><td class="tl-b tl-ell" style="max-width:13em">${esc(t.nome)}</td><td style="width:22%">${_tlBarra(t.volume, maxT)}</td><td class="tl-r tl-num">${_tlNum(t.volume)}</td><td class="tl-r tl-num tl-t2">${_tlNum(part, 1)}%</td><td class="tl-r tl-num">${_tlNum(t.viagens)}</td><td class="tl-r tl-num">${t.entregas ? _tlNum(t.volume / t.entregas, 1) : '—'}</td><td class="tl-r tl-num" style="color:${_tlCorOcup(oc)}">${oc == null ? '—' : _tlNum(oc) + '%'}</td></tr>`;
   }).join('');
   return `<div class="tl-col">
     <div class="tl-kpis">
-      ${_tlKpi(_tlNum(T.viagens), 'viagens', '', `${docs.length} dia(s) programado(s)`)}
-      ${_tlKpi(`${_tlNum(T.volume)}<small> m³</small>`, 'volume entregue (prog.)')}
-      ${_tlKpi(_tlNum(T.entregas), 'entregas', '', T.viagens ? `${_tlNum(T.entregas / T.viagens, 1)} por viagem` : '')}
-      ${_tlKpi(T.entregas ? `${_tlNum(T.volume / T.entregas, 1)}<small> m³</small>` : '—', 'volume por entrega')}
-      ${_tlKpi(ocup == null ? '—' : ocup + '%', 'ocupação média', ocup == null ? '' : ocup >= 90 ? '#6ee04a' : ocup >= 75 ? '#f0be40' : '#f06060')}
+      ${_tlKpi('Viagens', _tlNum(A.T.viagens), { delta: dl(A.T.viagens, B.T.viagens), sub: `${A.T.dias} dia(s) de entrega` })}
+      ${_tlKpi('Volume programado', `${_tlNum(A.T.volume)}<small> m³</small>`, { delta: dl(A.T.volume, B.T.volume), sub: `média de ${_tlNum(A.T.volume / A.T.dias)} m³/dia` })}
+      ${_tlKpi('Entregas', _tlNum(A.T.entregas), { delta: dl(A.T.entregas, B.T.entregas), sub: `${_tlNum(A.T.entregas / (A.T.viagens || 1), 2)} entregas por viagem` })}
+      ${_tlKpi('Ocupação média', ocA == null ? '—' : `${_tlNum(ocA, 1)}<small>%</small>`, { cor: _tlCorOcup(ocA), delta: dl(ocA, ocB, { pp: true }) })}
+      ${_tlKpi('Atendimento de pedidos', atA == null ? '—' : `${_tlNum(atA, 1)}<small>%</small>`, { cor: atA == null ? '' : atA >= 98 ? _TL_BOM : atA >= 95 ? _TL_ATENCAO : _TL_CRITICO, delta: dl(atA, atB, { pp: true }), sub: `${_tlNum(A.T.atendidos)} de ${_tlNum(A.T.pedidos)} pedidos` })}
     </div>
-    <div class="tl-split tl-grow" style="grid-template-columns:1.25fr 1fr">
-      <div class="tl-panel"><div class="tl-panel-t">Volume programado por dia de entrega <span>m³</span></div><div class="tl-colbars">${barras}</div></div>
-      <div class="tl-panel"><div class="tl-panel-t">Transportadoras no mês <span>por volume</span></div>
-        <table class="tl-tab"><thead><tr><th>#</th><th>Transportadora</th><th class="tl-r">Viagens</th><th class="tl-r">Volume</th><th class="tl-r">Ocup.</th></tr></thead><tbody>${rank}</tbody></table></div>
+    <div class="tl-grid tl-grow" style="grid-template-columns:minmax(0,1.15fr) minmax(0,1fr)">
+      ${_tlPainel('Volume programado por dia de entrega', `m³ · média ${_tlNum(media)} m³/dia`,
+        `<div class="tl-vbars"><div class="tl-vb-area"><div class="tl-vb-media" style="bottom:${media / maxVol * 100}%"><span>média ${_tlNum(media)}</span></div>${barras}</div></div>`)}
+      ${_tlPainel('Transportadoras', 'volume (m³), participação, viagens, m³ por entrega e ocupação',
+        `<table class="tl-tab"><thead><tr><th>#</th><th>Transportadora</th><th></th><th class="tl-r">Volume</th><th class="tl-r">Part.</th><th class="tl-r">Viagens</th><th class="tl-r">m³/entr.</th><th class="tl-r">Ocup.</th></tr></thead><tbody>${rank}</tbody></table>`)}
+    </div>
+  </div>`;
+}
+const _TL_FAIXAS_DROP = [[0, 5, 'até 5'], [5, 10, '5–10'], [10, 15, '10–15'], [15, 20, '15–20'], [20, 30, '20–30'], [30, Infinity, '30+']];
+function _telaoTelaClientes(D) {
+  const dia = +D.hoje.slice(8, 10), mesAnt = _tlMesAnterior(D.mes), mA = _tlMesCurto(mesAnt);
+  const A = _telaoAgregar(D.progs, D.mes, dia), B = _telaoAgregar(D.progs, mesAnt, dia);
+  if (!A.dias.length) return _tlVazio('Ainda não há dias deste mês publicados no telão', 'Clique em “📺 Atualizar telão” no Resumo Operação para publicar o mês.', '◷');
+  if (!A.temClientes) return _tlVazio('Os dias publicados ainda não têm o detalhe por cliente', 'Clique uma vez em “📺 Atualizar telão” no Resumo Operação para republicar o mês com os dados de cliente.', '◷');
+  const cA = A.clientes, cB = B.clientes, temB = B.temClientes && cB.length > 0;
+  const dropCarteira = l => l.length ? l.reduce((s, c) => s + c.drop, 0) / l.length : null; // média simples por cliente
+  const top10 = l => { const t = l.slice(0, 10).reduce((s, c) => s + c.volume, 0); const tot = l.reduce((s, c) => s + c.volume, 0); return tot ? t / tot * 100 : null; };
+  const dropOp = (A.T.volume / (A.T.entregas || 1)), dropOpB = B.T.entregas ? B.T.volume / B.T.entregas : null;
+  const dl = (a, b, o = {}) => temB ? _tlDelta(a, b, { ...o, mesAnt: mA }) : '';
+  const maxV = Math.max(...cA.slice(0, 11).map(c => c.volume), 1);
+  const linhas = cA.slice(0, 11).map((c, i) => `<tr>
+      <td class="tl-num tl-t3">${i + 1}</td>
+      <td><div class="tl-ell tl-b" style="max-width:19em">${esc(c.nome)}</div><small class="tl-t3">${esc(c.cidade)}</small></td>
+      <td style="width:26%">${_tlBarra(c.volume, maxV)}</td>
+      <td class="tl-r tl-num tl-b">${_tlNum(c.volume)}</td><td class="tl-r tl-num tl-t2">${_tlNum(c.volume / (A.T.volume || 1) * 100, 1)}%</td>
+      <td class="tl-r tl-num">${c.entregas}</td><td class="tl-r tl-num">${_tlNum(c.drop, 1)}</td></tr>`).join('');
+  const comBase = cA.filter(c => c.entregas >= 3);
+  const faixas = _TL_FAIXAS_DROP.map(([a, b, l]) => ({ l, n: cA.filter(c => c.drop >= a && c.drop < b).length }));
+  const maxF = Math.max(...faixas.map(f => f.n), 1);
+  const hist = faixas.map(f => `<div class="tl-vb"><div class="tl-vb-b" style="height:${Math.max(1, f.n / maxF * 100)}%"><div class="tl-vb-v tl-num">${f.n}</div></div><div class="tl-vb-d">${f.l} m³</div></div>`).join('');
+  const menores = [...comBase].sort((a, b) => a.drop - b.drop).slice(0, 5).map(c => `<div class="tl-li"><div><div class="tl-ell tl-b">${esc(c.nome)}</div><small>${esc(c.cidade)} · ${c.entregas} entregas · ${_tlNum(c.volume)} m³</small></div><b class="tl-num" style="color:${_TL_ATENCAO}">${_tlNum(c.drop, 1)} m³</b></div>`).join('');
+  return `<div class="tl-col">
+    <div class="tl-kpis">
+      ${_tlKpi('Clientes atendidos', _tlNum(cA.length), { delta: dl(cA.length, cB.length) })}
+      ${_tlKpi('Drop médio por cliente', `${_tlNum(dropCarteira(cA), 1)}<small> m³</small>`, { delta: dl(dropCarteira(cA), dropCarteira(cB)), sub: 'média do m³/entrega de cada cliente' })}
+      ${_tlKpi('Drop operacional', `${_tlNum(dropOp, 1)}<small> m³</small>`, { delta: dl(dropOp, dropOpB), sub: 'volume total ÷ entregas' })}
+      ${_tlKpi('Concentração top 10', `${_tlNum(top10(cA), 1)}<small>%</small>`, { sub: 'do volume do mês nos 10 maiores clientes' })}
+      ${_tlKpi('Entregas por cliente', _tlNum(A.T.entregas / (cA.length || 1), 1), { sub: `${_tlNum(A.T.entregas)} entregas no mês` })}
+    </div>
+    <div class="tl-grid tl-grow" style="grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)">
+      ${_tlPainel('Maiores clientes por volume', 'm³ no mês, participação, entregas e drop (m³ por entrega)',
+        `<table class="tl-tab tl-tab-c"><thead><tr><th>#</th><th>Cliente</th><th></th><th class="tl-r">m³</th><th class="tl-r">Part.</th><th class="tl-r">Entr.</th><th class="tl-r">Drop</th></tr></thead><tbody>${linhas}</tbody></table>`)}
+      <div class="tl-col">
+        ${_tlPainel('Distribuição do drop por cliente', 'nº de clientes por faixa de m³/entrega', `<div class="tl-vbars tl-vbars-s"><div class="tl-vb-area">${hist}</div></div>`, 'tl-grow')}
+        ${_tlPainel('Menor drop do mês', 'clientes com 3+ entregas · oportunidade de consolidar pedidos', menores || '<div class="tl-t3">Nenhum cliente com 3 ou mais entregas ainda.</div>')}
+      </div>
+    </div>
+  </div>`;
+}
+function _telaoTelaOcorrencias(D) {
+  const dia = +D.hoje.slice(8, 10), mesAnt = _tlMesAnterior(D.mes), mA = _tlMesCurto(mesAnt);
+  if (D.erroOcorr) return _tlVazio('Não consegui ler as ocorrências', esc(D.erroOcorr), '!');
+  const oA = _telaoOcorrMes(D.ocorr, D.mes, dia), oB = _telaoOcorrMes(D.ocorr, mesAnt, dia);
+  const A = _telaoAgregar(D.progs, D.mes, dia), B = _telaoAgregar(D.progs, mesAnt, dia);
+  const temB = B.dias.length > 0 || oB.length > 0;
+  const dl = (a, b, o = {}) => temB ? _tlDelta(a, b, { maiorMelhor: false, ...o, mesAnt: mA }) : '';
+  const idx = (o, T) => T.entregas ? o.length / T.entregas * 100 : null;
+  const iA = idx(oA, A.T), iB = idx(oB, B.T);
+  const conta = (l, f) => l.filter(f).length;
+  const dev = r => r.tipo === 'devolucao_total' || r.tipo === 'devolucao_parcial';
+  const volA = oA.reduce((s, r) => s + (Number(r.volumeAfetadoM3) || 0), 0), volB = oB.reduce((s, r) => s + (Number(r.volumeAfetadoM3) || 0), 0);
+  if (!oA.length) {
+    return `<div class="tl-col">
+      <div class="tl-kpis">${_tlKpi('Ocorrências no mês', '0', { cor: _TL_BOM, delta: dl(0, oB.length) })}${_tlKpi('Índice de ocorrências', `0<small>%</small>`, { cor: _TL_BOM, sub: `sobre ${_tlNum(A.T.entregas)} entregas` })}</div>
+      ${_tlVazio('Nenhuma devolução ou reentrega registrada neste mês', 'Ocorrências registradas no Histórico (↩️ Devolução / 🔁 Reentrega) aparecem aqui.', '✓')}</div>`;
+  }
+  // Por motivo (top 7 + Outros)
+  const mot = new Map(); oA.forEach(r => { const k = (r.motivo || 'Não informado').trim(); mot.set(k, (mot.get(k) || 0) + 1); });
+  let motL = [...mot.entries()].sort((a, b) => b[1] - a[1]);
+  if (motL.length > 7) motL = [...motL.slice(0, 6), ['Outros', motL.slice(6).reduce((s, x) => s + x[1], 0)]];
+  const maxM = Math.max(...motL.map(x => x[1]), 1);
+  const motHtml = motL.map(([k, n]) => `<div class="tl-brow"><div class="tl-ell">${esc(k)}</div>${_tlBarra(n, maxM)}<b class="tl-num tl-r">${n}</b><small class="tl-num tl-r tl-t3">${_tlNum(n / oA.length * 100)}%</small></div>`).join('');
+  // Por transportadora: ocorrências, índice sobre as entregas dela no mês, volume afetado
+  const trE = new Map(A.transp.map(t => [t.nome, t.entregas]));
+  const trO = new Map(); oA.forEach(r => { const k = r.transportadora || '—'; if (!trO.has(k)) trO.set(k, { n: 0, vol: 0 }); const o = trO.get(k); o.n++; o.vol += Number(r.volumeAfetadoM3) || 0; });
+  const trHtml = [...trO.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 8).map(([k, o]) => {
+    const e = trE.get(k), ix = e ? o.n / e * 100 : null;
+    return `<tr><td class="tl-b tl-ell" style="max-width:13em">${esc(k)}</td><td class="tl-r tl-num">${o.n}</td><td class="tl-r tl-num" style="color:${ix == null ? 'var(--tl-t3)' : ix <= 1 ? _TL_BOM : ix <= 3 ? _TL_ATENCAO : _TL_CRITICO}">${ix == null ? '—' : _tlNum(ix, 1) + '%'}</td><td class="tl-r tl-num tl-t2">${_tlNum(o.vol, 1)} m³</td></tr>`;
+  }).join('');
+  const tipos = Object.entries(_TL_TIPO).map(([k, [l, c]]) => ({ l, c, n: conta(oA, r => r.tipo === k) })).filter(t => t.n);
+  const tipoBar = `<div class="tl-stack tl-stack-l">${tipos.map(t => `<span style="flex:${t.n};background:${t.c}"></span>`).join('')}</div><div class="tl-legenda" style="margin:.6vw 0 0">${tipos.map(t => `<span class="tl-leg"><i style="background:${t.c}"></i>${t.l} <b class="tl-num">${t.n}</b></span>`).join('')}</div>`;
+  const recentes = [...oA].sort((a, b) => String(b.criadoEm).localeCompare(String(a.criadoEm))).slice(0, 8).map(r => {
+    const [l, c] = _TL_TIPO[r.tipo] || ['Ocorrência', 'var(--tl-t3)'];
+    return `<div class="tl-li"><div><div class="tl-ell tl-b">${esc(r.cliente || '—')}</div><small><span style="color:${c}">●</span> ${l} · ${esc(r.motivo || '—')} · ${esc(r.transportadora || '')}</small></div><span class="tl-num tl-t2">${esc((r.dataEntregaOriginal || '').slice(0, 5))}</span></div>`;
+  }).join('');
+  return `<div class="tl-col">
+    <div class="tl-kpis">
+      ${_tlKpi('Ocorrências no mês', _tlNum(oA.length), { delta: dl(oA.length, oB.length) })}
+      ${_tlKpi('Índice de ocorrências', iA == null ? '—' : `${_tlNum(iA, 2)}<small>%</small>`, { cor: iA == null ? '' : iA <= 1 ? _TL_BOM : iA <= 3 ? _TL_ATENCAO : _TL_CRITICO, delta: iB == null ? '' : dl(iA, iB, { pp: true }), sub: `sobre ${_tlNum(A.T.entregas)} entregas programadas` })}
+      ${_tlKpi('Devoluções', _tlNum(conta(oA, dev)), { sub: `${conta(oA, r => r.tipo === 'devolucao_total')} totais · ${conta(oA, r => r.tipo === 'devolucao_parcial')} parciais`, delta: dl(conta(oA, dev), conta(oB, dev)) })}
+      ${_tlKpi('Reentregas', _tlNum(conta(oA, r => r.tipo === 'reentrega')), { delta: dl(conta(oA, r => r.tipo === 'reentrega'), conta(oB, r => r.tipo === 'reentrega')) })}
+      ${_tlKpi('Volume afetado', `${_tlNum(volA, 1)}<small> m³</small>`, { delta: dl(volA, volB), sub: A.T.volume ? `${_tlNum(volA / A.T.volume * 100, 2)}% do volume do mês` : '' })}
+    </div>
+    <div class="tl-grid tl-grow" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)">
+      <div class="tl-col">
+        ${_tlPainel('Por tipo', `${oA.length} ocorrência(s)`, tipoBar)}
+        ${_tlPainel('Por motivo', 'quantidade e % do total', motHtml, 'tl-grow')}
+      </div>
+      ${_tlPainel('Por transportadora', 'índice = ocorrências ÷ entregas da transportadora no mês',
+        `<table class="tl-tab"><thead><tr><th>Transportadora</th><th class="tl-r">Ocorr.</th><th class="tl-r">Índice</th><th class="tl-r">Volume</th></tr></thead><tbody>${trHtml}</tbody></table>`)}
+      ${_tlPainel('Registros mais recentes', 'data de entrega original', recentes)}
     </div>
   </div>`;
 }
 const _TELAO_TELAS = [
-  { id: 'disp', titulo: D => `Disponibilidade da frota · hoje, ${_tlDataBr(D.hoje)}`, render: _telaoTelaDisponibilidade },
-  { id: 'preench', titulo: D => `Preenchimento de disponibilidade · amanhã, ${_tlDiaSemana(D.amanha)} ${_tlDataBr(D.amanha)}`, render: _telaoTelaPreenchimento },
-  { id: 'hoje', titulo: D => `Programação · entregas de hoje, ${_tlDataBr(D.hoje)}${D.progHoje ? ` · ${D.progHoje.programacoes || 1} programação(ões)` : ''}`, render: _telaoTelaHoje },
-  { id: 'amanha', titulo: D => `Programação · entregas de amanhã, ${_tlDiaSemana(D.amanha)} ${_tlDataBr(D.amanha)}`, render: _telaoTelaAmanha },
-  { id: 'mes', titulo: D => `Resultado do mês · ${['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'][+D.mes.slice(5, 7) - 1]} de ${D.mes.slice(0, 4)}`, render: _telaoTelaMes },
+  { nome: 'Frota hoje', kicker: 'Frota', titulo: D => `Disponibilidade · hoje, ${_tlDataBr(D.hoje)}`, render: _telaoTelaDisponibilidade },
+  { nome: 'Preenchimento', kicker: 'Frota', titulo: D => `Preenchimento de amanhã · ${_tlDiaSemana(D.amanha)}, ${_tlDataBr(D.amanha)}`, render: _telaoTelaPreenchimento },
+  { nome: 'Entregas hoje', kicker: 'Programação', titulo: D => `Entregas de hoje · ${_tlDataBr(D.hoje)}`, render: _telaoTelaHoje },
+  { nome: 'Entregas amanhã', kicker: 'Programação', titulo: D => `Entregas de amanhã · ${_tlDiaSemana(D.amanha)}, ${_tlDataBr(D.amanha)}`, render: _telaoTelaAmanha },
+  { nome: 'Mês', kicker: 'Desempenho do mês', titulo: D => `${_TL_MESES[+D.mes.slice(5, 7) - 1][0].toUpperCase() + _TL_MESES[+D.mes.slice(5, 7) - 1].slice(1)} de ${D.mes.slice(0, 4)} · até ${_tlDataBr(D.hoje)}`, render: _telaoTelaMes },
+  { nome: 'Clientes', kicker: 'Clientes', titulo: D => `Volume e drop por cliente · ${_TL_MESES[+D.mes.slice(5, 7) - 1]}`, render: _telaoTelaClientes },
+  { nome: 'Ocorrências', kicker: 'Qualidade', titulo: D => `Devoluções e reentregas · ${_TL_MESES[+D.mes.slice(5, 7) - 1]}`, render: _telaoTelaOcorrencias },
 ];
 
 const TELAO_CSS = `
-#telao-root{position:fixed;inset:0;z-index:99999;background:#0b110c;color:#eef3e8;font-family:Inter,'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;padding:1.6vw 2vw 1.1vw;gap:1.2vw;overflow:hidden;font-size:clamp(12px,1.05vw,26px);cursor:none}
+#telao-root{--tl-bg:#0c1210;--tl-s1:#131b17;--tl-s2:#18221d;--tl-bd:#223029;--tl-grid:#1c2721;--tl-t1:#eef2ee;--tl-t2:#b4c0b8;--tl-t3:#7d8a82;--tl-acc:#b8e04a;
+  position:fixed;inset:0;z-index:99999;background:var(--tl-bg);color:var(--tl-t1);font-family:'Segoe UI',Inter,system-ui,sans-serif;display:flex;flex-direction:column;
+  padding:1.4vw 1.8vw 1vw;gap:1vw;overflow:hidden;font-size:clamp(11px,0.94vw,24px);line-height:1.3;cursor:none;-webkit-font-smoothing:antialiased}
 #telao-root.tl-mouse{cursor:default}
 #telao-root *{box-sizing:border-box}
-.tl-top{display:flex;align-items:center;gap:1.6vw}
-.tl-marca{font-weight:800;letter-spacing:.14em;color:#b8e04a;font-size:1.15em}
-.tl-sub{color:#8a9a86;font-size:.85em;letter-spacing:.08em;text-transform:uppercase}
-.tl-titulo{flex:1;font-size:1.75em;font-weight:700;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tl-relogio{text-align:right;line-height:1.05}
-.tl-relogio b{display:block;font-size:2.3em;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.tl-relogio span{color:#8a9a86;font-size:.85em}
+#telao-root small{font-size:.82em}
+.tl-num{font-variant-numeric:tabular-nums}
+.tl-b{font-weight:600}.tl-r{text-align:right}.tl-t2{color:var(--tl-t2)}.tl-t3{color:var(--tl-t3)}
+.tl-ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-top{display:flex;align-items:flex-end;gap:2vw;padding-bottom:1vw;border-bottom:1px solid var(--tl-bd)}
+.tl-marca{display:flex;flex-direction:column;gap:.15em;padding-right:2vw;border-right:1px solid var(--tl-bd)}
+.tl-marca b{font-weight:800;letter-spacing:.2em;color:var(--tl-acc);font-size:1.2em}
+.tl-marca span{color:var(--tl-t3);font-size:.78em;letter-spacing:.14em;text-transform:uppercase}
+.tl-tit{flex:1;min-width:0}
+.tl-kicker{color:var(--tl-acc);font-size:.8em;font-weight:700;letter-spacing:.16em;text-transform:uppercase}
+.tl-titulo{font-size:1.9em;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.1em}
+.tl-relogio{text-align:right;line-height:1}
+.tl-relogio b{display:block;font-size:2.5em;font-weight:300;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.tl-relogio span{color:var(--tl-t3);font-size:.85em}
 .tl-corpo{flex:1;min-height:0;display:flex;flex-direction:column}
-.tl-col{display:flex;flex-direction:column;gap:1.2vw;flex:1;min-height:0}
+.tl-col{display:flex;flex-direction:column;gap:1vw;flex:1;min-height:0;min-width:0}
 .tl-grow{flex:1;min-height:0}
-.tl-split{display:grid;grid-template-columns:1fr 1.6fr;gap:1.2vw;flex:1;min-height:0}
-.tl-panel{background:#131c14;border:1px solid #223024;border-radius:1vw;padding:1.2vw 1.4vw;overflow:hidden;display:flex;flex-direction:column;min-height:0}
-.tl-panel-t{font-size:1em;font-weight:700;color:#cfe0c8;margin-bottom:.9vw;display:flex;justify-content:space-between;gap:1vw;text-transform:uppercase;letter-spacing:.06em}
-.tl-panel-t span{font-weight:500;color:#8a9a86;text-transform:none;letter-spacing:0}
-.tl-hero{background:#131c14;border:1px solid #223024;border-radius:1vw;padding:2vw;display:flex;flex-direction:column;justify-content:center}
-.tl-hero-v{font-size:8.5em;font-weight:800;line-height:.95;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
-.tl-hero-l{font-size:1.7em;font-weight:600;margin-top:.3vw}
-.tl-hero-meta{color:#8a9a86;font-size:1.05em;margin:.4vw 0 1.6vw}
-.tl-chips{display:grid;grid-template-columns:1fr 1fr;gap:.6vw 1.2vw}
-.tl-chip{font-size:1.05em;color:#cfe0c8;display:flex;align-items:center;gap:.5vw}
-.tl-chip b{font-size:1.3em;color:#eef3e8;font-variant-numeric:tabular-nums;min-width:2.2em;text-align:right}
-.tl-dot{width:.8em;height:.8em;border-radius:50%;flex-shrink:0}
-.tl-row{display:grid;grid-template-columns:14em 1fr 4.2em 4.6em;align-items:center;gap:1vw;padding:.55vw 0;border-bottom:1px solid #1d291f}
-.tl-row:last-child{border-bottom:none}
-.tl-row-nome{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tl-row-pct{font-weight:800;font-size:1.35em;text-align:right;font-variant-numeric:tabular-nums}
-.tl-row-n{color:#8a9a86;text-align:right;font-variant-numeric:tabular-nums}
-.tl-stack{display:flex;height:1.2em;border-radius:99px;overflow:hidden;gap:2px;background:#1d291f}
+.tl-grid{display:grid;gap:1vw;flex:1;min-height:0}
+.tl-panel{background:var(--tl-s1);border:1px solid var(--tl-bd);border-radius:.6vw;padding:1vw 1.2vw;overflow:hidden;display:flex;flex-direction:column;min-height:0;min-width:0}
+.tl-panel-h{display:flex;align-items:baseline;justify-content:space-between;gap:1vw;margin-bottom:.8vw}
+.tl-panel-h h3{margin:0;font-size:.86em;font-weight:700;color:var(--tl-t2);text-transform:uppercase;letter-spacing:.1em;white-space:nowrap}
+.tl-panel-h span{color:var(--tl-t3);font-size:.82em;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl-panel-b{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.tl-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:1vw}
+.tl-kpi{background:var(--tl-s1);border:1px solid var(--tl-bd);border-radius:.6vw;padding:.9vw 1.2vw 1vw;min-width:0}
+.tl-kpi-l{color:var(--tl-t2);font-size:.8em;font-weight:700;text-transform:uppercase;letter-spacing:.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-kpi-v{font-size:3em;font-weight:600;letter-spacing:-.03em;line-height:1.08;margin-top:.15em;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tl-kpi-v small{font-size:.42em;font-weight:500;color:var(--tl-t3);letter-spacing:0;margin-left:.15em}
+.tl-kpi-s{color:var(--tl-t3);font-size:.84em;margin-top:.25em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-delta{font-size:.86em;font-weight:700;margin-top:.3em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-delta span{font-weight:400;color:var(--tl-t3)}
+.tl-delta.tl-neutro{color:var(--tl-t3);font-weight:400}
+.tl-hero{justify-content:center;padding:1.6vw 1.8vw}
+.tl-hero-v{font-size:7.4em;font-weight:600;line-height:.95;letter-spacing:-.045em;margin:.15em 0 .1em}
+.tl-hero-s{color:var(--tl-t2);font-size:1.05em}
+.tl-hero-n{display:flex;flex-wrap:wrap;gap:.4vw 1.6vw;margin-top:1.2vw;padding-top:1vw;border-top:1px solid var(--tl-grid);color:var(--tl-t3)}
+.tl-hero-n b{color:var(--tl-t1);font-size:1.25em;font-weight:600;margin-right:.25em}
+.tl-oprow{display:grid;grid-template-columns:1fr 3.4em 3.6em;gap:.8vw;align-items:baseline;padding:.42vw 0;border-bottom:1px solid var(--tl-grid)}
+.tl-oprow:last-child{border-bottom:0}
+.tl-oprow b{text-align:right;font-weight:700}.tl-oprow small{text-align:right;color:var(--tl-t3)}
+.tl-legenda{display:flex;flex-wrap:wrap;gap:.4vw 1.4vw;margin-bottom:.9vw}
+.tl-leg{display:inline-flex;align-items:center;gap:.45em;color:var(--tl-t2);font-size:.86em}
+.tl-leg i{width:.75em;height:.75em;border-radius:2px;display:inline-block}
+.tl-leg b{color:var(--tl-t1);margin-left:.2em}
+.tl-trow{display:grid;grid-template-columns:13em 1fr 3.8em 5.2em;align-items:center;gap:1vw;padding:.52vw 0;border-bottom:1px solid var(--tl-grid)}
+.tl-trow:last-child{border-bottom:0}
+.tl-big{font-size:1.3em;font-weight:700}
+.tl-stack{display:flex;height:.9em;gap:2px;border-radius:4px;overflow:hidden}
 .tl-stack span{display:block;height:100%}
-.tl-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:1.2vw}
-.tl-kpi{background:#131c14;border:1px solid #223024;border-radius:1vw;padding:1.1vw 1.4vw}
-.tl-kpi-v{font-size:3.3em;font-weight:800;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
-.tl-kpi-v small{font-size:.45em;font-weight:600;color:#8a9a86;letter-spacing:0}
-.tl-kpi-l{margin-top:.45vw;color:#cfe0c8;font-weight:600;text-transform:uppercase;letter-spacing:.05em;font-size:.85em}
-.tl-kpi-s{color:#8a9a86;font-size:.85em;margin-top:.2vw}
-.tl-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(19em,1fr));gap:1vw;align-content:start;flex:1;min-height:0;overflow:hidden}
-.tl-card{border:1.5px solid;border-radius:.9vw;padding:1vw 1.2vw}
-.tl-card-nome{font-weight:700;font-size:1.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tl-card-st{font-weight:800;font-size:1.4em;margin:.35vw 0 .6vw}
-.tl-bar{height:.5em;background:#1d291f;border-radius:99px;overflow:hidden}
-.tl-bar span{display:block;height:100%}
-.tl-tab{width:100%;border-collapse:collapse;font-size:1em}
-.tl-tab th{text-align:left;color:#8a9a86;font-weight:600;font-size:.8em;text-transform:uppercase;letter-spacing:.06em;padding:0 .6vw .5vw;border-bottom:1px solid #223024}
-.tl-tab td{padding:.5vw .6vw;border-bottom:1px solid #1a251c;white-space:nowrap}
-.tl-tab .tl-r{text-align:right}
-.tl-dest{max-width:22em;overflow:hidden;text-overflow:ellipsis;color:#cfe0c8}
-.tl-mono{font-variant-numeric:tabular-nums}
-.tl-b{font-weight:700}
-.tl-pill{border:1.5px solid;border-radius:99px;padding:.15em .7em;font-weight:700;font-size:.85em}
-.tl-mais{color:#8a9a86;margin-top:.6vw;font-size:.9em}
-.tl-na{display:grid;grid-template-columns:1fr auto;gap:0 1vw;padding:.45vw 0;border-bottom:1px solid #1a251c}
-.tl-na span{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tl-na small{color:#8a9a86;grid-column:1}
-.tl-na b{grid-column:2;grid-row:1/3;align-self:center;color:#f0be40;font-variant-numeric:tabular-nums}
-.tl-colbars{flex:1;display:flex;align-items:flex-end;gap:.35vw;min-height:0;padding-top:1.4em}
-.tl-colbar{flex:1;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end;min-width:0}
-.tl-colbar-b{width:100%;background:#b8e04a;border-radius:.3vw .3vw 0 0;opacity:.85}
-.tl-colbar-v{font-size:.7em;color:#cfe0c8;margin-bottom:.2vw;white-space:nowrap}
-.tl-colbar-d{font-size:.75em;color:#8a9a86;margin-top:.3vw}
-.tl-vazio{color:#8a9a86;padding:1vw 0;font-size:1.1em}
+.tl-stack-l{height:1.4em}
+.tl-hbar{height:.62em;border-radius:0 4px 4px 0;overflow:hidden}
+.tl-hbar span{display:block;height:100%;border-radius:0 4px 4px 0}
+.tl-hbar-full{background:var(--tl-grid);border-radius:4px}.tl-hbar-full span{border-radius:4px}
+.tl-brow{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) 2.4em 3em;gap:.8vw;align-items:center;padding:.38vw 0}
+.tl-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(20em,1fr));gap:.9vw;align-content:start;flex:1;min-height:0;overflow:hidden}
+.tl-card{background:var(--tl-s1);border:1px solid var(--tl-bd);border-radius:.6vw;padding:.95vw 1.2vw}
+.tl-card-ok{opacity:.78}
+.tl-card-h{display:flex;justify-content:space-between;gap:1vw;font-size:1.05em}
+.tl-card-st{font-weight:700;font-size:1.25em;margin:.5vw 0 .7vw}
+.tl-tab{width:100%;border-collapse:collapse}
+.tl-tab th{text-align:left;color:var(--tl-t3);font-weight:600;font-size:.76em;text-transform:uppercase;letter-spacing:.08em;padding:0 .55vw .5vw;border-bottom:1px solid var(--tl-bd);white-space:nowrap}
+.tl-tab th.tl-r{text-align:right}
+.tl-tab td{padding:.46vw .55vw;border-bottom:1px solid var(--tl-grid);white-space:nowrap}
+.tl-tab tr:last-child td{border-bottom:0}
+.tl-tab-c td{padding:.32vw .55vw}
+.tl-tab-c small{display:block;line-height:1.1}
+.tl-tag{display:inline-flex;align-items:center;gap:.45em;font-weight:700;font-size:.9em}
+.tl-tag i{width:.55em;height:.55em;border-radius:50%}
+.tl-li{display:flex;justify-content:space-between;align-items:center;gap:1vw;padding:.5vw 0;border-bottom:1px solid var(--tl-grid);min-width:0}
+.tl-li:last-child{border-bottom:0}
+.tl-li>div{min-width:0}
+.tl-li small{color:var(--tl-t3);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-rodape-p{color:var(--tl-t3);margin-top:.6vw;font-size:.88em}
+.tl-vbars{flex:1;min-height:0;display:flex;padding-top:1.5em;margin-bottom:2.5em}
+.tl-vbars-s{margin-bottom:1.6em}
+.tl-vb-area{position:relative;flex:1;display:flex;align-items:flex-end;gap:.3vw;border-bottom:1px solid var(--tl-bd)}
+.tl-vbars-s .tl-vb-area{gap:1.2vw}
+.tl-vb{flex:1;height:100%;display:flex;align-items:flex-end;justify-content:center;min-width:0;position:relative}
+.tl-vb-b{position:relative;width:100%;max-width:4.5em;background:${_TL_SERIE};border-radius:4px 4px 0 0}
+.tl-vb-v{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:.3em;font-size:.78em;color:var(--tl-t1);font-weight:600;white-space:nowrap}
+.tl-vb-d{position:absolute;top:100%;left:50%;transform:translateX(-50%);font-size:.75em;color:var(--tl-t3);margin-top:.4em;text-align:center;line-height:1.1;white-space:nowrap}
+.tl-vb-d small{display:block;font-size:.85em}
+.tl-vb-media{position:absolute;left:0;right:0;border-top:1px solid var(--tl-t2);z-index:2;pointer-events:none}
+.tl-vb-media span{position:absolute;left:0;bottom:.2em;font-size:.74em;color:var(--tl-t1);background:var(--tl-s1);padding:0 .4em;border-radius:3px}
 .tl-msg{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.8vw}
-.tl-msg-i{font-size:5em}
-.tl-msg-t{font-size:2.1em;font-weight:700}
-.tl-msg-s{color:#8a9a86;font-size:1.2em;max-width:50em}
-.tl-rod{display:flex;align-items:center;gap:1.2vw;color:#8a9a86;font-size:.85em}
-.tl-dots{display:flex;gap:.5vw}
-.tl-dots span{padding:.2em .8em;border-radius:99px;background:#131c14;border:1px solid #223024}
-.tl-dots span.on{color:#0b110c;background:#b8e04a;border-color:#b8e04a;font-weight:700}
-.tl-prog{flex:1;height:3px;background:#1d291f;border-radius:99px;overflow:hidden}
-.tl-prog span{display:block;height:100%;background:#b8e04a;width:0}
-.tl-upd.velho{color:#f06060;font-weight:700}
-.tl-sair{position:absolute;top:.8vw;right:50%;transform:translateX(50%);display:none;gap:.5vw}
+.tl-msg-i{font-size:4em;color:var(--tl-t3);font-weight:300}
+.tl-msg-t{font-size:1.9em;font-weight:600}
+.tl-msg-s{color:var(--tl-t3);font-size:1.1em;max-width:52em}
+.tl-rod{display:flex;align-items:center;gap:1.2vw;color:var(--tl-t3);font-size:.82em;padding-top:.2vw}
+.tl-dots{display:flex;gap:.3vw}
+.tl-dots span{padding:.25em .8em;border-radius:4px;color:var(--tl-t3)}
+.tl-dots span b{font-weight:600;margin-right:.4em;color:var(--tl-t3)}
+.tl-dots span.on{color:var(--tl-bg);background:var(--tl-acc);font-weight:700}
+.tl-dots span.on b{color:var(--tl-bg)}
+.tl-prog{flex:1;height:2px;background:var(--tl-grid);border-radius:2px;overflow:hidden}
+.tl-prog span{display:block;height:100%;background:var(--tl-acc);width:0}
+.tl-upd.velho{color:${_TL_CRITICO};font-weight:700}
+.tl-sair{position:absolute;top:.6vw;left:50%;transform:translateX(-50%);display:none;gap:.5vw;z-index:5}
 #telao-root.tl-mouse .tl-sair{display:flex}
-.tl-sair button{background:#223024;color:#eef3e8;border:1px solid #33463a;border-radius:.5vw;padding:.4em 1em;font:inherit;font-size:.9em;cursor:pointer}
+.tl-sair button{background:var(--tl-s2);color:var(--tl-t1);border:1px solid var(--tl-bd);border-radius:.4vw;padding:.4em 1em;font:inherit;font-size:.9em;cursor:pointer}
 `;
 
 function _telaoPintar() {
   const root = document.getElementById('telao-root');
   if (!root) return;
   const D = _telao.dados;
-  const tela = _TELAO_TELAS[_telao.idx % _TELAO_TELAS.length];
-  const corpo = root.querySelector('.tl-corpo'), titulo = root.querySelector('.tl-titulo');
-  if (!D) {
-    titulo.textContent = 'Carregando…';
-    corpo.innerHTML = `<div class="tl-msg"><div class="tl-msg-t">${_telao.erro ? 'Não consegui carregar os dados' : 'Carregando dados…'}</div>${_telao.erro ? `<div class="tl-msg-s">${esc(_telao.erro)} — tento de novo em instantes.</div>` : ''}</div>`;
-  } else {
-    titulo.textContent = tela.titulo(D);
+  const i = _telao.idx % _TELAO_TELAS.length, tela = _TELAO_TELAS[i];
+  const corpo = root.querySelector('.tl-corpo');
+  root.querySelector('.tl-kicker').textContent = D ? tela.kicker : 'Centro de operações';
+  root.querySelector('.tl-titulo').textContent = D ? tela.titulo(D) : 'Carregando…';
+  if (!D) corpo.innerHTML = _tlVazio(_telao.erro ? 'Não consegui carregar os dados' : 'Carregando dados…', _telao.erro ? `${esc(_telao.erro)} — nova tentativa em instantes.` : '', '◷');
+  else {
     try { corpo.innerHTML = tela.render(D); }
-    catch (e) { console.error('[telão]', e); corpo.innerHTML = `<div class="tl-msg"><div class="tl-msg-t">Erro ao montar esta tela</div><div class="tl-msg-s">${esc(e.message || e)}</div></div>`; }
+    catch (e) { console.error('[telão]', e); corpo.innerHTML = _tlVazio('Erro ao montar este painel', esc(e.message || e), '!'); }
   }
-  root.querySelector('.tl-dots').innerHTML = _TELAO_TELAS.map((t, i) => `<span class="${i === _telao.idx % _TELAO_TELAS.length ? 'on' : ''}">${['Disponibilidade', 'Preenchimento', 'Hoje', 'Amanhã', 'Mês'][i]}</span>`).join('');
+  root.querySelector('.tl-dots').innerHTML = _TELAO_TELAS.map((t, j) => `<span class="${j === i ? 'on' : ''}"><b>${j + 1}</b>${t.nome}</span>`).join('');
   _telaoRodape();
 }
 function _telaoRodape() {
@@ -1813,14 +2010,14 @@ function _telaoRodape() {
   root.querySelector('.tl-relogio b').textContent = _tlHora(agora.getTime());
   root.querySelector('.tl-relogio span').textContent = agora.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' });
   const upd = root.querySelector('.tl-upd');
-  const velho = !_telao.carregadoEm || Date.now() - _telao.carregadoEm > TELAO_DADOS_MS * 2.5;
-  upd.textContent = _telao.carregadoEm ? `${velho ? '⚠ dados de ' : 'atualizado às '}${_tlHora(_telao.carregadoEm)}${velho ? ' — sem conexão?' : ''}` : 'carregando…';
-  upd.classList.toggle('velho', !!(_telao.carregadoEm && velho));
-  const prog = root.querySelector('.tl-prog span');
-  prog.style.width = _telao.pausado ? '100%' : Math.min(100, (Date.now() - _telao.trocaEm) / TELAO_TROCA_MS * 100) + '%';
-  root.querySelector('.tl-pausa').textContent = _telao.pausado ? '⏸ pausado (espaço continua)' : '';
+  const velho = _telao.carregadoEm && Date.now() - _telao.carregadoEm > TELAO_FROTA_MS * 2.5;
+  upd.textContent = !_telao.carregadoEm ? 'carregando…' : velho ? `⚠ dados de ${_tlHora(_telao.carregadoEm)} — verifique a conexão` : `Atualizado às ${_tlHora(_telao.carregadoEm)}`;
+  upd.classList.toggle('velho', !!velho);
+  root.querySelector('.tl-prog span').style.width = _telao.pausado ? '100%' : Math.min(100, (Date.now() - _telao.trocaEm) / TELAO_TROCA_MS * 100) + '%';
+  root.querySelector('.tl-pausa').textContent = _telao.pausado ? '⏸ Pausado (espaço continua)' : '';
 }
-async function _telaoAtualizarDados() {
+async function _telaoAtualizarDados(forcarLento = false) {
+  if (forcarLento) _telao.lentoEm = 0;
   try {
     _telao.dados = await _telaoCarregarDados();
     _telao.carregadoEm = Date.now();
@@ -1841,7 +2038,7 @@ function _telaoTecla(e) {
   if (e.key === 'ArrowRight') _telaoTrocar(1);
   else if (e.key === 'ArrowLeft') _telaoTrocar(-1);
   else if (e.key === ' ') { e.preventDefault(); _telao.pausado = !_telao.pausado; _telao.trocaEm = Date.now(); _telaoRodape(); }
-  else if (e.key === 'r' || e.key === 'R') _telaoAtualizarDados();
+  else if (e.key === 'r' || e.key === 'R') _telaoAtualizarDados(true);
   else if (e.key === 'Escape' && !document.fullscreenElement) sairTelao();
 }
 let _telaoMouseTimer = null;
@@ -1862,16 +2059,20 @@ async function renderTelao() {
   app.innerHTML = `<style>${TELAO_CSS}</style>
     <div id="telao-root">
       <div class="tl-sair"><button onclick="telaoTelaCheia()">⛶ Tela cheia</button><button onclick="sairTelao()">✕ Sair do telão</button></div>
-      <div class="tl-top"><div><div class="tl-marca">NEXTA</div><div class="tl-sub">Sala de operação</div></div><div class="tl-titulo"></div><div class="tl-relogio"><b></b><span></span></div></div>
-      <div class="tl-corpo"></div>
-      <div class="tl-rod"><div class="tl-dots"></div><div class="tl-prog"><span></span></div><span class="tl-pausa"></span><span class="tl-upd"></span></div>
+      <header class="tl-top">
+        <div class="tl-marca"><b>NEXTA</b><span>Centro de operações</span></div>
+        <div class="tl-tit"><div class="tl-kicker"></div><div class="tl-titulo"></div></div>
+        <div class="tl-relogio"><b></b><span></span></div>
+      </header>
+      <main class="tl-corpo"></main>
+      <footer class="tl-rod"><div class="tl-dots"></div><div class="tl-prog"><span></span></div><span class="tl-pausa"></span><span class="tl-upd"></span></footer>
     </div>`;
   _telao.ativo = true;
   _telao.trocaEm = Date.now();
   _telao.timers.forEach(clearInterval);
   _telao.timers = [
     setInterval(() => { if (!_telao.pausado && Date.now() - _telao.trocaEm >= TELAO_TROCA_MS) _telaoTrocar(1); else _telaoRodape(); }, 1000),
-    setInterval(_telaoAtualizarDados, TELAO_DADOS_MS),
+    setInterval(() => _telaoAtualizarDados(), TELAO_FROTA_MS),
   ];
   document.addEventListener('keydown', _telaoTecla);
   document.addEventListener('mousemove', _telaoMouse);

@@ -13135,6 +13135,7 @@ function _telaoResumoData(dataBr, consolidado, nArquivos) {
   const viagens = [];
   const atendidos = new Set();
   const porBase = new Map(), porTransp = new Map();
+  const porCliente = new Map(); // drop por cliente / clientes de maior volume (telão: tela Clientes)
   const add = (map, k, placa, vol, cap, ent) => {
     if (!map.has(k)) map.set(k, { nome: k, viagens: 0, placas: new Set(), volume: 0, capacidade: 0, entregas: 0 });
     const o = map.get(k); o.viagens++; o.placas.add(placa); o.volume += vol; o.capacidade += cap; o.entregas += ent;
@@ -13149,7 +13150,14 @@ function _telaoResumoData(dataBr, consolidado, nArquivos) {
       const cap = Number(v.capacidade) || 0;
       const base = vi.terminalOrigem || v.terminal || paradas[0].pedido.terminal || '—';
       const transp = v.transportadora || '—';
-      paradas.forEach(pa => atendidos.add(String(pa.pedido.id)));
+      paradas.forEach(pa => {
+        atendidos.add(String(pa.pedido.id));
+        const pd = pa.pedido;
+        const nomeN = String(pd.cliente || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+        const k = (pd.codigoSAP ? 'S' + String(pd.codigoSAP).trim() : 'N' + nomeN).slice(0, 80);
+        if (!porCliente.has(k)) porCliente.set(k, { k, nome: pd.cliente || '', cidade: pd.cidade || '', volume: 0, entregas: 0 });
+        const c = porCliente.get(k); c.volume += pa.volumeTotal || 0; c.entregas++;
+      });
       const cidades = [...new Set(paradas.map(pa => pa.pedido.cidade).filter(Boolean))];
       viagens.push({ placa: v.placa, transp, base, ini, fim, entregas: paradas.length, volume: Math.round(volume * 10) / 10, cap,
         cidades: cidades.slice(0, 4), clientes: paradas.map(pa => pa.pedido.cliente || '').slice(0, 4), pet: vi.petId || '' });
@@ -13179,6 +13187,7 @@ function _telaoResumoData(dataBr, consolidado, nArquivos) {
       demanda: Math.round(pedidosDia.reduce((s, p) => s + volPed(p), 0) * 10) / 10,
     },
     porBase: fecha(porBase), porTransp: fecha(porTransp),
+    porCliente: [...porCliente.values()].map(c => ({ ...c, volume: Math.round(c.volume * 10) / 10 })).sort((a, b) => b.volume - a.volume).slice(0, 600),
     viagens: viagens.slice(0, 400),
     naoAtendidos: naoAtendidos.slice(0, 60),
   };
