@@ -1745,11 +1745,12 @@ function _telaoTelaMes(D) {
   const dl = (a, b, o = {}) => temB ? _tlDelta(a, b, { ...o, mesAnt: mA }) : '';
   const vols = A.dias.map(d => d.totais?.volume || 0);
   const maxVol = Math.max(...vols, 1), media = vols.reduce((s, v) => s + v, 0) / vols.length;
-  // Rótulo de valor só no maior dia e no último (não em toda barra).
-  const iMax = vols.indexOf(Math.max(...vols)), iUlt = vols.length - 1;
+  // Valor em cima de cada barra (pedido da operação). Com muitos dias no mês
+  // a fonte diminui um pouco pra não encostar um rótulo no outro.
+  const rotFonte = A.dias.length > 22 ? '.62em' : A.dias.length > 16 ? '.7em' : '.78em';
   const barras = A.dias.map((d, i) => {
     const v = d.totais?.volume || 0;
-    const rot = i === iMax || i === iUlt ? `<div class="tl-vb-v tl-num">${_tlNum(v)}</div>` : '';
+    const rot = `<div class="tl-vb-v tl-num" style="font-size:${rotFonte}">${_tlNum(v)}</div>`;
     return `<div class="tl-vb"><div class="tl-vb-b" style="height:${Math.max(1, v / maxVol * 100)}%">${rot}</div><div class="tl-vb-d">${d.data.slice(8, 10)}<small>${_tlDiaSemana(d.data).slice(0, 3)}</small></div></div>`;
   }).join('');
   const maxT = Math.max(...A.transp.map(t => t.volume), 1);
@@ -1766,8 +1767,8 @@ function _telaoTelaMes(D) {
       ${_tlKpi('Atendimento de pedidos', atA == null ? '—' : `${_tlNum(atA, 1)}<small>%</small>`, { cor: atA == null ? '' : atA >= 98 ? _TL_BOM : atA >= 95 ? _TL_ATENCAO : _TL_CRITICO, delta: dl(atA, atB, { pp: true }), sub: `${_tlNum(A.T.atendidos)} de ${_tlNum(A.T.pedidos)} pedidos` })}
     </div>
     <div class="tl-grid tl-grow" style="grid-template-columns:minmax(0,1.15fr) minmax(0,1fr)">
-      ${_tlPainel('Volume programado por dia de entrega', `m³ · média ${_tlNum(media)} m³/dia`,
-        `<div class="tl-vbars"><div class="tl-vb-area"><div class="tl-vb-media" style="bottom:${media / maxVol * 100}%"><span>média ${_tlNum(media)}</span></div>${barras}</div></div>`)}
+      ${_tlPainel('Volume programado por dia de entrega', `m³ · linha = média de ${_tlNum(media)} m³/dia`,
+        `<div class="tl-vbars"><div class="tl-vb-area"><div class="tl-vb-media" style="bottom:${media / maxVol * 100}%"></div>${barras}</div></div>`)}
       ${_tlPainel('Transportadoras', 'volume (m³), participação, viagens, m³ por entrega e ocupação',
         `<table class="tl-tab"><thead><tr><th>#</th><th>Transportadora</th><th></th><th class="tl-r">Volume</th><th class="tl-r">Part.</th><th class="tl-r">Viagens</th><th class="tl-r">m³/entr.</th><th class="tl-r">Ocup.</th></tr></thead><tbody>${rank}</tbody></table>`)}
     </div>
@@ -1964,7 +1965,7 @@ const TELAO_CSS = `
 .tl-vbars-s .tl-vb-area{gap:1.2vw}
 .tl-vb{flex:1;height:100%;display:flex;align-items:flex-end;justify-content:center;min-width:0;position:relative}
 .tl-vb-b{position:relative;width:100%;max-width:4.5em;background:${_TL_SERIE};border-radius:4px 4px 0 0}
-.tl-vb-v{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:.3em;font-size:.78em;color:var(--tl-t1);font-weight:600;white-space:nowrap}
+.tl-vb-v{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:.3em;font-size:.78em;color:var(--tl-t1);font-weight:600;white-space:nowrap;z-index:3;background:var(--tl-s1);padding:0 .25em;border-radius:3px;line-height:1.25}
 .tl-vb-d{position:absolute;top:100%;left:50%;transform:translateX(-50%);font-size:.75em;color:var(--tl-t3);margin-top:.4em;text-align:center;line-height:1.1;white-space:nowrap}
 .tl-vb-d small{display:block;font-size:.85em}
 .tl-vb-media{position:absolute;left:0;right:0;border-top:1px solid var(--tl-t2);z-index:2;pointer-events:none}
