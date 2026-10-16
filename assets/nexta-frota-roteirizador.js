@@ -3566,6 +3566,44 @@ function _clientesFiltrados() {
     _bateFiltroExato(c.tipoContrato, filtroContrato)
   );
 }
+// ── Km da origem (cidade de operação do cliente → lat/lon do cliente) ──────
+// A "origem" é a base cadastrada na cidade de operação do cliente (c.operacao,
+// ex.: "Betim - MG"); se a cidade tiver mais de uma base, usa a mais perto.
+// Mostra a distância por estrada (perfil caminhão, mesmo serviço do mapa)
+// quando já foi calculada uma vez — fica guardada no navegador junto com os
+// trajetos do mapa — e, até lá, a distância em linha reta.
+function _kmOrigemCliente(c) {
+  if (!c || !c.operacao || !Number.isFinite(c.lat) || !Number.isFinite(c.lon)) return null;
+  const alvo = normalizarCidade(c.operacao);
+  const bases = (terminaisCad || []).filter(t => Number.isFinite(+t.lat) && Number.isFinite(+t.lon) && (+t.lat || +t.lon) && normalizarCidade(t.cidade || '') === alvo);
+  if (!bases.length) return { semBase: true };
+  const comDist = bases.map(t => ({ t, reta: haversine(+t.lat, +t.lon, c.lat, c.lon) })).sort((a, b) => a.reta - b.reta);
+  const { t, reta } = comDist[0];
+  let rota = null;
+  try { _rotaCarregarCache(); const seg = _rotaMemCache().get(_rotaChave({ lat: +t.lat, lon: +t.lon }, { lat: c.lat, lon: c.lon })); if (seg?.coords?.length > 2) rota = seg.distKm; } catch (e) {}
+  return { base: t.nome, a: { lat: +t.lat, lon: +t.lon }, b: { lat: c.lat, lon: c.lon }, reta, rota };
+}
+function _kmOrigemHtml(c, compacto = false) {
+  const k = _kmOrigemCliente(c);
+  if (!k) return '';
+  if (k.semBase) return `<span class="tag" id="kmo-${c.id}" style="font-size:9px;background:#F3F4F6;color:#6B7280;" title="Nenhuma base cadastrada com cidade igual à operação ${c.operacao}">📏 sem base cadastrada em ${c.operacao}</span>`;
+  const fmt = n => Math.round(n).toLocaleString('pt-BR');
+  if (k.rota != null) return `<span class="tag" id="kmo-${c.id}" style="font-size:9px;background:rgba(37,99,235,0.10);color:#1D4ED8;font-weight:700;" title="Distância por estrada (perfil caminhão) da base ${k.base} até o cliente · em linha reta: ${fmt(k.reta)} km">🛣 ${fmt(k.rota)} km de ${k.base}</span>`;
+  return `<span class="tag" id="kmo-${c.id}" style="font-size:9px;background:rgba(37,99,235,0.06);color:#1D4ED8;" title="Distância em LINHA RETA da base ${k.base} até o cliente. Clique em 'rota' para calcular por estrada.">📏 ~${fmt(k.reta)} km de ${k.base} <a href="#" onclick="event.preventDefault();calcularKmOrigemCliente(${c.id})" style="color:#1D4ED8;text-decoration:underline;margin-left:3px;">${compacto ? 'rota' : 'calcular rota'}</a></span>`;
+}
+async function calcularKmOrigemCliente(id) {
+  const c = clientes.find(x => x.id === id); const k = _kmOrigemCliente(c);
+  if (!k || k.semBase || k.rota != null) return k;
+  document.querySelectorAll(`#kmo-${id}`).forEach(el => { el.textContent = '🛣 calculando rota…'; });
+  try {
+    const seg = typeof osrmFetchSegmento === 'function' ? await osrmFetchSegmento(k.a, k.b) : null;
+    if (seg?.coords?.length > 2) { _rotaMemCache().set(_rotaChave(k.a, k.b), seg); _rotaSalvarCacheDepois(); }
+    else showToast('Não consegui calcular a rota agora — mantive a distância em linha reta.', false);
+  } catch (e) { console.warn('[km origem]', e); }
+  document.querySelectorAll(`#kmo-${id}`).forEach(el => { el.outerHTML = _kmOrigemHtml(c, el.closest('.leaflet-popup') != null); });
+  return _kmOrigemCliente(c);
+}
+window.calcularKmOrigemCliente = calcularKmOrigemCliente;
 function renderClientes() {
   // Auto-mescla duplicados (ver _mesclarClientesDuplicadosSilencioso) toda
   // vez que a lista é desenhada — não só nos pontos que carregam do
@@ -3617,6 +3655,7 @@ function renderClientes() {
             ${c.cadastroIncompleto ? `<span style="font-size:9px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #F59E0B;padding:2px 8px;border-radius:99px;">⚠️ Cadastro incompleto</span>` : ''}
             ${c.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
             <span class="tag tag-lime" style="font-size:9px;">Descarga média: ${(c.tempoDescargaMediaMin||45).toFixed(0)} min</span>
+            ${_kmOrigemHtml(c)}
           </div>
           <div style="font-size:11px;color:#4A6535;margin-bottom:6px;">📍 ${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}</div>
           ${c.endereco ? `<div style="font-size:11px;color:#4A6535;margin-bottom:6px;">🏠 ${c.endereco}</div>` : ''}
@@ -3700,13 +3739,16 @@ function renderClientesMapa() {
     const marker = L.circleMarker([c.lat, c.lon], {
       radius: 7, color: '#4F46E5', fillColor: '#818CF8', fillOpacity: 0.85, weight: 2,
     }).addTo(mapaClientesMap);
-    marker.bindPopup(`
+    marker.bindPopup(() => `
       <div style="font-size:12.5px;min-width:180px;">
         <b>${c.nome}</b>${c.codigoSAP ? ` <span style="color:#6B7280;font-size:10.5px;">SAP ${c.codigoSAP}</span>` : ''}<br>
         <span style="color:#4B5563;">${c.cidade || '—'}</span>${c.operacao ? ` · ${c.operacao}` : ''}<br>
         ${c.endereco ? `<span style="color:#6B7280;font-size:11px;">${c.endereco}</span><br>` : ''}
         <span style="color:#9CA3AF;font-size:10.5px;">${c.lat.toFixed(5)}, ${c.lon.toFixed(5)}</span>
+        <div style="margin-top:6px;">${_kmOrigemHtml(c, true)}</div>
       </div>`);
+    // Ao abrir o balão, calcula a rota por estrada sozinho (1 consulta, fica guardada).
+    marker.on('popupopen', () => { const k = _kmOrigemCliente(c); if (k && !k.semBase && k.rota == null) calcularKmOrigemCliente(c.id); });
     _cmapaMarkers.push(marker);
     bounds.push([c.lat, c.lon]);
   });

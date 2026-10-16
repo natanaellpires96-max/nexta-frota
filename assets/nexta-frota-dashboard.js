@@ -6515,7 +6515,7 @@ const RP_CFG_VAZIA = () => ({ dims: ['transportadora'], mets: ['viagens', 'entre
 let _rp = { cfg: RP_CFG_VAZIA(), modeloId: '', modelos: null, linhas: null, resultado: null, timer: null };
 // Cores (paleta categórica validada, tema claro) — só no gráfico com 2 agrupamentos.
 const RP_SERIE = '#2a78d6';
-const RP_CATS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6'];
+const RP_CATS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
 
 // ── Base de dados: 1 linha por entrega ───────────────────────────────────────
 const _rpNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
@@ -6697,8 +6697,28 @@ function _rpCalcular(base, cfg) {
     return ((a.m[o.met] ?? -Infinity) - (b.m[o.met] ?? -Infinity)) * sinal;
   });
   const totalGrupos = linhasRes.length;
-  if (cfg.limite > 0) linhasRes = linhasRes.slice(0, cfg.limite);
-  return { linhas: linhasRes, total, totalGrupos, nEntregas: linhas.length };
+  // 2 agrupamentos: a tabela vira BLOCOS pelo 1º agrupamento (ex.: um bloco por
+  // mês, com os clientes dentro e o subtotal do mês). Blocos de tempo ficam em
+  // ordem cronológica; os demais seguem a ordenação escolhida pelo subtotal.
+  // Participação de cada linha passa a ser DENTRO do bloco (% do mês).
+  let blocos = null;
+  if (cfg.dims.length === 2) {
+    const accB = new Map();
+    linhas.forEach(l => { const v = _rpValorDim(l, cfg.dims[0]); if (!accB.has(v)) accB.set(v, _rpNovoAcc()); _rpSomar(accB.get(v), l); });
+    const porBloco = new Map();
+    linhasRes.forEach(r => { if (!porBloco.has(r.vals[0])) porBloco.set(r.vals[0], []); porBloco.get(r.vals[0]).push(r); });
+    blocos = [...porBloco.entries()].map(([v, ls]) => {
+      const acc = accB.get(v), mB = _rpFechar(acc, base.viagens, accTot.volume);
+      ls.forEach(r => { r.m.participacao = mB.volume ? r.m.volume / mB.volume * 100 : null; });
+      return { val: v, rotulo: _rpRotuloDim(cfg.dims[0], v), m: mB, linhas: cfg.limite > 0 ? ls.slice(0, cfg.limite) : ls, totalLinhas: ls.length };
+    });
+    const tempo = RP_DIM[cfg.dims[0]]?.tempo;
+    blocos.sort((a, b) => (tempo || o.met === '_rotulo')
+      ? a.val.localeCompare(b.val, 'pt-BR', { numeric: true }) * (tempo ? 1 : sinal)
+      : ((a.m[o.met] ?? -Infinity) - (b.m[o.met] ?? -Infinity)) * sinal);
+    linhasRes = blocos.flatMap(b => b.linhas);
+  } else if (cfg.limite > 0) linhasRes = linhasRes.slice(0, cfg.limite);
+  return { linhas: linhasRes, blocos, total, totalGrupos, nEntregas: linhas.length };
 }
 
 // ── Formatação ───────────────────────────────────────────────────────────────
@@ -6716,20 +6736,29 @@ function _rpGrafico(res, cfg) {
   if (g.tipo === 'nenhum' || !met || !res.linhas.length) return '';
   const dims = cfg.dims, tempo0 = RP_DIM[dims[0]]?.tempo, tempo1 = RP_DIM[dims[1]]?.tempo;
   const nomeMet = RP_MET[met].nome;
-  // 2 agrupamentos com 1 de tempo → linhas (até 6 séries, o resto vira "Outros" fora do gráfico)
+  // 2 agrupamentos com 1 de tempo → uma série por item do outro agrupamento
+  // (até 8, pelos maiores em volume). Padrão: colunas agrupadas com o número
+  // em cima de cada coluna; "Linha" mostra a evolução com o número em cada ponto.
   if (dims.length === 2 && (tempo0 || tempo1)) {
     const iT = tempo0 ? 0 : 1, iC = 1 - iT;
     const tempos = [...new Set(res.linhas.map(r => r.vals[iT]))].sort();
-    if (tempos.length < 3 && g.tipo !== 'linha') { // poucos pontos no tempo: barras dizem mais que uma linha
-      const it = res.linhas.map(r => ({ rot: r.rotulos.join(' · '), v: r.m[met] })).filter(x => x.v != null && isFinite(x.v));
-      return _rpBarrasH(it.slice(0, 25), met, nomeMet, it.length > 25 ? `Mostrando os 25 primeiros de ${it.length} (todos estão na tabela).` : '');
-    }
     const porCat = new Map();
-    res.linhas.forEach(r => { const c = r.rotulos[iC]; if (!porCat.has(c)) porCat.set(c, { tot: 0, pts: new Map() }); const o = porCat.get(c); o.tot += r.m.volume || 0; o.pts.set(r.vals[iT], r.m[met]); });
-    const cats = [...porCat.entries()].sort((a, b) => b[1].tot - a[1].tot).slice(0, 6);
-    const series = cats.map(([nome, o], i) => ({ nome, cor: RP_CATS[i], pts: tempos.map(t => o.pts.get(t) ?? null) }));
-    const nota = porCat.size > 6 ? `${porCat.size - 6} ${RP_DIM[dims[iC]].nome.toLowerCase()}(s) com menor volume ficaram de fora do gráfico (estão na tabela).` : '';
-    return _rpSvgLinhas(tempos.map(t => _rpRotuloDim(dims[iT], t)), series, met, nomeMet, nota);
+    res.linhas.forEach(r => { const c = r.rotulos[iC]; if (!porCat.has(c)) porCat.set(c, { tot: 0, vol: 0, pts: new Map() }); const o = porCat.get(c); o.vol += r.m.volume || 0; o.pts.set(r.vals[iT], r.m[met]); });
+    const cats = [...porCat.entries()].sort((a, b) => b[1].vol - a[1].vol).slice(0, 8);
+    // Total da série no período (soma pra contagens/volume/custo; média ponderada não dá pra refazer aqui → mostra a média simples dos meses).
+    const soma = ['viagens', 'entregas', 'volume', 'capacidade', 'km', 'jornadaH', 'custo', 'ocorrencias', 'devolucoes', 'reentregas', 'volDevolvido'].includes(met);
+    const series = cats.map(([nome, o], i) => {
+      const pts = tempos.map(t => o.pts.get(t) ?? null), vs = pts.filter(v => v != null);
+      return { nome, cor: RP_CATS[i], pts, resumo: vs.length ? (soma ? vs.reduce((a, b) => a + b, 0) : vs.reduce((a, b) => a + b, 0) / vs.length) : null };
+    });
+    const nota = (porCat.size > 8 ? `${porCat.size - 8} ${RP_DIM[dims[iC]].nome.toLowerCase()}(s) com menor volume ficaram de fora do gráfico (estão na tabela). ` : '')
+      + `Na legenda: ${soma ? 'total do período' : 'média dos períodos'}.`;
+    const rotT = tempos.map(t => _rpRotuloDim(dims[iT], t));
+    if (tempos.length < 2 && g.tipo !== 'linha' && series.length > 1) {
+      const it = series.map(s => ({ rot: s.nome, v: s.pts[0] })).filter(x => x.v != null);
+      return _rpBarrasH(it, met, `${nomeMet} · ${rotT[0] || ''}`, nota);
+    }
+    return g.tipo === 'linha' ? _rpSvgLinhas(rotT, series, met, nomeMet, nota, true) : _rpSvgColunasAgrupadas(rotT, series, met, nomeMet, nota);
   }
   const itens = res.linhas.map(r => ({ rot: r.rotulos.join(' · '), v: r.m[met] })).filter(x => x.v != null && isFinite(x.v));
   if (dims.length === 1 && tempo0 && g.tipo !== 'barras') {
@@ -6767,7 +6796,34 @@ function _rpSvgColunas(rot, vals, met, nomeMet) {
   }).join('');
   return `<div class="rp-graf"><div class="rp-graf-t">${_rpEsc(nomeMet)}</div><svg class="rp-svg" viewBox="0 0 ${W} ${H}">${grid}<line x1="${ml}" x2="${W - mr}" y1="${H - mb}" y2="${H - mb}" class="rp-base"/>${barras}</svg></div>`;
 }
-function _rpSvgLinhas(rot, series, met, nomeMet, nota) {
+function _rpLegenda(series, met) {
+  return series.length > 1 ? `<div class="rp-leg">${series.map(s => `<span><i style="background:${s.cor}"></i>${_rpEsc(s.nome)}${s.resumo != null ? ` <b>${_rpEsc(_rpFmt(met, s.resumo))}</b>` : ''}</span>`).join('')}</div>` : '';
+}
+function _rpSvgColunasAgrupadas(rot, series, met, nomeMet, nota) {
+  const n = rot.length, k = series.length;
+  const W = 1000, H = 330, ml = 56, mr = 12, mt = 26, mb = 38;
+  const { topo, passo } = _rpEixoY(Math.max(...series.flatMap(s => s.pts).filter(v => v != null), 0));
+  const y = v => mt + (H - mt - mb) * (1 - (v || 0) / topo);
+  const gw = (W - ml - mr) / n, pad = Math.min(18, gw * 0.12), bw = Math.max(2, (gw - pad * 2 - (k - 1) * 2) / k);
+  const fonte = bw >= 26 ? 11 : bw >= 18 ? 9.5 : 8;
+  let grid = ''; for (let t = 0; t <= topo + 1e-9; t += passo) grid += `<line x1="${ml}" x2="${W - mr}" y1="${y(t)}" y2="${y(t)}" class="rp-grid"/><text x="${ml - 8}" y="${y(t) + 4}" class="rp-ax" text-anchor="end">${_rpFmt(met, t).replace('R$ ', '')}</text>`;
+  const barras = rot.map((r, i) => {
+    const x0 = ml + i * gw + pad;
+    const cols = series.map((s, j) => {
+      const v = s.pts[i]; if (v == null) return '';
+      const x = x0 + j * (bw + 2), h = Math.max(0, H - mb - y(v)), rr = Math.min(4, bw / 2, h);
+      const txt = _rpFmt(met, v).replace('R$ ', '');
+      // Número em cima de cada coluna (girado quando a coluna é estreita).
+      const lab = bw >= 18
+        ? `<text x="${x + bw / 2}" y="${y(v) - 4}" class="rp-val" text-anchor="middle" style="font-size:${fonte}px">${txt}</text>`
+        : `<text transform="translate(${x + bw / 2 + 3},${y(v) - 4}) rotate(-90)" class="rp-val" style="font-size:${fonte}px">${txt}</text>`;
+      return `<g class="rp-pt" data-tip="${_rpEsc(r)} · ${_rpEsc(s.nome)}: ${_rpEsc(_rpFmt(met, v))}"><path d="M${x},${H - mb} v${-Math.max(0, h - rr)} q0,-${rr} ${rr},-${rr} h${Math.max(0, bw - 2 * rr)} q${rr},0 ${rr},${rr} v${Math.max(0, h - rr)} z" fill="${s.cor}"/>${lab}</g>`;
+    }).join('');
+    return cols + `<text x="${ml + i * gw + gw / 2}" y="${H - mb + 18}" class="rp-ax" text-anchor="middle">${_rpEsc(String(r).replace(/\/\d{4}$/, ''))}</text>`;
+  }).join('');
+  return `<div class="rp-graf"><div class="rp-graf-t">${_rpEsc(nomeMet)}</div>${_rpLegenda(series, met)}<svg class="rp-svg" viewBox="0 0 ${W} ${H}">${grid}<line x1="${ml}" x2="${W - mr}" y1="${H - mb}" y2="${H - mb}" class="rp-base"/>${barras}</svg>${nota ? `<div class="rp-nota">${nota}</div>` : ''}</div>`;
+}
+function _rpSvgLinhas(rot, series, met, nomeMet, nota, rotularPontos) {
   const W = 1000, H = 300, ml = 56, mr = 16, mt = 16, mb = 38, n = rot.length;
   const todos = series.flatMap(s => s.pts).filter(v => v != null); const { topo, passo } = _rpEixoY(Math.max(...todos, 0));
   const x = i => ml + (n === 1 ? (W - ml - mr) / 2 : i * (W - ml - mr) / (n - 1)), y = v => mt + (H - mt - mb) * (1 - v / topo);
@@ -6776,13 +6832,14 @@ function _rpSvgLinhas(rot, series, met, nomeMet, nota) {
   const eixoX = rot.map((r, i) => i % passoRot === 0 ? `<text x="${x(i)}" y="${H - mb + 16}" class="rp-ax" text-anchor="middle">${_rpEsc(String(r).replace(/\/\d{4}$/, ''))}</text>` : '').join('');
   const linhas = series.map(s => {
     let d = '', on = false; s.pts.forEach((v, i) => { if (v == null) { on = false; return; } d += `${on ? 'L' : 'M'}${x(i)},${y(v)} `; on = true; });
-    const pts = n <= 40 ? s.pts.map((v, i) => v == null ? '' : `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${s.cor}" stroke="#fff" stroke-width="2"/>`).join('') : '';
+    const pts = n <= 40 ? s.pts.map((v, i) => v == null ? '' : `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${s.cor}" stroke="#fff" stroke-width="2"/>`
+      + (rotularPontos ? `<text x="${x(i)}" y="${y(v) - 8}" class="rp-val rp-val-l" text-anchor="middle">${_rpFmt(met, v).replace('R$ ', '')}</text>` : '')).join('') : '';
     return `<path d="${d}" fill="none" stroke="${s.cor}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${pts}`;
   }).join('');
   // Faixas de hover por posição do eixo X (tooltip com todas as séries daquele ponto).
   const faixa = (W - ml - mr) / Math.max(1, n - 1);
   const hover = rot.map((r, i) => `<rect class="rp-pt" x="${x(i) - faixa / 2}" y="${mt}" width="${faixa}" height="${H - mt - mb}" fill="transparent" data-tip="${_rpEsc(r)}${series.map(s => `\n${_rpEsc(s.nome)}: ${_rpEsc(_rpFmt(met, s.pts[i]))}`).join('')}"/>`).join('');
-  const legenda = series.length > 1 ? `<div class="rp-leg">${series.map(s => `<span><i style="background:${s.cor}"></i>${_rpEsc(s.nome)}</span>`).join('')}</div>` : '';
+  const legenda = _rpLegenda(series, met);
   return `<div class="rp-graf"><div class="rp-graf-t">${_rpEsc(nomeMet)}</div>${legenda}<svg class="rp-svg" viewBox="0 0 ${W} ${H}">${grid}<line x1="${ml}" x2="${W - mr}" y1="${H - mb}" y2="${H - mb}" class="rp-base"/>${linhas}${eixoX}${hover}</svg>${nota ? `<div class="rp-nota">${nota}</div>` : ''}</div>`;
 }
 
@@ -6818,6 +6875,8 @@ const RP_CSS = `
 .rp-grid{stroke:#EEF0F3;stroke-width:1}.rp-base{stroke:#D1D5DB;stroke-width:1}
 .rp-ax{font-size:11px;fill:#6B7280}.rp-val{font-size:11px;fill:#111827;font-weight:600}
 .rp-leg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:#374151;margin-bottom:6px}
+.rp-val-l{font-size:10.5px;font-weight:700;paint-order:stroke;stroke:#fff;stroke-width:3px}
+.rp-leg b{color:#111827;font-weight:700;margin-left:2px}
 .rp-leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .rp-hbars{display:flex;flex-direction:column;gap:5px}
 .rp-hb{display:grid;grid-template-columns:minmax(120px,26%) 1fr 110px;gap:10px;align-items:center;font-size:12px}
@@ -6835,6 +6894,9 @@ const RP_CSS = `
 .rp-tab tbody tr:hover td{background:#F9FAFB}
 .rp-tab tfoot td{position:sticky;bottom:0;background:#F3F4F6;font-weight:700;border-top:1px solid #D1D5DB}
 .rp-tab td.rk{color:#9CA3AF;width:1%}
+.rp-tab tr.rp-bl-h td{background:#EEF2FF;color:#1F2937;font-weight:700;font-size:12.5px;padding-top:10px;border-top:2px solid #C7D2FE}
+.rp-tab tr.rp-bl-h td span{font-weight:500;color:#6B7280;font-size:11.5px}
+.rp-tab tr.rp-bl-t td{font-weight:800;color:#030712;background:#F3F4F6;border-bottom:2px solid #D1D5DB}
 .rp-vazio{padding:48px;text-align:center;color:#6B7280;font-size:13px}
 #rp-tip{position:fixed;z-index:9100;pointer-events:none;background:#111827;color:#fff;font-size:12px;padding:6px 9px;border-radius:6px;white-space:pre;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none}
 @media (max-width:900px){.rp-corpo{grid-template-columns:1fr}.rp-side{border-right:0;border-bottom:1px solid #E5E7EB;max-height:45vh}}
@@ -6894,7 +6956,12 @@ function _rpRenderMain() {
   const mets = c.mets.map(id => RP_MET[id]).filter(Boolean);
   const seta = id => c.ordem.met === id ? (c.ordem.dir === 'asc' ? ' ▲' : ' ▼') : '';
   const cab = `<tr><th></th>${c.dims.map((d, i) => `<th onclick="rpOrdenarPor('_rotulo')">${_rpEsc(RP_DIM[d].nome)}${i === 0 ? seta('_rotulo') : ''}</th>`).join('')}${mets.map(m => `<th class="n" onclick="rpOrdenarPor('${m.id}')">${_rpEsc(m.nome)}${seta(m.id)}</th>`).join('')}</tr>`;
-  const corpo = res.linhas.map((r, i) => `<tr><td class="rk">${i + 1}</td>${r.rotulos.map(x => `<td>${_rpEsc(x)}</td>`).join('')}${mets.map(m => `<td class="n">${_rpFmt(m.id, r.m[m.id])}</td>`).join('')}</tr>`).join('');
+  const linhaHtml = (r, i, soSegunda) => `<tr><td class="rk">${i + 1}</td>${soSegunda ? `<td></td><td>${_rpEsc(r.rotulos[1])}</td>` : r.rotulos.map(x => `<td>${_rpEsc(x)}</td>`).join('')}${mets.map(m => `<td class="n">${_rpFmt(m.id, r.m[m.id])}</td>`).join('')}</tr>`;
+  const corpo = res.blocos
+    ? res.blocos.map(b => `<tr class="rp-bl-h"><td></td><td colspan="${1 + c.dims.length - 1 + mets.length}">${_rpEsc(b.rotulo)} <span>· ${b.totalLinhas} ${_rpEsc(RP_DIM[c.dims[1]].nome.toLowerCase())}(s)${b.linhas.length < b.totalLinhas ? `, mostrando ${b.linhas.length}` : ''}</span></td></tr>`
+        + b.linhas.map((r, i) => linhaHtml(r, i, true)).join('')
+        + `<tr class="rp-bl-t"><td></td><td colspan="2">Total ${_rpEsc(b.rotulo)}</td>${mets.map(m => `<td class="n">${m.id === 'participacao' ? _rpFmt(m.id, b.m.participacao) : _rpFmt(m.id, b.m[m.id])}</td>`).join('')}</tr>`).join('')
+    : res.linhas.map((r, i) => linhaHtml(r, i, false)).join('');
   const rod = `<tr><td></td><td colspan="${c.dims.length}">Total${res.totalGrupos > res.linhas.length ? ` (todas as ${res.totalGrupos} linhas)` : ''}</td>${mets.map(m => `<td class="n">${_rpFmt(m.id, res.total[m.id])}</td>`).join('')}</tr>`;
   box.innerHTML = `
     <div class="rp-resumo"><span><b>${res.linhas.length}</b>${res.totalGrupos > res.linhas.length ? ` de ${res.totalGrupos}` : ''} linha(s)</span><span><b>${res.total.viagens.toLocaleString('pt-BR')}</b> viagens</span><span><b>${res.nEntregas.toLocaleString('pt-BR')}</b> entregas na base</span><span>${_rpEsc(_dashDescricaoFiltroAtual())}</span></div>
@@ -6976,9 +7043,15 @@ function _rpTabelaPlana() {
   const c = _rp.cfg, r = _rp.resultado, mets = c.mets.map(id => RP_MET[id]);
   const cab = [...c.dims.map(d => RP_DIM[d].nome), ...mets.map(m => m.nome)];
   const arred = (m, v) => v == null || !isFinite(v) ? '' : Math.round(v * 10 ** m.dec) / 10 ** m.dec;
-  const linhas = r.linhas.map(l => [...l.rotulos, ...mets.map(m => arred(m, l.m[m.id]))]);
+  const linhas = [], subtot = new Set(), titulos = new Set();
+  if (r.blocos) r.blocos.forEach(b => {
+    titulos.add(linhas.length); linhas.push([b.rotulo, ...c.dims.slice(1).map(() => ''), ...mets.map(() => '')]);
+    b.linhas.forEach(l => linhas.push(['', ...l.rotulos.slice(1), ...mets.map(m => arred(m, l.m[m.id]))]));
+    subtot.add(linhas.length); linhas.push([`Total ${b.rotulo}`, ...c.dims.slice(1).map(() => ''), ...mets.map(m => arred(m, b.m[m.id]))]);
+  });
+  else r.linhas.forEach(l => linhas.push([...l.rotulos, ...mets.map(m => arred(m, l.m[m.id]))]));
   const total = ['Total', ...c.dims.slice(1).map(() => ''), ...mets.map(m => arred(m, r.total[m.id]))];
-  return { cab, linhas, total, mets };
+  return { cab, linhas, total, mets, subtot, titulos };
 }
 function _rpNomeArquivo() { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${(document.getElementById('rp-titulo')?.textContent || 'Relatorio').replace(/[^\w\-]+/g, '_')}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`; }
 function rpExportarExcel() {
@@ -7015,7 +7088,7 @@ async function _rpSvgParaPng(svg) {
 async function rpExportarPDF() {
   const { jsPDF } = window.jspdf || {};
   if (!_rp.resultado || !jsPDF) { alert('Nada para exportar (ou biblioteca de PDF não carregada).'); return; }
-  const { cab: cab0, linhas, total, mets } = _rpTabelaPlana();
+  const { cab: cab0, linhas, total, mets, subtot, titulos } = _rpTabelaPlana();
   const semSobrescrito = x => String(x).replace(/³/g, '3').replace(/²/g, '2'); // fonte padrão do PDF não tem ³
   const cab = cab0.map(semSobrescrito);
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
@@ -7025,6 +7098,20 @@ async function rpExportarPDF() {
   const f = _rp.cfg.filtros || {};
   doc.text(doc.splitTextToSize(`${_dashDescricaoFiltroAtual()}${f.de || f.ate ? ` · entrega ${f.de || '…'} a ${f.ate || '…'}` : ''}${f.dim && f.texto ? ` · ${RP_DIM[f.dim]?.nome} contém "${f.texto}"` : ''} · gerado em ${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, 275), 10, 17);
   let y = 23;
+  // Legenda do gráfico (cor + nome + total) — o gráfico vai como imagem e a legenda fica em HTML na tela.
+  const leg = [...document.querySelectorAll('#rp-main .rp-leg span')].map(sp => ({ cor: sp.querySelector('i')?.style.background || '#999', txt: semSobrescrito(sp.textContent.trim()) }));
+  if (leg.length) {
+    doc.setFontSize(8); let x = 10;
+    leg.forEach(l => {
+      const w = doc.getTextWidth(l.txt) + 9;
+      if (x + w > 287) { x = 10; y += 5; }
+      const m = /rgb\((\d+),\s*(\d+),\s*(\d+)/.exec(l.cor) || /#(..)(..)(..)/.exec(l.cor);
+      const rgb = m ? (m[0].startsWith('#') ? [1, 2, 3].map(i => parseInt(m[i], 16)) : [+m[1], +m[2], +m[3]]) : [150, 150, 150];
+      doc.setFillColor(...rgb); doc.rect(x, y - 2.6, 3, 3, 'F'); doc.setTextColor(17, 24, 39); doc.text(l.txt, x + 4.5, y);
+      x += w + 4;
+    });
+    y += 4;
+  }
   const svg = document.querySelector('#rp-main .rp-svg');
   const barrasH = document.querySelector('#rp-main .rp-hbars');
   try {
@@ -7035,7 +7122,12 @@ async function rpExportarPDF() {
   const fmtCel = (m, v) => v === '' ? '—' : _rpFmt(m.id, v);
   const nd = _rp.cfg.dims.length;
   doc.autoTable({
-    head: [cab], body: linhas.map(l => [...l.slice(0, nd).map(semSobrescrito), ...mets.map((m, i) => fmtCel(m, l[nd + i]))]),
+    head: [cab], body: linhas.map((l, li) => titulos.has(li) ? [semSobrescrito(l[0]), ...l.slice(1).map(() => '')] : [...l.slice(0, nd).map(semSobrescrito), ...mets.map((m, i) => fmtCel(m, l[nd + i]))]),
+    didParseCell: d => {
+      if (d.section !== 'body') return;
+      if (subtot.has(d.row.index)) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.textColor = [3, 7, 18]; d.cell.styles.fillColor = [229, 231, 235]; }
+      if (titulos.has(d.row.index)) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.fillColor = [238, 242, 255]; }
+    },
     foot: [[...total.slice(0, nd), ...mets.map((m, i) => fmtCel(m, total[nd + i]))]],
     startY: y, styles: { fontSize: 7.5, cellPadding: 1.6 }, headStyles: { fillColor: [31, 41, 55], textColor: 255, fontStyle: 'bold' },
     footStyles: { fillColor: [229, 231, 235], textColor: [17, 24, 39], fontStyle: 'bold' }, alternateRowStyles: { fillColor: [248, 249, 250] },
