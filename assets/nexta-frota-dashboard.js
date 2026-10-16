@@ -6440,6 +6440,650 @@ document.addEventListener('click', function(e) {
   });
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// RELATÓRIO PERSONALIZADO — o usuário monta: agrupar por × colunas × filtros
+// ══════════════════════════════════════════════════════════════════════════════
+// Botão "📊 Relatórios › 🧩 Relatório personalizado". Trabalha em cima dos
+// MESMOS snapshots e filtros do topo do Dashboard (período, operação,
+// transportadora, clientes, segmento, bandeira) e das MESMAS regras de conta
+// (volume líquido de devolução, km real quando existe, custo pelo contrato
+// cadastrado no Frete) — não lê nada novo do Firebase, só os modelos salvos
+// (1 documento: config/relatorios_modelos, compartilhado entre admin e
+// operacional).
+//
+// Base: 1 linha por ENTREGA (parada). Viagens, capacidade, jornada e custo são
+// da viagem e contam UMA vez por grupo (conjunto de viagens distintas), igual
+// ao Dashboard faz pra ocupação por cliente.
+const RP_DIMS = [
+  { id: 'transportadora', nome: 'Transportadora' },
+  { id: 'placa', nome: 'Placa' },
+  { id: 'contrato', nome: 'Tipo de contrato' },
+  { id: 'base', nome: 'Base de carregamento' },
+  { id: 'operacao', nome: 'Operação (cidade da base)' },
+  { id: 'cliente', nome: 'Cliente' },
+  { id: 'cidade', nome: 'Cidade do cliente' },
+  { id: 'segmento', nome: 'Segmento' },
+  { id: 'bandeira', nome: 'Bandeira' },
+  { id: 'produto', nome: 'Produto' },
+  { id: 'dia', nome: 'Dia de entrega', tempo: true },
+  { id: 'semana', nome: 'Semana', tempo: true },
+  { id: 'mes', nome: 'Mês', tempo: true },
+  { id: 'diasemana', nome: 'Dia da semana', tempo: true },
+];
+const RP_METS = [
+  { id: 'viagens', nome: 'Viagens', grupo: 'Operação', dec: 0 },
+  { id: 'entregas', nome: 'Entregas', grupo: 'Operação', dec: 0 },
+  { id: 'volume', nome: 'Volume (m³)', grupo: 'Operação', dec: 1 },
+  { id: 'participacao', nome: 'Participação no volume (%)', grupo: 'Operação', dec: 1 },
+  { id: 'capacidade', nome: 'Capacidade das viagens (m³)', grupo: 'Operação', dec: 0 },
+  { id: 'placas', nome: 'Placas distintas', grupo: 'Operação', dec: 0 },
+  { id: 'clientes', nome: 'Clientes distintos', grupo: 'Operação', dec: 0 },
+  { id: 'dias', nome: 'Dias com entrega', grupo: 'Operação', dec: 0 },
+  { id: 'ocupacao', nome: 'Ocupação (%)', grupo: 'Eficiência', dec: 1 },
+  { id: 'drop', nome: 'Drop (m³/entrega)', grupo: 'Eficiência', dec: 1 },
+  { id: 'entregasViagem', nome: 'Entregas por viagem', grupo: 'Eficiência', dec: 2 },
+  { id: 'volumeViagem', nome: 'Volume por viagem (m³)', grupo: 'Eficiência', dec: 1 },
+  { id: 'viagensDia', nome: 'Viagens por dia', grupo: 'Eficiência', dec: 1 },
+  { id: 'km', nome: 'Km', grupo: 'Distância e jornada', dec: 0 },
+  { id: 'kmEntrega', nome: 'Km por entrega', grupo: 'Distância e jornada', dec: 1 },
+  { id: 'kmViagem', nome: 'Km por viagem', grupo: 'Distância e jornada', dec: 1 },
+  { id: 'jornadaH', nome: 'Jornada usada (h)', grupo: 'Distância e jornada', dec: 1 },
+  { id: 'jornadaViagemH', nome: 'Horas por viagem', grupo: 'Distância e jornada', dec: 1 },
+  { id: 'custo', nome: 'Custo de frete (R$)', grupo: 'Custo', dec: 2, moeda: true },
+  { id: 'custoM3', nome: 'Custo por m³ (R$)', grupo: 'Custo', dec: 2, moeda: true },
+  { id: 'custoViagem', nome: 'Custo por viagem (R$)', grupo: 'Custo', dec: 2, moeda: true },
+  { id: 'custoEntrega', nome: 'Custo por entrega (R$)', grupo: 'Custo', dec: 2, moeda: true },
+  { id: 'ocorrencias', nome: 'Ocorrências', grupo: 'Qualidade', dec: 0 },
+  { id: 'devolucoes', nome: 'Devoluções', grupo: 'Qualidade', dec: 0 },
+  { id: 'reentregas', nome: 'Reentregas', grupo: 'Qualidade', dec: 0 },
+  { id: 'volDevolvido', nome: 'Volume devolvido (m³)', grupo: 'Qualidade', dec: 1 },
+  { id: 'indiceOcorr', nome: 'Índice de ocorrências (%)', grupo: 'Qualidade', dec: 2 },
+];
+const RP_DIM = Object.fromEntries(RP_DIMS.map(d => [d.id, d]));
+const RP_MET = Object.fromEntries(RP_METS.map(m => [m.id, m]));
+// Modelos prontos (não dá pra excluir; "Salvar como" cria uma cópia editável).
+const RP_PADRAO = [
+  { id: 'p_fech', nome: 'Fechamento por transportadora', padrao: true, cfg: { dims: ['transportadora'], mets: ['viagens', 'entregas', 'volume', 'participacao', 'ocupacao', 'km', 'custo', 'custoM3'], ordem: { met: 'volume', dir: 'desc' }, grafico: { tipo: 'auto', met: 'volume' } } },
+  { id: 'p_cli', nome: 'Clientes por volume e drop', padrao: true, cfg: { dims: ['cliente'], mets: ['volume', 'participacao', 'entregas', 'drop', 'kmEntrega', 'ocorrencias'], ordem: { met: 'volume', dir: 'desc' }, limite: 50, grafico: { tipo: 'auto', met: 'volume' } } },
+  { id: 'p_base', nome: 'Ocupação por base', padrao: true, cfg: { dims: ['base'], mets: ['viagens', 'volume', 'capacidade', 'ocupacao', 'entregasViagem', 'drop'], ordem: { met: 'volume', dir: 'desc' }, grafico: { tipo: 'auto', met: 'ocupacao' } } },
+  { id: 'p_evol', nome: 'Evolução diária', padrao: true, cfg: { dims: ['dia'], mets: ['viagens', 'entregas', 'volume', 'ocupacao', 'drop'], ordem: { met: '_rotulo', dir: 'asc' }, grafico: { tipo: 'linha', met: 'volume' } } },
+  { id: 'p_transp_mes', nome: 'Transportadora por mês', padrao: true, cfg: { dims: ['mes', 'transportadora'], mets: ['viagens', 'volume', 'ocupacao', 'custo', 'custoM3'], ordem: { met: '_rotulo', dir: 'asc' }, grafico: { tipo: 'auto', met: 'volume' } } },
+  { id: 'p_ocorr', nome: 'Ocorrências por cliente', padrao: true, cfg: { dims: ['cliente'], mets: ['entregas', 'ocorrencias', 'devolucoes', 'reentregas', 'volDevolvido', 'indiceOcorr'], ordem: { met: 'ocorrencias', dir: 'desc' }, limite: 30, filtros: { minEntregas: 0 }, grafico: { tipo: 'auto', met: 'ocorrencias' } } },
+  { id: 'p_prod', nome: 'Volume por produto e base', padrao: true, cfg: { dims: ['produto', 'base'], mets: ['entregas', 'volume', 'participacao', 'drop'], ordem: { met: 'volume', dir: 'desc' }, grafico: { tipo: 'auto', met: 'volume' } } },
+];
+const RP_CFG_VAZIA = () => ({ dims: ['transportadora'], mets: ['viagens', 'entregas', 'volume', 'ocupacao', 'drop'], ordem: { met: 'volume', dir: 'desc' }, limite: 0, filtros: { de: '', ate: '', dim: '', texto: '', minEntregas: 0 }, grafico: { tipo: 'auto', met: 'volume' } });
+let _rp = { cfg: RP_CFG_VAZIA(), modeloId: '', modelos: null, linhas: null, resultado: null, timer: null };
+// Cores (paleta categórica validada, tema claro) — só no gráfico com 2 agrupamentos.
+const RP_SERIE = '#2a78d6';
+const RP_CATS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6'];
+
+// ── Base de dados: 1 linha por entrega ───────────────────────────────────────
+const _rpNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+const _rpIsoBr = br => { const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(String(br || '')); return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : ''; };
+function _rpSemana(iso) {
+  const d = new Date(iso + 'T12:00:00'); const dia = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dia + 3);
+  const ano = d.getFullYear(), j4 = new Date(ano, 0, 4); const sem = 1 + Math.round(((d - j4) / 864e5 - 3 + ((j4.getDay() + 6) % 7)) / 7);
+  return `${ano}-S${String(sem).padStart(2, '0')}`;
+}
+function _rpExtrair() {
+  const snaps = _dashSnapshotsAtivos || [];
+  const devol = new Map(); // petId__pedidoId -> {n, dev, reent, vol}
+  (typeof _devTodosRegistrosCache !== 'undefined' && _devTodosRegistrosCache || []).forEach(r => {
+    const k = (r.viagemId || '') + '__' + (r.pedidoId ?? '');
+    if (!devol.has(k)) devol.set(k, { n: 0, dev: 0, reent: 0, vol: 0 });
+    const o = devol.get(k); o.n++;
+    if (r.tipo === 'reentrega') o.reent++; else { o.dev++; o.vol += Number(r.volumeAfetadoM3) || 0; }
+  });
+  const contratos = typeof freteCarregarContratos === 'function' ? freteCarregarContratos() : [];
+  const spots = typeof freteCarregarSpot === 'function' ? freteCarregarSpot() : [];
+  const normPlaca = typeof _freteNormPlaca === 'function' ? _freteNormPlaca : (p => String(p || '').trim().toUpperCase());
+  const contratoPorPlaca = new Map(); contratos.forEach(c => { if (c.placa) contratoPorPlaca.set(normPlaca(c.placa), c); });
+  const viagens = [], linhas = [], nomes = new Map();
+  snaps.forEach((snap, si) => {
+    const res = snap.resultado || {}, terms = snap.terminais || [];
+    (snap.veiculos || []).forEach(v => {
+      if (_dashTransportadorasSelecionadas && !_dashTransportadorasSelecionadas.has(v.transportadora || '')) return;
+      const lista = (res[v.id] || []).filter(vi => !vi._vazio && (vi.paradas || []).length);
+      lista.forEach((vi, iV) => {
+        const operacao = dashCidadeOperacaoViagem(vi, v, terms);
+        if (_dashCidadesSelecionadas && !_dashCidadesSelecionadas.has(operacao)) return;
+        const base = vi.terminalOrigem || vi.paradas.find(p => p.pedido?.terminal)?.pedido?.terminal || v.terminal || '(sem base)';
+        const term = terms.find(t => t.nome === base);
+        const kmInfo = NextaKm.obterKmViagem(vi);
+        const kmReal = kmInfo.real ? kmInfo.km : null;
+        const somaOrig = kmReal != null ? NextaKm.estimativaLinhaReta(vi) : null;
+        const data = _rpIsoBr(vi.paradas[0]?.pedido?.dataEntregaLogistica || vi.paradas[0]?.pedido?.dataEntrega) || String(snap.savedAt || '').slice(0, 10);
+        const capV = Number(v.capacidade || v.capacidadeTotal) || 0;
+        const jornadaMin = Number(vi.tempoConsumidoMin) || vi.paradas.reduce((s, p, i) => s + (i === 0 ? (p.tempoCarregamentoMin || 0) : 0)
+          + (p.waitAfterLoadingMin || 0) + (p.deslocCarregadoMin || 0) + (p.overnight ? 0 : (p.tempoEsperaRestricaoMin || 0)) + (p.tempoDescargaMin || 0) + (p.deslocVazioMin || 0), 0);
+        const vk = `${si}|${v.id}|${iV}`;
+        const viagem = { vk, placa: v.placa || '', data, mesKey: data.slice(0, 7), cap: capV, jornadaMin, termOrigem: base,
+          destinos: [...new Set(vi.paradas.map(p => p.pedido?.cidade || p.pedido?.cliente || ''))].join(', '), kmIda: 0, volume: 0, custo: 0, linhas: [] };
+        vi.paradas.forEach((par, ip) => {
+          const ped = par.pedido || {};
+          const nomeRaw = ped.cliente || ped.nomeCliente || par.nome || '?';
+          const ck = dashChaveCliente(ped);
+          nomes.set(ck, dashNomeCanônico(nomes.get(ck), nomeRaw));
+          const volBruto = par.volumeTotal || 0;
+          const oc = devol.get((vi.petId || '') + '__' + (ped.id ?? '')) || null;
+          const vol = Math.max(0, volBruto - (oc?.vol || 0));
+          const c = typeof latLonEfetivo === 'function' ? latLonEfetivo(ped) : { lat: par.lat, lon: par.lon };
+          const kmBase = par.distanciaKm > 0 ? par.distanciaKm : ((term?.lat && term?.lon && c?.lat && c?.lon && typeof haversine === 'function') ? haversine(term.lat, term.lon, c.lat, c.lon) : 0);
+          const km = kmReal != null ? (somaOrig > 0 ? kmReal * (kmBase / somaOrig) : kmReal / vi.paradas.length) : kmBase;
+          viagem.kmIda += km; viagem.volume += vol;
+          const L = { vk, ek: vk + '|' + ip, temContrato: false, data, transportadora: v.transportadora || '(sem transportadora)', placa: v.placa || '', contrato: v.contrato || '—', base, operacao,
+            ck, nomeRaw, cidade: ped.cidade || '—', vol, volBruto, km, custo: 0,
+            itens: (par.itens || []).filter(it => it && it.produto).map(it => ({ produto: it.produto, volume: Number(it.volume) || 0 })),
+            ocorr: oc?.n || 0, dev: oc?.dev || 0, reent: oc?.reent || 0, volDev: oc?.vol || 0 };
+          viagem.linhas.push(L); linhas.push(L);
+        });
+        viagens.push(viagem);
+      });
+    });
+  });
+  // Custo de frete por viagem: mesma regra do Ranking de Transportadoras
+  // (contrato da placa, fixo rateado pelas viagens do mês, diária uma vez por
+  // dia) — e rateado entre as entregas da viagem pelo volume.
+  const nMes = {}; viagens.forEach(vg => { const k = vg.placa + '__' + vg.mesKey; nMes[k] = (nMes[k] || 0) + 1; });
+  const diaJa = new Set();
+  viagens.sort((a, b) => a.data.localeCompare(b.data)).forEach(vg => {
+    const contrato = contratoPorPlaca.get(normPlaca(vg.placa));
+    if (!contrato) return;
+    const kDia = vg.placa + '__' + vg.data;
+    const entry = { ...vg, _diariaFlatHoje: !diaJa.has(kDia), transportadora: contrato.transportadora };
+    diaJa.add(kDia);
+    vg.custo = _dashCustoViagemRanking(entry, contrato, nMes[vg.placa + '__' + vg.mesKey], spots) || 0;
+    const tot = vg.linhas.reduce((s, l) => s + l.vol, 0);
+    vg.linhas.forEach(l => { l.custo = tot > 0 ? vg.custo * l.vol / tot : vg.custo / vg.linhas.length; l.temContrato = true; });
+  });
+  // Nome de exibição, segmento e bandeira por cliente (cadastro de hoje).
+  const lookBand = _dashBandeiraLookup(), segCache = new Map(), bandCache = new Map();
+  linhas.forEach(l => {
+    l.cliente = nomes.get(l.ck) || l.nomeRaw;
+    if (!segCache.has(l.cliente)) { segCache.set(l.cliente, dashClienteSegmento(l.cliente) || '—'); bandCache.set(l.cliente, dashClienteBandeira(l.cliente, lookBand) || '—'); }
+    l.segmento = segCache.get(l.cliente); l.bandeira = bandCache.get(l.cliente);
+  });
+  // Filtros globais de Clientes/Segmento/Bandeira do topo do Dashboard.
+  const efetivos = dashClientesEfetivos(_dashTodosClientes || []);
+  const efNorm = _dashNormalizarSetClientes(efetivos);
+  const linhasOk = efNorm ? linhas.filter(l => _dashNomeBateFiltro(l.cliente, efNorm) || _dashNomeBateFiltro(l.nomeRaw, efNorm)) : linhas;
+  const viagensPorChave = new Map(viagens.map(vg => [vg.vk, vg]));
+  return { linhas: linhasOk, viagens: viagensPorChave };
+}
+
+// ── Agregação ────────────────────────────────────────────────────────────────
+function _rpValorDim(l, id) {
+  switch (id) {
+    case 'dia': return l.data;
+    case 'semana': return _rpSemana(l.data);
+    case 'mes': return l.data.slice(0, 7);
+    case 'diasemana': return String((new Date(l.data + 'T12:00:00').getDay() + 6) % 7);
+    case 'produto': return l._produto || '—';
+    default: return l[id] == null || l[id] === '' ? '—' : String(l[id]);
+  }
+}
+const _RP_DIAS = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
+const _RP_MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+function _rpRotuloDim(id, v) {
+  if (v === '—') return '—';
+  if (id === 'dia') return `${v.slice(8, 10)}/${v.slice(5, 7)}/${v.slice(0, 4)}`;
+  if (id === 'mes') return `${_RP_MESES[+v.slice(5, 7) - 1]}/${v.slice(0, 4)}`;
+  if (id === 'diasemana') return _RP_DIAS[+v];
+  if (id === 'semana') {
+    const [a, s] = v.split('-S'); const j4 = new Date(+a, 0, 4); const seg = new Date(j4); seg.setDate(j4.getDate() - ((j4.getDay() + 6) % 7) + (+s - 1) * 7);
+    const dom = new Date(seg); dom.setDate(seg.getDate() + 6); const f = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+    return `Sem ${+s} · ${f(seg)}–${f(dom)}`;
+  }
+  return v;
+}
+function _rpNovoAcc() { return { eks: new Set(), volume: 0, km: 0, custo: 0, ocorr: 0, dev: 0, reent: 0, volDev: 0, vks: new Set(), placas: new Set(), clientes: new Set(), dias: new Set(), volC: 0, eksC: new Set(), vksC: new Set(), ocVistos: new Set() }; }
+function _rpSomar(a, l) {
+  // Entrega conta UMA vez por grupo (com Produto a mesma entrega aparece em
+  // várias linhas — no total geral não pode contar 2x).
+  a.eks.add(l.ek); a.volume += l.vol; a.km += l.km; a.custo += l.custo; a.volDev += l.volDev;
+  if (!a.ocVistos.has(l.ek)) { a.ocVistos.add(l.ek); a.ocorr += l.ocorr; a.dev += l.dev; a.reent += l.reent; }
+  a.vks.add(l.vk); a.placas.add(l.placa); a.clientes.add(l.ck); a.dias.add(l.data);
+  if (l.temContrato) { a.volC += l.vol; a.eksC.add(l.ek); a.vksC.add(l.vk); }
+}
+function _rpFechar(a, viagens, volTotal) {
+  let cap = 0, jorn = 0;
+  a.vks.forEach(k => { const vg = viagens.get(k); if (vg) { cap += vg.cap; jorn += vg.jornadaMin; } });
+  const nv = a.vks.size, div = (x, y) => y ? x / y : null;
+  a.entregas = a.eks.size;
+  return {
+    viagens: nv, entregas: a.entregas, volume: a.volume, participacao: div(a.volume * 100, volTotal), capacidade: cap,
+    placas: a.placas.size, clientes: a.clientes.size, dias: a.dias.size,
+    ocupacao: div(a.volume * 100, cap), drop: div(a.volume, a.entregas), entregasViagem: div(a.entregas, nv), volumeViagem: div(a.volume, nv), viagensDia: div(nv, a.dias.size),
+    km: a.km, kmEntrega: div(a.km, a.entregas), kmViagem: div(a.km, nv), jornadaH: jorn / 60, jornadaViagemH: div(jorn / 60, nv),
+    // Custo unitário só sobre o que TEM contrato cadastrado no Frete — placa
+    // sem contrato não entra no denominador (senão diluiria o R$/m³).
+    custo: a.custo, custoM3: div(a.custo, a.volC), custoViagem: div(a.custo, a.vksC.size), custoEntrega: div(a.custo, a.eksC.size),
+    ocorrencias: a.ocorr, devolucoes: a.dev, reentregas: a.reent, volDevolvido: a.volDev, indiceOcorr: div(a.ocorr * 100, a.entregas),
+  };
+}
+function _rpCalcular(base, cfg) {
+  const f = cfg.filtros || {};
+  let linhas = base.linhas;
+  if (f.de) linhas = linhas.filter(l => l.data >= f.de);
+  if (f.ate) linhas = linhas.filter(l => l.data <= f.ate);
+  const usaProduto = cfg.dims.includes('produto') || f.dim === 'produto';
+  if (usaProduto) {
+    // Produto: cada entrega vira uma linha por produto, com a fatia de volume
+    // (e de custo/km) proporcional ao produto; a entrega conta 1 em cada produto.
+    linhas = linhas.flatMap(l => {
+      const tot = l.itens.reduce((s, i) => s + i.volume, 0);
+      if (!l.itens.length || !tot) return [{ ...l, _produto: '(sem produto)' }];
+      return l.itens.map(i => { const fr = i.volume / tot; return { ...l, _produto: i.produto, vol: l.vol * fr, km: l.km * fr, custo: l.custo * fr, volDev: l.volDev * fr }; });
+    });
+  }
+  if (f.dim && f.texto) {
+    const termos = f.texto.split(/[;,]/).map(_rpNorm).filter(Boolean);
+    linhas = linhas.filter(l => { const v = _rpNorm(_rpRotuloDim(f.dim, _rpValorDim(l, f.dim))); return termos.some(t => v.includes(t)); });
+  }
+  const accTot = _rpNovoAcc(); linhas.forEach(l => _rpSomar(accTot, l));
+  const total = _rpFechar(accTot, base.viagens, accTot.volume);
+  const grupos = new Map();
+  linhas.forEach(l => {
+    const vals = cfg.dims.map(d => _rpValorDim(l, d));
+    const k = vals.join('\u0001');
+    if (!grupos.has(k)) grupos.set(k, { vals, acc: _rpNovoAcc() });
+    _rpSomar(grupos.get(k).acc, l);
+  });
+  let linhasRes = [...grupos.values()].map(g => ({ vals: g.vals, rotulos: g.vals.map((v, i) => _rpRotuloDim(cfg.dims[i], v)), m: _rpFechar(g.acc, base.viagens, accTot.volume) }));
+  if (f.minEntregas > 0) linhasRes = linhasRes.filter(r => r.m.entregas >= f.minEntregas);
+  const o = cfg.ordem || { met: 'volume', dir: 'desc' }, sinal = o.dir === 'asc' ? 1 : -1;
+  linhasRes.sort((a, b) => {
+    if (o.met === '_rotulo') { for (let i = 0; i < a.vals.length; i++) { const c = a.vals[i].localeCompare(b.vals[i], 'pt-BR', { numeric: true }); if (c) return c * sinal; } return 0; }
+    return ((a.m[o.met] ?? -Infinity) - (b.m[o.met] ?? -Infinity)) * sinal;
+  });
+  const totalGrupos = linhasRes.length;
+  if (cfg.limite > 0) linhasRes = linhasRes.slice(0, cfg.limite);
+  return { linhas: linhasRes, total, totalGrupos, nEntregas: linhas.length };
+}
+
+// ── Formatação ───────────────────────────────────────────────────────────────
+function _rpFmt(id, v) {
+  if (v == null || !isFinite(v)) return '—';
+  const m = RP_MET[id];
+  const s = Number(v).toLocaleString('pt-BR', { minimumFractionDigits: m.dec, maximumFractionDigits: m.dec });
+  return m.moeda ? 'R$ ' + s : s;
+}
+const _rpEsc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ── Gráfico (SVG, série única ou até 6 séries) ──────────────────────────────
+function _rpGrafico(res, cfg) {
+  const g = cfg.grafico || {}; const met = RP_MET[g.met] ? g.met : cfg.mets[0];
+  if (g.tipo === 'nenhum' || !met || !res.linhas.length) return '';
+  const dims = cfg.dims, tempo0 = RP_DIM[dims[0]]?.tempo, tempo1 = RP_DIM[dims[1]]?.tempo;
+  const nomeMet = RP_MET[met].nome;
+  // 2 agrupamentos com 1 de tempo → linhas (até 6 séries, o resto vira "Outros" fora do gráfico)
+  if (dims.length === 2 && (tempo0 || tempo1)) {
+    const iT = tempo0 ? 0 : 1, iC = 1 - iT;
+    const tempos = [...new Set(res.linhas.map(r => r.vals[iT]))].sort();
+    if (tempos.length < 3 && g.tipo !== 'linha') { // poucos pontos no tempo: barras dizem mais que uma linha
+      const it = res.linhas.map(r => ({ rot: r.rotulos.join(' · '), v: r.m[met] })).filter(x => x.v != null && isFinite(x.v));
+      return _rpBarrasH(it.slice(0, 25), met, nomeMet, it.length > 25 ? `Mostrando os 25 primeiros de ${it.length} (todos estão na tabela).` : '');
+    }
+    const porCat = new Map();
+    res.linhas.forEach(r => { const c = r.rotulos[iC]; if (!porCat.has(c)) porCat.set(c, { tot: 0, pts: new Map() }); const o = porCat.get(c); o.tot += r.m.volume || 0; o.pts.set(r.vals[iT], r.m[met]); });
+    const cats = [...porCat.entries()].sort((a, b) => b[1].tot - a[1].tot).slice(0, 6);
+    const series = cats.map(([nome, o], i) => ({ nome, cor: RP_CATS[i], pts: tempos.map(t => o.pts.get(t) ?? null) }));
+    const nota = porCat.size > 6 ? `${porCat.size - 6} ${RP_DIM[dims[iC]].nome.toLowerCase()}(s) com menor volume ficaram de fora do gráfico (estão na tabela).` : '';
+    return _rpSvgLinhas(tempos.map(t => _rpRotuloDim(dims[iT], t)), series, met, nomeMet, nota);
+  }
+  const itens = res.linhas.map(r => ({ rot: r.rotulos.join(' · '), v: r.m[met] })).filter(x => x.v != null && isFinite(x.v));
+  if (dims.length === 1 && tempo0 && g.tipo !== 'barras') {
+    const ordenado = res.linhas.slice().sort((a, b) => a.vals[0].localeCompare(b.vals[0], 'pt-BR', { numeric: true }));
+    const tipo = g.tipo === 'linha' || ordenado.length > 31 ? 'linha' : 'colunas';
+    const rot = ordenado.map(r => r.rotulos[0]), vals = ordenado.map(r => r.m[met]);
+    return tipo === 'linha' ? _rpSvgLinhas(rot, [{ nome: nomeMet, cor: RP_SERIE, pts: vals }], met, nomeMet, '') : _rpSvgColunas(rot, vals, met, nomeMet);
+  }
+  return _rpBarrasH(itens.slice(0, 25), met, nomeMet, itens.length > 25 ? `Mostrando os 25 primeiros de ${itens.length} (todos estão na tabela).` : '');
+}
+function _rpBarrasH(itens, met, nomeMet, nota) {
+  const max = Math.max(...itens.map(i => i.v), 0) || 1;
+  const linhas = itens.map(i => `<div class="rp-hb" data-tip="${_rpEsc(i.rot)}: ${_rpEsc(_rpFmt(met, i.v))}">
+      <div class="rp-hb-r" title="${_rpEsc(i.rot)}">${_rpEsc(i.rot)}</div>
+      <div class="rp-hb-t"><span style="width:${Math.max(0.5, i.v / max * 100)}%"></span></div>
+      <div class="rp-hb-v">${_rpFmt(met, i.v)}</div></div>`).join('');
+  return `<div class="rp-graf"><div class="rp-graf-t">${_rpEsc(nomeMet)}</div><div class="rp-hbars">${linhas}</div>${nota ? `<div class="rp-nota">${nota}</div>` : ''}</div>`;
+}
+function _rpEixoY(max) {
+  const bruto = max / 4, pot = Math.pow(10, Math.floor(Math.log10(bruto || 1))), passo = [1, 2, 2.5, 5, 10].map(x => x * pot).find(x => x >= bruto) || pot * 10;
+  return { topo: Math.ceil(max / passo) * passo || 1, passo };
+}
+function _rpSvgColunas(rot, vals, met, nomeMet) {
+  const W = 1000, H = 300, ml = 56, mr = 12, mt = 22, mb = 38, n = vals.length;
+  const max = Math.max(...vals.map(v => v || 0), 0); const { topo, passo } = _rpEixoY(max);
+  const y = v => mt + (H - mt - mb) * (1 - (v || 0) / topo), bw = (W - ml - mr) / n, gap = Math.min(6, bw * 0.2);
+  let grid = ''; for (let t = 0; t <= topo + 1e-9; t += passo) grid += `<line x1="${ml}" x2="${W - mr}" y1="${y(t)}" y2="${y(t)}" class="rp-grid"/><text x="${ml - 8}" y="${y(t) + 4}" class="rp-ax" text-anchor="end">${_rpFmt(met, t).replace('R$ ', '')}</text>`;
+  const passoRot = Math.ceil(n / 16);
+  const barras = vals.map((v, i) => {
+    const x = ml + i * bw + gap / 2, h = Math.max(0, H - mb - y(v)), w = Math.max(1, bw - gap);
+    return `<g class="rp-pt" data-tip="${_rpEsc(rot[i])}: ${_rpEsc(_rpFmt(met, v))}"><rect x="${ml + i * bw}" y="${mt}" width="${bw}" height="${H - mt - mb}" fill="transparent"/>
+      <path d="M${x},${H - mb} v${-Math.max(0, h - 4)} q0,-4 4,-4 h${Math.max(0, w - 8)} q4,0 4,4 v${Math.max(0, h - 4)} z" fill="${RP_SERIE}"/>
+      ${n <= 20 ? `<text x="${x + w / 2}" y="${y(v) - 5}" class="rp-val" text-anchor="middle">${_rpFmt(met, v).replace('R$ ', '')}</text>` : ''}
+      ${i % passoRot === 0 ? `<text x="${x + w / 2}" y="${H - mb + 16}" class="rp-ax" text-anchor="middle">${_rpEsc(String(rot[i]).replace(/\/\d{4}$/, ''))}</text>` : ''}</g>`;
+  }).join('');
+  return `<div class="rp-graf"><div class="rp-graf-t">${_rpEsc(nomeMet)}</div><svg class="rp-svg" viewBox="0 0 ${W} ${H}">${grid}<line x1="${ml}" x2="${W - mr}" y1="${H - mb}" y2="${H - mb}" class="rp-base"/>${barras}</svg></div>`;
+}
+function _rpSvgLinhas(rot, series, met, nomeMet, nota) {
+  const W = 1000, H = 300, ml = 56, mr = 16, mt = 16, mb = 38, n = rot.length;
+  const todos = series.flatMap(s => s.pts).filter(v => v != null); const { topo, passo } = _rpEixoY(Math.max(...todos, 0));
+  const x = i => ml + (n === 1 ? (W - ml - mr) / 2 : i * (W - ml - mr) / (n - 1)), y = v => mt + (H - mt - mb) * (1 - v / topo);
+  let grid = ''; for (let t = 0; t <= topo + 1e-9; t += passo) grid += `<line x1="${ml}" x2="${W - mr}" y1="${y(t)}" y2="${y(t)}" class="rp-grid"/><text x="${ml - 8}" y="${y(t) + 4}" class="rp-ax" text-anchor="end">${_rpFmt(met, t).replace('R$ ', '')}</text>`;
+  const passoRot = Math.ceil(n / 12);
+  const eixoX = rot.map((r, i) => i % passoRot === 0 ? `<text x="${x(i)}" y="${H - mb + 16}" class="rp-ax" text-anchor="middle">${_rpEsc(String(r).replace(/\/\d{4}$/, ''))}</text>` : '').join('');
+  const linhas = series.map(s => {
+    let d = '', on = false; s.pts.forEach((v, i) => { if (v == null) { on = false; return; } d += `${on ? 'L' : 'M'}${x(i)},${y(v)} `; on = true; });
+    const pts = n <= 40 ? s.pts.map((v, i) => v == null ? '' : `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${s.cor}" stroke="#fff" stroke-width="2"/>`).join('') : '';
+    return `<path d="${d}" fill="none" stroke="${s.cor}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${pts}`;
+  }).join('');
+  // Faixas de hover por posição do eixo X (tooltip com todas as séries daquele ponto).
+  const faixa = (W - ml - mr) / Math.max(1, n - 1);
+  const hover = rot.map((r, i) => `<rect class="rp-pt" x="${x(i) - faixa / 2}" y="${mt}" width="${faixa}" height="${H - mt - mb}" fill="transparent" data-tip="${_rpEsc(r)}${series.map(s => `\n${_rpEsc(s.nome)}: ${_rpEsc(_rpFmt(met, s.pts[i]))}`).join('')}"/>`).join('');
+  const legenda = series.length > 1 ? `<div class="rp-leg">${series.map(s => `<span><i style="background:${s.cor}"></i>${_rpEsc(s.nome)}</span>`).join('')}</div>` : '';
+  return `<div class="rp-graf"><div class="rp-graf-t">${_rpEsc(nomeMet)}</div>${legenda}<svg class="rp-svg" viewBox="0 0 ${W} ${H}">${grid}<line x1="${ml}" x2="${W - mr}" y1="${H - mb}" y2="${H - mb}" class="rp-base"/>${linhas}${eixoX}${hover}</svg>${nota ? `<div class="rp-nota">${nota}</div>` : ''}</div>`;
+}
+
+// ── Tela ────────────────────────────────────────────────────────────────────
+const RP_CSS = `
+#rp-modal{position:fixed;inset:0;z-index:9000;background:rgba(17,24,39,.45);display:flex;align-items:stretch;justify-content:center;padding:2vh 2vw;font-family:inherit}
+#rp-modal *{box-sizing:border-box}
+.rp-box{background:#F9FAFB;border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.25);display:flex;flex-direction:column;width:100%;max-width:1680px;overflow:hidden}
+.rp-head{display:flex;align-items:center;gap:12px;padding:14px 20px;background:#fff;border-bottom:1px solid #E5E7EB}
+.rp-head h2{margin:0;font-size:17px;font-weight:700;color:#111827}
+.rp-head small{color:#6B7280;font-size:12px}
+.rp-head .rp-x{margin-left:auto}
+.rp-btn{border:1px solid #D1D5DB;background:#fff;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit;white-space:nowrap}
+.rp-btn:hover{background:#F3F4F6}.rp-btn:disabled{opacity:.5;cursor:default}
+.rp-btn-p{background:var(--accent,#4F46E5);border-color:var(--accent,#4F46E5);color:#fff}.rp-btn-p:hover{filter:brightness(.95);background:var(--accent,#4F46E5)}
+.rp-corpo{flex:1;min-height:0;display:grid;grid-template-columns:320px minmax(0,1fr)}
+.rp-side{background:#fff;border-right:1px solid #E5E7EB;overflow-y:auto;padding:14px 16px 24px}
+.rp-sec{margin-bottom:16px}
+.rp-sec>label,.rp-st{display:block;font-size:10.5px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.rp-side select,.rp-side input[type=text],.rp-side input[type=date],.rp-side input[type=number]{width:100%;border:1px solid #D1D5DB;border-radius:7px;padding:6px 8px;font-size:12.5px;font-family:inherit;background:#fff;color:#111827}
+.rp-row{display:flex;gap:6px;align-items:center}.rp-row>*{flex:1;min-width:0}
+.rp-mets{border:1px solid #E5E7EB;border-radius:8px;max-height:300px;overflow-y:auto;padding:4px 8px}
+.rp-mg{font-size:10px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 2px}
+.rp-mets label{display:flex;align-items:center;gap:7px;font-size:12.5px;color:#374151;padding:3px 0;cursor:pointer}
+.rp-mets input{accent-color:var(--accent,#4F46E5)}
+.rp-dica{font-size:11px;color:#6B7280;line-height:1.4;margin-top:5px}
+.rp-main{overflow-y:auto;padding:18px 22px 28px;min-width:0}
+.rp-resumo{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:#6B7280;margin-bottom:12px}
+.rp-resumo b{color:#111827}
+.rp-graf{background:#fff;border:1px solid #E5E7EB;border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.rp-graf-t{font-size:12px;font-weight:700;color:#374151;margin-bottom:8px}
+.rp-svg{width:100%;height:auto;max-height:340px;display:block;overflow:visible}
+.rp-grid{stroke:#EEF0F3;stroke-width:1}.rp-base{stroke:#D1D5DB;stroke-width:1}
+.rp-ax{font-size:11px;fill:#6B7280}.rp-val{font-size:11px;fill:#111827;font-weight:600}
+.rp-leg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:#374151;margin-bottom:6px}
+.rp-leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.rp-hbars{display:flex;flex-direction:column;gap:5px}
+.rp-hb{display:grid;grid-template-columns:minmax(120px,26%) 1fr 110px;gap:10px;align-items:center;font-size:12px}
+.rp-hb-r{color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rp-hb-t{height:12px}.rp-hb-t span{display:block;height:100%;background:${RP_SERIE};border-radius:0 4px 4px 0}
+.rp-hb-v{text-align:right;font-variant-numeric:tabular-nums;color:#111827;font-weight:600}
+.rp-hb:hover .rp-hb-t span{filter:brightness(.9)}
+.rp-nota{font-size:11px;color:#6B7280;margin-top:8px}
+.rp-tabw{background:#fff;border:1px solid #E5E7EB;border-radius:12px;overflow:auto;max-height:62vh}
+.rp-tab{width:100%;border-collapse:collapse;font-size:12.5px}
+.rp-tab th{position:sticky;top:0;background:#F9FAFB;text-align:left;font-size:10.5px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;padding:9px 12px;border-bottom:1px solid #E5E7EB;cursor:pointer;white-space:nowrap;user-select:none}
+.rp-tab th.n,.rp-tab td.n{text-align:right}
+.rp-tab th:hover{color:#111827}
+.rp-tab td{padding:7px 12px;border-bottom:1px solid #F1F2F4;color:#111827;white-space:nowrap;font-variant-numeric:tabular-nums}
+.rp-tab tbody tr:hover td{background:#F9FAFB}
+.rp-tab tfoot td{position:sticky;bottom:0;background:#F3F4F6;font-weight:700;border-top:1px solid #D1D5DB}
+.rp-tab td.rk{color:#9CA3AF;width:1%}
+.rp-vazio{padding:48px;text-align:center;color:#6B7280;font-size:13px}
+#rp-tip{position:fixed;z-index:9100;pointer-events:none;background:#111827;color:#fff;font-size:12px;padding:6px 9px;border-radius:6px;white-space:pre;box-shadow:0 4px 14px rgba(0,0,0,.25);display:none}
+@media (max-width:900px){.rp-corpo{grid-template-columns:1fr}.rp-side{border-right:0;border-bottom:1px solid #E5E7EB;max-height:45vh}}
+`;
+function _rpOpts(lista, sel, vazio) { return (vazio ? `<option value="">${vazio}</option>` : '') + lista.map(x => `<option value="${x.id}"${x.id === sel ? ' selected' : ''}>${_rpEsc(x.nome)}</option>`).join(''); }
+function _rpRenderSide() {
+  const c = _rp.cfg, f = c.filtros || (c.filtros = {});
+  const mods = [...RP_PADRAO, ...(_rp.modelos || [])];
+  const grupos = [...new Set(RP_METS.map(m => m.grupo))];
+  const metsHtml = grupos.map(g => `<div class="rp-mg">${g}</div>` + RP_METS.filter(m => m.grupo === g).map(m =>
+    `<label><input type="checkbox" value="${m.id}" ${c.mets.includes(m.id) ? 'checked' : ''} onchange="rpToggleMet('${m.id}', this.checked)">${m.nome}</label>`).join('')).join('');
+  const metsSel = c.mets.map(id => RP_MET[id]).filter(Boolean);
+  document.getElementById('rp-side').innerHTML = `
+    <div class="rp-sec"><label>Modelo</label>
+      <select onchange="rpAbrirModelo(this.value)"><option value="">— Novo relatório —</option>
+        <optgroup label="Prontos">${mods.filter(m => m.padrao).map(m => `<option value="${m.id}"${m.id === _rp.modeloId ? ' selected' : ''}>${_rpEsc(m.nome)}</option>`).join('')}</optgroup>
+        ${(_rp.modelos || []).length ? `<optgroup label="Salvos pela equipe">${_rp.modelos.map(m => `<option value="${m.id}"${m.id === _rp.modeloId ? ' selected' : ''}>${_rpEsc(m.nome)}</option>`).join('')}</optgroup>` : ''}
+      </select>
+      <div class="rp-row" style="margin-top:6px">
+        <button class="rp-btn" onclick="rpSalvarModelo(false)" ${!_rp.modeloId || mods.find(m => m.id === _rp.modeloId)?.padrao ? 'disabled' : ''}>💾 Salvar</button>
+        <button class="rp-btn" onclick="rpSalvarModelo(true)">Salvar como…</button>
+        <button class="rp-btn" onclick="rpExcluirModelo()" title="Excluir modelo salvo" ${!_rp.modeloId || mods.find(m => m.id === _rp.modeloId)?.padrao ? 'disabled' : ''}>🗑</button>
+      </div>
+      ${_rp.modelos === null ? '<div class="rp-dica">Carregando modelos da equipe…</div>' : ''}
+    </div>
+    <div class="rp-sec"><label>Agrupar por</label>
+      <select onchange="rpSetDim(0, this.value)">${_rpOpts(RP_DIMS, c.dims[0], '')}</select>
+      <select style="margin-top:6px" onchange="rpSetDim(1, this.value)">${_rpOpts(RP_DIMS.filter(d => d.id !== c.dims[0]), c.dims[1] || '', '+ segundo agrupamento (opcional)')}</select>
+      <div class="rp-dica">Ex.: Transportadora + Mês mostra cada transportadora mês a mês.</div>
+    </div>
+    <div class="rp-sec"><label>Colunas (${c.mets.length})</label><div class="rp-mets">${metsHtml}</div></div>
+    <div class="rp-sec"><label>Filtros do relatório</label>
+      <div class="rp-row"><input type="date" value="${f.de || ''}" onchange="rpSetFiltro('de', this.value)" title="Entrega de"><input type="date" value="${f.ate || ''}" onchange="rpSetFiltro('ate', this.value)" title="Entrega até"></div>
+      <div class="rp-dica" style="margin:3px 0 8px">Data de entrega (opcional), dentro do período carregado no Dashboard.</div>
+      <select onchange="rpSetFiltro('dim', this.value)">${_rpOpts(RP_DIMS.filter(d => d.id !== 'diasemana'), f.dim || '', 'Filtrar por… (opcional)')}</select>
+      <input type="text" style="margin-top:6px" placeholder="contém… (separe vários por vírgula)" value="${_rpEsc(f.texto || '')}" oninput="rpSetFiltro('texto', this.value)" ${f.dim ? '' : 'disabled'}>
+      <div class="rp-row" style="margin-top:6px"><span style="font-size:12px;color:#374151;flex:2">Mínimo de entregas por linha</span><input type="number" min="0" value="${f.minEntregas || 0}" onchange="rpSetFiltro('minEntregas', +this.value || 0)"></div>
+      <div class="rp-dica">Os filtros do topo do Dashboard (período, operação, transportadora, clientes, segmento e bandeira) também valem aqui.</div>
+    </div>
+    <div class="rp-sec"><label>Ordenar e limitar</label>
+      <div class="rp-row"><select onchange="rpSetOrdem(this.value, null)"><option value="_rotulo"${c.ordem.met === '_rotulo' ? ' selected' : ''}>Nome / data</option>${_rpOpts(metsSel, c.ordem.met, '')}</select>
+        <select onchange="rpSetOrdem(null, this.value)" style="flex:.7"><option value="desc"${c.ordem.dir === 'desc' ? ' selected' : ''}>Maior → menor</option><option value="asc"${c.ordem.dir === 'asc' ? ' selected' : ''}>Menor → maior</option></select></div>
+      <select style="margin-top:6px" onchange="rpSet('limite', +this.value)">${[[0, 'Todas as linhas'], [10, 'Top 10'], [20, 'Top 20'], [50, 'Top 50'], [100, 'Top 100']].map(([v, l]) => `<option value="${v}"${(c.limite || 0) === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+    </div>
+    <div class="rp-sec"><label>Gráfico</label>
+      <div class="rp-row"><select onchange="rpSetGraf('tipo', this.value)">${[['auto', 'Automático'], ['barras', 'Barras'], ['linha', 'Linha (tempo)'], ['nenhum', 'Sem gráfico']].map(([v, l]) => `<option value="${v}"${(c.grafico?.tipo || 'auto') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+        <select onchange="rpSetGraf('met', this.value)">${_rpOpts(metsSel, c.grafico?.met, '')}</select></div>
+    </div>`;
+}
+function _rpRenderMain() {
+  const box = document.getElementById('rp-main'); if (!box) return;
+  const c = _rp.cfg;
+  if (!_rp.linhas) { box.innerHTML = '<div class="rp-vazio">Montando a base de dados…</div>'; return; }
+  if (!_rp.linhas.linhas.length) { box.innerHTML = '<div class="rp-vazio">Nenhuma entrega no período e filtros carregados no Dashboard.<br>Ajuste o período no topo do Dashboard e abra de novo.</div>'; return; }
+  if (!c.mets.length) { box.innerHTML = '<div class="rp-vazio">Marque pelo menos uma coluna à esquerda.</div>'; return; }
+  const res = _rp.resultado = _rpCalcular(_rp.linhas, c);
+  const mets = c.mets.map(id => RP_MET[id]).filter(Boolean);
+  const seta = id => c.ordem.met === id ? (c.ordem.dir === 'asc' ? ' ▲' : ' ▼') : '';
+  const cab = `<tr><th></th>${c.dims.map((d, i) => `<th onclick="rpOrdenarPor('_rotulo')">${_rpEsc(RP_DIM[d].nome)}${i === 0 ? seta('_rotulo') : ''}</th>`).join('')}${mets.map(m => `<th class="n" onclick="rpOrdenarPor('${m.id}')">${_rpEsc(m.nome)}${seta(m.id)}</th>`).join('')}</tr>`;
+  const corpo = res.linhas.map((r, i) => `<tr><td class="rk">${i + 1}</td>${r.rotulos.map(x => `<td>${_rpEsc(x)}</td>`).join('')}${mets.map(m => `<td class="n">${_rpFmt(m.id, r.m[m.id])}</td>`).join('')}</tr>`).join('');
+  const rod = `<tr><td></td><td colspan="${c.dims.length}">Total${res.totalGrupos > res.linhas.length ? ` (todas as ${res.totalGrupos} linhas)` : ''}</td>${mets.map(m => `<td class="n">${_rpFmt(m.id, res.total[m.id])}</td>`).join('')}</tr>`;
+  box.innerHTML = `
+    <div class="rp-resumo"><span><b>${res.linhas.length}</b>${res.totalGrupos > res.linhas.length ? ` de ${res.totalGrupos}` : ''} linha(s)</span><span><b>${res.total.viagens.toLocaleString('pt-BR')}</b> viagens</span><span><b>${res.nEntregas.toLocaleString('pt-BR')}</b> entregas na base</span><span>${_rpEsc(_dashDescricaoFiltroAtual())}</span></div>
+    ${_rpGrafico(res, c)}
+    <div class="rp-tabw"><table class="rp-tab"><thead>${cab}</thead><tbody>${corpo}</tbody><tfoot>${rod}</tfoot></table></div>
+    <div class="rp-nota">Volume líquido de devoluções · km real quando a viagem já tem trajeto calculado · custo pelo contrato da placa cadastrado no Frete (placas sem contrato somam R$ 0 e ficam fora do custo por m³/viagem/entrega) · com Produto, a entrega é dividida pelo volume de cada produto.</div>`;
+}
+function _rpRecalcular() { clearTimeout(_rp.timer); _rp.timer = setTimeout(() => { try { _rpRenderMain(); } catch (e) { console.error('[relatório]', e); document.getElementById('rp-main').innerHTML = `<div class="rp-vazio">Erro ao montar: ${_rpEsc(e.message)}</div>`; } }, 120); }
+function _rpTudo() { _rpRenderSide(); _rpRecalcular(); }
+function _rpTitulo() { const m = [...RP_PADRAO, ...(_rp.modelos || [])].find(x => x.id === _rp.modeloId); document.getElementById('rp-titulo').textContent = m ? m.nome : 'Relatório personalizado'; }
+
+// ── Ações ────────────────────────────────────────────────────────────────────
+function rpSet(k, v) { _rp.cfg[k] = v; _rpTudo(); }
+function rpSetDim(i, v) {
+  const d = _rp.cfg.dims.slice();
+  if (i === 0) { d[0] = v || 'transportadora'; if (d[1] === d[0]) d.splice(1, 1); } else { if (v) d[1] = v; else d.splice(1, 1); }
+  _rp.cfg.dims = d; _rpTudo();
+}
+function rpToggleMet(id, on) {
+  const s = _rp.cfg.mets.filter(x => x !== id); if (on) s.push(id);
+  _rp.cfg.mets = RP_METS.map(m => m.id).filter(x => s.includes(x)); // mantém a ordem do catálogo
+  if (!s.includes(_rp.cfg.grafico?.met)) _rp.cfg.grafico = { ..._rp.cfg.grafico, met: _rp.cfg.mets[0] };
+  if (_rp.cfg.ordem.met !== '_rotulo' && !s.includes(_rp.cfg.ordem.met)) _rp.cfg.ordem = { met: _rp.cfg.mets[0] || '_rotulo', dir: 'desc' };
+  _rpTudo();
+}
+function rpSetFiltro(k, v) { _rp.cfg.filtros = { ..._rp.cfg.filtros, [k]: v }; if (k === 'dim') _rpRenderSide(); _rpRecalcular(); }
+function rpSetOrdem(met, dir) { _rp.cfg.ordem = { met: met ?? _rp.cfg.ordem.met, dir: dir ?? _rp.cfg.ordem.dir }; _rpRecalcular(); }
+function rpOrdenarPor(met) {
+  const o = _rp.cfg.ordem; _rp.cfg.ordem = o.met === met ? { met, dir: o.dir === 'asc' ? 'desc' : 'asc' } : { met, dir: met === '_rotulo' ? 'asc' : 'desc' };
+  _rpTudo();
+}
+function rpSetGraf(k, v) { _rp.cfg.grafico = { ..._rp.cfg.grafico, [k]: v }; _rpRecalcular(); }
+function rpAbrirModelo(id) {
+  _rp.modeloId = id;
+  const m = [...RP_PADRAO, ...(_rp.modelos || [])].find(x => x.id === id);
+  _rp.cfg = m ? { ...RP_CFG_VAZIA(), ...JSON.parse(JSON.stringify(m.cfg)), filtros: { ...RP_CFG_VAZIA().filtros, ...(m.cfg.filtros || {}) } } : RP_CFG_VAZIA();
+  _rpTitulo(); _rpTudo();
+}
+// Modelos compartilhados: 1 documento em config/relatorios_modelos.
+const _rpRef = () => window.fbDoc(window.fbDb, 'config', 'relatorios_modelos');
+async function _rpCarregarModelos() {
+  try {
+    if (!window.fbGetDoc) throw new Error('Firestore indisponível');
+    const s = await window.fbGetDoc(_rpRef());
+    _rp.modelos = s.exists() ? (s.data().modelos || []) : [];
+  } catch (e) { console.warn('[relatório] modelos:', e); _rp.modelos = []; }
+  if (document.getElementById('rp-side')) _rpRenderSide();
+}
+async function _rpGravarModelos(mutar) {
+  const s = await window.fbGetDoc(_rpRef()); // lê fresco pra não apagar o que outra pessoa salvou
+  const lista = s.exists() ? (s.data().modelos || []) : [];
+  const nova = mutar(lista) || lista;
+  await window.fbSetDoc(_rpRef(), { modelos: nova, atualizadoEm: new Date().toISOString() });
+  _rp.modelos = nova;
+}
+async function rpSalvarModelo(comoNovo) {
+  let id = _rp.modeloId, nome;
+  const atual = (_rp.modelos || []).find(m => m.id === id);
+  if (comoNovo || !atual) {
+    nome = prompt('Nome do modelo (todo mundo da equipe vai ver):', atual ? atual.nome + ' (cópia)' : '');
+    if (!nome || !nome.trim()) return;
+    id = 'm_' + Date.now().toString(36);
+  } else nome = atual.nome;
+  const reg = { id, nome: nome.trim(), cfg: JSON.parse(JSON.stringify(_rp.cfg)), criadoPor: (window.S && window.S.user) || '', atualizadoEm: new Date().toISOString() };
+  try {
+    await _rpGravarModelos(l => { const i = l.findIndex(m => m.id === id); if (i >= 0) l[i] = { ...l[i], ...reg }; else l.push(reg); return l; });
+    _rp.modeloId = id; _rpTitulo(); _rpRenderSide();
+    showToast(`💾 Modelo "${reg.nome}" salvo para a equipe.`, true);
+  } catch (e) { alert('Não consegui salvar o modelo: ' + (e.message || e)); }
+}
+async function rpExcluirModelo() {
+  const m = (_rp.modelos || []).find(x => x.id === _rp.modeloId); if (!m) return;
+  if (!confirm(`Excluir o modelo "${m.nome}" para toda a equipe?`)) return;
+  try { await _rpGravarModelos(l => l.filter(x => x.id !== m.id)); _rp.modeloId = ''; _rpTitulo(); _rpRenderSide(); showToast('Modelo excluído.', true); }
+  catch (e) { alert('Não consegui excluir: ' + (e.message || e)); }
+}
+// ── Exportação ───────────────────────────────────────────────────────────────
+function _rpTabelaPlana() {
+  const c = _rp.cfg, r = _rp.resultado, mets = c.mets.map(id => RP_MET[id]);
+  const cab = [...c.dims.map(d => RP_DIM[d].nome), ...mets.map(m => m.nome)];
+  const arred = (m, v) => v == null || !isFinite(v) ? '' : Math.round(v * 10 ** m.dec) / 10 ** m.dec;
+  const linhas = r.linhas.map(l => [...l.rotulos, ...mets.map(m => arred(m, l.m[m.id]))]);
+  const total = ['Total', ...c.dims.slice(1).map(() => ''), ...mets.map(m => arred(m, r.total[m.id]))];
+  return { cab, linhas, total, mets };
+}
+function _rpNomeArquivo() { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${(document.getElementById('rp-titulo')?.textContent || 'Relatorio').replace(/[^\w\-]+/g, '_')}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`; }
+function rpExportarExcel() {
+  if (!_rp.resultado || typeof XLSX === 'undefined') { alert('Nada para exportar (ou biblioteca de Excel não carregada).'); return; }
+  const { cab, linhas, total } = _rpTabelaPlana();
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([cab, ...linhas, total]);
+  ws['!cols'] = cab.map((h, i) => ({ wch: Math.min(40, Math.max(h.length, ...linhas.slice(0, 200).map(l => String(l[i] ?? '').length)) + 2) }));
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: linhas.length, c: cab.length - 1 } }) };
+  XLSX.utils.book_append_sheet(wb, ws, 'Relatório');
+  const f = _rp.cfg.filtros || {};
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['Relatório', document.getElementById('rp-titulo')?.textContent || ''], ['Gerado em', new Date().toLocaleString('pt-BR')], ['Gerado por', (window.S && window.S.user) || ''],
+    ['Filtros do Dashboard', _dashDescricaoFiltroAtual()], ['Entrega de/até', `${f.de || '—'} / ${f.ate || '—'}`],
+    ['Filtro do relatório', f.dim && f.texto ? `${RP_DIM[f.dim]?.nome} contém "${f.texto}"` : '—'], ['Mínimo de entregas', f.minEntregas || 0],
+    [], ['Regras', 'Volume líquido de devoluções; km real quando calculado; custo pelo contrato da placa (Frete).'],
+  ]), 'Filtros');
+  XLSX.writeFile(wb, _rpNomeArquivo() + '.xlsx');
+  showToast('📊 Excel gerado.', true);
+}
+async function _rpSvgParaPng(svg) {
+  const clone = svg.cloneNode(true);
+  const vb = svg.viewBox.baseVal; clone.setAttribute('width', vb.width * 2); clone.setAttribute('height', vb.height * 2);
+  clone.querySelectorAll('.rp-grid').forEach(e => { e.setAttribute('stroke', '#EEF0F3'); }); clone.querySelectorAll('.rp-base').forEach(e => e.setAttribute('stroke', '#D1D5DB'));
+  clone.querySelectorAll('.rp-ax').forEach(e => { e.setAttribute('fill', '#6B7280'); e.setAttribute('font-size', '11'); e.setAttribute('font-family', 'Arial'); });
+  clone.querySelectorAll('.rp-val').forEach(e => { e.setAttribute('fill', '#111827'); e.setAttribute('font-size', '11'); e.setAttribute('font-weight', '700'); e.setAttribute('font-family', 'Arial'); });
+  clone.querySelectorAll('.rp-pt rect[fill=transparent], rect.rp-pt').forEach(e => e.remove());
+  const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(clone));
+  const img = new Image(); await new Promise((ok, ko) => { img.onload = ok; img.onerror = ko; img.src = url; });
+  const cv = document.createElement('canvas'); cv.width = vb.width * 2; cv.height = vb.height * 2;
+  const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height); ctx.drawImage(img, 0, 0);
+  return { data: cv.toDataURL('image/png'), w: vb.width, h: vb.height };
+}
+async function rpExportarPDF() {
+  const { jsPDF } = window.jspdf || {};
+  if (!_rp.resultado || !jsPDF) { alert('Nada para exportar (ou biblioteca de PDF não carregada).'); return; }
+  const { cab: cab0, linhas, total, mets } = _rpTabelaPlana();
+  const semSobrescrito = x => String(x).replace(/³/g, '3').replace(/²/g, '2'); // fonte padrão do PDF não tem ³
+  const cab = cab0.map(semSobrescrito);
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const titulo = document.getElementById('rp-titulo')?.textContent || 'Relatório personalizado';
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.text(semSobrescrito(`NEXTA — ${titulo.toUpperCase()}`), 10, 12);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+  const f = _rp.cfg.filtros || {};
+  doc.text(doc.splitTextToSize(`${_dashDescricaoFiltroAtual()}${f.de || f.ate ? ` · entrega ${f.de || '…'} a ${f.ate || '…'}` : ''}${f.dim && f.texto ? ` · ${RP_DIM[f.dim]?.nome} contém "${f.texto}"` : ''} · gerado em ${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, 275), 10, 17);
+  let y = 23;
+  const svg = document.querySelector('#rp-main .rp-svg');
+  const barrasH = document.querySelector('#rp-main .rp-hbars');
+  try {
+    if (svg) { const p = await _rpSvgParaPng(svg); const w = 277, h = w * p.h / p.w; doc.addImage(p.data, 'PNG', 10, y, w, h); y += h + 4; }
+    else if (barrasH && typeof html2canvas === 'function') { const cv = await html2canvas(barrasH.parentElement, { scale: 2, backgroundColor: '#ffffff' }); const w = 277, h = Math.min(120, w * cv.height / cv.width); doc.addImage(cv.toDataURL('image/png'), 'PNG', 10, y, w * (h / (w * cv.height / cv.width)), h); y += h + 4; }
+  } catch (e) { console.warn('[relatório] gráfico fora do PDF:', e); }
+  if (typeof doc.autoTable !== 'function') { alert('Biblioteca de tabela do PDF não carregada.'); return; }
+  const fmtCel = (m, v) => v === '' ? '—' : _rpFmt(m.id, v);
+  const nd = _rp.cfg.dims.length;
+  doc.autoTable({
+    head: [cab], body: linhas.map(l => [...l.slice(0, nd).map(semSobrescrito), ...mets.map((m, i) => fmtCel(m, l[nd + i]))]),
+    foot: [[...total.slice(0, nd), ...mets.map((m, i) => fmtCel(m, total[nd + i]))]],
+    startY: y, styles: { fontSize: 7.5, cellPadding: 1.6 }, headStyles: { fillColor: [31, 41, 55], textColor: 255, fontStyle: 'bold' },
+    footStyles: { fillColor: [229, 231, 235], textColor: [17, 24, 39], fontStyle: 'bold' }, alternateRowStyles: { fillColor: [248, 249, 250] },
+    columnStyles: Object.fromEntries(mets.map((m, i) => [nd + i, { halign: 'right' }])), margin: { left: 10, right: 10 }, theme: 'grid', showFoot: 'lastPage',
+  });
+  doc.save(_rpNomeArquivo() + '.pdf');
+  showToast('📄 PDF gerado.', true);
+}
+// ── Abrir / fechar ──────────────────────────────────────────────────────────
+function _rpTooltip(e) {
+  const tip = document.getElementById('rp-tip'); if (!tip) return;
+  const alvo = e.target.closest && e.target.closest('[data-tip]');
+  if (!alvo) { tip.style.display = 'none'; return; }
+  tip.textContent = alvo.getAttribute('data-tip'); tip.style.display = 'block';
+  const x = Math.min(window.innerWidth - tip.offsetWidth - 8, e.clientX + 14), y = Math.max(8, e.clientY - tip.offsetHeight - 10);
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+function dashAbrirRelatorioPersonalizado() {
+  document.getElementById('dash-relatorios-menu')?.style && (document.getElementById('dash-relatorios-menu').style.display = 'none');
+  if (!(_dashSnapshotsAtivos || []).length) { alert('Carregue um período no Dashboard primeiro (filtro 🗓️ Período no topo).'); return; }
+  if (!document.getElementById('rp-style')) { const st = document.createElement('style'); st.id = 'rp-style'; st.textContent = RP_CSS; document.head.appendChild(st); }
+  document.getElementById('rp-modal')?.remove();
+  const el = document.createElement('div'); el.id = 'rp-modal';
+  el.innerHTML = `<div class="rp-box">
+      <div class="rp-head"><div><h2 id="rp-titulo">Relatório personalizado</h2><small>Monte do seu jeito: agrupe, escolha as colunas, filtre e exporte.</small></div>
+        <div style="display:flex;gap:8px;margin-left:auto"><button class="rp-btn" onclick="rpExportarExcel()">📊 Excel</button><button class="rp-btn" onclick="rpExportarPDF()">📄 PDF</button><button class="rp-btn rp-btn-p" onclick="dashFecharRelatorioPersonalizado()">Fechar</button></div></div>
+      <div class="rp-corpo"><aside class="rp-side" id="rp-side"></aside><main class="rp-main" id="rp-main"></main></div>
+    </div><div id="rp-tip"></div>`;
+  el.addEventListener('mousemove', _rpTooltip);
+  el.addEventListener('mousedown', e => { if (e.target === el) dashFecharRelatorioPersonalizado(); });
+  document.body.appendChild(el);
+  document.addEventListener('keydown', _rpEsc_);
+  _rp.linhas = null; _rpTitulo(); _rpRenderSide(); _rpRenderMain();
+  setTimeout(async () => {
+    // Ocorrências vêm do mesmo cache do Histórico/Dashboard — se ainda não
+    // carregou nesta sessão, espera carregar antes de montar a base.
+    if ((typeof _devTodosRegistrosCache === 'undefined' || !_devTodosRegistrosCache) && typeof _devCarregarCacheRegistros === 'function') {
+      try { await _devCarregarCacheRegistros(); } catch (e) { /* segue sem ocorrências */ }
+    }
+    try { _rp.linhas = _rpExtrair(); } catch (e) { console.error('[relatório] base:', e); _rp.linhas = { linhas: [], viagens: new Map() }; }
+    _rpRecalcular();
+  }, 30);
+  if (_rp.modelos === null) _rpCarregarModelos();
+}
+function _rpEsc_(e) { if (e.key === 'Escape') dashFecharRelatorioPersonalizado(); }
+function dashFecharRelatorioPersonalizado() { document.getElementById('rp-modal')?.remove(); document.removeEventListener('keydown', _rpEsc_); }
+Object.assign(window, { dashAbrirRelatorioPersonalizado, dashFecharRelatorioPersonalizado, rpSet, rpSetDim, rpToggleMet, rpSetFiltro, rpSetOrdem, rpOrdenarPor, rpSetGraf, rpAbrirModelo, rpSalvarModelo, rpExcluirModelo, rpExportarExcel, rpExportarPDF });
+
 })(); // fim IIFE dashboard
 // A chave da OpenRouteService NÃO fica mais aqui — antes ficava exposta
 // literalmente no código-fonte (qualquer um com DevTools conseguia copiar
