@@ -47,7 +47,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
   getFirestore, doc, getDoc, setDoc, collection,
-  getDocs, query, where, orderBy, limit, writeBatch, deleteDoc
+  getDocs, query, where, orderBy, limit, writeBatch, deleteDoc, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import {
   getAuth, signInWithEmailAndPassword, signOut,
@@ -1476,18 +1476,15 @@ async function buildStatusBoardAlert(allP, userOps=null, offset=0){
 // Abre pelo botão "📺 Telão" (admin/operacional) ou direto pelo endereço
 // com ?telao=1. Gira entre 7 painéis a cada 20s. Teclas: ← → troca ·
 // espaço pausa · R recarrega · Esc sai.
-//   • Frota (disponibilidade hoje / preenchimento amanhã): Firestore ao vivo,
-//     recarregado a cada 5 min.
+//   • Frota (disponibilidade hoje / preenchimento amanhã): availability + locks.
 //   • Programação, Mês, Clientes: telao_programacao/{AAAA-MM-DD}, publicado
-//     pelo Roteirizador a cada programação salva — recarregado a cada 15 min.
-//   • Ocorrências: devolucoesReentregas (mesmo registro do Histórico/Dashboard)
-//     — recarregado a cada 15 min.
+//     pelo Roteirizador a cada programação salva.
+//   • Ocorrências: devolucoesReentregas (mesmo registro do Histórico/Dashboard).
+//   Tudo AO VIVO por escuta (onSnapshot) — ver "Dados" abaixo.
 // Comparações "vs mês anterior" são sempre no MESMO PERÍODO (do dia 1 até o
 // mesmo dia do mês anterior), pra não comparar mês parcial com mês fechado.
 const TELAO_TROCA_MS = 20000;
-const TELAO_FROTA_MS = 5 * 60000;
-const TELAO_LENTO_MS = 15 * 60000;
-const _telao = { ativo: false, idx: 0, pausado: false, dados: null, carregadoEm: 0, lentoEm: 0, lento: null, erro: null, timers: [], trocaEm: 0 };
+const _telao = { ativo: false, idx: 0, pausado: false, dados: null, carregadoEm: 0, erro: null, timers: [], subs: [], trocaEm: 0, dia: '', diaAmanha: '' };
 // Cores validadas (dataviz validator, superfície escura): ordem dos segmentos
 // da barra empilhada é a ordem que passa no teste de daltonismo.
 const _TL_ST = [
@@ -1506,59 +1503,108 @@ const _tlMesCurto = mes => _TL_MESES[+mes.slice(5, 7) - 1].slice(0, 3);
 const _tlIsoDeBr = br => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(br || ''); return m ? `${m[3]}-${m[2]}-${m[1]}` : ''; };
 const _tlPct = (a, b) => b ? a / b * 100 : null;
 
-// ── Dados ────────────────────────────────────────────────────────────────
-async function _telaoDisponibilidade(ds, allP) {
+// ── Dados (ao vivo, por "escuta" — onSnapshot) ──────────────────────────
+// Antes o telão RELIA tudo a cada 5/15 min (~140 leituras por rodada só de
+// disponibilidade) — com a TV ligada o dia todo, isso sozinho consumia
+// 20–40 mil das 50 mil leituras grátis por dia do Firestore. Agora ele
+// "escuta": o Firestore cobra a leitura de cada documento UMA vez ao abrir
+// e, depois, só 1 leitura por documento que MUDAR. Bônus: fica ao vivo de
+// verdade (uma transportadora preenche e o telão já mostra).
+// Fora do horário de operação o telão desliga as escutas (zero leitura) e
+// mostra só o relógio. Padrão 05h–22h; muda pelo endereço: ?horario=6-20
+// (ou ?horario=0-24 pra nunca desligar).
+const TELAO_HORARIO = (() => {
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(new URLSearchParams(location.search).get('horario') || '');
+  return m ? [Math.min(24, +m[1]), Math.min(24, +m[2])] : [5, 22];
+})();
+function _telaoDentroDoHorario() { const h = new Date().getHours(); return TELAO_HORARIO[0] <= h && h < TELAO_HORARIO[1]; }
+const _telaoFonte = { plates: null, avail: new Map(), locks: new Set(), progs: new Map(), ocorr: new Map(), erros: {}, recebidoEm: 0 };
+function _telaoDisponibilidade(ds, allP) {
   const ativos = CARRIERS.filter(c => (allP[c] || []).some(p => p.ativo !== false));
-  const pairs = [];
-  ativos.forEach(c => (allP[c] || []).filter(p => p.ativo !== false).forEach(p => pairs.push({ carrier: c, plate: p.placa, dateStr: ds })));
-  const [sm, locks] = await Promise.all([dbLoadStatusBulk(pairs), Promise.all(ativos.map(c => dbGetLock(c, ds)))]);
   const novo = nome => ({ nome, total: 0, disponivel: 0, indisponivel: 0, manutencao: 0, folga: 0, programado: 0, pendente: 0 });
   const tot = novo('Total'), porOp = new Map();
   const fechar = r => { r.preenchidas = r.total - r.pendente; const den = r.preenchidas - r.folga - r.programado; r.pct = den > 0 ? Math.round(r.disponivel / den * 100) : null; return r; };
-  const porTransp = ativos.map((c, i) => {
+  const porTransp = ativos.map(c => {
     const r = novo(c);
     (allP[c] || []).filter(p => p.ativo !== false).forEach(p => {
-      const s = sm[`${c}||${p.placa}||${ds}`]?.status;
+      const s = _telaoFonte.avail.get(`${c}||${p.placa}||${ds}`);
       const k = s && r[s] !== undefined ? s : 'pendente';
       const op = p.operacao || 'Sem operação';
       if (!porOp.has(op)) porOp.set(op, novo(op));
       [r, tot, porOp.get(op)].forEach(o => { o[k]++; o.total++; });
     });
     fechar(r);
-    r.concluido = !!locks[i] || (r.total > 0 && r.pendente === 0);
+    r.concluido = _telaoFonte.locks.has(`${c}||${ds}`) || (r.total > 0 && r.pendente === 0);
     return r;
   });
   fechar(tot);
   return { ds, porTransp, tot, porOp: [...porOp.values()].map(fechar).sort((a, b) => b.total - a.total) };
 }
-async function _telaoCarregarLento(hoje) {
-  const mes = hoje.slice(0, 7), mesAnt = _tlMesAnterior(mes);
-  const ini = new Date(+mesAnt.slice(0, 4), +mesAnt.slice(5, 7) - 1, 1).toISOString();
-  const [progs, ocorr] = await Promise.all([
-    getDocs(query(collection(db, 'telao_programacao'), where('mes', 'in', [mes, mesAnt])))
-      .then(s => { const l = []; s.forEach(d => l.push(d.data())); return l; }).catch(e => ({ _erro: e })),
-    getDocs(query(collection(db, 'devolucoesReentregas'), where('criadoEm', '>=', ini), orderBy('criadoEm', 'desc'), limit(1500)))
-      .then(s => { const l = []; s.forEach(d => l.push({ id: d.id, ...d.data() })); return l; }).catch(e => ({ _erro: e })),
-  ]);
-  const semPerm = x => x && x._erro && /permission/i.test(String(x._erro.code || x._erro.message));
-  return { progs: Array.isArray(progs) ? progs : [], ocorr: Array.isArray(ocorr) ? ocorr : [], semPermProg: semPerm(progs), erroOcorr: ocorr?._erro ? String(ocorr._erro.code || ocorr._erro.message) : null };
-}
-async function _telaoCarregarDados() {
-  cacheInvalidatePrefix('status||');
-  cacheInvalidate('plates');
-  const hoje = dateStr(0), amanha = dateStr(1);
-  const allP = await dbGetPlates();
-  const precisaLento = !_telao.lento || Date.now() - _telao.lentoEm > TELAO_LENTO_MS || _telao.lento.hoje !== hoje;
-  const [dispHoje, dispAmanha, lento] = await Promise.all([
-    _telaoDisponibilidade(hoje, allP), _telaoDisponibilidade(amanha, allP),
-    precisaLento ? _telaoCarregarLento(hoje) : Promise.resolve(null),
-  ]);
-  if (lento) { _telao.lento = { ...lento, hoje }; _telao.lentoEm = Date.now(); }
-  const L = _telao.lento;
-  const porData = new Map(L.progs.map(d => [d.data, d]));
-  return { hoje, amanha, mes: hoje.slice(0, 7), dispHoje, dispAmanha,
+function _telaoMontarDados() {
+  const F = _telaoFonte;
+  if (!F.plates) return null; // ainda chegando
+  const hoje = _telao.dia, amanha = _telao.diaAmanha;
+  const progs = [...F.progs.values()];
+  const porData = new Map(progs.map(d => [d.data, d]));
+  const semPerm = e => !!e && /permission/i.test(String(e.code || e.message));
+  return { hoje, amanha, mes: hoje.slice(0, 7),
+    dispHoje: _telaoDisponibilidade(hoje, F.plates), dispAmanha: _telaoDisponibilidade(amanha, F.plates),
     progHoje: porData.get(hoje) || null, progAmanha: porData.get(amanha) || null,
-    progs: L.progs, ocorr: L.ocorr, semPermProg: L.semPermProg, erroOcorr: L.erroOcorr };
+    progs, ocorr: [...F.ocorr.values()],
+    semPermProg: semPerm(F.erros.progs), erroOcorr: F.erros.ocorr ? String(F.erros.ocorr.code || F.erros.ocorr.message) : null };
+}
+let _telaoMontarTimer = null;
+function _telaoMarcarMudanca() {
+  _telaoFonte.recebidoEm = Date.now();
+  clearTimeout(_telaoMontarTimer);
+  _telaoMontarTimer = setTimeout(() => {
+    try { const D = _telaoMontarDados(); if (D) { _telao.dados = D; _telao.carregadoEm = Date.now(); } }
+    catch (e) { console.error('[telão]', e); _telao.erro = e.message || String(e); }
+    _telaoPintar();
+  }, 400); // junta várias mudanças seguidas numa repintura só
+}
+function _telaoDesassinar() {
+  (_telao.subs || []).forEach(u => { try { u(); } catch (e) {} });
+  _telao.subs = [];
+}
+function _telaoAssinar() {
+  _telaoDesassinar();
+  const F = _telaoFonte;
+  const hoje = dateStr(0), amanha = dateStr(1), mes = hoje.slice(0, 7), mesAnt = _tlMesAnterior(mes);
+  const ini = new Date(+mesAnt.slice(0, 4), +mesAnt.slice(5, 7) - 1, 1).toISOString();
+  _telao.dia = hoje; _telao.diaAmanha = amanha; _telao.erro = null;
+  F.avail.clear(); F.locks.clear(); F.progs.clear(); F.ocorr.clear(); F.erros = {};
+  const erro = chave => e => {
+    console.error(`[telão] escuta "${chave}" falhou:`, e);
+    F.erros[chave] = e;
+    if (chave === 'plates' || chave === 'avail') _telao.erro = String(e.code || e.message || e);
+    _telaoMarcarMudanca();
+  };
+  _telao.subs = [
+    onSnapshot(doc(db, 'config', 'plates'), s => { F.plates = s.exists() ? (s.data().data || {}) : {}; _telao.erro = null; _telaoMarcarMudanca(); }, erro('plates')),
+    onSnapshot(query(collection(db, 'availability'), where('dateStr', 'in', [hoje, amanha])), s => {
+      F.avail.clear();
+      s.forEach(d => { const x = d.data(); if (x.status) F.avail.set(`${x.carrier}||${x.plate}||${x.dateStr}`, x.status); });
+      _telaoMarcarMudanca();
+    }, erro('avail')),
+    onSnapshot(query(collection(db, 'locks'), where('dateStr', 'in', [hoje, amanha])), s => {
+      F.locks.clear();
+      s.forEach(d => { const x = d.data(); if (x.carrier) F.locks.add(`${x.carrier}||${x.dateStr}`); });
+      _telaoMarcarMudanca();
+    }, erro('locks')),
+    onSnapshot(query(collection(db, 'telao_programacao'), where('mes', 'in', [mes, mesAnt])), s => {
+      F.progs.clear(); s.forEach(d => F.progs.set(d.id, d.data())); delete F.erros.progs; _telaoMarcarMudanca();
+    }, erro('progs')),
+    onSnapshot(query(collection(db, 'devolucoesReentregas'), where('criadoEm', '>=', ini)), s => {
+      F.ocorr.clear(); s.forEach(d => F.ocorr.set(d.id, { id: d.id, ...d.data() })); delete F.erros.ocorr; _telaoMarcarMudanca();
+    }, erro('ocorr')),
+  ];
+}
+// Liga/desliga as escutas conforme o horário e troca de dia (meia-noite).
+function _telaoVerificarEscutas() {
+  const dentro = _telaoDentroDoHorario();
+  if (!dentro && _telao.subs?.length) { _telaoDesassinar(); _telao.dados = null; _telaoPintar(); }
+  else if (dentro && (!_telao.subs?.length || _telao.dia !== dateStr(0))) { _telaoAssinar(); _telaoPintar(); }
 }
 // Agrega dias publicados (do dia 1 até `ateDia`) — base dos painéis do mês.
 function _telaoAgregar(docs, mes, ateDia) {
@@ -1994,6 +2040,14 @@ function _telaoPintar() {
   const D = _telao.dados;
   const i = _telao.idx % _TELAO_TELAS.length, tela = _TELAO_TELAS[i];
   const corpo = root.querySelector('.tl-corpo');
+  if (!_telaoDentroDoHorario()) {
+    root.querySelector('.tl-kicker').textContent = 'Centro de operações';
+    root.querySelector('.tl-titulo').textContent = 'Fora do horário de operação';
+    corpo.innerHTML = _tlVazio(`O painel volta sozinho às ${String(TELAO_HORARIO[0]).padStart(2, '0')}:00`, 'Fora do horário o telão não consulta o banco de dados (economia da cota gratuita do Firestore).', '☾');
+    root.querySelector('.tl-dots').innerHTML = '';
+    _telaoRodape();
+    return;
+  }
   root.querySelector('.tl-kicker').textContent = D ? tela.kicker : 'Centro de operações';
   root.querySelector('.tl-titulo').textContent = D ? tela.titulo(D) : 'Carregando…';
   if (!D) corpo.innerHTML = _tlVazio(_telao.erro ? 'Não consegui carregar os dados' : 'Carregando dados…', _telao.erro ? `${esc(_telao.erro)} — nova tentativa em instantes.` : '', '◷');
@@ -2011,23 +2065,13 @@ function _telaoRodape() {
   root.querySelector('.tl-relogio b').textContent = _tlHora(agora.getTime());
   root.querySelector('.tl-relogio span').textContent = agora.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' });
   const upd = root.querySelector('.tl-upd');
-  const velho = _telao.carregadoEm && Date.now() - _telao.carregadoEm > TELAO_FROTA_MS * 2.5;
-  upd.textContent = !_telao.carregadoEm ? 'carregando…' : velho ? `⚠ dados de ${_tlHora(_telao.carregadoEm)} — verifique a conexão` : `Atualizado às ${_tlHora(_telao.carregadoEm)}`;
+  const foraHorario = !_telaoDentroDoHorario();
+  const velho = !foraHorario && (!navigator.onLine || !!_telao.erro);
+  upd.textContent = foraHorario ? 'Escuta desligada (fora do horário)' : !_telao.carregadoEm ? 'conectando…'
+    : velho ? `⚠ sem conexão — última atualização ${_tlHora(_telaoFonte.recebidoEm || _telao.carregadoEm)}` : `● Ao vivo · última alteração ${_tlHora(_telaoFonte.recebidoEm || _telao.carregadoEm)}`;
   upd.classList.toggle('velho', !!velho);
   root.querySelector('.tl-prog span').style.width = _telao.pausado ? '100%' : Math.min(100, (Date.now() - _telao.trocaEm) / TELAO_TROCA_MS * 100) + '%';
   root.querySelector('.tl-pausa').textContent = _telao.pausado ? '⏸ Pausado (espaço continua)' : '';
-}
-async function _telaoAtualizarDados(forcarLento = false) {
-  if (forcarLento) _telao.lentoEm = 0;
-  try {
-    _telao.dados = await _telaoCarregarDados();
-    _telao.carregadoEm = Date.now();
-    _telao.erro = null;
-  } catch (e) {
-    console.error('[telão] falha ao carregar', e);
-    _telao.erro = e.message || String(e);
-  }
-  _telaoPintar();
 }
 function _telaoTrocar(passo = 1) {
   _telao.idx = (_telao.idx + passo + _TELAO_TELAS.length) % _TELAO_TELAS.length;
@@ -2039,7 +2083,7 @@ function _telaoTecla(e) {
   if (e.key === 'ArrowRight') _telaoTrocar(1);
   else if (e.key === 'ArrowLeft') _telaoTrocar(-1);
   else if (e.key === ' ') { e.preventDefault(); _telao.pausado = !_telao.pausado; _telao.trocaEm = Date.now(); _telaoRodape(); }
-  else if (e.key === 'r' || e.key === 'R') _telaoAtualizarDados(true);
+  else if (e.key === 'r' || e.key === 'R') { if (_telaoDentroDoHorario()) _telaoAssinar(); }
   else if (e.key === 'Escape' && !document.fullscreenElement) sairTelao();
 }
 let _telaoMouseTimer = null;
@@ -2072,15 +2116,24 @@ async function renderTelao() {
   _telao.trocaEm = Date.now();
   _telao.timers.forEach(clearInterval);
   _telao.timers = [
-    setInterval(() => { if (!_telao.pausado && Date.now() - _telao.trocaEm >= TELAO_TROCA_MS) _telaoTrocar(1); else _telaoRodape(); }, 1000),
-    setInterval(() => _telaoAtualizarDados(), TELAO_FROTA_MS),
+    setInterval(() => { if (_telaoDentroDoHorario() && !_telao.pausado && Date.now() - _telao.trocaEm >= TELAO_TROCA_MS) _telaoTrocar(1); else _telaoRodape(); }, 1000),
+    setInterval(_telaoVerificarEscutas, 30000), // horário de operação e virada do dia
+    setInterval(() => { if (_telao.dados) _telaoPintar(); }, 60000), // status das viagens/contagem do corte andam com o relógio
   ];
   document.addEventListener('keydown', _telaoTecla);
   document.addEventListener('mousemove', _telaoMouse);
   document.addEventListener('visibilitychange', _telaoVisivel);
   _telaoWakeLock();
   _telaoPintar();
-  await _telaoAtualizarDados();
+  _telaoVerificarEscutas();
+}
+// Para timers e escutas (sair do telão, logout, ou outra tela assumir o app).
+function _telaoParar() {
+  if (!_telao.ativo && !_telao.subs?.length && !_telao.timers.length) return;
+  _telao.ativo = false;
+  _telao.timers.forEach(clearInterval); _telao.timers = [];
+  _telaoDesassinar();
+  _telao.dados = null; _telao.carregadoEm = 0;
 }
 function telaoTelaCheia() { document.documentElement.requestFullscreen?.().catch(() => {}); }
 function abrirTelao() {
@@ -2092,6 +2145,8 @@ function sairTelao() {
   S.telao = false;
   _telao.ativo = false;
   _telao.timers.forEach(clearInterval); _telao.timers = [];
+  _telaoDesassinar();
+  _telao.dados = null; _telao.carregadoEm = 0;
   document.removeEventListener('keydown', _telaoTecla);
   document.removeEventListener('mousemove', _telaoMouse);
   document.removeEventListener('visibilitychange', _telaoVisivel);
@@ -2108,11 +2163,11 @@ async function render(){
   const app=document.getElementById("app");
   // Sempre salva o shell antes de qualquer innerHTML para não perdê-lo
   parkRoteirizadorShell();
-  if(!S.user){ _telao.ativo=false; app.innerHTML=renderLogin(); return; }
+  if(!S.user){ _telaoParar(); app.innerHTML=renderLogin(); return; }
   const u=USERS_DB[S.user];
   // Telão (sala de operação): tela cheia, sem menu — só admin/operacional.
   if(S.telao && (u.role==="admin"||u.role==="operacional")){ await renderTelao(); return; }
-  _telao.ativo=false;
+  _telaoParar();
   const notifs=await dbGetNotifs();
   const hasNotif=notifs.length>0;
   const helpRole = u.role==="operacional" ? "operacional" : u.role==="carrier" ? "transportador" : "";
