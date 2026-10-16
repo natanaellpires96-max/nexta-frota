@@ -853,6 +853,12 @@
               📊 Relatórios <span style="font-size:8px;">▾</span>
             </button>
             <div id="dash-relatorios-menu" style="display:none;position:absolute;top:calc(100% + 6px);right:0;z-index:500;background:#fff;border:1px solid #D1D5DB;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.16);min-width:220px;overflow:hidden;padding:5px;">
+              <button onclick="dashAbrirRelatorioPersonalizado()" onmouseover="this.style.background='rgba(79,70,229,0.1)'" onmouseout="this.style.background='none'"
+                title="Monte o seu relatório: escolha como agrupar, quais colunas, filtre, veja o gráfico e exporte em Excel ou PDF. Modelos salvos ficam disponíveis para a equipe."
+                style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:700;color:var(--accent,#4F46E5);background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
+                🧩 Relatório personalizado
+              </button>
+              <div style="height:1px;background:#E5E7EB;margin:4px 2px;"></div>
               <button onclick="dashExportarExcel(); dashToggleMenuRelatorios();" id="dash-export-btn" onmouseover="this.style.background='rgba(21,128,61,0.1)'" onmouseout="this.style.background='none'"
                 style="display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;text-align:left;padding:9px 10px;font-size:12.5px;font-weight:600;color:#14532D;background:none;border:none;border-radius:6px;cursor:pointer;font-family:inherit;">
                 📊 Exportar Excel
