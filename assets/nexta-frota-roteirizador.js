@@ -5333,7 +5333,15 @@ async function renderAprendizado() {
 // a trava de encaixe exato de compartimentos.
 var mapaPedidosMap      = null;
 var _pmapaMarkers       = {};        // pedidoId -> {marker,pedido} OU chaveCoord -> {marker,pedidos[],lat,lon,grupo:true} quando há 2+ pedidos na mesma coordenada
-var _pmapaSelecionados  = new Set(); // ids de pedido selecionados
+var _pmapaSelecionados  = new Set(); // chaves internas (_pmapaUid) dos pedidos selecionados
+// Seleção pelo PRÓPRIO pedido (objeto), não pelo id gravado nele: dois pedidos
+// com o mesmo id (vindos de planilha, quebra, histórico…) eram marcados juntos
+// com um clique só. Cada pedido ganha uma chave interna própria, só na memória.
+var _pmapaUidMap = new WeakMap(), _pmapaUidSeq = 0;
+function _pmapaUid(p) { let u = _pmapaUidMap.get(p); if (!u) { u = ++_pmapaUidSeq; _pmapaUidMap.set(p, u); } return u; }
+function _pmapaSel(p) { return _pmapaSelecionados.has(_pmapaUid(p)); }
+function _pmapaPedidosSelecionados() { return (pedidos || []).filter(p => _pmapaSelecionados.has(_pmapaUid(p))); }
+function _pmapaPedidoPorUid(u) { return (pedidos || []).find(p => _pmapaUid(p) === u) || null; }
 var _pmapaModoSelecao   = false;
 var _pmapaLassoPontos   = [];
 var _pmapaLassoLayer    = null;
@@ -5378,7 +5386,10 @@ function _pmapaGarantirMapa() {
   }).addTo(mapaPedidosMap);
   mapaPedidosMap.setView([-14.235, -51.925], 4);
   mapaPedidosMap.invalidateSize();
+  // Marca quando o mapa está mexendo (zoom/arrasto) — clique nesse intervalo não seleciona nada.
+  mapaPedidosMap.on('zoomstart movestart zoomend moveend', () => { _pmapaMexeuEm = Date.now(); });
 }
+var _pmapaMexeuEm = 0, _pmapaCliqueTimer = null;
 // Lista só terminais que têm pelo menos 1 pedido PENDENTE (evita cair, por
 // padrão, num terminal cadastrado mas sem nenhum pedido — o que deixava o
 // mapa vazio). Ordena pelo terminal com mais pedidos primeiro.
@@ -5456,7 +5467,7 @@ function _pmapaChaveCoord(lat, lon) { return `${lat.toFixed(5)}|${lon.toFixed(5)
 function _pmapaCorGrupo(lista) {
   const pendentes = lista.filter(p => _pmapaVolumePendente(p) > 0.0001);
   if (!pendentes.length) return '#9CA3AF'; // tudo já roteirizado
-  const todasSelecionadas = pendentes.every(p => _pmapaSelecionados.has(p.id));
+  const todasSelecionadas = pendentes.every(p => _pmapaSel(p));
   return todasSelecionadas ? '#F97316' : '#4A6535';
 }
 function _pmapaIconGrupo(cor, qtd) {
@@ -5473,7 +5484,7 @@ function _pmapaPopupGrupoHtml(chave, lista, lat, lon) {
   const linhas = lista.map(p => {
     const volPend = _pmapaVolumePendente(p);
     const totalmenteAlocado = volPend <= 0.0001;
-    const sel = _pmapaSelecionados.has(p.id);
+    const sel = _pmapaSel(p);
     const produtosHtml = (p.produtos || []).map(pr => `${pr.produto}: ${pr.volume} m³`).join(', ');
     return `<div style="padding:7px 0;border-bottom:1px solid #E5E7EB;">
       <div style="font-weight:700;font-size:11.5px;">${p.cliente}${p.codigoSAP ? ` <span style="font-weight:400;color:#6B7280;">(SAP ${p.codigoSAP})</span>` : ''}</div>
@@ -5482,7 +5493,7 @@ function _pmapaPopupGrupoHtml(chave, lista, lat, lon) {
         ? `<div style="font-size:10.5px;color:#6B7280;font-weight:700;">✓ Já roteirizado</div>`
         : `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:3px;">
              <span style="font-size:11px;font-weight:700;color:#4A6535;">Pendente: ${volPend.toFixed(1)} m³ de ${totalVolPedido(p).toFixed(1)} m³</span>
-             <button onclick="pmapaToggleSelecaoPedido(${p.id}, '${chave}')" style="font-size:10.5px;font-weight:700;padding:3px 10px;border-radius:6px;border:1px solid ${sel ? '#F97316' : '#4A6535'};background:${sel ? '#F97316' : '#fff'};color:${sel ? '#fff' : '#4A6535'};cursor:pointer;white-space:nowrap;">${sel ? '✓ Selecionado' : 'Selecionar'}</button>
+             <button onclick="pmapaToggleSelecaoPedido(${_pmapaUid(p)}, '${chave}')" style="font-size:10.5px;font-weight:700;padding:3px 10px;border-radius:6px;border:1px solid ${sel ? '#F97316' : '#4A6535'};background:${sel ? '#F97316' : '#fff'};color:${sel ? '#fff' : '#4A6535'};cursor:pointer;white-space:nowrap;">${sel ? '✓ Selecionado' : 'Selecionar'}</button>
            </div>`}
     </div>`;
   }).join('');
@@ -5505,7 +5516,7 @@ function _pmapaAtualizarMarkerGrupo(chave) {
   entry.marker.setPopupContent(_pmapaPopupGrupoHtml(chave, entry.pedidos, entry.lat, entry.lon));
 }
 function pmapaToggleSelecaoPedido(pedidoId, chave) {
-  if (_pmapaSelecionados.has(pedidoId)) _pmapaSelecionados.delete(pedidoId);
+  if (_pmapaSelecionados.has(pedidoId)) _pmapaSelecionados.delete(pedidoId); // pedidoId aqui = chave interna (_pmapaUid)
   else _pmapaSelecionados.add(pedidoId);
   _pmapaAtualizarMarkerGrupo(chave);
   pmapaAtualizarPainel();
@@ -5535,7 +5546,7 @@ function _garantirIdsPedidosUnicos() {
 var _pmapaAssinaturaFit = null; // só reenquadra o mapa quando muda O QUE aparece (não a seleção)
 function _pmapaIconUnico(p) {
   const totalmenteAlocado = _pmapaVolumePendente(p) <= 0.0001;
-  const bg = _pmapaSelecionados.has(p.id) ? '#F97316' : (totalmenteAlocado ? '#9CA3AF' : '#4A6535');
+  const bg = _pmapaSel(p) ? '#F97316' : (totalmenteAlocado ? '#9CA3AF' : '#4A6535');
   return L.divIcon({
     className: '',
     html: `<div style="width:22px;height:22px;border-radius:50%;background:${bg};border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.35);"></div>`,
@@ -5574,7 +5585,7 @@ function renderPedidosMapa() {
       const icon = _pmapaIconUnico(p);
       const marker = L.marker([c.lat, c.lon], { icon }).addTo(mapaPedidosMap);
       const produtosHtml = (p.produtos || []).map(pr => `${pr.produto}: ${pr.volume} m³`).join('<br/>');
-      marker.bindPopup(`
+      const _popupHtml = `
         <div style="font-size:12px;min-width:180px;">
           <div style="font-weight:700;margin-bottom:3px;">${p.cliente}</div>
           <div style="color:#666;margin-bottom:6px;">${p.cidade || ''}${p.terminal ? ' · ' + p.terminal : ''}</div>
@@ -5584,20 +5595,49 @@ function renderPedidosMapa() {
           </div>
           ${streetViewBotaoHtml(c.lat, c.lon)}
         </div>
-      `);
+      `;
+      // Pedido pendente: o clique é pra SELECIONAR. O balão abrindo no clique
+      // ficava por cima do pedido e "engolia" o 2º clique de um duplo clique de
+      // zoom — o zoom não acontecia e o pedido ficava selecionado. Agora: passar
+      // o mouse mostra os dados (dica que não bloqueia clique) e o balão
+      // completo (com Street View) abre no botão DIREITO.
+      if (totalmenteAlocado) marker.bindPopup(_popupHtml);
+      else {
+        marker.bindTooltip(_popupHtml.replace(streetViewBotaoHtml(c.lat, c.lon), '<div style="color:#9CA3AF;font-size:10.5px;margin-top:4px;">Clique: selecionar · duplo clique: zoom · botão direito: detalhes</div>'), { direction: 'top', offset: [0, -12], opacity: 0.97 });
+        marker.on('contextmenu', (e) => { L.DomEvent.preventDefault(e.originalEvent); L.popup({ autoPan: false, offset: [0, -8] }).setLatLng(marker.getLatLng()).setContent(_popupHtml).openOn(mapaPedidosMap); });
+      }
       if (!totalmenteAlocado) {
-        marker.on('click', () => {
+        // Clique duplo é ZOOM, não seleção: o clique simples só vale depois de
+        // ~300ms sem um segundo clique, e é ignorado se o mapa estava dando zoom
+        // ou sendo arrastado (antes, dar zoom com duplo clique em cima de um
+        // pedido marcava/desmarcava pedidos sem querer).
+        marker.on('click', (e) => {
+          if (_pmapaModoSelecao) return;
+          if (Date.now() - _pmapaMexeuEm < 400) return;
+          if (_pmapaCliqueTimer) {
+            // 2º clique em seguida = duplo clique → é zoom: cancela a seleção e aproxima no ponto.
+            clearTimeout(_pmapaCliqueTimer); _pmapaCliqueTimer = null;
+            mapaPedidosMap.setZoomAround(e.latlng || marker.getLatLng(), mapaPedidosMap.getZoom() + 1);
+            return;
+          }
+          _pmapaCliqueTimer = setTimeout(() => { _pmapaCliqueTimer = null; if (Date.now() - _pmapaMexeuEm < 400) return; alternar(); }, 320);
+        });
+        const alternar = () => {
           if (_pmapaModoSelecao) return; // durante o desenho, clique não seleciona
-          if (_pmapaSelecionados.has(p.id)) _pmapaSelecionados.delete(p.id);
-          else _pmapaSelecionados.add(p.id);
+          const u = _pmapaUid(p);
+          const tirou = _pmapaSelecionados.has(u);
+          if (tirou) _pmapaSelecionados.delete(u);
+          else _pmapaSelecionados.add(u);
+          // Confirma na hora QUAL pedido entrou/saiu (e quantos estão marcados).
+          showToast(`${tirou ? '− Removido' : '+ Selecionado'}: ${p.cliente}${p.cidade ? ' (' + p.cidade + ')' : ''} · ${_pmapaSelecionados.size} na seleção`, !tirou);
           // Só repinta ESTE marcador — antes redesenhava o mapa todo e voltava
           // o zoom pro Brasil inteiro a cada clique (o marcador que estava
           // embaixo do mouse mudava e o clique seguinte pegava outro pedido).
           marker.setIcon(_pmapaIconUnico(p));
           pmapaAtualizarPainel();
-        });
+        };
       }
-      _pmapaMarkers[p.id] = { marker, pedido: p };
+      _pmapaMarkers['u' + _pmapaUid(p)] = { marker, pedido: p }; // chave interna: nunca colide (id repetido deixava marcador "fantasma" no mapa)
     } else {
       // Mais de um pedido na mesma coordenada — 1 marcador com selo de
       // contagem; a seleção de cada pedido acontece dentro do popup (ver
@@ -5619,35 +5659,73 @@ function renderPedidosMapa() {
   pmapaAtualizarPainel();
 }
 // ── Seleção por área (lasso à mão livre) ─────────────────────────────────────
+// Bug corrigido: o fim do desenho só era escutado DENTRO do mapa. Se o botão
+// do mouse fosse solto fora dele (no painel do lado, na barra de cima), o
+// desenho ficava "aberto" e continuava somando pontos a cada movimento do
+// mouse — e o próximo clique em qualquer pedido (ex.: no RJ) fechava um
+// contorno gigante que passava por cima de outros pedidos (ex.: Pinda),
+// selecionando tudo junto. Agora: o fim é escutado na janela inteira, Esc
+// cancela, um "rabisco" pequeno não seleciona nada, o contorno aparece
+// fechado enquanto desenha e, ao terminar, o sistema avisa quantos pedidos
+// entraram pela área.
+var _pmapaLassoCancelar = null;
 function _pmapaAtivarSelecao() {
   if (!mapaPedidosMap) return;
+  if (_pmapaLassoCancelar) _pmapaLassoCancelar(); // nunca empilha dois modos de desenho
   _pmapaModoSelecao = true;
+  mapaPedidosMap.closePopup(); // balão aberto engolia o clique de início do desenho
   mapaPedidosMap.dragging.disable();
   const container = mapaPedidosMap.getContainer();
   container.style.cursor = 'crosshair';
-  const onDown = (e) => {
-    _pmapaLassoPontos = [mapaPedidosMap.mouseEventToLatLng(e)];
+  const btn = document.getElementById('pmapa-btn-lasso');
+  if (btn) { btn.textContent = '✏️ Desenhando… (Esc cancela)'; btn.style.background = '#FFF7ED'; }
+  let desenhando = false, pxIni = null, pxMin = null, pxMax = null;
+  const encerrar = () => {
+    container.removeEventListener('mousedown', onDown, true);
+    container.removeEventListener('mousemove', onMove, true);
+    window.removeEventListener('mouseup', onUp, true);
+    document.removeEventListener('keydown', onKey, true);
     if (_pmapaLassoLayer) { _pmapaLassoLayer.remove(); _pmapaLassoLayer = null; }
-    _pmapaLassoLayer = L.polyline([_pmapaLassoPontos[0]], { color: '#F97316', weight: 2, dashArray: '5,5' }).addTo(mapaPedidosMap);
-    _pmapaMoveHandler = (ev) => {
-      _pmapaLassoPontos.push(mapaPedidosMap.mouseEventToLatLng(ev));
-      _pmapaLassoLayer.setLatLngs(_pmapaLassoPontos);
-    };
-    _pmapaUpHandler = () => {
-      container.removeEventListener('mousemove', _pmapaMoveHandler);
-      container.removeEventListener('mouseup', _pmapaUpHandler);
-      if (_pmapaLassoLayer) { _pmapaLassoLayer.remove(); _pmapaLassoLayer = null; }
-      if (_pmapaLassoPontos.length >= 3) _pmapaAplicarSelecaoPoligono(_pmapaLassoPontos);
-      _pmapaLassoPontos = [];
-      _pmapaModoSelecao = false;
-      mapaPedidosMap.dragging.enable();
-      container.style.cursor = '';
-      container.removeEventListener('mousedown', onDown);
-    };
-    container.addEventListener('mousemove', _pmapaMoveHandler);
-    container.addEventListener('mouseup', _pmapaUpHandler);
+    _pmapaLassoPontos = [];
+    mapaPedidosMap.dragging.enable();
+    container.style.cursor = '';
+    if (btn) { btn.textContent = '✏️ Selecionar área'; btn.style.background = ''; }
+    _pmapaLassoCancelar = null;
+    // Libera o clique normal nos pedidos só depois do clique que terminou o desenho.
+    setTimeout(() => { _pmapaModoSelecao = false; }, 0);
   };
-  container.addEventListener('mousedown', onDown, { once: true });
+  const onDown = (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    desenhando = true;
+    pxIni = pxMin = pxMax = { x: e.clientX, y: e.clientY };
+    _pmapaLassoPontos = [mapaPedidosMap.mouseEventToLatLng(e)];
+    if (_pmapaLassoLayer) _pmapaLassoLayer.remove();
+    _pmapaLassoLayer = L.polygon(_pmapaLassoPontos, { color: '#F97316', weight: 2, dashArray: '5,5', fillColor: '#F97316', fillOpacity: 0.08 }).addTo(mapaPedidosMap);
+  };
+  const onMove = (ev) => {
+    if (!desenhando) return;
+    if (ev.buttons === 0) { onUp(ev); return; } // soltou o botão sem a gente ver: fecha aqui
+    _pmapaLassoPontos.push(mapaPedidosMap.mouseEventToLatLng(ev));
+    pxMin = { x: Math.min(pxMin.x, ev.clientX), y: Math.min(pxMin.y, ev.clientY) };
+    pxMax = { x: Math.max(pxMax.x, ev.clientX), y: Math.max(pxMax.y, ev.clientY) };
+    _pmapaLassoLayer.setLatLngs(_pmapaLassoPontos);
+  };
+  const onUp = () => {
+    if (!desenhando) return;
+    desenhando = false;
+    const pontos = _pmapaLassoPontos.slice();
+    const pequeno = !pxMin || (pxMax.x - pxMin.x < 12 && pxMax.y - pxMin.y < 12);
+    encerrar();
+    if (pontos.length >= 3 && !pequeno) _pmapaAplicarSelecaoPoligono(pontos);
+    else showToast('Área muito pequena — nada foi selecionado. Clique e arraste em volta dos pedidos.', false);
+  };
+  const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); encerrar(); showToast('Seleção por área cancelada.', true); } };
+  container.addEventListener('mousedown', onDown, true); // captura: pega mesmo em cima de marcador/balão
+  container.addEventListener('mousemove', onMove, true);
+  window.addEventListener('mouseup', onUp, true);
+  document.addEventListener('keydown', onKey, true);
+  _pmapaLassoCancelar = encerrar;
 }
 function _pontoDentroPoligono(lat, lon, poligono) {
   let dentro = false;
@@ -5661,18 +5739,21 @@ function _pontoDentroPoligono(lat, lon, poligono) {
   return dentro;
 }
 function _pmapaAplicarSelecaoPoligono(poligono) {
+  let novos = 0;
   Object.values(_pmapaMarkers).forEach(entry => {
     const ll = entry.marker.getLatLng();
     if (!_pontoDentroPoligono(ll.lat, ll.lng, poligono)) return;
     const lista = entry.grupo ? entry.pedidos : [entry.pedido];
     lista.forEach(pedido => {
       if (_pmapaVolumePendente(pedido) <= 0.0001) return; // já roteirizado, não seleciona
-      _pmapaSelecionados.add(pedido.id);
+      if (!_pmapaSel(pedido)) { _pmapaSelecionados.add(_pmapaUid(pedido)); novos++; }
     });
   });
   renderPedidosMapa();
+  showToast(novos ? `${novos} pedido(s) selecionado(s) pela área.` : 'Nenhum pedido pendente dentro da área desenhada.', !!novos);
 }
 function pmapaLimparSelecao() {
+  if (_pmapaLassoCancelar) _pmapaLassoCancelar();
   _pmapaSelecionados.clear();
   renderPedidosMapa();
 }
@@ -5714,7 +5795,7 @@ function pmapaAtualizarPainel() {
   const box = document.getElementById('pmapa-painel');
   if (!box) return;
   const terminalSel = valId('pmapa-terminal');
-  const selecionados = [...(_pmapaSelecionados)].map(id => pedidos.find(p => p.id === id)).filter(Boolean);
+  const selecionados = _pmapaPedidosSelecionados();
   if (!selecionados.length) {
     box.innerHTML = `<div style="font-size:12px;color:var(--text-3);">Nenhum pedido selecionado.<br/><br/>Clique num pedido no mapa, ou use "✏️ Selecionar área" e desenhe um contorno ao redor de vários.</div>`;
     return;
@@ -5741,7 +5822,7 @@ function pmapaAtualizarPainel() {
         <div style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.cliente}</div>
         <div style="color:var(--text-3);">${_pmapaVolumePendente(p).toFixed(1)} m³${terminaisDistintos.length > 1 ? ` · ${p.terminal || '(sem terminal)'}` : ''}</div>
       </div>
-      <button class="btn btn-sm btn-danger" style="padding:2px 6px;" onclick="pmapaRemoverDaSelecao(${p.id})">✕</button>
+      <button class="btn btn-sm btn-danger" style="padding:2px 6px;" onclick="pmapaRemoverDaSelecao(${_pmapaUid(p)})">✕</button>
     </div>
   `).join('');
   box.innerHTML = `
@@ -5774,7 +5855,7 @@ function _pmapaGarantirEstruturaResultado() {
 function pmapaFecharCarga() {
   const veiculoId = parseInt(valId('pmapa-veiculo'), 10);
   const v = veiculos.find(x => x.id === veiculoId);
-  const selecionados = [...(_pmapaSelecionados)].map(id => pedidos.find(p => p.id === id)).filter(Boolean);
+  const selecionados = _pmapaPedidosSelecionados();
   if (!v || !selecionados.length) return;
   const terminaisDistintos = [...new Set(selecionados.map(p => p.terminal || ''))];
   const cidadesDistintasFechar = [...new Set(terminaisDistintos.map(t => normalizarCidade(cidadeDoTerminal(t)) || '(sem cidade)'))];
