@@ -519,6 +519,10 @@ function fmtAuditAction(action, details={}) {
       return `🎯 Meta de SLA de preenchimento atualizada${details.value !== undefined ? ` para ${details.value}%` : ""}`;
     case "alert_cutoff_update":
       return `🔔 Horário de corte de alerta atualizado${details.hour !== undefined ? ` para ${String(details.hour).padStart(2,'0')}:00` : ""}`;
+    case "oferta_sob_demanda":
+      return `🚚 Placa sob demanda ofertada — ${details.plate || ""}${details.carrier ? ` · ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
+    case "oferta_sob_demanda_retirada":
+      return `🚚 Oferta retirada — ${details.plate || ""}${details.carrier ? ` · ${details.carrier}` : ""}${details.date ? ` (${fmtDateStr(details.date)})` : ""}`;
     case "plate_add":
       return `🚛 Placa cadastrada${details.placa ? ` — ${details.placa}` : ""}${details.carrier ? ` (${details.carrier})` : ""}`;
     case "plate_remove":
@@ -752,7 +756,7 @@ async function dbRemoveLock(carrier, dateStr) {
 }
 async function dbClearStatusForDate(carrier, dateStr) {
   // Remove todos os registros de disponibilidade do carrier+data
-  const allP = await dbGetPlates();
+  const allP = _semSobDemanda(await dbGetPlates()); // não apaga oferta de placa sob demanda (é da operação)
   const plates = (allP[carrier] || []).filter(p => p.ativo !== false);
   await Promise.all(plates.map(async p => {
     const id = `${carrier}__${p.placa}__${dateStr}`;
@@ -824,7 +828,9 @@ async function dbLoadStatusBulk(pairs) {
             motoristaDiurno: d.motoristaDiurno || "",
             motoristaNoturno:d.motoristaNoturno|| "",
             hodometro:       d.hodometro !== undefined ? d.hodometro : null,
-            hodometroFotoUrl: d.hodometroFotoUrl || null
+            hodometroFotoUrl: d.hodometroFotoUrl || null,
+            oferta: !!d.oferta, baseOferta: d.baseOferta || '', obsOferta: d.obsOferta || '',
+            ofertadoPor: d.ofertadoPor || '', ofertadoEm: d.ofertadoEm || ''
           };
           const key  = `${carrier}||${d.plate}||${dateStr}`;
           const cKey = `status||${carrier}||${d.plate}||${dateStr}`;
@@ -908,6 +914,10 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
         return;
       }
       const operacao = registroFirestore.operacao || v.terminal || '';
+      // Sob demanda: leva pro Roteirizador as bases onde pode carregar e os
+      // destinos (UF) que pode atender — o otimizador e o mapa respeitam isso.
+      v._sobDemanda = ehSobDemanda(registroFirestore);
+      v._basesOferta = null;
       // Regras 3-5: status do painel do dia
       const key = `${carrier}||${plate}||${dateStr}`;
       const rec = bulk[key];
@@ -929,6 +939,10 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
 
         v.disponibilidade     = (rec.status === 'disponivel' || _isManutComRetorno)
           ? 'Disponível' : 'Indisponível';
+        if (v._sobDemanda) {
+          const bases = rec.baseOferta ? [rec.baseOferta] : (registroFirestore.basesCarregamento || []);
+          v._basesOferta = bases.length ? bases : null;
+        }
         v._motivoIndisponivel = v.disponibilidade === 'Indisponível' ? rec.status : null;
         v._emManutencao       = rec.status === 'manutencao'; // flag para exibição
 
@@ -948,8 +962,9 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
         if (motNPainel) { v.motoristaNt      = motNPainel; v._motoristaPainel = true; }
       } else {
         // Sem registro no painel para este dia → não marcou disponível → bloqueia
+        // (placa sob demanda: não foi ofertada pela operação neste dia)
         v.disponibilidade    = 'Indisponível';
-        v._motivoIndisponivel = 'sem_registro';
+        v._motivoIndisponivel = v._sobDemanda ? 'nao_ofertado' : 'sem_registro';
       }
     });
   } catch(e) {
@@ -991,6 +1006,19 @@ let OPERACOES = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de C
 const TIPOS_VEIC = ["Truck","Bi-Truck","Cavalo Mecânico"];
 const IDENTS     = ["Petronas","Branco"];
 const CONTRATOS  = ["Dedicado","Spot"];
+// ── Escala da placa ─────────────────────────────────────────────────────────
+// "Diária": a transportadora preenche a disponibilidade todo dia (como sempre).
+// "Sob demanda": operação dedicada (ex.: carregar em São Caetano/Paulínia e
+// entregar no RJ) — a placa NÃO entra na disponibilidade diária (não conta no
+// %, não fica "sem resposta", não segura a trava de preenchimento, não aparece
+// no telão nem no painel do transportador). Quem diz se ela pode rodar no dia é
+// a OPERAÇÃO, ofertando a placa no Painel de Disponibilidade; a oferta vira o
+// registro de disponibilidade do dia e o Roteirizador só usa a placa ofertada,
+// só nas bases dela e só para os clientes marcados como "operação sob demanda".
+const ESCALAS = [["diaria","Diária (transportadora preenche)"],["sob_demanda","Sob demanda (operação oferta)"]];
+function ehSobDemanda(p){ return !!p && p.escala === 'sob_demanda'; }
+function _semSobDemanda(allP){ const o = {}; for (const k in (allP||{})) o[k] = (allP[k]||[]).filter(p => !ehSobDemanda(p)); return o; }
+function _ufsDeTexto(t){ return [...new Set(String(t||'').toUpperCase().split(/[^A-Z]+/).filter(x => x.length === 2))]; }
 const STATUS_OPTS = [
   {val:"disponivel",  label:"Disponível",        cls:"st-disp",  badge:"b-green",  color:"#6ee04a"},
   {val:"indisponivel",label:"Indisponível",       cls:"st-indisp",badge:"b-red",    color:"#f06060"},
@@ -1519,7 +1547,8 @@ const TELAO_HORARIO = (() => {
 })();
 function _telaoDentroDoHorario() { const h = new Date().getHours(); return TELAO_HORARIO[0] <= h && h < TELAO_HORARIO[1]; }
 const _telaoFonte = { plates: null, avail: new Map(), locks: new Set(), progs: new Map(), ocorr: new Map(), erros: {}, recebidoEm: 0 };
-function _telaoDisponibilidade(ds, allP) {
+function _telaoDisponibilidade(ds, allPTodas) {
+  const allP = _semSobDemanda(allPTodas);
   const ativos = CARRIERS.filter(c => (allP[c] || []).some(p => p.ativo !== false));
   const novo = nome => ({ nome, total: 0, disponivel: 0, indisponivel: 0, manutencao: 0, folga: 0, programado: 0, pendente: 0 });
   const tot = novo('Total'), porOp = new Map();
@@ -2508,7 +2537,7 @@ async function renderCarrier(carrier){
       withTimeout(dbGetDrivers(), 15000, "Falha ao carregar motoristas").catch(()=>({}))
     ]);
     const userOps=userOperacoes(USERS_DB[S.user]);
-    const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&(!userOps||userOps.includes(p.operacao)));
+    const loadedPlates = (allP[carrier]||[]).filter(p=>p.ativo!==false&&!ehSobDemanda(p)&&(!userOps||userOps.includes(p.operacao)));
     if(loadedPlates.length===0){
       const opLabel=userOps?` para a operação ${userOps.join(' / ')}`:'';
       mc.innerHTML=`<p class="sec-title">Disponibilidade da frota</p><p class="sec-sub">${esc(carrier)}</p>
@@ -2950,7 +2979,7 @@ async function renderRoteirizador(body){
 async function renderDashboard(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando dashboard...</div>`;
   const ds=dateStr(S.dateOffset);
-  const allP=await dbGetPlates();
+  const allP=_semSobDemanda(await dbGetPlates()); // placas sob demanda ficam fora da disponibilidade diária
   const _uOps=userOperacoes(USERS_DB[S.user]);
   const pendingAlerts=await buildPendingAlerts(allP,_uOps);
   const allPairs=[];
@@ -3116,7 +3145,7 @@ async function renderKpisMensais(body){
     monthOpts.push({year:d.getFullYear(),month:d.getMonth(),label:`${MONTH_NAMES_PT[d.getMonth()]} ${d.getFullYear()}`});
   }
   const selOpts=monthOpts.map(m=>`<option value="${m.year}-${m.month}" ${m.year===S.kpiYear&&m.month===S.kpiMonth?"selected":""}>${m.label}</option>`).join("");
-  const allP=await dbGetPlates();
+  const allP=_semSobDemanda(await dbGetPlates());
   const dates=getMonthDates(S.kpiYear,S.kpiMonth);
   // Only dates up to today
   const todayDs=dateStr(0);
@@ -3675,7 +3704,10 @@ async function saveCutoffHour(){
 async function renderToday(body){
   body.innerHTML=`<div class="loading"><span class="spin"></span>Carregando...</div>`;
   const ds=dateStr(S.dateOffset);
-  const [allP, allDrivers]=await Promise.all([dbGetPlates(), dbGetDrivers().catch(()=>({}))]);
+  const [allPTodas, allDrivers]=await Promise.all([dbGetPlates(), dbGetDrivers().catch(()=>({}))]);
+  const allP=_semSobDemanda(allPTodas); // sob demanda: seção própria de ofertas (abaixo), fora dos números
+  const _uRoleToday=USERS_DB[S.user]?.role;
+  const ofertasHtml=(_uRoleToday==='admin'||_uRoleToday==='operacional') ? await renderOfertasSobDemanda(allPTodas, ds) : '';
   // Retorna nome do motorista somente se ele estiver ativo (ou não estiver cadastrado — legado)
   function driverAtivoNome(carrier, operacao, nome){
     if(!nome) return '';
@@ -3778,6 +3810,7 @@ async function renderToday(body){
       ${renderContratoFilterUI()}
     </div>
     ${pendingAlerts}
+    ${ofertasHtml}
     <div class="summary-grid">
       <div class="sum-card"><div class="sum-num" style="color:var(--green)">${counts.disponivel}</div><div class="sum-label">Disponíveis</div></div>
       <div class="sum-card"><div class="sum-num" style="color:var(--red)">${counts.indisponivel}</div><div class="sum-label">Indisponíveis</div></div>
@@ -3788,6 +3821,75 @@ async function renderToday(body){
     </div>
     ${sections||'<div class="empty"><span class="ei">🔍</span>Nenhuma placa com esse filtro.</div>'}`;
 }
+// ── Ofertas da operação sob demanda (Painel de Disponibilidade) ──────────────
+// A oferta É o registro de disponibilidade do dia (coleção availability), com
+// oferta:true — o Roteirizador já entende sem nada novo: placa ofertada =
+// Disponível a partir do horário informado, na base escolhida.
+async function renderOfertasSobDemanda(allP, ds){
+  const linhas = [];
+  for (const carrier of CARRIERS) (allP[carrier]||[]).forEach(p => { if (p.ativo !== false && ehSobDemanda(p)) linhas.push({ carrier, p }); });
+  if (!linhas.length) return '';
+  const sm = await dbLoadStatusBulk(linhas.map(({carrier,p}) => ({ carrier, plate: p.placa, dateStr: ds })));
+  const nOf = linhas.filter(({carrier,p}) => sm[`${carrier}||${p.placa}||${ds}`]?.status === 'disponivel').length;
+  const inp = 'background:var(--dark);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:4px 6px;font-size:12px';
+  const rows = linhas.map(({carrier,p}) => {
+    const rec = sm[`${carrier}||${p.placa}||${ds}`];
+    const of = rec?.status === 'disponivel';
+    const bases = (p.basesCarregamento && p.basesCarregamento.length) ? p.basesCarregamento : [p.operacao].filter(Boolean);
+    const rid = `of-${(carrier+'_'+p.placa).replace(/[^A-Za-z0-9_]/g,'_')}`;
+    const args = `'${attr(jsArg(carrier))}','${attr(jsArg(p.placa))}','${ds}','${rid}'`;
+    const seOf = `if(this.closest('tr').querySelector('.of-chk').checked) salvarOfertaSobDemanda(${args})`;
+    return `<tr id="${rid}" style="${of?'background:rgba(110,224,74,.07)':''}">
+      <td style="font-size:12px">${esc(carrier)}</td>
+      <td style="font-family:'DM Mono',monospace;font-weight:600">${esc(p.placa)}</td>
+      <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
+      <td style="text-align:center"><input type="checkbox" class="of-chk" ${of?'checked':''} onchange="salvarOfertaSobDemanda(${args})" style="width:18px;height:18px;accent-color:var(--green);cursor:pointer" title="Ofertar esta placa para o dia"></td>
+      <td><input type="time" class="of-hora" value="${attr(of ? (rec.time||'') : '')}" onchange="${seOf}" style="${inp}"></td>
+      <td><select class="of-base" onchange="${seOf}" style="${inp};max-width:200px">
+        <option value="">${esc(bases.length>1 ? 'Qualquer: '+bases.join(' ou ') : (bases[0]||'Operação da placa'))}</option>
+        ${bases.length>1?bases.map(b=>`<option value="${attr(b)}"${rec?.baseOferta===b?' selected':''}>${esc(b)}</option>`).join(''):''}
+      </select></td>
+      <td><input type="text" class="of-obs" value="${attr(of ? (rec.obsOferta||'') : '')}" placeholder="Obs. (opcional)" onchange="${seOf}" style="width:100%;${inp}"></td>
+      <td style="font-size:11px;color:var(--muted);white-space:nowrap">${of ? `✓ ${esc(rec.ofertadoPor||'')}${rec.ofertadoEm?' · '+esc(new Date(rec.ofertadoEm).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):''}` : (rec?.status ? esc(getSt(rec.status).label) : 'Não ofertada')}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="carrier-block" style="margin-bottom:1.25rem">
+    <div class="carrier-head" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="ch-icon">🚚</span>Operação sob demanda — ofertas do dia
+      <span class="ch-count">${nOf} de ${linhas.length} ofertada(s)</span>
+      <span style="font-size:11px;color:var(--muted);font-weight:400">Fora dos números da disponibilidade diária. Marque as placas que podem rodar neste dia — o Roteirizador só usa as ofertadas.</span></div>
+    <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:820px">
+      <thead><tr><th>TRANSPORTADOR</th><th>PLACA</th><th>CAP.</th><th style="text-align:center">OFERTADA</th><th>DISPONÍVEL A PARTIR DE</th><th>BASE DO DIA</th><th>OBSERVAÇÃO</th><th>REGISTRO</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`;
+}
+async function salvarOfertaSobDemanda(carrier, plate, ds, rid){
+  const row = document.getElementById(rid); if (!row) return;
+  const ofertada = row.querySelector('.of-chk').checked;
+  const id = `${carrier}__${plate}__${ds}`;
+  const cKey = `status||${carrier}||${plate}||${ds}`;
+  try {
+    if (!ofertada) {
+      await deleteDoc(doc(db, "availability", id));
+      cacheSet(cKey, null);
+      showToast(`${plate}: oferta retirada para ${fmtDateStr(ds)}.`, true);
+    } else {
+      const agora = new Date().toISOString();
+      const data = { carrier, plate, dateStr: ds, status: 'disponivel', time: row.querySelector('.of-hora').value || '', filled: true,
+        oferta: true, baseOferta: row.querySelector('.of-base').value || '', obsOferta: row.querySelector('.of-obs').value.trim(),
+        ofertadoPor: USERS_DB[S.user]?.name || S.user || '', ofertadoEm: agora, updatedAt: agora,
+        motoristaDiurno: '', motoristaNoturno: '', hodometro: null, hodometroFotoUrl: null };
+      await setDoc(doc(db, "availability", id), data);
+      cacheSet(cKey, { status: 'disponivel', time: data.time, motoristaDiurno: '', motoristaNoturno: '', hodometro: null, hodometroFotoUrl: null,
+        oferta: true, baseOferta: data.baseOferta, obsOferta: data.obsOferta, ofertadoPor: data.ofertadoPor, ofertadoEm: data.ofertadoEm });
+      showToast(`${plate} ofertada para ${fmtDateStr(ds)}${data.time?' a partir das '+data.time:''}.`, true);
+    }
+    try { await dbAddAudit(ofertada ? "oferta_sob_demanda" : "oferta_sob_demanda_retirada", { carrier, plate, date: ds }); } catch(e) {}
+    await renderTabBody();
+  } catch(e) {
+    console.error('[oferta sob demanda]', e);
+    showToast('Não consegui salvar a oferta: ' + (e.code || e.message || e), false);
+  }
+}
+window.salvarOfertaSobDemanda = salvarOfertaSobDemanda;
 // ═══════════════════════════════════════════════════════════
 // HISTORY
 // ═══════════════════════════════════════════════════════════
@@ -3816,7 +3918,8 @@ async function renderHistory(body){
     </div>
     <div id="hist-result"><div class="loading"><span class="spin"></span>Buscando registros...</div></div>`;
   const dates=getDates(S.histDays);
-  const [allP, allDrivers]=await Promise.all([dbGetPlates(), dbGetDrivers().catch(()=>({}))]);
+  const [allPHist, allDrivers]=await Promise.all([dbGetPlates(), dbGetDrivers().catch(()=>({}))]);
+  const allP=_semSobDemanda(allPHist);
   // Retorna nome apenas se motorista ativo (ou não cadastrado — legado)
   function driverAtivoHist(carrier, operacao, nome){
     if(!nome) return '';
@@ -4207,7 +4310,7 @@ function hideExportProgress(){
   if(wrap) setTimeout(()=>wrap.remove(), 800);
 }
 async function buildRows(dates, onProgress){
-  const allP = await dbGetPlates();
+  const allP = _semSobDemanda(await dbGetPlates());
   // Filtro dinâmico de relatório (ver painel "🎛 Filtros do relatório" em
   // renderExport) — aplica nas placas ANTES de buscar os dados (mais
   // barato: menos placas = menos leituras no Firestore), exceto "status",
@@ -4741,7 +4844,7 @@ async function renderRegister(body){
         <td style="font-size:12px">${esc(p.operacao)}</td>
         <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
         <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${esc(p.identificacao)}</span></td>
-        <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${esc(p.contrato)}</span></td>
+        <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${esc(p.contrato)}</span>${ehSobDemanda(p)?`<div style="margin-top:4px"><span class="badge b-blue" style="font-size:10px" title="Fora da disponibilidade diária — a operação oferta a placa. Bases: ${attr((p.basesCarregamento||[]).join(', ')||p.operacao||'—')}">Sob demanda</span></div>`:''}</td>
         <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
         <td>${statusBadge}</td>
         <td>${renderDriverCell(p.motoristaDiurno,p.motoristaNoturno)}</td>
@@ -4778,6 +4881,7 @@ async function renderRegister(body){
         <div class="form-field"><label>CAPACIDADE (m³)</label><input id="r-cap" type="number" placeholder="Ex: 25" min="1" max="999"></div>
         <div class="form-field"><label>MOTORISTA DIURNO</label><select id="r-mot-d"><option value="">— Sem motorista —</option></select></div>
         <div class="form-field"><label>MOTORISTA NOTURNO</label><select id="r-mot-n"><option value="">— Sem motorista —</option></select></div>
+        ${_escalaCamposHtml('r', null)}
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-lime" id="add-btn" onclick="addPlate()">+ Cadastrar placa</button>
@@ -4788,6 +4892,27 @@ async function renderRegister(body){
     <div id="plates-list">${listHTML}</div>`;
   // Populate driver selects after render
   setTimeout(()=>populateDriverSelects(), 50);
+}
+// Campos "Escala" no cadastro/edição da placa. prefixo: 'r' (nova) ou 'e' (editar).
+function _escalaCamposHtml(prefixo, p){
+  const esc_ = (p && p.escala) || 'diaria';
+  const bases = new Set((p && p.basesCarregamento) || []);
+  return `
+    <div class="form-field"><label>ESCALA</label>
+      <select id="${prefixo}-escala" onchange="document.getElementById('${prefixo}-sob-box').style.display=this.value==='sob_demanda'?'grid':'none'">
+        ${ESCALAS.map(([v,l])=>`<option value="${v}"${v===esc_?' selected':''}>${l}</option>`).join('')}
+      </select></div>
+    <div id="${prefixo}-sob-box" style="display:${esc_==='sob_demanda'?'grid':'none'};grid-column:1/-1;grid-template-columns:1fr;gap:12px;background:rgba(112,168,240,.06);border:1px dashed var(--border2);border-radius:var(--radius);padding:10px 12px">
+      <div class="form-field"><label>BASES ONDE PODE CARREGAR</label>
+        <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px">${OPERACOES.map(o=>`<label style="display:inline-flex;gap:5px;align-items:center;text-transform:none;letter-spacing:0;font-size:12px;color:var(--text);white-space:nowrap;margin:0"><input type="checkbox" class="${prefixo}-base-chk" value="${attr(o)}"${bases.has(o)?' checked':''}>${esc(o)}</label>`).join('')}</div>
+        <p style="font-size:11px;color:var(--muted);margin-top:4px">Sem nenhuma marcada, vale a operação da placa.</p></div>
+      <p style="font-size:11px;color:var(--muted);margin:0">Quais clientes a placa atende é definido no cadastro do CLIENTE (Roteirizador › Clientes › "Atendido pela operação sob demanda") — clientes do RJ da operação diária continuam com a frota diária.</p>
+    </div>`;
+}
+function _escalaLerCampos(prefixo){
+  const escala = document.getElementById(`${prefixo}-escala`)?.value || 'diaria';
+  if (escala !== 'sob_demanda') return { escala: 'diaria', basesCarregamento: [] };
+  return { escala, basesCarregamento: [...document.querySelectorAll(`.${prefixo}-base-chk:checked`)].map(c => c.value) };
 }
 async function addPlate(){
   const carrier=document.getElementById("r-carrier").value;
@@ -4814,7 +4939,7 @@ async function addPlate(){
     await dbAtualizarPlates(allP => {
       if(CARRIERS.some(c=>(allP[c]||[]).some(p=>p.placa===placa))){ duplicada = true; return; }
       if(!allP[carrier]) allP[carrier]=[];
-      allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade,motoristaDiurno:motDiurno,motoristaNoturno:motNoturno});
+      allP[carrier].push({placa,operacao,tipo,identificacao,contrato,capacidade:+capacidade,motoristaDiurno:motDiurno,motoristaNoturno:motNoturno,..._escalaLerCampos('r')});
     });
     if(duplicada){
       msg.textContent="Placa já cadastrada.";msg.style.color="var(--red)";
@@ -5865,6 +5990,7 @@ async function openEditModal(carrier, idx){
         <div class="form-field"><label>IDENTIFICAÇÃO</label><select id="e-id">${idOpts}</select></div>
         <div class="form-field"><label>TIPO DE CONTRATO</label><select id="e-contrato">${ctOpts}</select></div>
         <div class="form-field"><label>CAPACIDADE (m³)</label><input id="e-cap" type="number" value="${attr(p.capacidade)}" min="1" max="999"></div>
+        ${_escalaCamposHtml('e', p)}
       </div>
       <div style="border-top:1px solid var(--border);margin:1.25rem 0;padding-top:1.25rem">
         <p style="font-size:12px;font-weight:500;color:var(--lime);margin-bottom:1rem;letter-spacing:.04em">MOTORISTAS VINCULADOS</p>
@@ -5922,7 +6048,7 @@ async function saveEdit(){
       let i = _editPending.placa ? allP[carrier].findIndex(p=>p.placa===_editPending.placa) : idx;
       if(i<0 || i==null || !allP[carrier][i]) i = idx;
       if(!allP[carrier][i]){ naoEncontrada = true; return; }
-      allP[carrier][i]={...allP[carrier][i], operacao, tipo, identificacao, contrato, capacidade:+capacidade, motoristaDiurno:motD, motoristaNoturno:motN};
+      allP[carrier][i]={...allP[carrier][i], operacao, tipo, identificacao, contrato, capacidade:+capacidade, motoristaDiurno:motD, motoristaNoturno:motN, ..._escalaLerCampos('e')};
     });
     if(naoEncontrada){ showToast('Placa não encontrada.',false); return; }
     const modal=document.getElementById('edit-modal');

@@ -1018,10 +1018,43 @@ function terminalPorNome(nome) {
 function cidadeBaseVeiculo(v) {
   return (v?.cidadeBase || v?.cidade || cidadeDoTerminal(v?.terminal) || '').toString().trim();
 }
+// ── Operação sob demanda (placa com escala "Sob demanda" no cadastro) ───────
+// Vem da sincronização com a disponibilidade (sincronizarDisponibilidadeVeiculos):
+//   v._sobDemanda  → placa fora da disponibilidade diária, só roda ofertada;
+//   v._basesOferta → cidades/bases onde pode carregar NESTE dia (oferta ou cadastro).
+// QUEM é da operação é o CLIENTE (cadastro: "Atendido pela operação sob
+// demanda") — não o estado: há clientes do RJ da operação diária (Duque de
+// Caxias, Paulínia) que continuam com a frota diária normalmente.
+//   • placa sob demanda → só atende pedido de cliente marcado;
+//   • pedido de cliente marcado → só vai pra placa sob demanda (se existir
+//     alguma cadastrada; senão segue normal, pra não travar quem não usa).
+const _cacheOpSob = new WeakMap(); // pedido → { lista de clientes usada, resultado } (o otimizador pergunta milhares de vezes)
+function pedidoDaOperacaoSobDemanda(p) {
+  if (!p) return false;
+  if (p.operacaoSobDemanda) return true;
+  const c = _cacheOpSob.get(p);
+  if (c && c.cl === clientes && c.n === clientes.length) return c.v;
+  const cli = (typeof encontrarClienteDoPedido === 'function') ? encontrarClienteDoPedido(p) : null;
+  const v = !!cli?.operacaoSobDemanda;
+  _cacheOpSob.set(p, { cl: clientes, n: clientes.length, v });
+  return v;
+}
+function veiculoAtendeDestino(v, pedido) {
+  const daOperacao = pedidoDaOperacaoSobDemanda(pedido);
+  if (v?._sobDemanda) return daOperacao;
+  if (!daOperacao) return true;
+  return !(veiculos || []).some(x => x._sobDemanda); // cliente da operação: frota diária só se não houver placa sob demanda cadastrada
+}
 function veiculoAtendeTerminal(v, terminalNome) {
   // Pedido sem terminal → aceita qualquer veículo
   // (a roteirização usará a cidade base do veículo como origem)
   if (!terminalNome) return true;
+  // Sob demanda ofertada: pode carregar em qualquer uma das bases do dia (ex.:
+  // São Caetano OU Paulínia) — compara pela cidade da base.
+  if (v?._basesOferta && v._basesOferta.length) {
+    const cidT = normalizarCidade(cidadeDoTerminal(terminalNome)) || normalizarCidade(terminalNome.split(' ')[0]);
+    return v._basesOferta.some(b => { const nb = normalizarCidade(b); return !!nb && !!cidT && (nb === cidT || nb.startsWith(cidT) || cidT.startsWith(nb)); });
+  }
   // Veículo tem terminal fixo cadastrado → match exato
   if (v?.terminal) {
     if (v.terminal === terminalNome) return true;
@@ -2723,7 +2756,7 @@ function contarCandidatosItem(item) {
   return veiculos
     .filter(v => !item.tiposCaminhao.length || item.tiposCaminhao.includes(v.tipo))
     .filter(v => !item.pedido.identidadePetronas || !!v.identidadePetronas)
-    .filter(v => veiculoAtendeTerminal(v, item.terminal)).length;
+    .filter(v => veiculoAtendeTerminal(v, item.terminal) && veiculoAtendeDestino(v, item.pedido)).length;
 }
 function optsTerminais(valorSel) {
   return '<option value="">Selecione o terminal...</option>' +
@@ -3043,6 +3076,7 @@ function abrirFormCliente(id) {
     document.getElementById('cl-restricao').value= c.restricaoHorario || '';
     document.getElementById('cl-obs').value      = c.observacoes || '';
     document.getElementById('cl-identidade-petronas').checked = !!c.identidadePetronas;
+    { const el = document.getElementById('cl-operacao-sob-demanda'); if (el) el.checked = !!c.operacaoSobDemanda; }
     document.getElementById('cl-segmento').value = c.segmento || '';
     document.getElementById('cl-operacao').value = c.operacao || '';
     document.getElementById('cl-assessor').value = c.assessor || '';
@@ -3063,6 +3097,7 @@ function abrirFormCliente(id) {
     });
     document.getElementById('cl-descarga').value = 45;
     document.getElementById('cl-identidade-petronas').checked = false;
+    { const el = document.getElementById('cl-operacao-sob-demanda'); if (el) el.checked = false; }
     document.getElementById('cl-segmento').value = '';
     document.getElementById('cl-operacao').value = '';
     document.getElementById('cl-bandeira').value = '';
@@ -3120,6 +3155,7 @@ async function salvarCliente() {
     observacoes:     document.getElementById('cl-obs').value.trim(),
     tiposCaminhao:   lerTiposSelecionados('cl-tipos-btns'),
     identidadePetronas: document.getElementById('cl-identidade-petronas').checked,
+    operacaoSobDemanda: !!document.getElementById('cl-operacao-sob-demanda')?.checked,
     segmento:        document.getElementById('cl-segmento').value,
     operacao:        document.getElementById('cl-operacao').value,
     assessor:        document.getElementById('cl-assessor').value.trim(),
@@ -3654,6 +3690,7 @@ function renderClientes() {
             ${c.tipoContrato ? `<span class="tag" style="font-size:9px;background:rgba(8,145,178,0.12);color:#0E7490;">📄 ${c.tipoContrato}</span>` : ''}
             ${c.cadastroIncompleto ? `<span style="font-size:9px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #F59E0B;padding:2px 8px;border-radius:99px;">⚠️ Cadastro incompleto</span>` : ''}
             ${c.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
+            ${c.operacaoSobDemanda ? `<span class="tag" style="font-size:9px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE;" title="Pedidos deste cliente vão só para placas da operação sob demanda">🚚 Operação sob demanda</span>` : ''}
             <span class="tag tag-lime" style="font-size:9px;">Descarga média: ${(c.tempoDescargaMediaMin||45).toFixed(0)} min</span>
             ${_kmOrigemHtml(c)}
           </div>
@@ -5772,7 +5809,8 @@ function _pmapaVeiculosCompativeis(pedidosSel, terminaisNomes) {
     if (listaTerminais.some(t => t && !veiculoAtendeTerminal(v, t))) return false;
     return pedidosSel.every(p =>
       (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
-      (!p.identidadePetronas || !!v.identidadePetronas)
+      (!p.identidadePetronas || !!v.identidadePetronas) &&
+      veiculoAtendeDestino(v, p)
     );
   });
 }
@@ -7014,11 +7052,13 @@ function _renderVeiculosInterno() {
               ? (() => {
                   const motivo = v._motivoIndisponivel;
                   if (motivo === 'inativo') return `<span class="tag" style="font-size:9px;background:#FEE2E2;color:#B91C1C;border:1px solid #FECACA;" title="Veículo inativo no cadastro Firestore">⛔ Inativo</span>`;
+                  if (motivo === 'nao_ofertado') return `<span class="tag" style="font-size:9px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE;" title="Placa sob demanda: só roda quando a operação oferta no Painel de Disponibilidade">🚚 Sob demanda · não ofertada</span>`;
                   if (motivo === 'sem_registro') return `<span class="tag" style="font-size:9px;background:#FFF7ED;color:#92400E;border:1px solid #FDE68A;" title="Sem registro de disponibilidade para este dia">⚠ Sem registro no painel</span>`;
                   const labels = {manutencao:'Manutenção',folga:'Folga',programado:'Em viagem',indisponivel:'Indisponível'};
                   return `<span class="tag" style="font-size:9px;background:#FEE2E2;color:#B91C1C;border:1px solid #FECACA;" title="Status do Painel de Disponibilidade">⛔ ${labels[motivo]||'Indisponível'}</span>`;
                 })()
               : `<span class="tag" style="font-size:9px;background:#D1FAE5;color:#065F46;border:1px solid #6EE7B7;" title="Status do Painel de Disponibilidade">✓ Disponível</span>`}
+            ${v._sobDemanda && (v.disponibilidade||'') === 'Disponível' ? `<span class="tag" style="font-size:9px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE;" title="Placa sob demanda ofertada pela operação para este dia">🚚 Sob demanda · ${(v._basesOferta||[]).join(' / ') || 'base da placa'}</span>` : ''}
             ${(v.contrato||'Dedicado') === 'Spot'
               ? `<span class="tag" style="font-size:9px;background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;">Spot</span>`
               : `<span class="tag" style="font-size:9px;background:#EEF3FF;color:#1E40AF;border:1px solid #93C5FD;">Dedicado</span>`}
@@ -7178,6 +7218,10 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   //   • 'Manutenção'  → entra SOMENTE se previsão de retorno (_horarioDisponivelAPartirDe)
   //                     for antes ou igual ao jornadaFim do veículo (há janela de uso no dia)
   //   • Demais (Programado/Em viagem, Folga, sem_registro) → sempre bloqueado
+  // Cliente da operação sob demanda só vai pra placa sob demanda — conta as
+  // placas sob demanda ANTES de tirar as indisponíveis do dia: mesmo sem
+  // nenhuma ofertada hoje, o pedido fica pendente (não vai pra frota diária).
+  const _temFrotaSob = veiculos.some(v => v._sobDemanda);
   const veiculosIndisponiveis = veiculos.filter(v => {
     if ((v.disponibilidade || 'Indisponível') !== 'Disponível') return true; // bloqueia
     // Veículo marcado como disponível mas em manutenção com horário de retorno:
@@ -7317,7 +7361,8 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   // resolve manualmente. Isso é intencional — não reintroduzir o filtro aqui.
   const veicOk = (v, p) =>
     (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
-    veiculoAtendeTerminal(v, p.terminal);
+    veiculoAtendeTerminal(v, p.terminal) &&
+    (v._sobDemanda ? pedidoDaOperacaoSobDemanda(p) : (!_temFrotaSob || !pedidoDaOperacaoSobDemanda(p))); // operação sob demanda: placa ↔ clientes marcados
   const totalVolProdutos = (produtos=[]) => produtos.reduce((s, pr) => s + (pr?.volume || 0), 0);
   const produtosPendentesPedido = (pedido) => {
     const alocadoPorProduto = {};
@@ -12216,7 +12261,8 @@ const _fmtAbs = (base, abs) => {
 };
 // Avalia se o veículo serve pra viagem; devolve null (serve) ou o motivo.
 function _trocaMotivoIncompativel(v, vi) {
-  if ((v.disponibilidade || 'Disponível') === 'Indisponível') return 'indisponível no cadastro';
+  if ((v.disponibilidade || 'Disponível') === 'Indisponível') return v._motivoIndisponivel === 'nao_ofertado' ? 'sob demanda não ofertada no dia' : 'indisponível no cadastro';
+  if ((vi.paradas || []).some(p => p.pedido && !veiculoAtendeDestino(v, p.pedido))) return v._sobDemanda ? 'sob demanda: só clientes da operação' : 'cliente da operação sob demanda';
   const terms = [...new Set((vi.paradas || []).map(p => p.pedido?.terminal).filter(Boolean))];
   const termViagem = terms[0] || vi.terminalOrigem || '';
   const cidV = normalizarCidade(cidadeBaseVeiculo(v));
