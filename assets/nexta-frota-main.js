@@ -3829,7 +3829,18 @@ async function renderOfertasSobDemanda(allP, ds){
   const linhas = [];
   for (const carrier of CARRIERS) (allP[carrier]||[]).forEach(p => { if (p.ativo !== false && ehSobDemanda(p)) linhas.push({ carrier, p }); });
   if (!linhas.length) return '';
-  const sm = await dbLoadStatusBulk(linhas.map(({carrier,p}) => ({ carrier, plate: p.placa, dateStr: ds })));
+  const [sm, allDrivers] = await Promise.all([
+    dbLoadStatusBulk(linhas.map(({carrier,p}) => ({ carrier, plate: p.placa, dateStr: ds }))),
+    dbGetDrivers().catch(() => ({})),
+  ]);
+  // Motorista do dia: começa no vinculado no cadastro da placa e pode ser
+  // trocado aqui (lista = motoristas ativos da transportadora nas bases da placa).
+  const optsMot = (carrier, bases, turno, atual) => {
+    const lista = (allDrivers[carrier] || []).filter(d => d.ativo !== false && (!d.turno || d.turno === turno) && (!bases.length || bases.includes(d.operacao) || !d.operacao));
+    const nomes = [...new Set(lista.map(d => d.nome))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    if (atual && !nomes.includes(atual)) nomes.unshift(atual);
+    return `<option value="">— ${turno === 'Diurno' ? '☀' : '🌙'} sem motorista —</option>` + nomes.map(n => `<option value="${attr(n)}"${n === atual ? ' selected' : ''}>${esc(n)}</option>`).join('');
+  };
   const nOf = linhas.filter(({carrier,p}) => sm[`${carrier}||${p.placa}||${ds}`]?.status === 'disponivel').length;
   const inp = 'background:var(--dark);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:4px 6px;font-size:12px';
   const rows = linhas.map(({carrier,p}) => {
@@ -3839,6 +3850,8 @@ async function renderOfertasSobDemanda(allP, ds){
     const rid = `of-${(carrier+'_'+p.placa).replace(/[^A-Za-z0-9_]/g,'_')}`;
     const args = `'${attr(jsArg(carrier))}','${attr(jsArg(p.placa))}','${ds}','${rid}'`;
     const seOf = `if(this.closest('tr').querySelector('.of-chk').checked) salvarOfertaSobDemanda(${args})`;
+    const motD = of ? (rec.motoristaDiurno || p.motoristaDiurno || '') : (p.motoristaDiurno || '');
+    const motN = of ? (rec.motoristaNoturno || p.motoristaNoturno || '') : (p.motoristaNoturno || '');
     return `<tr id="${rid}" style="${of?'background:rgba(110,224,74,.07)':''}">
       <td style="font-size:12px">${esc(carrier)}</td>
       <td style="font-family:'DM Mono',monospace;font-weight:600">${esc(p.placa)}</td>
@@ -3849,6 +3862,7 @@ async function renderOfertasSobDemanda(allP, ds){
         <option value="">${esc(bases.length>1 ? 'Qualquer: '+bases.join(' ou ') : (bases[0]||'Operação da placa'))}</option>
         ${bases.length>1?bases.map(b=>`<option value="${attr(b)}"${rec?.baseOferta===b?' selected':''}>${esc(b)}</option>`).join(''):''}
       </select></td>
+      <td style="min-width:170px"><select class="of-mot-d" onchange="${seOf}" style="${inp};width:100%;box-sizing:border-box;margin-bottom:4px">${optsMot(carrier, bases, 'Diurno', motD)}</select><select class="of-mot-n" onchange="${seOf}" style="${inp};width:100%;box-sizing:border-box">${optsMot(carrier, bases, 'Noturno', motN)}</select></td>
       <td style="min-width:170px"><input type="text" class="of-obs" value="${attr(of ? (rec.obsOferta||'') : '')}" placeholder="Obs. (opcional)" onchange="${seOf}" style="width:100%;box-sizing:border-box;${inp}"></td>
       <td style="font-size:11px;color:var(--muted);white-space:nowrap">${of ? `✓ ${esc(rec.ofertadoPor||'')}${rec.ofertadoEm?' · '+esc(new Date(rec.ofertadoEm).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):''}` : (rec?.status ? `<span title="Registro já existente para este dia, lançado pela transportadora no painel dela (antes da placa virar sob demanda). Ao ofertar, a oferta substitui esse registro.">Transportadora informou: <b style="color:var(--text)">${esc(getSt(rec.status).label)}</b></span>` : 'Não ofertada')}</td>
     </tr>`;
@@ -3857,8 +3871,8 @@ async function renderOfertasSobDemanda(allP, ds){
     <div class="carrier-head" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="ch-icon">🚚</span>Operação sob demanda — ofertas do dia
       <span class="ch-count">${nOf} de ${linhas.length} ofertada(s)</span>
       <span style="font-size:11px;color:var(--muted);font-weight:400">Fora dos números da disponibilidade diária. Marque as placas que podem rodar neste dia — o Roteirizador só usa as ofertadas.</span></div>
-    <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1000px">
-      <thead><tr><th>TRANSPORTADOR</th><th>PLACA</th><th>CAP.</th><th style="text-align:center">OFERTADA</th><th>DISPONÍVEL A PARTIR DE</th><th>BASE DO DIA</th><th>OBSERVAÇÃO</th><th>REGISTRO</th></tr></thead>
+    <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1180px">
+      <thead><tr><th>TRANSPORTADOR</th><th>PLACA</th><th>CAP.</th><th style="text-align:center">OFERTADA</th><th>DISPONÍVEL A PARTIR DE</th><th>BASE DO DIA</th><th>MOTORISTAS</th><th>OBSERVAÇÃO</th><th>REGISTRO</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
 }
 async function salvarOfertaSobDemanda(carrier, plate, ds, rid){
@@ -3876,9 +3890,10 @@ async function salvarOfertaSobDemanda(carrier, plate, ds, rid){
       const data = { carrier, plate, dateStr: ds, status: 'disponivel', time: row.querySelector('.of-hora').value || '', filled: true,
         oferta: true, baseOferta: row.querySelector('.of-base').value || '', obsOferta: row.querySelector('.of-obs').value.trim(),
         ofertadoPor: USERS_DB[S.user]?.name || S.user || '', ofertadoEm: agora, updatedAt: agora,
-        motoristaDiurno: '', motoristaNoturno: '', hodometro: null, hodometroFotoUrl: null };
+        motoristaDiurno: row.querySelector('.of-mot-d')?.value || '', motoristaNoturno: row.querySelector('.of-mot-n')?.value || '',
+        hodometro: null, hodometroFotoUrl: null };
       await setDoc(doc(db, "availability", id), data);
-      cacheSet(cKey, { status: 'disponivel', time: data.time, motoristaDiurno: '', motoristaNoturno: '', hodometro: null, hodometroFotoUrl: null,
+      cacheSet(cKey, { status: 'disponivel', time: data.time, motoristaDiurno: data.motoristaDiurno, motoristaNoturno: data.motoristaNoturno, hodometro: null, hodometroFotoUrl: null,
         oferta: true, baseOferta: data.baseOferta, obsOferta: data.obsOferta, ofertadoPor: data.ofertadoPor, ofertadoEm: data.ofertadoEm });
       showToast(`${plate} ofertada para ${fmtDateStr(ds)}${data.time?' a partir das '+data.time:''}.`, true);
     }
