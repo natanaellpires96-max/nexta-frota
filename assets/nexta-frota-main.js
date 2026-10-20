@@ -3845,19 +3845,19 @@ async function renderOfertasSobDemanda(allP, ds){
       <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
       <td style="text-align:center"><input type="checkbox" class="of-chk" ${of?'checked':''} onchange="salvarOfertaSobDemanda(${args})" style="width:18px;height:18px;accent-color:var(--green);cursor:pointer" title="Ofertar esta placa para o dia"></td>
       <td><input type="time" class="of-hora" value="${attr(of ? (rec.time||'') : '')}" onchange="${seOf}" style="${inp}"></td>
-      <td><select class="of-base" onchange="${seOf}" style="${inp};max-width:200px">
+      <td style="min-width:210px"><select class="of-base" onchange="${seOf}" style="${inp};width:100%;box-sizing:border-box">
         <option value="">${esc(bases.length>1 ? 'Qualquer: '+bases.join(' ou ') : (bases[0]||'Operação da placa'))}</option>
         ${bases.length>1?bases.map(b=>`<option value="${attr(b)}"${rec?.baseOferta===b?' selected':''}>${esc(b)}</option>`).join(''):''}
       </select></td>
-      <td><input type="text" class="of-obs" value="${attr(of ? (rec.obsOferta||'') : '')}" placeholder="Obs. (opcional)" onchange="${seOf}" style="width:100%;${inp}"></td>
-      <td style="font-size:11px;color:var(--muted);white-space:nowrap">${of ? `✓ ${esc(rec.ofertadoPor||'')}${rec.ofertadoEm?' · '+esc(new Date(rec.ofertadoEm).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):''}` : (rec?.status ? esc(getSt(rec.status).label) : 'Não ofertada')}</td>
+      <td style="min-width:170px"><input type="text" class="of-obs" value="${attr(of ? (rec.obsOferta||'') : '')}" placeholder="Obs. (opcional)" onchange="${seOf}" style="width:100%;box-sizing:border-box;${inp}"></td>
+      <td style="font-size:11px;color:var(--muted);white-space:nowrap">${of ? `✓ ${esc(rec.ofertadoPor||'')}${rec.ofertadoEm?' · '+esc(new Date(rec.ofertadoEm).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):''}` : (rec?.status ? `<span title="Registro já existente para este dia, lançado pela transportadora no painel dela (antes da placa virar sob demanda). Ao ofertar, a oferta substitui esse registro.">Transportadora informou: <b style="color:var(--text)">${esc(getSt(rec.status).label)}</b></span>` : 'Não ofertada')}</td>
     </tr>`;
   }).join('');
   return `<div class="carrier-block" style="margin-bottom:1.25rem">
     <div class="carrier-head" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="ch-icon">🚚</span>Operação sob demanda — ofertas do dia
       <span class="ch-count">${nOf} de ${linhas.length} ofertada(s)</span>
       <span style="font-size:11px;color:var(--muted);font-weight:400">Fora dos números da disponibilidade diária. Marque as placas que podem rodar neste dia — o Roteirizador só usa as ofertadas.</span></div>
-    <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:820px">
+    <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1000px">
       <thead><tr><th>TRANSPORTADOR</th><th>PLACA</th><th>CAP.</th><th style="text-align:center">OFERTADA</th><th>DISPONÍVEL A PARTIR DE</th><th>BASE DO DIA</th><th>OBSERVAÇÃO</th><th>REGISTRO</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
 }
