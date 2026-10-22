@@ -918,18 +918,52 @@ async function dbLoadStatusBulk(pairs) {
 //  5. Sem registro no painel para a data → Indisponível
 //     (apenas quem marcou "disponível" no painel está apto para aquele dia)
 // ═══════════════════════════════════════════════════════════
+// Normalização para casar placas/transportadoras entre Roteirizador e Painel
+function _normPlaca(s){ return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function _normCarrier(s){ return String(s || '').trim().toUpperCase().replace(/\s+/g, ' '); }
+function _casarPlacaPainel(allPlates, carrierV, placaV){
+  const np = _normPlaca(placaV), nc = _normCarrier(carrierV);
+  if (!np) return null;
+  let soPlaca = null, nSoPlaca = 0;
+  for (const c of Object.keys(allPlates || {})) {
+    for (const p of (allPlates[c] || [])) {
+      if (_normPlaca(p.placa) !== np) continue;
+      if (_normCarrier(c) === nc) return { carrier: c, p };
+      soPlaca = { carrier: c, p }; nSoPlaca++;
+    }
+  }
+  return nSoPlaca === 1 ? soPlaca : null; // transportadora escrita diferente, mas placa única
+}
 async function sincronizarDisponibilidadeVeiculos(dateStr) {
   if (!veiculos.length) return;
   try {
-    const [allPlates, bulk, allDriversCad] = await Promise.all([
-      dbGetPlates(),
-      dbLoadStatusBulk(veiculos.map(v => ({
-        carrier: v.transportadora || '',
-        plate:   v.placa          || '',
-        dateStr
-      }))),
+    const allPlates = await dbGetPlates();
+    // Pares a consultar: placas do Roteirizador (na grafia do Painel) + TODAS as
+    // placas sob demanda do Painel (para avisar oferta de placa que não está
+    // cadastrada em Veículos & Turnos).
+    const pares = new Map();
+    const addPar = (carrier, plate) => { if (carrier && plate) pares.set(`${carrier}||${plate}`, { carrier, plate, dateStr }); };
+    veiculos.forEach(v => {
+      const m = _casarPlacaPainel(allPlates, v.transportadora, v.placa);
+      addPar(m ? m.carrier : (v.transportadora || ''), m ? m.p.placa : (v.placa || ''));
+    });
+    const sobPainel = [];
+    for (const c of Object.keys(allPlates)) (allPlates[c] || []).forEach(p => {
+      if (p.ativo !== false && ehSobDemanda(p)) { sobPainel.push({ carrier: c, p }); addPar(c, p.placa); }
+    });
+    // Oferta sob demanda é feita por outra pessoa/computador a qualquer hora:
+    // nunca confia no cache para essas placas (são poucas — custo mínimo).
+    sobPainel.forEach(({ carrier, p }) => cacheInvalidate(`status||${carrier}||${p.placa}||${dateStr}`));
+    const [bulk, allDriversCad] = await Promise.all([
+      dbLoadStatusBulk([...pares.values()]),
       dbGetDrivers().catch(() => ({}))
     ]);
+    // Ofertadas no Painel mas sem cadastro em Veículos & Turnos → aviso no Roteirizador
+    const casadas = new Set();
+    veiculos.forEach(v => { const m = _casarPlacaPainel(allPlates, v.transportadora, v.placa); if (m) casadas.add(`${m.carrier}||${m.p.placa}`); });
+    window._sobOfertadasSemCadastro = sobPainel
+      .filter(({ carrier, p }) => !casadas.has(`${carrier}||${p.placa}`) && bulk[`${carrier}||${p.placa}||${dateStr}`]?.status === 'disponivel')
+      .map(({ carrier, p }) => ({ carrier, placa: p.placa, capacidade: p.capacidade, dateStr }));
     // Retorna o nome do motorista apenas se ele estiver ativo no cadastro de
     // motoristas do transportador (allDriversCad). Motoristas não cadastrados
     // (legado) são mantidos por compatibilidade. Esta é a mesma regra já usada
@@ -945,13 +979,15 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
       return nome;
     }
     veiculos.forEach(v => {
-      const carrier = v.transportadora || '';
-      const plate   = v.placa          || '';
+      // Casa a placa do Roteirizador com o cadastro do Painel tolerando
+      // diferenças de escrita (hífen, espaço, minúscula, nome da transportadora
+      // com caixa diferente) — e passa a usar a grafia do PAINEL para buscar o
+      // registro do dia, que é a mesma usada ao gravar a oferta/disponibilidade.
+      const m = _casarPlacaPainel(allPlates, v.transportadora, v.placa);
+      const carrier = m ? m.carrier : (v.transportadora || '');
+      const plate   = m ? m.p.placa : (v.placa || '');
       // Regras 1 e 2: verifica cadastro Firestore
-      const cadastroPlacas = allPlates[carrier] || [];
-      const registroFirestore = cadastroPlacas.find(p =>
-        (p.placa || '').trim().toUpperCase() === plate.trim().toUpperCase()
-      );
+      const registroFirestore = m ? m.p : null;
       if (!registroFirestore) {
         // Não existe no cadastro → inativo/inexistente
         v.disponibilidade    = 'Indisponível';
@@ -1022,6 +1058,30 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
     console.warn('[sincronizarDisponibilidadeVeiculos]', e);
   }
 }
+// Escuta ao vivo das ofertas sob demanda de uma data (usada pelo Roteirizador):
+// quando alguém oferta/retira uma placa em qualquer computador, o Roteirizador
+// é avisado na hora. Custo: as ofertas do dia uma vez + 1 leitura por mudança.
+let _ofertasEscuta = { ds: null, unsub: null };
+function escutarOfertasSobDemanda(ds, aoMudar){
+  if (!ds || !S.user) return;
+  if (_ofertasEscuta.ds === ds && _ofertasEscuta.unsub) { _ofertasEscuta.cb = aoMudar; return; }
+  try { _ofertasEscuta.unsub && _ofertasEscuta.unsub(); } catch(e) {}
+  _ofertasEscuta = { ds, unsub: null, cb: aoMudar };
+  let primeira = true;
+  try {
+    _ofertasEscuta.unsub = onSnapshot(
+      query(collection(db, 'availability'), where('dateStr', '==', ds), where('oferta', '==', true)),
+      snap => {
+        const mud = snap.docChanges().map(c => ({ tipo: c.type, ...c.doc.data() }));
+        mud.forEach(m => cacheInvalidate(`status||${m.carrier}||${m.plate}||${ds}`));
+        if (primeira) { primeira = false; return; }
+        if (mud.length && typeof _ofertasEscuta.cb === 'function') _ofertasEscuta.cb(mud, ds);
+      },
+      e => console.warn('[escuta ofertas sob demanda]', e.code || e.message)
+    );
+  } catch(e) { console.warn('[escuta ofertas sob demanda]', e); }
+}
+window.escutarOfertasSobDemanda = escutarOfertasSobDemanda;
 // ═══════════════════════════════════════════════════════════
 function recordHasStatus(rec){
   return !!(rec && rec.status);

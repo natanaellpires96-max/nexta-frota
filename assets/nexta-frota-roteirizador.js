@@ -7009,6 +7009,33 @@ function jornadaHojeTagHtml(v) {
   }
   return `<span class="tag" style="font-size:9px;font-weight:700;background:${bg};color:${fg};border:1px solid ${border};" title="Jornada consumida hoje: soma o que já está salvo no histórico pra este dia + o que está sendo montado nesta sessão — atualiza sozinho a cada viagem alocada, removida, editada ou salva">${texto}</span>`;
 }
+// ── Ofertas sob demanda ao vivo ────────────────────────────────────────────
+// Escuta as ofertas da data da operação: ofertou/retirou no Painel (em
+// qualquer computador) → Veículos & Turnos atualiza sozinho e avisa.
+function _escutarOfertasRot(ds) {
+  if (!ds || typeof window.escutarOfertasSobDemanda !== 'function') return;
+  window.escutarOfertasSobDemanda(ds, (mud, dsMud) => {
+    const atual = document.getElementById('rot-data-operacao')?.value;
+    if (atual && atual !== dsMud) return;
+    const desc = mud.map(m => `${m.plate} ${m.tipo === 'removed' ? 'retirada' : (m.tipo === 'added' ? 'ofertada' : 'alterada')}`).join(', ');
+    const posRot = (typeof ultimoResultado !== 'undefined' && ultimoResultado) ? ' — roteirize de novo para usar' : '';
+    sincronizarDisponibilidadeVeiculos(dsMud).then(() => {
+      if (document.getElementById('tab-veiculos')?.classList.contains('active')) _renderVeiculosInterno();
+      try { renderPainelJornadaVeiculos(); } catch(e) {}
+      showToast(`🚚 Sob demanda: ${desc}${posRot}`, true);
+    }).catch(() => {});
+  });
+}
+function _avisoSobForaCadastroHtml() {
+  const escHtml = t => String(t ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const lst = window._sobOfertadasSemCadastro || [];
+  if (!lst.length) return '';
+  return `<div style="background:#FFF7ED;border:1px solid #FDBA74;color:#9A3412;border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;">
+    <b>⚠ ${lst.length} placa(s) sob demanda ofertada(s) no Painel, mas sem cadastro em Veículos &amp; Turnos:</b>
+    ${lst.map(o => `<span class="tag" style="font-size:10px;margin-left:4px;">${escHtml(o.placa)} · ${escHtml(o.carrier)}${o.capacidade ? ' · ' + escHtml(String(o.capacidade)) + 'm³' : ''}</span>`).join('')}
+    <div style="margin-top:4px;color:#7C2D12;">O Roteirizador só usa veículos cadastrados aqui (com compartimentos e jornada). Cadastre a placa com a <b>mesma grafia e transportadora</b> do Painel e ela entra automaticamente.</div>
+  </div>`;
+}
 function renderVeiculos() {
   // Sempre re-sincroniza motoristas e disponibilidade do painel do dia antes de renderizar.
   // Usa a data do seletor do roteirizador (rot-data-operacao) como prioridade,
@@ -7016,6 +7043,7 @@ function renderVeiculos() {
   // Fallback para dateStr(S.dateOffset) caso o input não exista.
   const inputData = document.getElementById('rot-data-operacao')?.value;
   const ds = inputData || dateStr(S.dateOffset);
+  _escutarOfertasRot(ds);
   sincronizarDisponibilidadeVeiculos(ds)
     .catch(() => {})
     .then(() => _carregarJornadaHistoricoDoDia(ds).catch(() => {}))
@@ -7038,8 +7066,8 @@ function _renderVeiculosInterno() {
     containsFiltro(cidadeBaseVeiculo(v), filtroCidade) &&
     (!filtroTipo || v.tipo === filtroTipo)
   );
-  if (!lista.length) { el.innerHTML = '<div class="empty">Nenhum veículo encontrado para os filtros.</div>'; return; }
-  el.innerHTML = lista.map(v => `
+  if (!lista.length) { el.innerHTML = _avisoSobForaCadastroHtml() + '<div class="empty">Nenhum veículo encontrado para os filtros.</div>'; return; }
+  el.innerHTML = _avisoSobForaCadastroHtml() + lista.map(v => `
     <div class="card">
       <div style="display:flex;align-items:flex-start;gap:10px;">
         <div style="flex:1;">
@@ -13695,6 +13723,7 @@ function _sincronizarDataOperacaoComPedidos() {
   if (el.value === iso) return; // já estava certo, evita toast/sincronização à toa
   el.value = iso;
   el._inicializado = true; // evita que initDataOperacao() sobrescreva com "amanhã" depois
+  _escutarOfertasRot(iso);
   sincronizarDisponibilidadeVeiculos(iso).then(() => {
     if (document.getElementById('tab-veiculos')?.classList.contains('active')) renderVeiculos();
     showToast(`📅 Data da operação ajustada para ${minData.toLocaleDateString('pt-BR')} (data de entrega dos pedidos importados)`, true);
@@ -13702,6 +13731,7 @@ function _sincronizarDataOperacaoComPedidos() {
 }
 function onDataOperacaoChange(valor) {
   if (!valor) return;
+  _escutarOfertasRot(valor);
   sincronizarDisponibilidadeVeiculos(valor).then(() => {
     return _carregarJornadaHistoricoDoDia(valor).catch(() => {});
   }).then(() => {
@@ -13718,6 +13748,7 @@ function initDataOperacao() {
   const amanha = new Date(); amanha.setDate(amanha.getDate() + 1);
   const iso = `${amanha.getFullYear()}-${String(amanha.getMonth()+1).padStart(2,'0')}-${String(amanha.getDate()).padStart(2,'0')}`;
   el.value = iso;
+  _escutarOfertasRot(iso);
   sincronizarDisponibilidadeVeiculos(iso).then(() => _carregarJornadaHistoricoDoDia(iso).catch(() => {})).then(() => renderPainelJornadaVeiculos()).catch(() => {});
 }
 window.exportarRelatorioRoteirizacao = function exportarRelatorioRoteirizacao() {
