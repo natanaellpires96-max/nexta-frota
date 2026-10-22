@@ -76,20 +76,71 @@ function uidToEmail(uid){ return `${uid}@nexta-frota.app`; }
 // ═══════════════════════════════════════════════════════════
 const _cache = new Map(); // key → { value, expiresAt }
 const CACHE_TTL = 60_000; // 60 segundos
+// ── Disponibilidade de DIAS PASSADOS: cache longo e guardado no navegador ──
+// Era o grande consumidor da cota grátis do Firestore (50 mil leituras/dia):
+// Auditoria (45 dias × todas as placas ≈ 2.700 leituras por abertura), KPIs
+// Mensais (≈ 1.800), Daily Briefing (tendência de 14 dias ≈ 850) e Relatórios
+// reliam TUDO a cada abertura depois de 60s — e de novo a cada computador e a
+// cada recarga da página. Dia que já passou praticamente não muda, então fica
+// guardado por 6h (e sobrevive a recarregar a página). O botão 🔄 Atualizar
+// limpa tudo, pra quando alguém corrigir um dia antigo e precisar ver na hora.
+// Hoje e amanhã continuam com os 60s de sempre.
+const STATUS_PASSADO_LS = 'nexta_status_passado_v1';
+const STATUS_PASSADO_TTL = 6 * 3600_000;
+let _statusPassado = (() => { try { return JSON.parse(localStorage.getItem(STATUS_PASSADO_LS) || '{}') || {}; } catch (e) { return {}; } })(); // key → [valor, salvoEm]
+let _statusPassadoTimer = null;
+function _ehStatusDiaPassado(key) {
+  if (!key.startsWith('status||')) return false;
+  const ds = key.slice(key.lastIndexOf('||') + 2);
+  return /^\d{4}-\d{2}-\d{2}$/.test(ds) && ds < dateStr(0);
+}
+function _statusPassadoSalvarDepois() {
+  clearTimeout(_statusPassadoTimer);
+  _statusPassadoTimer = setTimeout(() => {
+    const limite = dateStr(-75), agora = Date.now();
+    for (const k in _statusPassado) {
+      const ds = k.slice(k.lastIndexOf('||') + 2);
+      if (ds < limite || agora - _statusPassado[k][1] > STATUS_PASSADO_TTL) delete _statusPassado[k];
+    }
+    try { localStorage.setItem(STATUS_PASSADO_LS, JSON.stringify(_statusPassado)); }
+    catch (e) { _statusPassado = {}; try { localStorage.removeItem(STATUS_PASSADO_LS); } catch (e2) {} }
+  }, 2000);
+}
 function cacheGet(key) {
   const entry = _cache.get(key);
-  if (!entry) return undefined;
-  if (Date.now() > entry.expiresAt) { _cache.delete(key); return undefined; }
-  return entry.value;
+  if (entry) {
+    if (Date.now() <= entry.expiresAt) return entry.value;
+    _cache.delete(key);
+  }
+  const p = _statusPassado[key];
+  if (p && Date.now() - p[1] < STATUS_PASSADO_TTL && _ehStatusDiaPassado(key)) {
+    _cache.set(key, { value: p[0], expiresAt: p[1] + STATUS_PASSADO_TTL });
+    return p[0];
+  }
+  return undefined;
 }
 function cacheSet(key, value, ttl = CACHE_TTL) {
+  if (_ehStatusDiaPassado(key)) {
+    _cache.set(key, { value, expiresAt: Date.now() + STATUS_PASSADO_TTL });
+    _statusPassado[key] = [value, Date.now()];
+    _statusPassadoSalvarDepois();
+    return;
+  }
   _cache.set(key, { value, expiresAt: Date.now() + ttl });
 }
 function cacheInvalidate(...keys) {
-  keys.forEach(k => _cache.delete(k));
+  keys.forEach(k => { _cache.delete(k); if (_statusPassado[k]) { delete _statusPassado[k]; _statusPassadoSalvarDepois(); } });
 }
 function cacheInvalidatePrefix(prefix) {
   for (const k of _cache.keys()) { if (k.startsWith(prefix)) _cache.delete(k); }
+  let mudou = false;
+  for (const k in _statusPassado) { if (k.startsWith(prefix)) { delete _statusPassado[k]; mudou = true; } }
+  if (mudou) _statusPassadoSalvarDepois();
+}
+function cacheLimparTudo() {
+  _cache.clear();
+  _statusPassado = {};
+  try { localStorage.removeItem(STATUS_PASSADO_LS); } catch (e) {}
 }
 // ═══════════════════════════════════════════════════════════
 // DB HELPERS
@@ -2228,7 +2279,7 @@ async function render(){
 }
 async function refreshSystem(){
   showToast('Atualizando dados...');
-  _cache.clear();
+  cacheLimparTudo(); // inclui a disponibilidade de dias passados guardada no navegador
   await loadConfig();
   await render();
   showToast('Sistema atualizado.', true);
@@ -5152,7 +5203,7 @@ async function adminUnlock(carrier, ds){
     dbRemoveLock(carrier, ds),
     dbClearStatusForDate(carrier, ds)
   ]);
-  _cache.clear();
+  cacheLimparTudo(); // dia antigo foi alterado: descarta também o que estava guardado no navegador
   await dbAddNotif(`Admin desbloqueou e resetou o lançamento de ${carrier} — ${fmtDateStr(ds)}`);
   await dbAddAudit("admin_unlock", { carrier, date: ds });
   showToast(`Lançamento de ${carrier} desbloqueado e resetado!`);
@@ -5172,7 +5223,7 @@ async function adminUnlockPlate(carrier, plate, ds){
     // Invalidate cache
     const cKey = `status||${carrier}||${plate}||${ds}`;
     cacheInvalidate(cKey);
-    _cache.clear();
+    cacheLimparTudo(); // dia antigo foi alterado: descarta também o que estava guardado no navegador
     await dbAddNotif(`Admin desbloqueou a placa ${plate} de ${carrier} — ${fmtDateStr(ds)}`);
     await dbAddAudit("admin_unlock_plate", { carrier, plate, date: ds });
     showToast(`Placa ${plate} desbloqueada!`);
@@ -5323,7 +5374,7 @@ async function salvarCorrecaoHodometro(){
       mudancas.slice(i,i+400).forEach(m=>batch.update(doc(db,"availability",m.id), { hodometro:m.para, updatedAt:agora }));
       await batch.commit();
     }
-    _cache.clear();
+    cacheLimparTudo(); // dia antigo foi alterado: descarta também o que estava guardado no navegador
     await dbAddAudit("hodometro_correcao_lote", {
       carrier, plate, qtd: mudancas.length,
       alteracoes: mudancas.map(m=>[m.dateStr, m.de, m.para]), // [data, antes, depois] — pra desfazer se precisar
