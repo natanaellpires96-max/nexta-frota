@@ -12113,6 +12113,7 @@ async function abrirDetalheHistorico(filename) {
             <td style="padding:6px 8px;text-align:right;white-space:nowrap;${bordaGrupo}">
               ${volumes[i].toFixed(1)} m³
               <span onclick="abrirEditarVolumesParada(${ctxIdx})" title="Editar volume dos produtos dessa entrega, sem mexer no resto da viagem" style="cursor:pointer;margin-left:4px;">✏️</span>
+              <span onclick="excluirPedidoViagemHistorico(${ctxIdx})" title="Excluir só esta entrega da viagem (o resto da viagem continua) — cria uma nova revisão, o arquivo original fica preservado" style="cursor:pointer;margin-left:4px;">🗑</span>
             </td>
             <td style="padding:6px 8px;text-align:center;white-space:nowrap;${bordaGrupo}">${botaoOcorrenciaHtml}</td>
           </tr>`);
@@ -12555,6 +12556,61 @@ async function excluirViagemHistorico(veiculoId, petId) {
   }
 }
 window.excluirViagemHistorico = excluirViagemHistorico;
+// Exclui UMA entrega (parada) de uma viagem salva, mantendo as demais.
+// Mesmo mecanismo de revisão: nunca sobrescreve o original. Não recalcula
+// rota/horários (igual ao "Incluir pedido"); se a entrega excluída era a
+// última, o retorno à base passa pra parada anterior. O pedido volta a ficar
+// pendente nesse arquivo — dá pra incluir em outra viagem pelo ➕.
+async function excluirPedidoViagemHistorico(ctxIdx) {
+  const ctx = _devContextosHistorico[ctxIdx];
+  if (!ctx || !_histDetalheFilenameAtual) return;
+  const filenameAtual = _histDetalheFilenameAtual;
+  try {
+    if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+    const fh = await dirHandleHistorico.getFileHandle(filenameAtual);
+    const data = JSON.parse(await (await fh.getFile()).text());
+    const lista = data.resultado?.[ctx.veiculoId];
+    const viagem = Array.isArray(lista) ? lista.find(vi => vi && !vi._vazio && vi.petId === ctx.viagemId) : null;
+    if (!viagem) { alert('Não achei essa viagem no arquivo — talvez já tenha mudado nessa revisão.'); return; }
+    const paradas = viagem.paradas || [];
+    let i = ctx.paradaIndex;
+    const mesmoPedido = pa => String(pa?.pedido?.id ?? '') === String(ctx.pedidoId ?? '') && (pa?.pedido?.cliente || '—') === ctx.cliente;
+    if (!mesmoPedido(paradas[i])) i = paradas.findIndex(mesmoPedido);
+    if (i < 0) { alert('Não achei essa entrega dentro da viagem — talvez já tenha sido removida.'); return; }
+    if (paradas.length === 1) {
+      if (confirm(`${ctx.cliente} é a única entrega da viagem ${ctx.viagemId}.\n\nQuer excluir a viagem inteira?`)) {
+        // excluirViagemHistorico pede a própria confirmação; aqui já confirmou.
+        const _conf = window.confirm; window.confirm = () => true;
+        try { await excluirViagemHistorico(ctx.veiculoId, ctx.viagemId); } finally { window.confirm = _conf; }
+      }
+      return;
+    }
+    const vol = Number(paradas[i].volumeTotal) || (paradas[i].itens || []).reduce((s, it) => s + (it.volume || 0), 0);
+    if (!confirm(`Excluir a entrega de ${ctx.cliente}${ctx.pedidoId !== '' ? ` (pedido ${ctx.pedidoId})` : ''} — ${vol.toFixed(1)} m³ — da viagem ${ctx.viagemId}?\n\nAs outras entregas da viagem continuam. Rota e horários não são recalculados.\nIsso salva uma nova revisão — o arquivo original fica preservado no histórico.`)) return;
+    const [removida] = paradas.splice(i, 1);
+    if (i === paradas.length && paradas.length) {
+      // Era a última: o retorno à base passa pra nova última parada.
+      paradas[paradas.length - 1].deslocVazioMin = removida.deslocVazioMin || paradas[paradas.length - 1].deslocVazioMin || 0;
+    }
+    // Trajeto mudou → km real antigo deixa de valer (recálculo em lote preenche de novo).
+    delete viagem._kmAjustado;
+    delete viagem._kmAjustadoAuto;
+    viagem._paradasExcluidas = viagem._paradasExcluidas || [];
+    viagem._paradasExcluidas.push({
+      pedidoId: removida.pedido?.id ?? null, cliente: removida.pedido?.cliente || '', volume: vol,
+      itens: (removida.itens || []).map(it => ({ produto: it.produto, volume: it.volume, ordemSAP: it.ordemSAP || '' })),
+      por: (typeof S !== 'undefined' && S?.user) ? S.user : '', em: new Date().toISOString(),
+    });
+    const novoFilename = await _histSalvarRevisao(filenameAtual, data);
+    showToast(`Entrega de ${ctx.cliente} excluída da viagem ${ctx.viagemId} — nova revisão salva.`, true);
+    await abrirDetalheHistorico(novoFilename);
+    if (typeof carregarListaHistorico === 'function') carregarListaHistorico();
+  } catch (e) {
+    console.error('[Histórico] falha ao excluir entrega:', e);
+    alert('Erro ao excluir entrega: ' + e.message);
+  }
+}
+window.excluirPedidoViagemHistorico = excluirPedidoViagemHistorico;
 // Edita o volume de um ou mais produtos de UMA entrega específica, direto no
 // arquivo salvo — sem mexer em mais nada da viagem (outras paradas, outros
 // veículos). Mesmo mecanismo de revisão do excluirViagemHistorico acima.
