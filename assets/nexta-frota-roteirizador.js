@@ -11474,6 +11474,7 @@ async function salvarNoHistorico(silencioso = false) {
     await popularDropdownRoteirizacoes();
     popularSeletorResumoDia().catch(()=>{});
     telaoPublicarDatasDepois(datasEntrega); // telão da sala de operação
+    _sobSincronizarDepois(snapshot, filename); // ciclos da operação sob demanda
     // ── Km real em segundo plano (NÃO bloqueia o salvamento) ────────────────
     // Antes, essa busca (via ORS, trajeto de verdade) rodava ANTES de gravar
     // o arquivo — com o limitador de 30 req/min compartilhado com todo o
@@ -12215,7 +12216,7 @@ async function exportarPNGViagemHistorico(petId, original = false, enviarWhatsAp
     const idUnico = `hist-png-${Date.now()}`;
     bloco.setAttribute('data-bloco-id', idUnico); // evita confundir com o card da mesma placa na tela principal
     const _nomeHist = `${petId}${original ? '_original' : (data.revisaoDe ? '_alterada' : '')}`;
-    if (enviarWhatsApp) { showToast('📲 Gerando a imagem e colocando na fila do robô…', true); _waItem = await _waEnfileirarBloco(idUnico, _nomeHist, _waMapa); }
+    if (enviarWhatsApp) { showToast('📲 Gerando a imagem e colocando na fila do robô…', true); _waItem = await _waEnfileirarBloco(idUnico, _nomeHist, _waMapa); if (_waItem) { try { window.sobCicloMarcarEnvioPedido?.(petId); } catch (e) {} } }
     else await exportarBlocoPNG(idUnico, _nomeHist);
   } catch (e) {
     console.error('[Histórico] PNG da viagem:', e);
@@ -12503,6 +12504,38 @@ function _histRecalcularResumo(data) {
     terminaisUsados: [...terminaisUsados],
   };
 }
+// ── Operação sob demanda: passa as viagens do arquivo para o módulo de
+// ciclos (nexta-frota-sobdemanda.js), que filtra as placas sob demanda e
+// cria/atualiza/cancela os ciclos. Roda depois, sem travar o salvamento.
+function _sobExtrairViagens(data) {
+  const out = [];
+  (data.veiculos || []).forEach(v => {
+    const viagens = (data.resultado?.[v.id] || []).filter(vi => vi && !vi._vazio && (vi.paradas || []).length);
+    viagens.forEach((vi, idx) => {
+      let car = { data: '', hora: '' };
+      try { car = _fmtAbs(_histBaseDate(data, vi), _histInicioCargaAbs(v, viagens, idx)); } catch (e) {}
+      out.push({
+        petId: vi.petId || `VIA${v.placa || v.id}${idx + 1}`, veiculoId: v.id, placa: v.placa || '', transportadora: v.transportadora || '',
+        base: vi.paradas[0]?.pedido?.terminal || vi.terminalOrigem || '',
+        dataCarregamento: car.data, horaCarregamento: car.hora,
+        entregas: vi.paradas.map(pa => ({
+          cliente: pa.pedido?.cliente || '', pedidoId: pa.pedido?.id ?? '', cidade: pa.pedido?.cidade || '',
+          itens: (pa.itens || []).map(it => ({ produto: it.produto || '', volume: Number(it.volume) || 0 })),
+        })),
+      });
+    });
+  });
+  return out;
+}
+function _sobSincronizarDepois(data, arquivo, revisaoDeForcada) {
+  if (typeof window.sobCiclosSincronizarArquivo !== 'function' || !data) return;
+  let viagens;
+  try { viagens = _sobExtrairViagens(data); } catch (e) { console.warn('[sob ciclos] extrair', e); return; }
+  setTimeout(() => {
+    window.sobCiclosSincronizarArquivo(viagens, { arquivo, revisaoDe: revisaoDeForcada || data.revisaoDe || null })
+      .catch(e => console.warn('[sob ciclos] sincronizar', e));
+  }, 300);
+}
 // Grava `data` (já editado em memória) como uma NOVA revisão do arquivo
 // `filenameAtual` — o original nunca é sobrescrito, só ganha o vínculo
 // substituidoPor. Devolve o nome do novo arquivo.
@@ -12531,6 +12564,7 @@ async function _histSalvarRevisao(filenameAtual, data) {
   delete _histMetaCache[filenameAtual];
   delete _histMetaCache[novoFilename];
   telaoPublicarDatasDepois(data.datasEntrega || []); // telão da sala de operação
+  _sobSincronizarDepois(data, novoFilename); // ciclos da operação sob demanda
   return novoFilename;
 }
 async function excluirViagemHistorico(veiculoId, petId) {
@@ -13653,6 +13687,7 @@ async function excluirEntradaHistorico(filename, btn) {
   if (!confirm(`Excluir "${filename}" do histórico?`)) return;
   if (!await _histGarantirPermissao()) return;
   let datasDoArquivo = [];
+  let _sobVersaoVolta = null; // versão anterior que volta a valer (ciclos sob demanda seguem ela)
   try {
     // ── Desfaz vínculos de revisão ANTES de excluir ──────────────────────
     // Sem isso: excluir a versão MAIS RECENTE de uma correção (que tem
@@ -13680,6 +13715,7 @@ async function excluirEntradaHistorico(filename, btn) {
             await wsAnt.write(JSON.stringify(dataAnt, null, 2));
             await wsAnt.close();
             delete _histMetaCache[data.revisaoDe];
+            _sobVersaoVolta = { data: dataAnt, arquivo: data.revisaoDe };
           }
         } catch(eAnt) { /* arquivo anterior já não existe — nada a desfazer */ }
       }
@@ -13703,6 +13739,10 @@ async function excluirEntradaHistorico(filename, btn) {
     }
     await dirHandleHistorico.removeEntry(filename);
     telaoPublicarDatasDepois(datasDoArquivo); // telão: tira do painel o que foi excluído
+    // Ciclos sob demanda: se a versão anterior volta a valer, eles passam a
+    // seguir ela; senão, os ciclos dessa programação são cancelados.
+    if (_sobVersaoVolta) _sobSincronizarDepois(_sobVersaoVolta.data, _sobVersaoVolta.arquivo, filename);
+    else { try { window.sobCiclosArquivoExcluido?.(filename)?.catch?.(() => {}); } catch (e) {} }
     await carregarListaHistorico(); // não só remove a linha — reconstrói a lista pra refletir qualquer vínculo desfeito acima
   } catch(e) {
     alert('Erro ao excluir: ' + e.message);

@@ -2987,6 +2987,7 @@ async function renderAdmin(){
     {id:"history",label:"Auditoria"},
     {id:"export",label:"Relatórios"},
     {id:"roteirizador",label:"Roteirizador"},
+    {id:"sobdemanda",label:"Operação sob demanda"},
     {id:"register",label:"Cadastros"},
   ];
   // Operacional não acessa Cadastros (que agora também contempla Usuários)
@@ -3036,6 +3037,10 @@ async function renderTabBody(){
   else if(S.adminTab==="today") await renderToday(body);
   else if(S.adminTab==="history") await renderHistory(body);
   else if(S.adminTab==="export") await renderExport(body); // "Relatórios" — agora também contém Arquivos Mensais (ver sub-abas dentro de renderExport)
+  else if(S.adminTab==="sobdemanda"){
+    if(typeof window.renderSobDemanda==="function") await window.renderSobDemanda(body);
+    else body.innerHTML=`<div class="empty">Módulo da operação sob demanda não carregado (confira o arquivo nexta-frota-sobdemanda.js).</div>`;
+  }
   else if(S.adminTab==="register") await renderRegister(body); // "Cadastros" — agora também contém Usuários (ver sub-aba dentro de renderRegister)
   else if(S.adminTab==="roteirizador"){
     const uRot=USERS_DB[S.user];
@@ -6379,6 +6384,10 @@ window.fbDoc = doc; window.fbGetDoc = getDoc; window.fbSetDoc = setDoc;
 window.fbCollection = collection; window.fbGetDocs = getDocs;
 window.fbQuery = query; window.fbWhere = where; window.fbOrderBy = orderBy;
 window.fbLimit = limit; window.fbWriteBatch = writeBatch; window.fbDeleteDoc = deleteDoc;
+// Usados pelo módulo da Operação sob demanda (nexta-frota-sobdemanda.js)
+window.ehSobDemanda = ehSobDemanda; window._casarPlacaPainel = _casarPlacaPainel;
+window._invalidarStatusPlaca = (carrier, plate, ds) => cacheInvalidate(`status||${carrier}||${plate}||${ds}`);
+window.dbAddAudit = (...a) => dbAddAudit(...a);
 async function reiniciarRoteirizador(){
   // ── 1. Zera arrays de dados de todas as abas ──────────────────────────────
   if(typeof pedidos       !== 'undefined') pedidos       = [];
