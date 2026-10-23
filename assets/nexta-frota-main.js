@@ -3978,14 +3978,33 @@ async function renderOfertasSobDemanda(allP, ds){
       <td style="font-size:11px;color:var(--muted);white-space:nowrap">${of ? `✓ ${esc(rec.ofertadoPor||'')}${rec.ofertadoEm?' · '+esc(new Date(rec.ofertadoEm).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})):''}` : (rec?.status ? `<span title="Registro já existente para este dia, lançado pela transportadora no painel dela (antes da placa virar sob demanda). Ao ofertar, a oferta substitui esse registro.">Transportadora informou: <b style="color:var(--text)">${esc(getSt(rec.status).label)}</b></span>` : 'Não ofertada')}</td>
     </tr>`;
   }).join('');
+  // Bloco recolhido por padrão (não polui o Painel); abre com um clique e
+  // lembra a escolha neste computador. Recolhido, mostra só as ofertadas.
+  const aberto = _ofertasSobAberto();
+  const chips = linhas.filter(({carrier,p}) => sm[`${carrier}||${p.placa}||${ds}`]?.status === 'disponivel').map(({carrier,p}) => {
+    const r = sm[`${carrier}||${p.placa}||${ds}`];
+    return `<span title="${attr(carrier)}" style="font-size:11px;font-family:'DM Mono',monospace;background:rgba(110,224,74,.1);border:1px solid rgba(110,224,74,.35);color:var(--text);border-radius:10px;padding:2px 8px;white-space:nowrap">${esc(p.placa)}${r.time?' · '+esc(r.time):''}${r.baseOferta?' · '+esc(r.baseOferta):''}</span>`;
+  }).join('');
   return `<div class="carrier-block" style="margin-bottom:1.25rem">
-    <div class="carrier-head" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="ch-icon">🚚</span>Operação sob demanda — ofertas do dia
+    <div class="carrier-head" onclick="alternarOfertasSob()" title="${aberto?'Recolher':'Abrir para ofertar placas'}" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;cursor:pointer;user-select:none;${aberto?'':'border-radius:var(--radius-lg)'}">
+      <span style="display:inline-block;width:12px;color:var(--muted);transition:transform .15s;transform:rotate(${aberto?90:0}deg)">▶</span><span class="ch-icon">🚚</span>Operação sob demanda — ofertas do dia
       <span class="ch-count">${nOf} de ${linhas.length} ofertada(s)</span>
-      <span style="font-size:11px;color:var(--muted);font-weight:400">Fora dos números da disponibilidade diária. Marque as placas que podem rodar neste dia — o Roteirizador só usa as ofertadas.</span></div>
-    <div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1180px">
+      ${aberto
+        ? `<span style="font-size:11px;color:var(--muted);font-weight:400">Fora dos números da disponibilidade diária. Marque as placas que podem rodar neste dia — o Roteirizador só usa as ofertadas.</span>`
+        : `${chips}<span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:auto">clique para ${nOf?'editar / ofertar mais':'ofertar'}</span>`}
+    </div>
+    ${aberto ? `<div class="tscroll"><table class="table" style="border-radius:0 0 var(--radius-lg) var(--radius-lg);min-width:1180px">
       <thead><tr><th>TRANSPORTADOR</th><th>PLACA</th><th>CAP.</th><th style="text-align:center">OFERTADA</th><th>DISPONÍVEL A PARTIR DE</th><th>BASE DO DIA</th><th>MOTORISTAS</th><th>OBSERVAÇÃO</th><th>REGISTRO</th></tr></thead>
-      <tbody>${rows}</tbody></table></div></div>`;
+      <tbody>${rows}</tbody></table></div>` : ''}</div>`;
 }
+function _ofertasSobAberto(){ try { return localStorage.getItem('nexta_ofertas_sob_aberto') === '1'; } catch(e) { return !!window._ofertasSobAbertoMem; } }
+function alternarOfertasSob(){
+  const novo = !_ofertasSobAberto();
+  window._ofertasSobAbertoMem = novo;
+  try { localStorage.setItem('nexta_ofertas_sob_aberto', novo ? '1' : '0'); } catch(e) {}
+  renderTabBody();
+}
+window.alternarOfertasSob = alternarOfertasSob;
 async function salvarOfertaSobDemanda(carrier, plate, ds, rid){
   const row = document.getElementById(rid); if (!row) return;
   const ofertada = row.querySelector('.of-chk').checked;
