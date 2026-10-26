@@ -89,14 +89,18 @@ function siglaAuto(nome) {
 const sigla = nome => (st.cfg?.siglas?.[nome]) || siglaAuto(nome);
 const apelido = cli => (st.cfg?.apelidos?.[cli]) || cli;
 
-const volCiclo = c => (c.entregas || []).reduce((s, e) => s + (e.itens || []).reduce((a, it) => a + (Number(it.volume) || 0), 0), 0);
+// Ciclos importados da planilha guardam o volume/produto/texto de clientes como
+// estavam lá (o texto da planilha nem sempre tem volume por cliente).
+const volCiclo = c => (Number(c.volumeInformado) > 0) ? Number(c.volumeInformado) : (c.entregas || []).reduce((s, e) => s + (e.itens || []).reduce((a, it) => a + (Number(it.volume) || 0), 0), 0);
 function produtoCiclo(c) {
+  if (c.produtoInformado) return c.produtoInformado;
   const s = new Set();
   (c.entregas || []).forEach(e => (e.itens || []).forEach(it => { if ((Number(it.volume) || 0) > 0) s.add(sigla(it.produto)); }));
   return s.size === 0 ? '' : (s.size === 1 ? [...s][0] : 'MISTO');
 }
 // "TREMENDÃO (5m³ GC + 20m³ S10) | CUTUBA (10m³ S10)"
 function clientesTexto(c) {
+  if (c.clientesTextoOriginal) return c.clientesTextoOriginal;
   return (c.entregas || []).map(e => {
     const por = new Map();
     (e.itens || []).forEach(it => { const sg = sigla(it.produto); por.set(sg, (por.get(sg) || 0) + (Number(it.volume) || 0)); });
@@ -839,6 +843,10 @@ window.sobAbrirConfig = async () => {
     <div style="font-size:12px;font-weight:700;margin:16px 0 4px">Contagem de ciclos já feitos por placa</div>
     <p style="font-size:11px;color:var(--muted);margin-bottom:6px">Nº do último ciclo FINALIZADO de cada caminhão (da planilha de hoje). Ex.: URP1B02 com 4 → a viagem em curso é o 5º. Os ciclos ativos são renumerados ao salvar.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px">${contagem.map(({ k, p }) => `<label style="display:flex;gap:6px;align-items:center;font-size:12px"><span style="flex:1"><b style="font-family:'DM Mono',monospace">${esc(p.placa)}</b> <span style="color:var(--muted);font-size:10.5px">${esc(p.carrier)}</span></span><input type="number" min="0" data-sob-base="${esc(k)}" value="${Number(st.cfg.base?.[k]) || 0}" style="${inpM};width:64px;text-align:right"></label>`).join('')}</div>
+    <div style="border:1px dashed var(--border2);border-radius:8px;padding:10px;margin-top:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:260px"><div style="font-size:12px;font-weight:700">📥 Importar ciclos finalizados</div><div style="font-size:11px;color:var(--muted)">Arquivo .json gerado a partir da planilha antiga. Pode importar de novo sem duplicar; a contagem de cada placa é ajustada sozinha.</div></div>
+      <label class="btn btn-sm" style="cursor:pointer">Escolher arquivo…<input type="file" accept=".json,application/json" style="display:none" onchange="sobImportarArquivo(this.files[0]);this.value=''"></label>
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"><button class="btn btn-sm" onclick="sobFecharModal()">Cancelar</button><button class="btn btn-lime btn-sm" onclick="sobSalvarConfig()">💾 Salvar</button></div>`, 980);
 };
 window.sobSalvarConfig = async () => {
@@ -856,6 +864,73 @@ window.sobSalvarConfig = async () => {
     for (const k of Object.keys(base)) await renumerarPlaca(k, ativos);
     fecharModal(); toast('Configuração salva.', true); renderSobDemanda();
   } catch (e) { alert('Não consegui salvar: ' + (e.code || e.message)); }
+};
+
+// ── Importação de ciclos finalizados (planilha antiga → .json) ─────────────
+window.sobImportarArquivo = async file => {
+  if (!file) return;
+  let dados;
+  try { dados = JSON.parse(await file.text()); } catch (e) { alert('Arquivo inválido (não é JSON).'); return; }
+  const lista = Array.isArray(dados?.ciclos) ? dados.ciclos : null;
+  if (dados?.tipo !== 'nexta_sob_ciclos_import' || !lista || !lista.length) { alert('Esse arquivo não é uma importação de ciclos da operação sob demanda.'); return; }
+  await carregarCfg(true);
+  const allP = await window.dbGetPlates();
+  const { col, db, getDocs, query, where } = fb();
+  const menorData = lista.map(c => c.dataCarregamento).filter(Boolean).sort()[0] || '0000';
+  const existentes = [];
+  const snap = await getDocs(query(col(db, 'sob_ciclos'), where('dataCarregamento', '>=', menorData)));
+  snap.forEach(d => existentes.push({ id: d.id, ...d.data() }));
+  const ativos = await carregarAtivos();
+  ativos.forEach(a => { if (!existentes.some(e => e.id === a.id)) existentes.push(a); });
+  const plano = lista.map(c => {
+    const m = window._casarPlacaPainel?.(allP, c.carrier, c.placa);
+    const placa = m ? m.p.placa : c.placa, carrier = m ? m.carrier : c.carrier;
+    const pn = normPlaca(placa);
+    const id = `imp__${pn}__${c.cicloNum}`;
+    const dup = existentes.find(e => e.id !== id && !e.cancelado && e.origem !== 'importado' && normPlaca(e.placa) === pn && e.dataCarregamento === c.dataCarregamento);
+    return { c, placa, carrier, pn, id, dup };
+  });
+  const porPlaca = {};
+  plano.forEach(x => { porPlaca[x.pn] = Math.max(porPlaca[x.pn] || 0, Number(x.c.cicloNum) || 0); });
+  const dups = plano.filter(x => x.dup);
+  const resumo = Object.entries(porPlaca).sort().map(([k, n]) => `${k}: último finalizado ${n}º`).join('\n');
+  if (!confirm(`Importar ${plano.length} ciclo(s) finalizado(s) de ${Object.keys(porPlaca).length} placa(s)?\n\n${resumo}${dups.length ? `\n\n${dups.length} já existe(m) no sistema (mesma placa e dia de carregamento) — esses não são duplicados: o ciclo do sistema fica, marcado como finalizado com o nº da planilha.` : ''}\n\nOs próximos ciclos de cada placa continuam a contagem a partir daí.`)) return;
+  toast('Importando ciclos…', true);
+  let novos = 0, atual = 0;
+  try {
+    for (const x of plano) {
+      const c = x.c;
+      if (x.dup) {
+        const patch = { cicloNum: Number(c.cicloNum) || x.dup.cicloNum, status: 'finalizado', finalizado: true };
+        if (!x.dup.etaData && c.etaData) patch.etaData = c.etaData;
+        if (c.marcos) patch.marcos = Object.fromEntries(Object.entries(c.marcos).filter(([k]) => !x.dup.marcos?.[k]));
+        st.ciclos.set(x.dup.id, x.dup);
+        await gravarCiclo(x.dup.id, patch, 'Finalizado pela importação da planilha');
+        atual++; continue;
+      }
+      await gravarCiclo(x.id, {
+        origem: 'importado', previa: false, cancelado: false, finalizado: true, status: 'finalizado',
+        cicloNum: Number(c.cicloNum) || null, placa: x.placa, carrier: x.carrier, base: c.base || '',
+        dataCarregamento: c.dataCarregamento || '', horaCarregamento: c.horaCarregamento || '',
+        etaData: c.etaData || '', etaTurno: c.etaTurno || '',
+        entregas: (c.entregas || []).map(e => ({ cliente: e.cliente || '', pedidoId: '', itens: (e.itens || []).map(it => ({ produto: it.produto || '', volume: Number(it.volume) || 0 })) })),
+        volumeInformado: Number(c.volumeInformado) || 0, produtoInformado: c.produtoInformado || '', clientesTextoOriginal: c.clientesTextoOriginal || '',
+        marcos: c.marcos || {}, importadoDe: dados.origem || file.name, criadoEm: new Date().toISOString(), criadoPor: usuario(),
+      }, `Importado da planilha (${dados.origem || file.name}, linha ${c.linha || '?'})`);
+      novos++;
+    }
+    const base = {};
+    Object.entries(porPlaca).forEach(([k, n]) => { base[k] = Math.max(Number(st.cfg.base?.[k]) || 0, n); });
+    await salvarCfg({ base });
+    const ativosAgora = await carregarAtivos();
+    for (const k of Object.keys(base)) await renumerarPlaca(k, ativosAgora.filter(a => !a.cancelado));
+    st.carregadoEm = 0;
+    if (st.periodo < 45) st.periodo = 60;
+    st.finalAberto = true;
+    fecharModal();
+    toast(`📥 ${novos} ciclo(s) importado(s)${atual ? `, ${atual} já existente(s) atualizado(s)` : ''}. Contagem das placas ajustada.`, true);
+    renderSobDemanda();
+  } catch (e) { alert(`Parei no meio da importação (${novos} gravados): ${e.code || e.message}\nPode importar de novo — não duplica.`); }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
