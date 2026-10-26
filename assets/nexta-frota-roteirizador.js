@@ -7014,18 +7014,40 @@ function jornadaHojeTagHtml(v) {
 // qualquer computador) → Veículos & Turnos atualiza sozinho e avisa.
 function _escutarOfertasRot(ds) {
   if (!ds || typeof window.escutarOfertasSobDemanda !== 'function') return;
-  window.escutarOfertasSobDemanda(ds, (mud, dsMud) => {
-    const atual = document.getElementById('rot-data-operacao')?.value;
-    if (atual && atual !== dsMud) return;
-    const desc = mud.map(m => `${m.plate} ${m.tipo === 'removed' ? 'retirada' : (m.tipo === 'added' ? 'ofertada' : 'alterada')}`).join(', ');
-    const posRot = (typeof ultimoResultado !== 'undefined' && ultimoResultado) ? ' — roteirize de novo para usar' : '';
-    sincronizarDisponibilidadeVeiculos(dsMud).then(() => {
-      if (document.getElementById('tab-veiculos')?.classList.contains('active')) _renderVeiculosInterno();
-      try { renderPainelJornadaVeiculos(); } catch(e) {}
-      showToast(`🚚 Sob demanda: ${desc}${posRot}`, true);
-    }).catch(() => {});
-  });
+  window.escutarOfertasSobDemanda(ds, mud => _rotAposOferta(mud));
 }
+// Oferta/retirada no Painel (qualquer computador, ou este mesmo) → atualiza
+// a disponibilidade e REDESENHA o resultado da roteirização na hora, para a
+// placa já aparecer (card "Sem viagens") e receber cargas arrastadas — sem
+// precisar roteirizar de novo. Junta várias mudanças seguidas num aviso só.
+let _rotOfertaFila = [], _rotOfertaTimer = null;
+function _rotAposOferta(mud) {
+  (mud || []).forEach(m => { if (!_rotOfertaFila.some(x => x.plate === m.plate && x.dateStr === m.dateStr)) _rotOfertaFila.push(m); else Object.assign(_rotOfertaFila.find(x => x.plate === m.plate && x.dateStr === m.dateStr), m); });
+  clearTimeout(_rotOfertaTimer);
+  _rotOfertaTimer = setTimeout(async () => {
+    const lote = _rotOfertaFila; _rotOfertaFila = [];
+    const atual = document.getElementById('rot-data-operacao')?.value || '';
+    const br = d => (d || '').split('-').reverse().slice(0, 2).join('/');
+    const doDia = lote.filter(m => !atual || m.dateStr === atual);
+    const outros = lote.filter(m => atual && m.dateStr !== atual);
+    const desc = l => l.map(m => `${m.plate} ${m.tipo === 'removed' ? 'retirada' : 'ofertada'}`).join(', ');
+    if (doDia.length) {
+      try { await sincronizarDisponibilidadeVeiculos(atual || doDia[0].dateStr); } catch (e) {}
+      if (document.getElementById('tab-veiculos')?.classList.contains('active')) { try { _renderVeiculosInterno(); } catch (e) {} }
+      if (typeof ultimoResultado !== 'undefined' && ultimoResultado) {
+        try { renderResultado(ultimoResultado, ultimoControleTempo || {}); } catch (e) { console.warn('[oferta] redesenhar resultado', e); }
+      }
+      try { renderPainelJornadaVeiculos(); } catch (e) {}
+      const semCad = (window._sobOfertadasSemCadastro || []).map(o => o.placa);
+      const faltam = doDia.filter(m => m.tipo !== 'removed' && semCad.includes(m.plate)).map(m => m.plate);
+      showToast(`🚚 Sob demanda: ${desc(doDia)}${ultimoResultado ? ' — já aparece no resultado para alocar' : ''}${faltam.length ? ` · ⚠ ${faltam.join(', ')} sem cadastro em Veículos & Turnos` : ''}`, !faltam.length);
+    }
+    if (outros.length) {
+      showToast(`🚚 ${desc(outros)} para ${[...new Set(outros.map(m => br(m.dateStr)))].join(', ')} — o Roteirizador está em ${br(atual)}. Mude a data da operação para usar.`, false);
+    }
+  }, 600);
+}
+window._rotAposOferta = _rotAposOferta;
 function _avisoSobForaCadastroHtml() {
   const escHtml = t => String(t ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   const lst = window._sobOfertadasSemCadastro || [];

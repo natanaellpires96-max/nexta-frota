@@ -1064,21 +1064,25 @@ async function sincronizarDisponibilidadeVeiculos(dateStr, listaAlvo) {
 // Escuta ao vivo das ofertas sob demanda de uma data (usada pelo Roteirizador):
 // quando alguém oferta/retira uma placa em qualquer computador, o Roteirizador
 // é avisado na hora. Custo: as ofertas do dia uma vez + 1 leitura por mudança.
-let _ofertasEscuta = { ds: null, unsub: null };
+let _ofertasEscuta = { chave: null, unsub: null };
+// Escuta a data do Roteirizador + hoje + amanhã (oferta feita para outro dia
+// também é avisada). Cada mudança chega com a data dela (m.dateStr).
 function escutarOfertasSobDemanda(ds, aoMudar){
   if (!ds || !S.user) return;
-  if (_ofertasEscuta.ds === ds && _ofertasEscuta.unsub) { _ofertasEscuta.cb = aoMudar; return; }
+  const datas = [...new Set([ds, dateStr(0), dateStr(1)])].sort();
+  const chave = datas.join('|');
+  if (_ofertasEscuta.chave === chave && _ofertasEscuta.unsub) { _ofertasEscuta.cb = aoMudar; return; }
   try { _ofertasEscuta.unsub && _ofertasEscuta.unsub(); } catch(e) {}
-  _ofertasEscuta = { ds, unsub: null, cb: aoMudar };
+  _ofertasEscuta = { chave, unsub: null, cb: aoMudar };
   let primeira = true;
   try {
     _ofertasEscuta.unsub = onSnapshot(
-      query(collection(db, 'availability'), where('dateStr', '==', ds), where('oferta', '==', true)),
+      query(collection(db, 'availability'), where('dateStr', 'in', datas), where('oferta', '==', true)),
       snap => {
         const mud = snap.docChanges().map(c => ({ tipo: c.type, ...c.doc.data() }));
-        mud.forEach(m => cacheInvalidate(`status||${m.carrier}||${m.plate}||${ds}`));
+        mud.forEach(m => cacheInvalidate(`status||${m.carrier}||${m.plate}||${m.dateStr}`));
         if (primeira) { primeira = false; return; }
-        if (mud.length && typeof _ofertasEscuta.cb === 'function') _ofertasEscuta.cb(mud, ds);
+        if (mud.length && typeof _ofertasEscuta.cb === 'function') _ofertasEscuta.cb(mud);
       },
       e => console.warn('[escuta ofertas sob demanda]', e.code || e.message)
     );
@@ -4037,6 +4041,7 @@ async function salvarOfertaSobDemanda(carrier, plate, ds, rid){
       showToast(`${plate} ofertada para ${fmtDateStr(ds)}${data.time?' a partir das '+data.time:''}.`, true);
     }
     try { await dbAddAudit(ofertada ? "oferta_sob_demanda" : "oferta_sob_demanda_retirada", { carrier, plate, date: ds }); } catch(e) {}
+    try { window._rotAposOferta?.([{ plate, dateStr: ds, tipo: ofertada ? 'added' : 'removed' }]); } catch(e) {}
     await renderTabBody();
   } catch(e) {
     console.error('[oferta sob demanda]', e);

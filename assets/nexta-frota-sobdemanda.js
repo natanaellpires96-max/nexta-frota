@@ -571,6 +571,7 @@ window.sobOfertar = async (carrier, placa, ds, hora, obs) => {
       motoristaDiurno: ex.exists() ? (ex.data().motoristaDiurno || '') : '', motoristaNoturno: ex.exists() ? (ex.data().motoristaNoturno || '') : '',
       hodometro: null, hodometroFotoUrl: null });
     window._invalidarStatusPlaca?.(carrier, placa, ds);
+    try { window._rotAposOferta?.([{ plate: placa, dateStr: ds, tipo: 'added' }]); } catch (e) {}
     try { await window.dbAddAudit?.('oferta_sob_demanda', { carrier, plate: placa, date: ds }); } catch (e) {}
     toast(`${placa} ofertada para ${br(ds)}${hora ? ' a partir das ' + hora : ''}.`, true);
   } catch (e) { toast('Não consegui ofertar: ' + (e.code || e.message), false); }
