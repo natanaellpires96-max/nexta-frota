@@ -10949,43 +10949,11 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
             return `${String(Math.floor(md/60)).padStart(2,'0')}:${String(md%60).padStart(2,'0')}`;
           })();
           const temOverride = viagem.horarioCargaManualMin !== undefined;
-          // ── Sugestão de turno (mesma regra que escolhe o motorista acima):
-          // carga a partir do início de jornada e antes das 18:00 → diurno;
-          // senão noturno. Avisa se a viagem atravessa a troca de turno e se o
-          // motorista digitado não é o do turno sugerido.
-          const _turnoHtml = (() => {
-            const escA = t => String(t || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-            const fimAbs = (typeof fimCicloMin !== 'undefined' && !isNaN(fimCicloMin)) ? fimCicloMin : null;
-            const hm = m => { const md = ((Math.round(m) % 1440) + 1440) % 1440; return `${String(Math.floor(md / 60)).padStart(2, '0')}:${String(md % 60).padStart(2, '0')}`; };
-            const motSug = ehNoturno ? (v.motoristaNt || '') : (v.motoristaDiurno || '');
-            let aviso = '';
-            if (fimAbs != null) {
-              const diaCarga = Math.floor(cargaMin / 1440);
-              if (!ehNoturno) {
-                const trocaAbs = diaCarga * 1440 + 18 * 60;
-                if (fimAbs > trocaAbs) aviso = `retorno ${hm(fimAbs)} passa da troca de turno (18:00)`;
-              } else {
-                const diaFimTurno = hod >= 18 * 60 ? diaCarga + 1 : diaCarga;
-                const trocaAbs = diaFimTurno * 1440 + _jornadaIniHod;
-                if (fimAbs > trocaAbs) aviso = `retorno ${hm(fimAbs)} passa da troca de turno (${hm(_jornadaIniHod)})`;
-              }
-            }
-            const cor = ehNoturno ? 'background:#EEF2FF;color:#3730A3;border:1px solid #C7D2FE;' : 'background:#FEF9C3;color:#854D0E;border:1px solid #FDE68A;';
-            let h = `<span title="Sugestão pelo horário de carga (${cargaHHMM}): diurno = do início da jornada (${hm(_jornadaIniHod)}) até 18:00; noturno = 18:00 em diante${motSug ? ` · motorista ${ehNoturno ? 'noturno' : 'diurno'} do cadastro: ${escA(motSug)}` : ''}" style="font-size:10px;font-weight:700;border-radius:10px;padding:1px 8px;white-space:nowrap;${cor}">${ehNoturno ? '🌙 Turno noturno' : '☀ Turno diurno'}</span>`;
-            if (aviso) h += `<span title="A viagem começa num turno e termina no outro — pode precisar trocar de motorista no meio ou ajustar o horário de carga" style="font-size:10px;font-weight:600;color:#B45309;white-space:nowrap;">⚠ ${aviso}</span>`;
-            if (motSug && nomeMotor && motSug.trim().toUpperCase() !== nomeMotor.trim().toUpperCase()) {
-              h += `<button onclick="(function(b){var i=b.parentElement.querySelector('input:not([type=time])');if(i){i.value=b.dataset.m;i.dispatchEvent(new Event('input'));}b.remove();})(this)" data-m="${escA(motSug)}" title="O motorista digitado não é o do turno ${ehNoturno ? 'noturno' : 'diurno'} no cadastro da placa" style="font-size:10px;padding:1px 7px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-2);cursor:pointer;white-space:nowrap;">usar ${escA(motSug)}</button>`;
-            } else if (!nomeMotor && motSug === '' ) {
-              h += `<span style="font-size:10px;color:var(--text-3);font-style:italic;white-space:nowrap;">sem motorista ${ehNoturno ? 'noturno' : 'diurno'} no cadastro</span>`;
-            }
-            return h;
-          })();
           html += `<div style="padding:3px 10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;${utilViagBg(utilV)}border-bottom:1px solid var(--border);filter:brightness(0.95);">
             <span style="font-size:10px;color:var(--text-3);white-space:nowrap;">Motorista</span>
             <input value="${nomeMotor.replace(/"/g,'&quot;')}" placeholder="—"
               oninput="${onInput}"
               style="font-size:11px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;width:190px;background:var(--surface);color:var(--text);font-weight:500;" />
-            ${_turnoHtml}
             <span style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:6px;">${temOverride ? '✏️' : '🕐'} Carga</span>
             <input type="time" value="${cargaHHMM}"
               title="${temOverride ? 'Horário personalizado — clique em Restaurar para voltar ao calculado' : 'Horário calculado — edite para personalizar'}"
@@ -11046,6 +11014,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
                 ${p.pedido.terminal ? termTag(p.pedido.terminal) : ''}
                 ${temQuebra ? '<span class="tag tag-red">quebra</span>' : ''}
                 ${p.pedido.restricao ? `<span class="tag tag-yellow">${p.pedido.restricao}</span>` : ''}
+                ${p.pedido.turnoEntrega ? `<span class="tag" title="Turno de entrega informado no pedido" style="font-size:9px;background:#FFF7ED;color:#9A3412;border-color:#FDBA74;">${iconeTurnoEntrega(p.pedido.turnoEntrega)} Turno: ${p.pedido.turnoEntrega}</span>` : ''}
                 ${p.pedido.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ Exige ID Petronas</span>` : ''}
                 ${tiposStop}
                 <span class="pill" style="color:var(--pet-green);border-color:#C4E87A;margin-left:2px;">Vol. alocado: ${p.volumeTotal.toFixed(1)} m³</span>
