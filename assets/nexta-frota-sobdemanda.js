@@ -385,10 +385,14 @@ function linhaCiclo(c, secao) {
       ${STATUS.map(o => `<option value="${o.id}"${o.id === c.status ? ' selected' : ''} style="background:#fff;color:#111">${esc(o.label)}</option>`).join('')}</select>`;
   const eta = `<div style="display:flex;gap:3px"><input type="date" value="${esc(c.etaData || '')}" onchange="sobCampo('${jsq(c.id)}','etaData',this.value)" style="${inpCss};width:118px">
       <select onchange="sobCampo('${jsq(c.id)}','etaTurno',this.value)" style="${inpCss}"><option value="">turno</option>${TURNOS.map(t => `<option${t === c.etaTurno ? ' selected' : ''}>${t}</option>`).join('')}</select></div>`;
-  const dsr = `<input type="date" value="${esc(c.dsr || '')}" onchange="sobCampo('${jsq(c.id)}','dsr',this.value)" style="${inpCss};width:118px">`;
-  const prox = `<div style="display:flex;gap:3px;align-items:center"><input type="date" value="${esc(c.proxCarga || '')}" onchange="sobCampo('${jsq(c.id)}','proxCarga',this.value)" style="${inpCss};width:118px;font-weight:700">
-      <select onchange="sobCampo('${jsq(c.id)}','proxCargaNota',this.value)" title="Em vez de data: Manutenção, DSR, Sem previsão" style="${inpCss};width:46px">${NOTAS_PROX.map(n => `<option value="${esc(n)}"${n === (c.proxCargaNota || '') ? ' selected' : ''}>${n || '—'}</option>`).join('')}</select>
-      ${c.proxCargaNota ? `<span style="font-size:10px;font-weight:700;color:#F4B183">${esc(c.proxCargaNota)}</span>` : ''}</div>`;
+  const dsr = `<input type="date" value="${esc(c.dsr || '')}" onchange="sobCampo('${jsq(c.id)}','dsr',this.value)" style="${inpCss};width:100%;box-sizing:border-box">`;
+  // Próx. carga: OU a data OU uma nota (Manutenção / DSR / Sem previsão) —
+  // nunca as duas lado a lado (não cabe na coluna).
+  const optsNota = sel => NOTAS_PROX.map(n => `<option value="${esc(n)}"${n === sel ? ' selected' : ''} style="background:#fff;color:#111">${n || '— usar data —'}</option>`).join('');
+  const prox = c.proxCargaNota
+    ? `<select onchange="sobCampo('${jsq(c.id)}','proxCargaNota',this.value)" title="Escolha '— usar data —' para voltar a informar a data" style="${inpCss};width:100%;box-sizing:border-box;background:#F4B183;color:#6B2A06;font-weight:700;border:none">${optsNota(c.proxCargaNota)}</select>`
+    : `<div style="display:flex;gap:3px;align-items:center;min-width:0"><input type="date" value="${esc(c.proxCarga || '')}" onchange="sobCampo('${jsq(c.id)}','proxCarga',this.value)" style="${inpCss};flex:1;min-width:0;font-weight:700">
+      <select onchange="sobCampo('${jsq(c.id)}','proxCargaNota',this.value)" title="Em vez de data: Manutenção, DSR, Sem previsão" style="${inpCss};width:38px;flex:none">${optsNota('')}</select></div>`;
   const ofertarBtn = (c.proxCarga && c.placa) ? `<button class="btn btn-sm" style="font-size:10px;padding:2px 6px" onclick="sobOfertar('${jsq(c.carrier)}','${jsq(c.placa)}','${c.proxCarga}','${jsq(c.proxCargaHora || '')}','Retorno do ciclo ${c.cicloNum || ''}')" title="Ofertar a placa no Painel para ${br(c.proxCarga)}">📅 Ofertar ${brCurto(c.proxCarga)}</button>` : '';
   const somenteLeitura = secao === 'finalizadas';
   return `<tr style="${c.previa ? 'background:rgba(167,139,250,.05)' : ''}">
@@ -401,7 +405,7 @@ function linhaCiclo(c, secao) {
     <td>${somenteLeitura ? chip(s) : statusSel}</td>
     <td style="text-align:right;font-weight:600">${fmtVol(volCiclo(c))}</td>
     <td style="text-align:center;font-size:12px">${esc(prod)}</td>
-    ${somenteLeitura ? '' : `<td>${dsr}</td><td>${prox}${ofertarBtn ? `<div style="margin-top:3px">${ofertarBtn}</div>` : ''}</td>`}
+    ${somenteLeitura ? '' : `<td style="overflow:hidden">${dsr}</td><td style="overflow:hidden">${prox}${ofertarBtn ? `<div style="margin-top:3px">${ofertarBtn}</div>` : ''}</td>`}
     ${st.marcos ? MARCOS.map(m => celMarco(c, m)).join('') + `<td style="font-size:11px;white-space:nowrap">${esc(c.dataCarregamento ? br(c.dataCarregamento) : '')}</td>` : ''}
     <td style="white-space:nowrap"><button class="btn btn-sm" style="font-size:11px;padding:3px 7px" onclick="sobAbrirCiclo('${jsq(c.id)}')" title="Detalhes, marcos, histórico de alterações">✏️</button></td>
   </tr>`;
