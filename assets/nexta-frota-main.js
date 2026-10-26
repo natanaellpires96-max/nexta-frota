@@ -934,8 +934,11 @@ function _casarPlacaPainel(allPlates, carrierV, placaV){
   }
   return nSoPlaca === 1 ? soPlaca : null; // transportadora escrita diferente, mas placa única
 }
-async function sincronizarDisponibilidadeVeiculos(dateStr) {
-  if (!veiculos.length) return;
+// listaAlvo (opcional): sincroniza outra lista (ex.: cópias para a troca de
+// veículo do Histórico, avaliadas no dia da viagem) sem mexer em `veiculos`.
+async function sincronizarDisponibilidadeVeiculos(dateStr, listaAlvo) {
+  const veiculos = listaAlvo || window.veiculos || (typeof globalThis.veiculos !== 'undefined' ? globalThis.veiculos : []);
+  if (!veiculos || !veiculos.length) return;
   try {
     const allPlates = await dbGetPlates();
     // Pares a consultar: placas do Roteirizador (na grafia do Painel) + TODAS as
@@ -961,7 +964,7 @@ async function sincronizarDisponibilidadeVeiculos(dateStr) {
     // Ofertadas no Painel mas sem cadastro em Veículos & Turnos → aviso no Roteirizador
     const casadas = new Set();
     veiculos.forEach(v => { const m = _casarPlacaPainel(allPlates, v.transportadora, v.placa); if (m) casadas.add(`${m.carrier}||${m.p.placa}`); });
-    window._sobOfertadasSemCadastro = sobPainel
+    if (!listaAlvo) window._sobOfertadasSemCadastro = sobPainel
       .filter(({ carrier, p }) => !casadas.has(`${carrier}||${p.placa}`) && bulk[`${carrier}||${p.placa}||${dateStr}`]?.status === 'disponivel')
       .map(({ carrier, p }) => ({ carrier, placa: p.placa, capacidade: p.capacidade, dateStr }));
     // Retorna o nome do motorista apenas se ele estiver ativo no cadastro de

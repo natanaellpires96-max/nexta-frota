@@ -12318,28 +12318,16 @@ async function abrirTrocaVeiculoHistorico(veiculoId, petId) {
   const base = _histBaseDate(data, vi);
   const inicioAtual = _histInicioCargaAbs(vAtual, lista, idx);
   const vol = vi.paradas.reduce((s, p) => s + (p.volumeTotal || 0), 0);
-  // Candidatos: cadastro atual (fonte da verdade) + veículos do próprio arquivo.
-  const porPlaca = new Map();
-  (data.veiculos || []).forEach(v => v.placa && porPlaca.set(v.placa, { v, doArquivo: true }));
-  (veiculos || []).forEach(v => v.placa && porPlaca.set(v.placa, { v, doArquivo: porPlaca.has(v.placa) }));
-  const opcoes = [];
-  porPlaca.forEach(({ v }, placa) => {
-    const idArq = (data.veiculos || []).find(x => x.placa === placa)?.id;
-    const viagensArq = idArq != null ? (data.resultado?.[idArq] || []).filter(x => x && !x._vazio && (x.paradas || []).length) : [];
-    const vArq = (data.veiculos || []).find(x => x.placa === placa) || v;
-    const outras = viagensArq.filter(x => x !== vi).map(x => {
-      const ini = _histInicioCargaAbs(vArq, viagensArq, viagensArq.indexOf(x));
-      return { petId: x.petId, ini, fim: ini + _histDuracaoParedeMin(x) };
-    });
-    const cap = (v.compartimentos || []).reduce((s, c) => s + (Number(c.cap) || 0), 0) || Number(v.capacidade) || 0;
-    opcoes.push({ v, placa, cap, motivo: placa === vAtual.placa ? null : _trocaMotivoIncompativel(v, vi), outras, atual: placa === vAtual.placa });
-  });
-  opcoes.sort((a, b) => (b.atual - a.atual) || ((a.motivo ? 1 : 0) - (b.motivo ? 1 : 0)) || (a.cap - b.cap) || a.placa.localeCompare(b.placa));
-  _trocaCtx = { veiculoId, petId, base, inicioAtual, opcoes, duracao: _histDuracaoParedeMin(vi) };
+  // Candidatos avaliados no DIA DO CARREGAMENTO da viagem (não na data que
+  // está no seletor do Roteirizador) — senão oferta/disponibilidade do dia
+  // errado (ex.: placa sob demanda ofertada pro dia 26 aparecia "não ofertada").
+  const iniCarga = _fmtAbs(base, inicioAtual);
+  const opcoes = await _trocaMontarOpcoes(data, vi, vAtual, iniCarga.data);
+  _trocaCtx = { veiculoId, petId, base, inicioAtual, opcoes, duracao: _histDuracaoParedeMin(vi), data, vi, vAtual, dataAvaliada: iniCarga.data };
 
   const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   const ok = opcoes.filter(o => !o.motivo), nao = opcoes.filter(o => o.motivo);
-  const optHtml = o => `<option value="${esc(o.placa)}" ${o.atual ? 'selected' : ''}>${esc(o.placa)} · ${esc(o.v.tipo || '')} · ${o.cap} m³ · ${esc(o.v.transportadora || '—')}${o.v.eixos ? ` · ${o.v.eixos} eixos` : ''}${o.atual ? ' (atual)' : (o.outras.length ? ` · já tem ${o.outras.length} viagem(ns) nesta programação` : '')}</option>`;
+  const optHtml = _trocaOptHtml;
   const ini = _fmtAbs(base, inicioAtual);
   document.getElementById('troca-veic-modal')?.remove();
   const m = document.createElement('div');
@@ -12352,21 +12340,79 @@ async function abrirTrocaVeiculoHistorico(veiculoId, petId) {
       Atual: <b>${esc(vAtual.placa)}</b> · ${esc(vAtual.transportadora || '—')} · carregamento <b>${ini.br}</b><br>
       Viagem: <b>${vol.toFixed(1)} m³</b> · base ${esc(vi.paradas[0]?.pedido?.terminal || vi.terminalOrigem || '—')} · ${vi.paradas.length} entrega(s)
     </div>
-    <label style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;">Veículo (${ok.length} compatível${ok.length === 1 ? '' : 'is'})</label>
+    <label id="troca-veic-label" style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;">Veículo (${ok.length} compatível${ok.length === 1 ? '' : 'is'} em ${iniCarga.data.split('-').reverse().slice(0, 2).join('/')})</label>
     <select id="troca-veic-placa" onchange="_trocaAtualizarAvisos()" style="width:100%;font-size:12.5px;padding:7px 8px;margin:4px 0 12px;">${ok.map(optHtml).join('')}</select>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
-      <div><label style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;">Dia do carregamento</label><br><input type="date" id="troca-veic-data" value="${ini.data}" min="${_fmtAbs(base, 0).data}" oninput="_trocaAtualizarAvisos()" style="font-size:12.5px;padding:6px 8px;margin-top:4px;"/></div>
+      <div><label style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;">Dia do carregamento</label><br><input type="date" id="troca-veic-data" value="${ini.data}" min="${_fmtAbs(base, 0).data}" oninput="_trocaAtualizarAvisos();_trocaDataMudou()" style="font-size:12.5px;padding:6px 8px;margin-top:4px;"/></div>
       <div><label style="font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase;">Horário</label><br><input type="time" id="troca-veic-hora" value="${ini.hora}" oninput="_trocaAtualizarAvisos()" style="font-size:12.5px;padding:6px 8px;margin-top:4px;"/></div>
     </div>
     <div id="troca-veic-avisos" style="margin-top:12px;"></div>
-    ${nao.length ? `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:11.5px;color:#6B7280;">Veículos que não servem pra esta viagem (${nao.length})</summary>
-      <div style="font-size:11.5px;color:#6B7280;padding:6px 0 0 12px;line-height:1.6;">${nao.map(o => `• <b>${esc(o.placa)}</b> (${o.cap} m³, ${esc(o.v.transportadora || '—')}): ${esc(o.motivo)}`).join('<br>')}</div></details>` : ''}
+    <div id="troca-veic-nao">${_trocaNaoServemHtml(nao)}</div>
     <div style="font-size:10.5px;color:#9CA3AF;margin-top:10px;">Salva como nova revisão (o original fica preservado). O horário fica fixo e vale na OR, no PNG/WhatsApp e na Herrlog. Rota e km da viagem não mudam.</div>
     <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button class="btn btn-green" onclick="salvarTrocaVeiculoHistorico()">💾 Salvar</button></div>
   </div>`;
   document.body.appendChild(m);
   _trocaAtualizarAvisos();
 }
+const _trocaEsc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+function _trocaOptHtml(o) {
+  const esc = _trocaEsc;
+  return `<option value="${esc(o.placa)}" ${o.atual ? 'selected' : ''}>${esc(o.placa)} · ${esc(o.v.tipo || '')} · ${o.cap} m³ · ${esc(o.v.transportadora || '—')}${o.v.eixos ? ` · ${o.v.eixos} eixos` : ''}${o.atual ? ' (atual)' : (o.outras.length ? ` · já tem ${o.outras.length} viagem(ns) nesta programação` : '')}${!o.atual && o.v._sobDemanda ? ' · sob demanda ofertada' : ''}</option>`;
+}
+function _trocaNaoServemHtml(nao) {
+  const esc = _trocaEsc;
+  return nao.length ? `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:11.5px;color:#6B7280;">Veículos que não servem pra esta viagem (${nao.length})</summary>
+      <div style="font-size:11.5px;color:#6B7280;padding:6px 0 0 12px;line-height:1.6;">${nao.map(o => `• <b>${esc(o.placa)}</b> (${o.cap} m³, ${esc(o.v.transportadora || '—')}): ${esc(o.motivo)}`).join('<br>')}</div></details>` : '';
+}
+// Monta os candidatos da troca com a disponibilidade do dia `dataIso`.
+// Trabalha em CÓPIAS dos veículos — não mexe no estado do Roteirizador.
+async function _trocaMontarOpcoes(data, vi, vAtual, dataIso) {
+  const porPlaca = new Map();
+  (data.veiculos || []).forEach(v => v.placa && porPlaca.set(v.placa, { ...v }));
+  (veiculos || []).forEach(v => v.placa && porPlaca.set(v.placa, { ...v }));
+  const copias = [...porPlaca.values()];
+  if (dataIso && typeof sincronizarDisponibilidadeVeiculos === 'function') {
+    try { await sincronizarDisponibilidadeVeiculos(dataIso, copias); } catch (e) { console.warn('[troca] disponibilidade do dia', e); }
+  }
+  const opcoes = [];
+  copias.forEach(v => {
+    const placa = v.placa;
+    const idArq = (data.veiculos || []).find(x => x.placa === placa)?.id;
+    const viagensArq = idArq != null ? (data.resultado?.[idArq] || []).filter(x => x && !x._vazio && (x.paradas || []).length) : [];
+    const vArq = (data.veiculos || []).find(x => x.placa === placa) || v;
+    const outras = viagensArq.filter(x => x !== vi).map(x => {
+      const ini = _histInicioCargaAbs(vArq, viagensArq, viagensArq.indexOf(x));
+      return { petId: x.petId, ini, fim: ini + _histDuracaoParedeMin(x) };
+    });
+    const cap = (v.compartimentos || []).reduce((s, c) => s + (Number(c.cap) || 0), 0) || Number(v.capacidade) || 0;
+    opcoes.push({ v, placa, cap, motivo: placa === vAtual.placa ? null : _trocaMotivoIncompativel(v, vi), outras, atual: placa === vAtual.placa });
+  });
+  opcoes.sort((a, b) => (b.atual - a.atual) || ((a.motivo ? 1 : 0) - (b.motivo ? 1 : 0)) || (a.cap - b.cap) || a.placa.localeCompare(b.placa));
+  return opcoes;
+}
+// Mudou o dia do carregamento no modal → reavalia a disponibilidade nesse dia.
+let _trocaDataTimer = null;
+function _trocaDataMudou() {
+  clearTimeout(_trocaDataTimer);
+  _trocaDataTimer = setTimeout(async () => {
+    const ctx = _trocaCtx;
+    const dt = document.getElementById('troca-veic-data')?.value;
+    if (!ctx || !dt || dt === ctx.dataAvaliada) return;
+    const selAntes = document.getElementById('troca-veic-placa')?.value;
+    const lbl = document.getElementById('troca-veic-label');
+    if (lbl) lbl.textContent = 'Veículo (consultando disponibilidade…)';
+    const opcoes = await _trocaMontarOpcoes(ctx.data, ctx.vi, ctx.vAtual, dt);
+    if (_trocaCtx !== ctx) return; // modal fechado/reaberto no meio
+    ctx.opcoes = opcoes; ctx.dataAvaliada = dt;
+    const ok = opcoes.filter(o => !o.motivo), nao = opcoes.filter(o => o.motivo);
+    const sel = document.getElementById('troca-veic-placa');
+    if (sel) { sel.innerHTML = ok.map(_trocaOptHtml).join(''); if (ok.some(o => o.placa === selAntes)) sel.value = selAntes; }
+    const box = document.getElementById('troca-veic-nao'); if (box) box.innerHTML = _trocaNaoServemHtml(nao);
+    if (lbl) lbl.textContent = `Veículo (${ok.length} compatível${ok.length === 1 ? '' : 'is'} em ${dt.split('-').reverse().slice(0, 2).join('/')})`;
+    _trocaAtualizarAvisos();
+  }, 400);
+}
+window._trocaDataMudou = _trocaDataMudou;
 function _trocaInicioDigitadoAbs() {
   if (!_trocaCtx) return NaN;
   const dt = document.getElementById('troca-veic-data')?.value, hr = document.getElementById('troca-veic-hora')?.value;
@@ -12391,7 +12437,7 @@ function _trocaAtualizarAvisos() {
     else if (o.outras.length) avisos.push({ cor: '#4B5563', txt: `Outras viagens do ${placa} nesta programação: ${o.outras.map(x => `${x.petId} ${_fmtAbs(_trocaCtx.base, x.ini).br}`).join(', ')}.` });
     if (o.v._horarioDisponivelAPartirDe) {
       const disp = parseHoraMin(o.v._horarioDisponivelAPartirDe);
-      if (!isNaN(disp) && (ini % 1440) < disp && Math.floor(ini / 1440) === 0) avisos.push({ cor: '#B45309', txt: `⚠️ Transportador informou ${placa} disponível só a partir das ${o.v._horarioDisponivelAPartirDe}.` });
+      if (!isNaN(disp) && (ini % 1440) < disp && Math.floor(ini / 1440) === Math.round((new Date((_trocaCtx.dataAvaliada || '') + 'T00:00:00').getTime() - _trocaCtx.base.getTime()) / 86400000)) avisos.push({ cor: '#B45309', txt: `⚠️ Transportador informou ${placa} disponível só a partir das ${o.v._horarioDisponivelAPartirDe}.` });
     }
   }
   box.innerHTML = avisos.map(a => `<div style="font-size:12px;color:${a.cor};margin-bottom:4px;">${a.txt}</div>`).join('');
