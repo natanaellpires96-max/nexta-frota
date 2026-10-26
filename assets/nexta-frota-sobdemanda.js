@@ -433,15 +433,17 @@ function tabelaSecao(titulo, linhas, secao, extraHead = '') {
   const corpo = linhas.length
     ? linhas.map(r => r.tipo === 'ciclo' ? linhaCiclo(r.c, secao) : linhaVeiculo(r)).join('')
     : `<tr><td colspan="${cab.length}" style="text-align:center;color:var(--muted);font-size:12px;padding:14px">Nada aqui.</td></tr>`;
-  // Larguras fixas por coluna (a tabela do sistema usa layout fixo).
-  const larg = { 'CICLO': 54, 'TRANSPORTADORA': 120, 'PLACA': 88, 'CLIENTE': 250, 'CARREGAMENTO': 112, 'ETA DESTINO': 214, 'ETA / FINALIZADA': 130,
-    'STATUS': 168, 'VOLUME': 70, 'PRODUTO': 76, 'DSR': 134, 'PRÓX. CARGA': 196, 'DATA CARREG.': 100, '': 92 };
-  const ws = cab.map(h => larg[h] || 118);
-  const total = ws.reduce((a, b) => a + b, 0);
+  // Larguras por coluna (a tabela do sistema usa layout fixo). A coluna
+  // CLIENTE fica sem largura: ocupa todo o espaço que sobrar, então a tabela
+  // preenche o quadro inteiro; só rola na horizontal em tela bem estreita.
+  const larg = { 'CICLO': 46, 'TRANSPORTADORA': 112, 'PLACA': 84, 'CARREGAMENTO': 108, 'ETA DESTINO': 204, 'ETA / FINALIZADA': 120,
+    'STATUS': 160, 'VOLUME': 62, 'PRODUTO': 70, 'DSR': 126, 'PRÓX. CARGA': 186, 'DATA CARREG.': 96, '': 84 };
+  const ws = cab.map(h => h === 'CLIENTE' ? null : (larg[h] || 112));
+  const minimo = ws.reduce((a, b) => a + (b || 0), 0) + 230;
   return `<div class="carrier-block" style="margin-bottom:1.1rem">
     <div class="carrier-head" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${titulo}<span class="ch-count">${linhas.length}</span>${extraHead}</div>
-    <div class="tscroll"><table class="table" style="table-layout:fixed;width:${total}px;min-width:${total}px">
-      <colgroup>${ws.map(w => `<col style="width:${w}px">`).join('')}</colgroup>
+    <div class="tscroll"><table class="table" style="table-layout:fixed;width:100%;min-width:${minimo}px">
+      <colgroup>${ws.map(w => w ? `<col style="width:${w}px">` : '<col>').join('')}</colgroup>
       <thead><tr>${cab.map(h => `<th style="white-space:nowrap">${h}</th>`).join('')}</tr></thead>
       <tbody>${corpo}</tbody></table></div></div>`;
 }
@@ -449,6 +451,13 @@ function tabelaSecao(titulo, linhas, secao, extraHead = '') {
 async function renderSobDemanda(body) {
   _body = body || _body || document.getElementById('tab-body');
   if (!_body) return;
+  // Esta aba usa a largura toda da tela (o sistema limita o conteúdo a 1440px).
+  if (!document.getElementById('sob-estilo-largo')) {
+    const stl = document.createElement('style'); stl.id = 'sob-estilo-largo';
+    stl.textContent = '.main.sob-larga{max-width:none;padding-left:1.25rem;padding-right:1.25rem}';
+    document.head.appendChild(stl);
+  }
+  document.querySelector('.main')?.classList.add('sob-larga');
   if (!ehOperacional()) { _body.innerHTML = '<div class="empty">Acesso restrito.</div>'; return; }
   if (!st.carregadoEm) _body.innerHTML = '<div class="loading"><span class="spin"></span>Carregando ciclos da operação sob demanda...</div>';
   try { await carregarTudo(false); }

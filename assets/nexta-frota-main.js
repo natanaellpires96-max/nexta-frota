@@ -3034,6 +3034,7 @@ async function setTab(t){
 async function renderTabBody(){
   const body=document.getElementById("tab-body");
   if(!body) return;
+  document.querySelector('.main')?.classList.remove('sob-larga'); // só a aba Operação sob demanda usa a tela toda
   parkRoteirizadorShell();
   if(S.adminTab==="dashboard") await renderDashboard(body);
   else if(S.adminTab==="kpis") await renderKpisMensais(body);
