@@ -8984,8 +8984,13 @@ function renderTemplateOperacao() {
       // primeira entrega recebe os CPTs mais altos →
       // template (CPT desc) exibe as entregas na sequência correta da rota.
       const paradasRev = [...(viOriginal.paradas || [])].reverse();
+      // Zera TODAS as alocações antes de re-simular: item editado no Histórico
+      // (volume trocado/zerado) não pode manter o compartimento antigo — era o
+      // que fazia aparecer CPT repetido no PNG (o antigo + o do pedido incluído).
+      for (const p of paradasRev) for (const it of (p.itens || [])) it.alocacoesCpt = [];
       for (const p of paradasRev) {
         for (const it of (p.itens || [])) {
+          if (!((Number(it.volume) || 0) > 0)) continue;
           const el = compsSimul.filter(c => c.disponivel > 0 && compElegivelProduto(c, it.produto));
           const aloc = selecionarCompartimentos(el, it.volume, 'exact')
                     || selecionarCompartimentos(el, it.volume, 'maxLE');
@@ -9002,6 +9007,8 @@ function renderTemplateOperacao() {
         }
       }
     })();
+    const _cptsUsados = new Set();
+    (viOriginal.paradas || []).forEach(p => (p.itens || []).forEach(it => (it.alocacoesCpt || []).forEach(a => { if ((a.volume || 0) > 0 && a.cpt) _cptsUsados.add(Number(a.cpt)); })));
     (viOriginal.paradas || []).forEach(p => {
       const cidadeEntrega = (p.pedido?.cidade || '').toString().trim();
       const postoCidade = cidadeEntrega ? `${p.pedido?.cliente || ''} (${cidadeEntrega.toUpperCase()})` : (p.pedido?.cliente || '');
@@ -9012,7 +9019,9 @@ function renderTemplateOperacao() {
       (p.pedido?.produtos || []).forEach(pr => {
         if (pr.ordemSAP) produtoOrdemMap[pr.produto] = pr.ordemSAP;
       });
-      const itens = (p.itens || []).length ? p.itens : [{ produto: '-', volume: p.volumeTotal || 0 }];
+      // Item com volume zerado (pedido trocado no Histórico) não vira linha na OR.
+      const _itensComVol = (p.itens || []).filter(it => (Number(it.volume) || 0) > 0);
+      const itens = _itensComVol.length ? _itensComVol : ((p.itens || []).length ? [] : [{ produto: '-', volume: p.volumeTotal || 0 }]);
       const _prodOcorrencia = {}; // rastreia quantas vezes cada produto apareceu nos itens
       const linhasParada = itens.flatMap(it => {
         const prodKey = it.produto || '';
@@ -9048,8 +9057,13 @@ function renderTemplateOperacao() {
         }];
       });
       linhasParada.forEach(ld => {
-        // Prefere o compartimento real da alocação; só usa countdown quando não há info de compartimento.
-        const cptAtrib = ld.cptOrig || (cptAtual > 0 ? cptAtual-- : '');
+        // Prefere o compartimento real da alocação; só usa countdown quando não há
+        // info de compartimento — pulando os CPTs já ocupados por outra linha.
+        let cptAtrib = ld.cptOrig;
+        if (!cptAtrib) {
+          while (cptAtual > 0 && _cptsUsados.has(cptAtual)) cptAtual--;
+          cptAtrib = cptAtual > 0 ? cptAtual-- : '';
+        }
         if (!paradasVisiveisRef.has(p)) return;
         linhasDados.push({ ...ld, cpt: cptAtrib });
       });
@@ -12788,7 +12802,7 @@ async function salvarEdicaoVolumesParada() {
     const parada = (viagem.paradas || [])[ctx.paradaIndex];
     if (!parada) { alert('Não achei essa entrega dentro da viagem — talvez a ordem das paradas tenha mudado.'); return; }
     if (Array.isArray(parada.itens) && parada.itens.length === novosVolumes.length) {
-      parada.itens.forEach((it, i) => { it.volume = novosVolumes[i].volume; });
+      parada.itens.forEach((it, i) => { if (it.volume !== novosVolumes[i].volume) it.alocacoesCpt = []; it.volume = novosVolumes[i].volume; });
     }
     parada.volumeTotal = novosVolumes.reduce((s, p) => s + p.volume, 0);
     const novoFilename = await _histSalvarRevisao(filenameAtual, data);
