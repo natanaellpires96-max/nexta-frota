@@ -1114,6 +1114,9 @@ function dashAgregar(snapshots, cidadesFiltro = null, transportadorasFiltro = nu
           mesKey: mesKeySnap,
           termOrigem: vi.terminalOrigem || v.terminal || '',
           destinos: Array.from(new Set(vi.paradas.map(p => (p.pedido?.cidade || p.pedido?.cliente || '')))).join(', '),
+          petId: vi.petId || '', // nº da viagem (Histórico por veículo)
+          rotaCidades: Array.from(new Set(vi.paradas.map(p => String(p.pedido?.cidade || '').trim()).filter(Boolean))), // destinos na ordem de entrega
+          clientesViagem: vi.paradas.map(p => p.pedido?.cliente || '').filter(Boolean),
           kmIda: kmIdaViagem,
           volume: volViagem,
           volumePorCliente: volumePorClienteViagem,
@@ -2003,6 +2006,26 @@ function _dashHistVeiculoKmPorDia(placaNorm) {
   });
   return mapa;
 }
+// Viagens por dia pra uma placa (nº da viagem + rota), na ordem da viagem.
+function _dashHistVeiculoViagensPorDia(placaNorm) {
+  const mapa = {};
+  (_dashUltimoAgregado?.entradasTransportadora || []).forEach(e => {
+    if (e._semViagem) return;
+    if ((e.placa || '').trim().toUpperCase() !== placaNorm) return;
+    (mapa[e.data] = mapa[e.data] || []).push({
+      petId: e.petId || '', origem: (e.cidadeOp && e.cidadeOp !== '(sem cidade)') ? e.cidadeOp : (e.termOrigem || ''), destinos: e.rotaCidades || [],
+      clientes: e.clientesViagem || [], km: (e.kmIda || 0) * 2, volume: e.volume || 0,
+    });
+  });
+  Object.values(mapa).forEach(l => l.sort((a, b) => String(a.petId).localeCompare(String(b.petId), 'pt-BR', { numeric: true })));
+  return mapa;
+}
+// "MOGI GUACU" → "Mogi Guacu"; "SAO JOSE DOS CAMPOS - SP" → "Sao Jose dos Campos"
+function _dashHistCidade(c) {
+  const semUf = String(c || '').replace(/\s*[-/]\s*[A-Za-z]{2}$/, '').trim();
+  const min = new Set(['de', 'da', 'do', 'dos', 'das', 'e']);
+  return semUf.toLowerCase().split(/\s+/).map((w, i) => (i && min.has(w)) ? w : w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
 // Cache por placa — evita reconsultar TODO o histórico daquela placa toda vez
 // que um filtro do Dashboard muda (cidade, cliente, mês...), já que
 // dashRender() re-chama esta função sempre que há um veículo selecionado.
@@ -2071,6 +2094,7 @@ async function dashCarregarHistoricoVeiculo(placaEscolhida) {
   // — evita "piscar" dado de uma placa antiga por cima da nova selecionada.
   if (_dashHistVeiculoPlacaAtual !== placaEscolhida) return;
   const kmPorDia = _dashHistVeiculoKmPorDia(pNorm);
+  const viagensPorDia = _dashHistVeiculoViagensPorDia(pNorm);
   const linhas = dias.map(dstr => {
     const dt = new Date(dstr + 'T00:00:00');
     return {
@@ -2078,6 +2102,7 @@ async function dashCarregarHistoricoVeiculo(placaEscolhida) {
       diaSemana: _DASH_HISTVEIC_DIAS_SEMANA[dt.getDay()],
       status: statusPorDia[dstr] || null,
       km: kmPorDia[dstr] || 0,
+      viagens: viagensPorDia[dstr] || [],
     };
   });
   _dashHistVeiculoDados = linhas;
@@ -2090,53 +2115,89 @@ function dashRenderHistoricoVeiculo(linhas, placa, erro) {
     box.innerHTML = '<div style="color:var(--text-3);text-align:center;padding:24px;font-size:12px;">Sem dados para este veículo no período.</div>';
     return;
   }
+  const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const avisoErro = erro
-    ? `<div style="background:rgba(240,96,96,.12);border:1px solid rgba(226,60,60,.35);border-radius:8px;padding:8px 12px;font-size:11px;color:#e23c3c;margin-bottom:10px;">⚠️ Não foi possível buscar o status de disponibilidade (${erro}). O km planejado abaixo continua correto, só o status ficou de fora.</div>`
+    ? `<div style="background:rgba(240,96,96,.12);border:1px solid rgba(226,60,60,.35);border-radius:8px;padding:8px 12px;font-size:11px;color:#e23c3c;margin-bottom:10px;">⚠️ Não foi possível buscar o status de disponibilidade (${esc(erro)}). Viagens e km abaixo continuam corretos, só o status ficou de fora.</div>`
     : '';
-  const fmtDataCurta = dstr => { const [y,m,d] = dstr.split('-'); return `${d}/${m}`; };
-  const chipStatus = (l) => {
-    const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status, cor: 'var(--text-2)', bg: 'rgba(255,255,255,.06)', borda: 'var(--border-dk)' }) : null;
+  const fmtDataCurta = dstr => { const [, m, d] = dstr.split('-'); return `${d}/${m}`; };
+  const fmtN = n => Math.round(n || 0).toLocaleString('pt-BR');
+  const fmtV = n => (Math.round((n || 0) * 10) / 10).toLocaleString('pt-BR');
+  const hoje = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
+  const stDe = l => l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status, cor: 'var(--text-2)', bg: 'rgba(127,127,127,.08)', borda: 'var(--border-dk)' }) : null;
+  const chipStatus = l => {
+    const st = stDe(l);
     if (!st) return `<span style="display:inline-block;padding:3px 9px;border-radius:20px;font-size:10px;color:var(--text-3);border:1px dashed var(--border-dk);white-space:nowrap;">sem registro</span>`;
     return `<span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:700;color:${st.cor};background:${st.bg};border:1px solid ${st.borda};white-space:nowrap;">${st.label}</span>`;
   };
-  // Fim de semana com fundo levemente destacado, pra achar sábado/domingo
-  // de relance numa tabela longa — mesmo truque visual da planilha original.
-  const fundoDia = dstr => {
-    const dow = new Date(dstr + 'T00:00:00').getDay();
-    return (dow === 0 || dow === 6) ? 'background:rgba(255,255,255,.035);' : '';
-  };
+  const fimSemana = dstr => { const dow = new Date(dstr + 'T00:00:00').getDay(); return dow === 0 || dow === 6; };
+  const fundoDia = dstr => dstr === hoje ? 'background:rgba(59,127,214,.07);' : (fimSemana(dstr) ? 'background:rgba(127,127,127,.06);' : '');
   const bordaCol = i => (i > 0 ? 'border-left:1px solid var(--border-dk);' : '');
-  // Primeira coluna (rótulo da linha) fixa ao rolar na horizontal — sticky
-  // exige fundo opaco (senão o conteúdo por baixo aparece por trás dela) e
-  // um z-index maior que as demais células pra ficar sempre por cima.
-  const colRotulo = 'position:sticky;left:0;z-index:2;padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;white-space:nowrap;background:var(--surface);box-shadow:2px 0 4px -2px rgba(0,0,0,.15);';
-  const colunas = linhas.length;
+  const colRotulo = 'position:sticky;left:0;z-index:2;padding:8px 10px;font-size:10px;font-weight:700;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;background:var(--surface);box-shadow:2px 0 4px -2px rgba(0,0,0,.15);vertical-align:middle;';
+  // Cartão de cada viagem: nº, rota (origem → destinos na ordem) e volume/km.
+  const cardViagem = vg => {
+    const destinos = vg.destinos.map(_dashHistCidade);
+    const rota = [vg.origem ? _dashHistCidade(vg.origem) : '', ...destinos].filter(Boolean);
+    const titulo = `${vg.petId || 'Viagem'}\n${rota.join(' → ')}\n${vg.clientes.join(' · ')}\n${fmtV(vg.volume)} m³ · ${fmtN(vg.km)} km (ida+volta)`;
+    return `<div title="${esc(titulo)}" style="text-align:left;border:1px solid var(--border-dk);border-left:3px solid #8a4fd6;border-radius:6px;padding:5px 7px;margin:0 0 5px;background:rgba(138,79,214,.05);">
+      <div style="font-family:var(--font-cond,inherit);font-size:11px;font-weight:800;letter-spacing:.03em;color:var(--text);white-space:nowrap;">${esc(vg.petId || '—')}</div>
+      <div style="font-size:10.5px;line-height:1.35;color:var(--text-2);margin-top:2px;">
+        ${vg.origem ? `<span style="color:var(--text-3);">${esc(_dashHistCidade(vg.origem))}</span> → ` : ''}${destinos.length ? destinos.map(d => `<b style="font-weight:600;color:var(--text);">${esc(d)}</b>`).join(' → ') : '<span style="color:var(--text-3);">—</span>'}
+      </div>
+      <div style="font-size:10px;color:var(--text-3);margin-top:3px;white-space:nowrap;">${fmtV(vg.volume)} m³ · ${fmtN(vg.km)} km</div>
+    </div>`;
+  };
+  // Resumo do período
+  const totViagens = linhas.reduce((s, l) => s + l.viagens.length, 0);
+  const totKm = linhas.reduce((s, l) => s + (l.km || 0), 0);
+  const totVol = linhas.reduce((s, l) => s + l.viagens.reduce((a, v) => a + (v.volume || 0), 0), 0);
+  const diasComViagem = linhas.filter(l => l.viagens.length).length;
+  const diasDisp = linhas.filter(l => l.status === 'disponivel').length;
+  const diasDispSemViagem = linhas.filter(l => l.status === 'disponivel' && !l.viagens.length && l.data < hoje).length;
+  const kpi = (v, rot, cor) => `<div style="flex:1;min-width:120px;border:1px solid var(--border-dk);border-radius:8px;padding:8px 12px;background:var(--surface);">
+      <div style="font-size:17px;font-weight:800;color:${cor || 'var(--text)'};line-height:1.1;">${v}</div>
+      <div style="font-size:10px;color:var(--text-3);margin-top:2px;">${rot}</div></div>`;
+  const larguraCol = linhas.some(l => l.viagens.length) ? 150 : 72;
   box.innerHTML = `
     ${avisoErro}
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
-      <div style="font-size:11px;color:var(--text-3);">Veículo <strong style="color:var(--text);">${placa}</strong> · ${linhas.length} dia(s) no período</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+      <div style="font-size:12px;color:var(--text-3);">Veículo <strong style="color:var(--text);font-size:13px;">${esc(placa)}</strong> · ${linhas.length} dia(s) no período</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         ${Object.values(_DASH_HISTVEIC_STATUS).map(st => `<span style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-3);"><span style="width:8px;height:8px;border-radius:50%;background:${st.cor};display:inline-block;"></span>${st.label}</span>`).join('')}
       </div>
     </div>
-    <div style="overflow-x:auto;border:0.5px solid var(--border-dk);border-radius:8px;">
-      <table style="border-collapse:collapse;width:100%;min-width:${colunas * 62}px;">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      ${kpi(fmtN(totViagens), `viagens em ${diasComViagem} dia(s)`, '#8a4fd6')}
+      ${kpi(fmtN(totKm), 'km no período (ida+volta)', 'var(--pet-green,#4caf1f)')}
+      ${kpi(`${fmtV(totVol)} m³`, 'volume transportado')}
+      ${kpi(`${diasDisp}`, 'dias disponível', '#4caf1f')}
+      ${kpi(`${diasDispSemViagem}`, 'dias disponível sem viagem', diasDispSemViagem ? '#c98a00' : 'var(--text)')}
+    </div>
+    <div style="overflow-x:auto;border:1px solid var(--border-dk);border-radius:10px;">
+      <table style="border-collapse:collapse;width:100%;min-width:${linhas.length * larguraCol + 120}px;table-layout:fixed;">
+        <colgroup><col style="width:120px">${linhas.map(() => `<col style="width:${larguraCol}px">`).join('')}</colgroup>
+        <thead>
+          <tr style="border-bottom:1px solid var(--border-dk);">
+            <th style="${colRotulo}text-align:left;">Dia</th>
+            ${linhas.map((l, i) => `<th style="padding:7px 4px;text-align:center;${bordaCol(i)}${fundoDia(l.data)}">
+              <div style="font-size:10px;font-weight:600;color:${fimSemana(l.data) ? '#3b7fd6' : 'var(--text-3)'};text-transform:uppercase;letter-spacing:.05em;">${l.diaSemana}</div>
+              <div style="font-size:12.5px;font-weight:800;color:var(--text);">${fmtDataCurta(l.data)}${l.data === hoje ? ' <span style="font-size:9px;font-weight:700;color:#3b7fd6;">HOJE</span>' : ''}</div>
+            </th>`).join('')}
+          </tr>
+        </thead>
         <tbody>
           <tr style="border-bottom:1px solid var(--border-dk);">
-            <td style="${colRotulo}">Dia semana</td>
-            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;color:var(--text-3);${bordaCol(i)}${fundoDia(l.data)}">${l.diaSemana}</td>`).join('')}
-          </tr>
-          <tr style="border-bottom:1px solid var(--border-dk);">
-            <td style="${colRotulo}">Data</td>
-            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11px;font-weight:700;color:var(--text);${bordaCol(i)}${fundoDia(l.data)}">${fmtDataCurta(l.data)}</td>`).join('')}
-          </tr>
-          <tr style="border-bottom:1px solid var(--border-dk);">
             <td style="${colRotulo}">Status</td>
-            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;${bordaCol(i)}${fundoDia(l.data)}">${chipStatus(l)}</td>`).join('')}
+            ${linhas.map((l, i) => `<td style="padding:7px 4px;text-align:center;${bordaCol(i)}${fundoDia(l.data)}">${chipStatus(l)}</td>`).join('')}
+          </tr>
+          <tr style="border-bottom:1px solid var(--border-dk);">
+            <td style="${colRotulo}">Viagens</td>
+            ${linhas.map((l, i) => `<td style="padding:7px 6px 2px;vertical-align:top;${bordaCol(i)}${fundoDia(l.data)}">${l.viagens.length
+              ? (l.viagens.length > 1 ? `<div style="font-size:9.5px;font-weight:700;color:#8a4fd6;text-align:center;margin-bottom:4px;">${l.viagens.length} viagens</div>` : '') + l.viagens.map(cardViagem).join('')
+              : `<div style="text-align:center;color:var(--text-3);font-size:11px;padding:4px 0 6px;">—</div>`}</td>`).join('')}
           </tr>
           <tr>
             <td style="${colRotulo}">Km do dia</td>
-            ${linhas.map((l,i)=>`<td style="padding:6px 4px;text-align:center;font-size:11.5px;font-weight:700;color:${l.km ? 'var(--pet-green,#b5e51d)' : 'var(--text-3)'};${bordaCol(i)}${fundoDia(l.data)}">${l.km?Math.round(l.km).toLocaleString('pt-BR'):'—'}</td>`).join('')}
+            ${linhas.map((l, i) => `<td style="padding:7px 4px;text-align:center;font-size:12px;font-weight:800;color:${l.km ? 'var(--pet-green,#4caf1f)' : 'var(--text-3)'};${bordaCol(i)}${fundoDia(l.data)}">${l.km ? fmtN(l.km) : '—'}</td>`).join('')}
           </tr>
         </tbody>
       </table>
@@ -2148,10 +2209,12 @@ function dashExportarHistoricoVeiculoCSV() {
     return;
   }
   const linhasCsv = [
-    ['Placa', 'Data', 'Dia da Semana', 'Status', 'Km do Dia (ida+volta)'].join(';'),
+    ['Placa', 'Data', 'Dia da Semana', 'Status', 'Km do Dia (ida+volta)', 'Viagens', 'Rotas'].join(';'),
     ..._dashHistVeiculoDados.map(l => {
       const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status }) : { label: '' };
-      return [_dashHistVeiculoPlacaAtual, l.data, l.diaSemana, st.label, l.km ? Math.round(l.km) : ''].join(';');
+      const vgs = l.viagens || [];
+      const rotas = vgs.map(v => [v.origem, ...(v.destinos || [])].filter(Boolean).map(_dashHistCidade).join(' > ')).join(' | ');
+      return [_dashHistVeiculoPlacaAtual, l.data, l.diaSemana, st.label, l.km ? Math.round(l.km) : '', vgs.map(v => v.petId).join(' | '), rotas].map(x => String(x).replace(/;/g, ',')).join(';');
     }),
   ];
   const csv = '\uFEFF' + linhasCsv.join('\r\n'); // BOM pro Excel abrir acentos certinho
