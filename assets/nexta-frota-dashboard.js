@@ -2203,21 +2203,41 @@ function dashRenderHistoricoVeiculo(linhas, placa, erro) {
       </table>
     </div>`;
 }
+// Linhas da exportação (CSV e Excel): uma por VIAGEM — dia com 2 viagens
+// sai em 2 linhas; dia sem viagem sai numa linha só. O km do dia vai só na
+// 1ª linha do dia, pra soma da coluna não duplicar.
+function _dashHistVeiculoLinhasExport() {
+  const fmtBr = d => { const [y, m, dd] = d.split('-'); return `${dd}/${m}/${y}`; };
+  const out = [];
+  _dashHistVeiculoDados.forEach(l => {
+    const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status }) : { label: '' };
+    const base = { placa: _dashHistVeiculoPlacaAtual, data: fmtBr(l.data), dia: l.diaSemana, status: st.label };
+    const vgs = l.viagens || [];
+    if (!vgs.length) { out.push({ ...base, kmDia: l.km ? Math.round(l.km) : '', qtd: 0, petId: '', rota: '', clientes: '', vol: '', kmViagem: '' }); return; }
+    vgs.forEach((v, i) => out.push({
+      ...base, kmDia: i === 0 && l.km ? Math.round(l.km) : '', qtd: i === 0 ? vgs.length : '',
+      petId: v.petId || '', rota: [v.origem, ...(v.destinos || [])].filter(Boolean).map(_dashHistCidade).join(' → '),
+      clientes: (v.clientes || []).join(' | '), vol: Math.round((v.volume || 0) * 10) / 10, kmViagem: Math.round(v.km || 0),
+    }));
+  });
+  return out;
+}
+const _DASH_HISTVEIC_COLS_EXPORT = [
+  ['placa', 'Placa', 10], ['data', 'Data', 11], ['dia', 'Dia da Semana', 9], ['status', 'Status', 20],
+  ['kmDia', 'Km do Dia (ida+volta)', 12], ['qtd', 'Viagens no Dia', 9], ['petId', 'Nº Viagem', 12],
+  ['rota', 'Rota', 48], ['clientes', 'Clientes', 60], ['vol', 'Volume (m³)', 10], ['kmViagem', 'Km da Viagem (ida+volta)', 12],
+];
 function dashExportarHistoricoVeiculoCSV() {
   if (!_dashHistVeiculoDados.length || !_dashHistVeiculoPlacaAtual) {
     showToast('Selecione um veículo com dados carregados antes de exportar.', false);
     return;
   }
+  const cols = _DASH_HISTVEIC_COLS_EXPORT;
   const linhasCsv = [
-    ['Placa', 'Data', 'Dia da Semana', 'Status', 'Km do Dia (ida+volta)', 'Viagens', 'Rotas'].join(';'),
-    ..._dashHistVeiculoDados.map(l => {
-      const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status }) : { label: '' };
-      const vgs = l.viagens || [];
-      const rotas = vgs.map(v => [v.origem, ...(v.destinos || [])].filter(Boolean).map(_dashHistCidade).join(' > ')).join(' | ');
-      return [_dashHistVeiculoPlacaAtual, l.data, l.diaSemana, st.label, l.km ? Math.round(l.km) : '', vgs.map(v => v.petId).join(' | '), rotas].map(x => String(x).replace(/;/g, ',')).join(';');
-    }),
+    cols.map(c => c[1]).join(';'),
+    ..._dashHistVeiculoLinhasExport().map(r => cols.map(c => String(r[c[0]] ?? '').replace(/;/g, ',').replace(/→/g, '>')).join(';')),
   ];
-  const csv = '\uFEFF' + linhasCsv.join('\r\n'); // BOM pro Excel abrir acentos certinho
+  const csv = '﻿' + linhasCsv.join('\r\n'); // BOM pro Excel abrir acentos certinho
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2237,18 +2257,16 @@ function dashExportarHistoricoVeiculoXLSX() {
     showToast('Biblioteca de Excel não carregada — tente recarregar a página.', false);
     return;
   }
-  const linhas = _dashHistVeiculoDados.map(l => {
-    const st = l.status ? (_DASH_HISTVEIC_STATUS[l.status] || { label: l.status }) : { label: '' };
-    return {
-      'Placa': _dashHistVeiculoPlacaAtual,
-      'Data': l.data,
-      'Dia da Semana': l.diaSemana,
-      'Status': st.label,
-      'Km do Dia (ida+volta)': l.km ? Math.round(l.km) : '',
-    };
-  });
-  const ws = XLSX.utils.json_to_sheet(linhas);
-  ws['!cols'] = [{ wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 20 }];
+  const cols = _DASH_HISTVEIC_COLS_EXPORT;
+  const linhas = _dashHistVeiculoLinhasExport();
+  const aoa = [cols.map(c => c[1]), ...linhas.map(r => cols.map(c => r[c[0]] === '' ? null : r[c[0]]))];
+  // Total no fim (km, viagens, volume)
+  const soma = k => linhas.reduce((s, r) => s + (Number(r[k]) || 0), 0);
+  aoa.push([]);
+  aoa.push(cols.map(c => c[0] === 'placa' ? 'TOTAL' : c[0] === 'kmDia' ? soma('kmDia') : c[0] === 'qtd' ? soma('qtd') : c[0] === 'vol' ? Math.round(soma('vol') * 10) / 10 : c[0] === 'kmViagem' ? soma('kmViagem') : null));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = cols.map(c => ({ wch: c[2] }));
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: linhas.length, c: cols.length - 1 } }) };
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Histórico');
   XLSX.writeFile(wb, `historico_${_dashHistVeiculoPlacaAtual}_${new Date().toISOString().slice(0,10)}.xlsx`);
