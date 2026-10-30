@@ -213,6 +213,7 @@ async function uploadPedidosOverlay(input) {
   try {
     const buf  = await file.arrayBuffer();
     const wb   = XLSX.read(buf, { type: 'array', cellDates: true });
+    _capturarOrigemPedidos(wb, file.name);
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
     if (!rows.length) { _setStatus('upload-ped-status', 'erro', '✕ Planilha vazia ou sem dados reconhecidos.'); return; }
     const novos = xlsxMapPedidosLiberadosRows(rows);
@@ -6240,6 +6241,35 @@ function _normDataEntregaImport(raw) {
   }
   return t;
 }
+// ─── Planilha original de pedidos (para exportar IDÊNTICA) ────────────────────
+// Guardado na importação: aba, ordem exata das colunas, formato de cada coluna
+// (data, número…) e larguras. Cada produto do pedido guarda a linha original
+// (_orig). A exportação refaz o arquivo nesse mesmo formato com os pedidos
+// como estão agora. Vai junto no Histórico (pedidosPlanilhaOrigem).
+var _pedidosPlanilhaOrigem = null;
+function _capturarOrigemPedidos(wb, nomeArquivo) {
+  try {
+    const aba = wb.SheetNames[0];
+    const ws = wb.Sheets[aba];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: false });
+    const brutos = (aoa[0] || []).map(h => String(h ?? '').trim());
+    // Mesmo nome que o sheet_to_json dá a cabeçalho repetido ("X", "X_1"…)
+    const vistos = {};
+    const cabecalho = brutos.map(h => { const n = vistos[h] = (vistos[h] ?? -1) + 1; return n ? `${h}_${n}` : h; });
+    const rng = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+    const formatos = {}, colunasData = [];
+    cabecalho.forEach((h, c) => {
+      for (let r = rng.s.r + 1; r <= Math.min(rng.e.r, rng.s.r + 200); r++) {
+        const cel = ws[XLSX.utils.encode_cell({ r, c: rng.s.c + c })];
+        if (!cel || cel.v === '' || cel.v == null) continue;
+        if (cel.z) formatos[h] = cel.z;
+        if (cel.t === 'd' || cel.v instanceof Date) colunasData.push(h);
+        break;
+      }
+    });
+    _pedidosPlanilhaOrigem = { arquivo: nomeArquivo || 'pedidos.xlsx', aba, cabecalho, cabecalhoTexto: brutos, formatos, colunasData, larguras: ws['!cols'] || null, importadoEm: new Date().toISOString() };
+  } catch (e) { console.warn('[pedidos] origem da planilha', e); }
+}
 // ─── Pedidos Liberados (Excel) ───────────────────────────────────────────────
 function xlsxMapPedidosLiberadosRows(rows) {
   const groups = {};
@@ -6333,7 +6363,7 @@ function xlsxMapPedidosLiberadosRows(rows) {
       const prodLabel = PRODUTOS.find(p => p.startsWith(material))
         ?? (material ? `${material} - ${prodNome}` : prodNome);
       // ordemSAP vai junto ao produto para ser exibido por compartimento
-      if (prodLabel) groups[key].produtos.push({ produto: prodLabel, volume, ordemSAP });
+      if (prodLabel) groups[key].produtos.push({ produto: prodLabel, volume, ordemSAP, _orig: r });
     }
   }
   return order.map((key, i) => {
@@ -6357,6 +6387,7 @@ async function carregarPedidosLiberados() {
       const wb   = XLSX.read(await resp.arrayBuffer(), { type: 'array', cellDates: true });
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
       if (!rows.length) continue;
+      _capturarOrigemPedidos(wb, arquivo);
       const novos = xlsxMapPedidosLiberadosRows(rows);
       if (!novos.length) continue;
       pedidos = novos;
@@ -6383,6 +6414,7 @@ function uploadPedidosLiberados(input) {
   reader.onload = function(e) {
     try {
       const wb   = XLSX.read(e.target.result, { type: 'array', cellDates: true });
+      _capturarOrigemPedidos(wb, input.files[0]?.name);
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
       if (!rows.length) { alert('Planilha vazia ou sem dados reconhecidos.'); return; }
       const novos = xlsxMapPedidosLiberadosRows(rows);
@@ -6415,6 +6447,77 @@ function limparTodosPedidos() {
   ultimoArquivoSalvoSessao = null;
   renderPedidos();
 }
+// Exporta os pedidos ATUAIS no mesmo arquivo da importação: mesma aba, mesmas
+// colunas na mesma ordem, mesmos formatos. Uma linha por produto (como o SAP).
+// Linha que veio da planilha é copiada como estava — só o volume reflete a
+// edição feita no sistema. Pedido incluído à mão é preenchido nas colunas
+// equivalentes. Pedido excluído no sistema não sai.
+function exportarPedidosPlanilha() {
+  if (typeof XLSX === 'undefined') { alert('SheetJS não carregado.'); return; }
+  if (!pedidos.length) { alert('Nenhum pedido carregado para exportar.'); return; }
+  const modelo = ['Clientes Id ERP', 'Clientes Razão Social', 'Cidade Entrega', 'Terminal', 'Material', 'Produto', 'Volume Pedido (m³)', 'No. Ordem SAP', 'Data Entrega Portal', 'Turno Entrega'];
+  const org = _pedidosPlanilhaOrigem;
+  let cab = org?.cabecalho?.length ? org.cabecalho.slice() : null;
+  if (!cab) {
+    const ks = [];
+    pedidos.forEach(p => (p.produtos || []).forEach(pr => Object.keys(pr._orig || {}).forEach(k => { if (!ks.includes(k)) ks.push(k); })));
+    cab = ks.length ? ks : modelo;
+  }
+  const textoCab = org?.cabecalhoTexto?.length === cab.length ? org.cabecalhoTexto : cab;
+  const acha = (...nomes) => nomes.find(n => cab.includes(n));
+  const colVol = acha('Volume Pedido (m³)', 'Volume Pedido', 'Volume');
+  const colunasData = new Set(org?.colunasData || ['Data Entrega Portal', 'Data Entrega portal', 'Dt Entrega Portal', 'Data Entrega Logística', 'Data Entrega Logistica', 'Data Entrega']);
+  const paraData = v => {
+    if (v instanceof Date) return v;
+    if (typeof v === 'string') {
+      if (/^\d{4}-\d{2}-\d{2}T/.test(v)) { const d = new Date(v); return isNaN(d) ? v : d; }
+      const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(v.trim());
+      if (m) return new Date(+m[3], +m[2] - 1, +m[1]);
+    }
+    return v;
+  };
+  const linhas = [];
+  pedidos.forEach(p => (p.produtos || []).forEach(pr => {
+    let r;
+    if (pr._orig) {
+      r = { ...pr._orig };
+      if (colVol && Number(r[colVol]) !== Number(pr.volume)) r[colVol] = Number(pr.volume) || 0;
+    } else {
+      // Pedido incluído à mão: preenche as colunas equivalentes do arquivo
+      const mat = /^(\S+)\s+-\s+(.*)$/.exec(pr.produto || '');
+      r = {};
+      const pos = (val, ...nomes) => { const c = acha(...nomes); if (c) r[c] = val; };
+      pos(p.codigoSAP || '', 'Clientes Id ERP', 'Cliente Id ERP');
+      pos(p.cliente || '', 'Clientes Razão Social', 'Cliente Razão Social');
+      pos(p.cidade || '', 'Cidade Entrega', 'Cidade');
+      pos(p.terminal || '', 'Terminal');
+      pos(mat ? mat[1] : '', 'Material');
+      pos(mat ? mat[2] : (pr.produto || ''), 'Produto');
+      if (colVol) r[colVol] = Number(pr.volume) || 0;
+      pos(pr.ordemSAP || (p.ordens || [])[0] || '', 'No. Ordem SAP', 'No Ordem SAP', 'Ordem SAP');
+      pos(paraData(p.dataEntregaLogistica || ''), 'Data Entrega Portal', 'Data Entrega portal', 'Dt Entrega Portal', 'Data Entrega Logística', 'Data Entrega Logistica', 'Data Entrega');
+      pos(p.turnoEntrega || '', 'Turno Entrega', 'Turno de Entrega', 'Turno');
+    }
+    linhas.push(cab.map(h => { const v = r[h]; return v === undefined || v === null ? '' : (colunasData.has(h) ? paraData(v) : v); }));
+  }));
+  const ws = XLSX.utils.aoa_to_sheet([textoCab, ...linhas], { cellDates: true });
+  // Formatos originais de cada coluna (datas, números…)
+  const fmts = org?.formatos || {};
+  cab.forEach((h, c) => {
+    const z = fmts[h] || (colunasData.has(h) ? 'dd/mm/yyyy' : null);
+    if (!z) return;
+    for (let i = 1; i <= linhas.length; i++) { const cel = ws[XLSX.utils.encode_cell({ r: i, c })]; if (cel && cel.v !== '' && cel.t !== 's') cel.z = z; }
+  });
+  ws['!cols'] = org?.larguras || cab.map(h => ({ wch: Math.max(12, Math.min(40, String(h).length + 4)) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, (org?.aba || 'Pedidos').slice(0, 31));
+  const base = String(org?.arquivo || 'pedidos_liberados.xlsx').replace(/\.(xlsx|xls|xlsm)$/i, '');
+  const d = new Date(), p2 = n => String(n).padStart(2, '0');
+  XLSX.writeFile(wb, `${base} - exportado ${p2(d.getDate())}-${p2(d.getMonth() + 1)} ${p2(d.getHours())}h${p2(d.getMinutes())}.xlsx`, { cellDates: true });
+  const semOrig = pedidos.reduce((s, p) => s + (p.produtos || []).filter(pr => !pr._orig).length, 0);
+  if (typeof window.showToast === 'function') window.showToast(`⬇ ${linhas.length} linha(s) exportada(s)${semOrig ? ` — ${semOrig} de pedido(s) incluído(s) no sistema` : ''}${org ? '' : ' (sem a planilha original nesta sessão: usei o modelo padrão)'}.`, true);
+}
+window.exportarPedidosPlanilha = exportarPedidosPlanilha;
 function baixarModeloPedidos() {
   if (typeof XLSX === 'undefined') { alert('SheetJS não carregado.'); return; }
   const headers = [
@@ -11560,6 +11663,7 @@ async function salvarNoHistorico(silencioso = false) {
       terminaisUsados: [...terminaisUsados],
     },
     pedidos:       JSON.parse(JSON.stringify(pedidos)),
+    pedidosPlanilhaOrigem: _pedidosPlanilhaOrigem, // formato da planilha importada (exportação idêntica)
     terminais:     JSON.parse(JSON.stringify(terminaisCad)),
     veiculos:      JSON.parse(JSON.stringify(veiculos)),
     resultado:     JSON.parse(JSON.stringify(ultimoResultado)),
@@ -13829,6 +13933,7 @@ async function popularDropdownRoteirizacoes() {
 function _restaurarEstado(estado) {
   _registrarCnpjTerminais(terminaisCad); // guarda o CNPJ da lista atual antes de trocar
   pedidos             = estado.pedidos       || [];
+  if (estado.pedidosPlanilhaOrigem) _pedidosPlanilhaOrigem = estado.pedidosPlanilhaOrigem;
   terminaisCad        = estado.terminais     || [];
   _completarCnpjTerminaisDoCadastro();
   veiculos            = estado.veiculos      || [];
