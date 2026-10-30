@@ -306,6 +306,87 @@ function _getPetSeq(chave) {
     if (changed) localStorage.setItem('petSeq', JSON.stringify(merged));
   } catch(e) {}
 })();
+// ── Contador COMPARTILHADO (Firebase config/pet_seq) ─────────────────────
+// O localStorage é só deste navegador: um computador que nunca salvou no mês
+// começava do 001 e repetia números já usados por outro. Agora o maior nº
+// salvo de cada mês fica no Firebase e todo computador parte dele.
+let _petSeqNuvemCache = { em: 0, dados: null };
+async function _petSeqNuvemLer(forcar = false) {
+  if (!window.fbDb || !window.fbGetDoc || !window.fbDoc) return _petSeqNuvemCache.dados || {};
+  if (!forcar && _petSeqNuvemCache.dados && Date.now() - _petSeqNuvemCache.em < 20000) return _petSeqNuvemCache.dados;
+  try {
+    const s = await window.fbGetDoc(window.fbDoc(window.fbDb, 'config', 'pet_seq'));
+    const d = s.exists() ? (s.data().seq || {}) : {};
+    _petSeqNuvemCache = { em: Date.now(), dados: d };
+    return d;
+  } catch (e) { console.warn('[petSeq] leitura do contador compartilhado', e); return _petSeqNuvemCache.dados || {}; }
+}
+async function _petSeqNuvemPublicar(mapa) {
+  if (!window.fbSetDoc || !window.fbDoc || !window.fbDb) return;
+  const atual = await _petSeqNuvemLer(true);
+  const novo = {};
+  Object.entries(mapa || {}).forEach(([k, n]) => { if ((Number(n) || 0) > (Number(atual[k]) || 0)) novo[k] = Number(n); });
+  if (!Object.keys(novo).length) return;
+  try {
+    await window.fbSetDoc(window.fbDoc(window.fbDb, 'config', 'pet_seq'), { seq: novo, atualizadoEm: new Date().toISOString() }, { merge: true });
+    _petSeqNuvemCache = { em: Date.now(), dados: { ...atual, ...novo } };
+  } catch (e) { console.warn('[petSeq] gravação do contador compartilhado', e); }
+}
+function _petSeqLocal() { try { return JSON.parse(localStorage.getItem('petSeq') || '{}') || {}; } catch { return {}; } }
+function _petSeqMesclarLocal(mapa) {
+  const st = _petSeqLocal();
+  Object.entries(mapa || {}).forEach(([k, n]) => { if ((Number(n) || 0) > (Number(st[k]) || 0)) st[k] = Number(n); });
+  try { localStorage.setItem('petSeq', JSON.stringify(st)); } catch {}
+}
+function _petSeqPartes(petId) {
+  let m = String(petId || '').match(/^P(\d{4})(\d{3,})$/);
+  if (!m) { const ml = String(petId || '').match(/^P(\d{2})(\d{2})\d{2}(\d{3,})$/); if (ml) m = [null, ml[1] + ml[2], ml[3]]; }
+  return m ? { chave: m[1], seq: parseInt(m[2], 10) } : null;
+}
+function _petSeqDoResultado(resultado) {
+  const out = {};
+  Object.values(resultado || {}).filter(Array.isArray).forEach(l => l.forEach(vi => {
+    const p = _petSeqPartes(vi?.petId); if (p && p.seq > (out[p.chave] || 0)) out[p.chave] = p.seq;
+  }));
+  return out;
+}
+// Troca o nº de uma viagem levando junto o que é guardado por nº (trava, motorista).
+function _petRenomear(vi, novo) {
+  const antigo = vi.petId;
+  if (!antigo || antigo === novo) { vi.petId = novo; return; }
+  if (typeof lockedViagens !== 'undefined' && lockedViagens.has(antigo)) { lockedViagens.delete(antigo); lockedViagens.add(novo); }
+  if (_motoristasOverride[antigo] !== undefined) { _motoristasOverride[novo] = _motoristasOverride[antigo]; delete _motoristasOverride[antigo]; }
+  vi.petId = novo;
+}
+// Checagem final ANTES de gravar: viagem com nº novo (dado nesta sessão) que
+// já foi usado por outro computador desde então → ganha o próximo nº livre.
+async function _petSeqGarantirUnicos(resultado) {
+  if (!resultado) return [];
+  const nuvem = await _petSeqNuvemLer(true);
+  const local = _petSeqLocal();
+  const proximo = {};
+  const trocas = [];
+  // nº de viagens já existentes neste resultado (vindas do histórico) também contam
+  const doResultado = {};
+  Object.values(resultado).filter(Array.isArray).forEach(l => l.forEach(vi => {
+    if (!vi || vi._petNovo) return;
+    const p = _petSeqPartes(vi.petId); if (p && p.seq > (doResultado[p.chave] || 0)) doResultado[p.chave] = p.seq;
+  }));
+  Object.values(resultado).filter(Array.isArray).forEach(l => l.forEach(vi => {
+    if (!vi || !vi._petNovo) return;
+    const p = _petSeqPartes(vi.petId); if (!p) return;
+    const limite = Math.max(Number(nuvem[p.chave]) || 0, Number(local[p.chave]) || 0, doResultado[p.chave] || 0);
+    if (proximo[p.chave] === undefined) proximo[p.chave] = limite;
+    if (p.seq <= limite || p.seq <= proximo[p.chave]) {
+      proximo[p.chave]++;
+      const novo = `P${p.chave}${String(proximo[p.chave]).padStart(3, '0')}`;
+      trocas.push(`${vi.petId} → ${novo}`);
+      _petRenomear(vi, novo);
+    } else proximo[p.chave] = Math.max(proximo[p.chave], p.seq);
+  }));
+  Object.values(resultado).filter(Array.isArray).forEach(l => l.forEach(vi => { if (vi) delete vi._petNovo; }));
+  return trocas;
+}
 // Atribui petId a qualquer viagem real que ainda não tenha um
 function atribuirPetIds(resultado, dataRef) {
   if (!resultado) return;
@@ -339,7 +420,7 @@ function atribuirPetIds(resultado, dataRef) {
     if (!Array.isArray(viagens)) continue;
     for (const vi of viagens) {
       if (vi._vazio || !(vi.paradas||[]).length) continue;
-      if (!vi.petId) { seq++; vi.petId = `P${mm}${yy}${String(seq).padStart(3,'0')}`; }
+      if (!vi.petId) { seq++; vi.petId = `P${mm}${yy}${String(seq).padStart(3,'0')}`; vi._petNovo = true; }
     }
   }
   // NÃO persiste o contador aqui — só persiste ao salvar no histórico,
@@ -10117,6 +10198,11 @@ function abrirMapaVeiculo(veiculoId) {
 // Reconstrói o contador de petId a partir de TODOS os arquivos do histórico,
 // descartando qualquer valor inflado que possa estar no localStorage.
 async function _reconstruirPetSeqDoHistorico({ obrigatorio = false } = {}) {
+  // O contador compartilhado (Firebase) vale SEMPRE — mesmo sem a pasta
+  // liberada neste navegador. Antes, sem pasta/permissão, a função desistia
+  // em silêncio e o computador numerava a partir do que tinha só nele.
+  const nuvem = await _petSeqNuvemLer();
+  _petSeqMesclarLocal(nuvem);
   if (!dirHandleHistorico) {
     if (obrigatorio) throw new Error('PASTA_NAO_SELECIONADA');
     return;
@@ -10128,6 +10214,7 @@ async function _reconstruirPetSeqDoHistorico({ obrigatorio = false } = {}) {
     return;
   }
   const stored = {};
+  const _petArquivos = new Map(); // nº da viagem → arquivos VIGENTES onde aparece (detecta repetidos)
   for await (const [name, handle] of dirHandleHistorico.entries()) {
     if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
     try {
@@ -10135,7 +10222,12 @@ async function _reconstruirPetSeqDoHistorico({ obrigatorio = false } = {}) {
       const resultado = data.resultado;
       if (!resultado) continue;
       Object.values(resultado).forEach(viagens => {
+        if (!Array.isArray(viagens)) return;
         (viagens || []).forEach(vi => {
+          if (vi?.petId && !vi._vazio && (vi.paradas || []).length && !data.substituidoPor) {
+            if (!_petArquivos.has(vi.petId)) _petArquivos.set(vi.petId, []);
+            _petArquivos.get(vi.petId).push(name);
+          }
           // Formato novo: P{MM}{YY}{NNN} → chave = 4 dígitos
           let m = (vi.petId || '').match(/^P(\d{4})(\d{3,})$/);
           if (!m) {
@@ -10151,7 +10243,13 @@ async function _reconstruirPetSeqDoHistorico({ obrigatorio = false } = {}) {
       });
     } catch(e) {}
   }
-  try { localStorage.setItem('petSeq', JSON.stringify(stored)); } catch(e) {}
+  window._petIdsPorArquivo = _petArquivos;
+  // Pasta + nuvem (o maior de cada mês). Descarta só a inflação local de
+  // rodadas que nunca foram salvas; publica o que a pasta conhece.
+  const final = { ...stored };
+  Object.entries(nuvem || {}).forEach(([k, n]) => { if ((Number(n) || 0) > (final[k] || 0)) final[k] = Number(n); });
+  try { localStorage.setItem('petSeq', JSON.stringify(final)); } catch(e) {}
+  _petSeqNuvemPublicar(stored).catch(() => {});
 }
 // Retorna o motorista correto — override manual por petId tem prioridade sobre a regra diurno/noturno
 function motoristaDaViagem(v, cargaAbsMin, vi) {
@@ -11351,6 +11449,13 @@ async function salvarNoHistorico(silencioso = false) {
     if (!dirHandleHistorico) return;
   }
   if (!await _histGarantirPermissao()) { if (!silencioso) alert('Permissão de escrita negada.'); return; }
+  // Nº de viagem: confere com o histórico + contador compartilhado antes de
+  // gravar — se outro computador usou o mesmo nº nesse meio tempo, troca.
+  try {
+    await _reconstruirPetSeqDoHistorico({ obrigatorio: false });
+    const _trocasPet = await _petSeqGarantirUnicos(ultimoResultado);
+    if (_trocasPet.length) showToast(`🔢 Nº de viagem já usado em outra programação — ajustado: ${_trocasPet.join(', ')}`, false);
+  } catch (e) { console.warn('[petSeq] checagem antes de salvar', e); }
   let totalViagens = 0, totalVolume = 0, totalPedidos = 0, totalRotas = 0;
   const terminaisUsados = new Set();
   veiculos.forEach(v => {
@@ -11487,6 +11592,7 @@ async function salvarNoHistorico(silencioso = false) {
     await ws.write(JSON.stringify(snapshot, null, 2));
     await ws.close();
     _atualizarPetSeq(ultimoResultado); // persiste contador apenas ao salvar
+    _petSeqNuvemPublicar(_petSeqDoResultado(ultimoResultado)).catch(() => {}); // e no contador compartilhado
     delete _histMetaCache[filename]; // invalida cache para releitura na próxima listagem
     // Marca o arquivo anterior (se houver) como substituído por este, sem
     // apagar ou alterar o resto do conteúdo dele — só adiciona o vínculo.
@@ -12093,6 +12199,12 @@ async function abrirDetalheHistorico(filename) {
                    <span onclick="abrirIncluirPedidoViagem('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Incluir um pedido nessa viagem (entra no fim, sem recalcular rota/horário) — cria uma nova revisão, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;">➕</span>
                    <span onclick="excluirViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Excluir essa viagem (ex.: deu recuo) — cria uma nova revisão sem ela, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;">🗑</span>
                  </div>
+                 ${(() => {
+                   const outros = (window._petIdsPorArquivo?.get(petId) || []).filter(f => f !== _histDetalheFilenameAtual);
+                   return outros.length
+                     ? `<div onclick="renumerarViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Este nº também está em: ${outros.join(', ')} — clique para dar um nº novo a ESTA viagem" style="cursor:pointer;margin:3px 0;display:inline-block;font-size:10px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:4px;padding:1px 6px;font-family:var(--font);letter-spacing:0;">⚠ nº repetido · 🔢 dar nº novo</div>`
+                     : '';
+                 })()}
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}${(() => {
                    // Eixos: do veículo gravado na programação; se o arquivo for
                    // antigo e não tiver, usa o cadastro atual da mesma placa.
@@ -12648,6 +12760,7 @@ async function _histSalvarRevisao(filenameAtual, data) {
   delete _histMetaCache[novoFilename];
   telaoPublicarDatasDepois(data.datasEntrega || []); // telão da sala de operação
   _sobSincronizarDepois(data, novoFilename); // ciclos da operação sob demanda
+  _petSeqNuvemPublicar(_petSeqDoResultado(data.resultado)).catch(() => {}); // contador compartilhado de nº de viagem
   return novoFilename;
 }
 async function excluirViagemHistorico(veiculoId, petId) {
@@ -12673,6 +12786,42 @@ async function excluirViagemHistorico(veiculoId, petId) {
   }
 }
 window.excluirViagemHistorico = excluirViagemHistorico;
+// Dá um nº novo (o próximo livre do mês) a uma viagem já salva — pra
+// corrigir nº repetido. Salva como revisão, igual às outras edições.
+async function renumerarViagemHistorico(veiculoId, petId) {
+  if (!_histDetalheFilenameAtual) return;
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  const filenameAtual = _histDetalheFilenameAtual;
+  try {
+    await _reconstruirPetSeqDoHistorico({ obrigatorio: true });
+    const nuvem = await _petSeqNuvemLer(true);
+    const data = await _histLerArquivo(filenameAtual);
+    const lista = data.resultado?.[veiculoId];
+    const vi = Array.isArray(lista) ? lista.find(x => x && !x._vazio && x.petId === petId) : null;
+    if (!vi) { alert('Não achei essa viagem no arquivo.'); return; }
+    const p = _petSeqPartes(petId);
+    if (!p) { alert('Formato de nº de viagem não reconhecido.'); return; }
+    const noArquivo = _petSeqDoResultado(data.resultado)[p.chave] || 0;
+    const prox = Math.max(Number(_petSeqLocal()[p.chave]) || 0, Number(nuvem[p.chave]) || 0, noArquivo) + 1;
+    const novo = `P${p.chave}${String(prox).padStart(3, '0')}`;
+    const ocorr = (_devTodosRegistrosCache || []).filter(r => r.viagemId === petId).length;
+    if (!confirm(`Trocar o nº da viagem ${petId} por ${novo}?\n\nIsso salva uma nova revisão; o arquivo original fica preservado.${ocorr ? `\n\nAtenção: há ${ocorr} ocorrência(s) registradas com o nº ${petId} — elas continuam com o nº antigo.` : ''}\n\nSe a OR já foi enviada à transportadora, reenvie com o nº novo.`)) return;
+    vi.petId = novo;
+    const novoFilename = await _histSalvarRevisao(filenameAtual, data);
+    _petSeqMesclarLocal({ [p.chave]: prox });
+    await _petSeqNuvemPublicar({ [p.chave]: prox });
+    const mapa = window._petIdsPorArquivo;
+    if (mapa) { mapa.set(petId, (mapa.get(petId) || []).filter(f => f !== filenameAtual)); mapa.set(novo, [novoFilename]); }
+    showToast(`Viagem ${petId} agora é ${novo} — nova revisão salva.`, true);
+    await abrirDetalheHistorico(novoFilename);
+    if (typeof carregarListaHistorico === 'function') carregarListaHistorico();
+  } catch (e) {
+    if (e.message === 'PERMISSAO_NEGADA' || e.message === 'PASTA_NAO_SELECIONADA') { alert('Libere a pasta do Histórico para conferir os números antes de trocar.'); return; }
+    console.error('[Histórico] falha ao renumerar viagem:', e);
+    alert('Erro ao trocar o nº: ' + e.message);
+  }
+}
+window.renumerarViagemHistorico = renumerarViagemHistorico;
 // Exclui UMA entrega (parada) de uma viagem salva, mantendo as demais.
 // Mesmo mecanismo de revisão: nunca sobrescreve o original. Não recalcula
 // rota/horários (igual ao "Incluir pedido"); se a entrega excluída era a
