@@ -388,6 +388,47 @@ async function _petSeqGarantirUnicos(resultado) {
   Object.values(resultado).filter(Array.isArray).forEach(l => l.forEach(vi => { if (vi) delete vi._petNovo; }));
   return trocas;
 }
+// Arquivos VIGENTES (não substituídos, não apagados, fora da cadeia de
+// revisões do arquivo atual) que também usam este nº de viagem.
+function _petOutrosArquivosVigentes(petId, atual) {
+  const lista = (window._petIdsPorArquivo && window._petIdsPorArquivo.get(petId)) || [];
+  if (!lista.length) return [];
+  const meta = f => (typeof _histMetaCache !== 'undefined' && _histMetaCache[f]) || null;
+  const cadeiaDe = f => { const c = new Set([f]); let x = f, n = 0; while (x && n++ < 60) { x = meta(x)?.revisaoDe; if (x) c.add(x); } return c; };
+  const daAtual = cadeiaDe(atual);
+  const existentes = new Set(((typeof _histEntriesUltimas !== 'undefined' && _histEntriesUltimas) || []).map(e => e.name));
+  return lista.filter(f => {
+    if (daAtual.has(f)) return false;               // versão anterior da mesma programação
+    if (cadeiaDe(f).has(atual)) return false;        // versão posterior da mesma programação
+    if (meta(f)?.substituidoPor) return false;       // substituída
+    if (existentes.size && !existentes.has(f)) return false; // apagada
+    return true;
+  });
+}
+// Mantém o mapa nº→arquivos em dia sem reler a pasta.
+function _petMapaTrocarArquivo(antigo, novo, resultadoNovo) {
+  const mapa = window._petIdsPorArquivo; if (!mapa) return;
+  if (antigo) mapa.forEach((arqs, k) => { const i = arqs.indexOf(antigo); if (i >= 0) arqs.splice(i, 1); if (!arqs.length) mapa.delete(k); });
+  if (novo && resultadoNovo) Object.values(resultadoNovo).filter(Array.isArray).forEach(l => l.forEach(vi => {
+    if (!vi?.petId || vi._vazio || !(vi.paradas || []).length) return;
+    if (!mapa.has(vi.petId)) mapa.set(vi.petId, []);
+    if (!mapa.get(vi.petId).includes(novo)) mapa.get(vi.petId).push(novo);
+  }));
+}
+// Envio Transportadora: confere os nºs NOVOS com o histórico + contador
+// compartilhado e já RESERVA (publica) — o nº que sai na OR não muda mais
+// depois, nem na hora de salvar/exportar.
+async function _petConferirEReservar() {
+  if (typeof ultimoResultado === 'undefined' || !ultimoResultado) return [];
+  const temNovo = Object.values(ultimoResultado).filter(Array.isArray).some(l => l.some(v => v && v._petNovo));
+  if (!temNovo) return [];
+  try { await _reconstruirPetSeqDoHistorico({ obrigatorio: false }); } catch (e) {}
+  const trocas = await _petSeqGarantirUnicos(ultimoResultado);
+  const mapa = _petSeqDoResultado(ultimoResultado);
+  _petSeqMesclarLocal(mapa);
+  await _petSeqNuvemPublicar(mapa);
+  return trocas;
+}
 // Atribui petId a qualquer viagem real que ainda não tenha um
 function atribuirPetIds(resultado, dataRef) {
   if (!resultado) return;
@@ -902,7 +943,28 @@ function showTab(name) {
   routeRoot.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', tabNames[i] === name));
   routeRoot.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   routeRoot.querySelector('#tab-' + name)?.classList.add('active');
-  if (name === 'operacao') renderTemplateOperacao();
+  if (name === 'operacao') {
+    // Confere/reserva os nºs de viagem ANTES de mostrar a OR (antes, só ao
+    // salvar — a OR podia sair com um nº que mudava depois).
+    const _alvoOp = routeRoot.querySelector('#tab-operacao');
+    const _temNovo = typeof ultimoResultado !== 'undefined' && ultimoResultado && Object.values(ultimoResultado).filter(Array.isArray).some(l => l.some(v => v && v._petNovo));
+    if (!_temNovo) renderTemplateOperacao();
+    else {
+      const _aviso = document.createElement('div');
+      _aviso.id = 'pet-conferindo';
+      _aviso.style.cssText = 'padding:10px 14px;margin-bottom:10px;border:1px solid #93C5FD;background:#EFF6FF;color:#1E40AF;border-radius:8px;font-size:12px;font-weight:600;';
+      _aviso.textContent = '🔢 Conferindo os números de viagem com o Histórico e os outros computadores…';
+      _alvoOp?.prepend(_aviso);
+      _petConferirEReservar().then(trocas => {
+        document.getElementById('pet-conferindo')?.remove();
+        renderTemplateOperacao();
+        if (trocas.length) {
+          try { renderResultado(ultimoResultado, ultimoControleTempo || {}); } catch (e) {}
+          showToast(`🔢 Nº de viagem já usado em outra programação — ajustado ANTES do envio: ${trocas.join(', ')}`, false);
+        }
+      }).catch(e => { console.warn('[petSeq] conferência no envio', e); document.getElementById('pet-conferindo')?.remove(); renderTemplateOperacao(); });
+    }
+  }
   if (name === 'resultado') {
     // Renderiza imediatamente com o que já estiver em cache (evita aba em
     // branco), e em seguida força a releitura do histórico do dia — sem
@@ -11697,6 +11759,7 @@ async function salvarNoHistorico(silencioso = false) {
     await ws.close();
     _atualizarPetSeq(ultimoResultado); // persiste contador apenas ao salvar
     _petSeqNuvemPublicar(_petSeqDoResultado(ultimoResultado)).catch(() => {}); // e no contador compartilhado
+    _petMapaTrocarArquivo(snapshot.revisaoDe && snapshot.revisaoDe !== filename ? snapshot.revisaoDe : null, filename, ultimoResultado);
     delete _histMetaCache[filename]; // invalida cache para releitura na próxima listagem
     // Marca o arquivo anterior (se houver) como substituído por este, sem
     // apagar ou alterar o resto do conteúdo dele — só adiciona o vínculo.
@@ -12304,7 +12367,7 @@ async function abrirDetalheHistorico(filename) {
                    <span onclick="excluirViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Excluir essa viagem (ex.: deu recuo) — cria uma nova revisão sem ela, o arquivo original fica preservado" style="cursor:pointer;font-size:11px;flex-shrink:0;">🗑</span>
                  </div>
                  ${(() => {
-                   const outros = (window._petIdsPorArquivo?.get(petId) || []).filter(f => f !== _histDetalheFilenameAtual);
+                   const outros = _petOutrosArquivosVigentes(petId, _histDetalheFilenameAtual);
                    return outros.length
                      ? `<div onclick="renumerarViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Este nº também está em: ${outros.join(', ')} — clique para dar um nº novo a ESTA viagem" style="cursor:pointer;margin:3px 0;display:inline-block;font-size:10px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:4px;padding:1px 6px;font-family:var(--font);letter-spacing:0;">⚠ nº repetido · 🔢 dar nº novo</div>`
                      : '';
@@ -12865,6 +12928,8 @@ async function _histSalvarRevisao(filenameAtual, data) {
   telaoPublicarDatasDepois(data.datasEntrega || []); // telão da sala de operação
   _sobSincronizarDepois(data, novoFilename); // ciclos da operação sob demanda
   _petSeqNuvemPublicar(_petSeqDoResultado(data.resultado)).catch(() => {}); // contador compartilhado de nº de viagem
+  if (_histMetaCache[filenameAtual] === undefined) _histMetaCache[filenameAtual] = { substituidoPor: novoFilename };
+  _petMapaTrocarArquivo(filenameAtual, novoFilename, data.resultado);
   return novoFilename;
 }
 async function excluirViagemHistorico(veiculoId, petId) {
@@ -14075,6 +14140,7 @@ async function excluirEntradaHistorico(filename, btn) {
       // a exclusão mesmo assim (comportamento anterior), só sem a limpeza.
     }
     await dirHandleHistorico.removeEntry(filename);
+    _petMapaTrocarArquivo(filename, _sobVersaoVolta ? _sobVersaoVolta.arquivo : null, _sobVersaoVolta ? _sobVersaoVolta.data.resultado : null); // nº de viagem: tira o apagado
     telaoPublicarDatasDepois(datasDoArquivo); // telão: tira do painel o que foi excluído
     // Ciclos sob demanda: se a versão anterior volta a valer, eles passam a
     // seguir ela; senão, os ciclos dessa programação são cancelados.
