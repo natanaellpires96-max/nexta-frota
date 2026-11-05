@@ -1439,6 +1439,8 @@
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <div class="sec-title" style="margin:0;">Historico de roteirizacoes</div>
       <div style="display:flex;gap:6px;">
+        <input type="file" id="herrlog-cruzar-input" accept=".xlsx,.xls" style="display:none;" onchange="cruzarHerrlogComPedidos(this)"/>
+        <button class="btn btn-sm" onclick="document.getElementById('herrlog-cruzar-input').click()" title="Escolha o export da Herrlog (tempos reais por viagem): devolve o mesmo arquivo com nº do pedido (Ordem SAP), produto e volume de cada parada">🔗 Cruzar Herrlog</button>
         <button class="btn btn-sm" onclick="carregarListaHistorico()">Atualizar lista</button>
         <button class="btn btn-green btn-sm" onclick="selecionarPastaHistorico()">Selecionar pasta</button>
       </div>
