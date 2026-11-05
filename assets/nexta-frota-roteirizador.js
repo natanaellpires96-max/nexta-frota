@@ -12991,6 +12991,168 @@ async function renumerarViagemHistorico(veiculoId, petId) {
   }
 }
 window.renumerarViagemHistorico = renumerarViagemHistorico;
+// ══════════════════════════════════════════════════════════════════════════
+// CRUZAR ARQUIVO DA HERRLOG COM OS PEDIDOS DO ROTEIRIZADOR
+// O export da Herrlog tem uma linha por parada (ORIGEM = carregamento,
+// DESTINO = entrega, na ordem da viagem) com os tempos reais, mas não tem
+// pedido/produto/volume. Aqui cada linha ganha isso, achando a viagem pelo nº
+// (coluna "Dt") nas programações VIGENTES do Histórico e a entrega pela
+// sequência (conferindo o nome do cliente).
+// Saída: o MESMO arquivo (mesmas colunas e linhas) + colunas novas no fim, e
+// uma aba "Pedidos por parada" com uma linha por produto.
+// ══════════════════════════════════════════════════════════════════════════
+function _herrNorm(t) {
+  return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
+    .replace(/\b(LTDA|EIRELI|ME|EPP|S\/?A|CIA|COMERCIO DE COMBUSTIVEIS|COMERCIO|DE|DA|DO|DOS|DAS|E)\b/g, ' ')
+    .replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function _herrMesmoCliente(a, b) {
+  const x = _herrNorm(a), y = _herrNorm(b);
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+}
+function _herrItensDaParada(pa) {
+  const ped = pa.pedido || {};
+  const ocorr = {};
+  return (pa.itens || []).filter(it => (Number(it.volume) || 0) > 0).map(it => {
+    const k = it.produto || ''; ocorr[k] = (ocorr[k] || 0) + 1;
+    let ordem = it.ordemSAP || '';
+    if (!ordem) { let n = 0; for (const pr of (ped.produtos || [])) if (pr.produto === k && ++n === ocorr[k]) { ordem = pr.ordemSAP || ''; break; } }
+    if (!ordem && (ped.ordens || []).length === 1) ordem = ped.ordens[0];
+    return { ordem: String(ordem || ''), produto: k, volume: Number(it.volume) || 0 };
+  });
+}
+async function cruzarHerrlogComPedidos(input) {
+  const file = input?.files?.[0];
+  if (input) input.value = '';
+  if (!file) return;
+  if (typeof XLSX === 'undefined') { alert('Biblioteca de Excel não carregada.'); return; }
+  if (!dirHandleHistorico) { alert('Selecione a pasta do Histórico primeiro (é de lá que vêm os pedidos de cada viagem).'); return; }
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  try {
+    // Sem cellDates: as datas/horas reais ficam como vieram (número + formato
+    // original). Converter pra Date e voltar deslocava segundos e o formato.
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellNF: true });
+    const nomeAba = wb.SheetNames[0];
+    const ws = wb.Sheets[nomeAba];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+    // Linha de cabeçalho: a primeira que tem "Dt" e "Sequencia"
+    const iCab = aoa.findIndex(r => (r || []).some(c => String(c || '').trim() === 'Dt') && (r || []).some(c => /^sequ[eê]ncia$/i.test(String(c || '').trim())));
+    if (iCab < 0) { alert('Não achei as colunas "Dt" (nº da viagem) e "Sequencia" nesse arquivo. É o export da Herrlog?'); return; }
+    const cab = aoa[iCab].map(c => String(c ?? '').trim());
+    const col = n => cab.findIndex(c => c.toLowerCase() === n.toLowerCase());
+    const cDt = col('Dt'), cSeq = cab.findIndex(c => /^sequ[eê]ncia$/i.test(c)), cTipo = col('Tipo'), cCli = col('ClienteNome'), cId = col('ID Herrlog'), cPlaca = col('Placa');
+    const cCheg = col('Data Chegada Real'), cSai = col('Data Saida Real'), cPerm = col('Tempo Permanência (h)');
+    const linhasDados = [];
+    for (let i = iCab + 1; i < aoa.length; i++) { const v = aoa[i]?.[cDt]; if (v && /^P\d{4,}/.test(String(v).trim())) linhasDados.push(i); }
+    if (!linhasDados.length) { alert('Nenhuma linha com nº de viagem (P...) na coluna "Dt".'); return; }
+    const precisa = new Set(linhasDados.map(i => String(aoa[i][cDt]).trim()));
+    showToast(`🔗 Procurando ${precisa.size} viagem(ns) no Histórico…`, true);
+    // Varre o Histórico: guarda a melhor versão de cada viagem (vigente > mais recente)
+    const achadas = new Map(); // petId → { vigente, savedAt, arquivo, placa, paradas }
+    for await (const [name, handle] of dirHandleHistorico.entries()) {
+      if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+      let data; try { data = JSON.parse(await (await handle.getFile()).text()); } catch (e) { continue; }
+      if (!data?.resultado) continue;
+      const vigente = !data.substituidoPor;
+      const placaPorId = {}; (data.veiculos || []).forEach(v => { placaPorId[v.id] = v.placa; });
+      Object.entries(data.resultado).forEach(([vid, viagens]) => {
+        if (!Array.isArray(viagens)) return;
+        viagens.forEach(vi => {
+          if (!vi?.petId || vi._vazio || !precisa.has(vi.petId) || !(vi.paradas || []).length) return;
+          const atual = achadas.get(vi.petId);
+          const melhor = !atual || (vigente && !atual.vigente) || (vigente === atual.vigente && String(data.savedAt || '') > String(atual.savedAt || ''));
+          if (melhor) achadas.set(vi.petId, { vigente, savedAt: data.savedAt || '', arquivo: name, placa: placaPorId[vid] || '',
+            paradas: vi.paradas.map(pa => ({ cliente: pa.pedido?.cliente || '', itens: _herrItensDaParada(pa) })) });
+        });
+      });
+    }
+    // Monta as colunas novas
+    const novasCols = ['Nº Pedido (Ordem SAP)', 'Produto', 'Volume Pedido (L)', 'Cliente no Roteirizador', 'Conferência'];
+    const c0 = Math.max(cab.length, ...aoa.slice(iCab, iCab + 1).map(r => r.length));
+    const porProduto = [];
+    const linhaOrigemProduto = []; // linha da aba original de cada produto (pra copiar as células de tempo)
+    let ok = 0, semViagem = 0, divergente = 0;
+    const fmtL = v => Math.round(v * 1000);
+    const resultados = new Map(); // linha → valores
+    linhasDados.forEach(i => {
+      const r = aoa[i];
+      const petId = String(r[cDt]).trim();
+      const tipo = String(r[cTipo] ?? '').trim().toUpperCase();
+      const seq = parseInt(r[cSeq], 10);
+      const cliHerr = r[cCli] || '';
+      const vg = achadas.get(petId);
+      if (!vg) { semViagem++; resultados.set(i, ['', '', '', '', 'Viagem não encontrada no Histórico']); return; }
+      let itens = [], cliRot = '', nota = '';
+      if (tipo === 'ORIGEM') {
+        itens = vg.paradas.flatMap(pa => pa.itens.map(it => ({ ...it, cliente: pa.cliente })));
+        cliRot = 'Carregamento (todos os pedidos da viagem)';
+        nota = 'OK';
+      } else {
+        let idx = isNaN(seq) ? -1 : seq - 2;
+        let pa = vg.paradas[idx];
+        if (!pa || !_herrMesmoCliente(pa.cliente, cliHerr)) {
+          const j = vg.paradas.findIndex(x => _herrMesmoCliente(x.cliente, cliHerr));
+          if (j >= 0) { pa = vg.paradas[j]; nota = `OK (cliente na ${j + 1}ª entrega do roteirizador)`; }
+          else if (pa) nota = `⚠ Cliente diferente: no roteirizador a ${idx + 1}ª entrega é ${pa.cliente}`;
+          else nota = `⚠ Entrega ${isNaN(seq) ? '?' : seq - 1} não existe na viagem do roteirizador (${vg.paradas.length} entrega(s))`;
+        } else nota = 'OK';
+        if (pa) { itens = pa.itens.map(it => ({ ...it, cliente: pa.cliente })); cliRot = pa.cliente; }
+      }
+      if (nota.startsWith('OK')) ok++; else divergente++;
+      if (!vg.vigente) nota += ' · (programação substituída)';
+      resultados.set(i, [
+        itens.map(it => it.ordem || '—').join(' | '),
+        itens.map(it => it.produto).join(' | '),
+        itens.length === 1 ? fmtL(itens[0].volume) : (itens.length ? itens.map(it => fmtL(it.volume).toLocaleString('pt-BR')).join(' | ') : ''),
+        cliRot, nota,
+      ]);
+      itens.forEach(it => { porProduto.push([
+        cId >= 0 ? r[cId] : '', petId, cPlaca >= 0 ? r[cPlaca] : vg.placa, tipo, isNaN(seq) ? '' : seq, cliHerr, it.cliente,
+        it.ordem, it.produto, Math.round(it.volume * 100) / 100, fmtL(it.volume), null, null, null,
+      ]); linhaOrigemProduto.push(i); });
+    });
+    // Aba original: mesmas linhas/colunas + colunas novas no fim (edita a própria planilha → mantém formatos)
+    const put = (rr, cc, v, extra = {}) => {
+      const ref = XLSX.utils.encode_cell({ r: rr, c: cc });
+      if (v === '' || v == null) { delete ws[ref]; return; }
+      ws[ref] = typeof v === 'number' ? { t: 'n', v, ...extra } : { t: 's', v: String(v), ...extra };
+    };
+    novasCols.forEach((h, k) => put(iCab, c0 + k, h));
+    resultados.forEach((vals, i) => vals.forEach((v, k) => put(i, c0 + k, v, (k === 2 && typeof v === 'number') ? { z: '#,##0' } : {})));
+    const rng = XLSX.utils.decode_range(ws['!ref']);
+    rng.e.c = Math.max(rng.e.c, c0 + novasCols.length - 1);
+    ws['!ref'] = XLSX.utils.encode_range(rng);
+    const cols = ws['!cols'] ? ws['!cols'].slice() : [];
+    while (cols.length < c0) cols.push({ wch: 14 });
+    cols[c0] = { wch: 22 }; cols[c0 + 1] = { wch: 34 }; cols[c0 + 2] = { wch: 16 }; cols[c0 + 3] = { wch: 34 }; cols[c0 + 4] = { wch: 44 };
+    ws['!cols'] = cols;
+    // Aba nova: uma linha por produto
+    const cab2 = ['ID Herrlog', 'Viagem (Dt)', 'Placa', 'Tipo', 'Sequência', 'Cliente (Herrlog)', 'Cliente (Roteirizador)', 'Nº Pedido (Ordem SAP)', 'Produto', 'Volume (m³)', 'Volume (L)', 'Data Chegada Real', 'Data Saida Real', 'Tempo Permanência (h)'];
+    const ws2 = XLSX.utils.aoa_to_sheet([cab2, ...porProduto]);
+    for (let i = 1; i <= porProduto.length; i++) {
+      // Tempos: cópia fiel das células da aba original (mesmo valor e formato)
+      const lo = linhaOrigemProduto[i - 1];
+      [[cCheg, 11], [cSai, 12], [cPerm, 13]].forEach(([cOrig, cDest]) => {
+        if (cOrig < 0) return;
+        const src = ws[XLSX.utils.encode_cell({ r: lo, c: cOrig })];
+        if (src) ws2[XLSX.utils.encode_cell({ r: i, c: cDest })] = { t: src.t, v: src.v, ...(src.z ? { z: src.z } : (cDest < 13 && src.t === 'n' ? { z: 'dd/mm/yyyy hh:mm:ss' } : {})) };
+      });
+      const cl = ws2[XLSX.utils.encode_cell({ r: i, c: 10 })]; if (cl) cl.z = '#,##0';
+    }
+    ws2['!cols'] = [10, 12, 10, 10, 9, 36, 36, 18, 34, 10, 11, 17, 17, 12].map(w => ({ wch: w }));
+    ws2['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: porProduto.length, c: cab2.length - 1 } }) };
+    const nome2 = 'Pedidos por parada';
+    if (wb.SheetNames.includes(nome2)) { delete wb.Sheets[nome2]; wb.SheetNames = wb.SheetNames.filter(n => n !== nome2); }
+    XLSX.utils.book_append_sheet(wb, ws2, nome2);
+    XLSX.writeFile(wb, file.name.replace(/\.(xlsx|xls|xlsm)$/i, '') + ' - com pedidos.xlsx');
+    const msg = `🔗 ${linhasDados.length} linha(s): ${ok} com pedido` + (divergente ? `, ${divergente} com divergência de cliente/sequência (ver coluna Conferência)` : '') + (semViagem ? `, ${semViagem} sem a viagem no Histórico` : '') + '.';
+    showToast(msg, !divergente && !semViagem);
+  } catch (e) {
+    console.error('[Herrlog] cruzamento', e);
+    alert('Erro ao cruzar o arquivo: ' + e.message);
+  }
+}
+window.cruzarHerrlogComPedidos = cruzarHerrlogComPedidos;
 // Exclui UMA entrega (parada) de uma viagem salva, mantendo as demais.
 // Mesmo mecanismo de revisão: nunca sobrescreve o original. Não recalcula
 // rota/horários (igual ao "Incluir pedido"); se a entrega excluída era a
