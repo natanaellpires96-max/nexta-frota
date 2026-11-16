@@ -5973,6 +5973,145 @@ function _pmapaDisponivelAsLabel(v) {
   }
   return isNaN(jMin) ? 'Disponível às —' : `Disponível às ${hhmm(jMin)} (jornada)`;
 }
+// ── Situação de cada placa no dia (mapa de pedidos) ─────────────────────────
+// 🟢 livre no dia · 🟡 já tem viagem e ainda cabe esta carga na jornada ·
+// 🔴 já rodou e a jornada que sobra não cabe esta carga (foi longe / muitas
+// viagens). Considera a programação aberta + outras programações VIGENTES do
+// mesmo dia salvas no Histórico (sem contar em dobro: dedup pelo nº da viagem).
+let _pmapaDiaHist = { chave: null, em: 0, porPlaca: new Map(), carregando: null };
+let _pmapaVeicEscolhido = null;
+const _pmapaNormPlaca = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+function _pmapaDataOpBr() {
+  const iso = document.getElementById('rot-data-operacao')?.value || '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '';
+}
+function _pmapaViagensDoVeiculo(v, viagens, desloc, origem, petIgnorar) {
+  const out = [];
+  const reais = (viagens || []).filter(vi => vi && !vi._vazio && (vi.paradas || []).length);
+  reais.forEach((vi, idx) => {
+    if (petIgnorar && vi.petId && petIgnorar.has(vi.petId)) return;
+    let ini = NaN; try { ini = _histInicioCargaAbs(v, reais, idx); } catch (e) {}
+    const dur = _histDuracaoParedeMin(vi);
+    out.push({ petId: vi.petId || '', inicio: isNaN(ini) ? null : ini + desloc, fim: isNaN(ini) ? null : ini + desloc + dur, dur,
+      destinos: [...new Set(vi.paradas.map(p => p.pedido?.cidade).filter(Boolean))], origem });
+  });
+  return out;
+}
+async function _pmapaCarregarDiaHist(dataBr) {
+  const chave = dataBr + '|' + (arquivoHistoricoAberto || '');
+  if (_pmapaDiaHist.chave === chave && Date.now() - _pmapaDiaHist.em < 120000) return _pmapaDiaHist.porPlaca;
+  if (_pmapaDiaHist.carregando) return _pmapaDiaHist.carregando;
+  _pmapaDiaHist.carregando = (async () => {
+    const porPlaca = new Map();
+    try {
+      if (dirHandleHistorico && dataBr && (await dirHandleHistorico.queryPermission({ mode: 'read' })) === 'granted') {
+        const [d, m, y] = dataBr.split('/'); const diaRef = new Date(+y, +m - 1, +d);
+        for await (const [name, handle] of dirHandleHistorico.entries()) {
+          if (handle.kind !== 'file' || !name.endsWith('.json') || name === arquivoHistoricoAberto) continue;
+          let data; try { data = JSON.parse(await (await handle.getFile()).text()); } catch (e) { continue; }
+          if (!data?.resultado || data.substituidoPor) continue;
+          if (arquivoHistoricoAberto && data.revisaoDe === arquivoHistoricoAberto) continue;
+          const temData = (data.datasEntrega || []).includes(dataBr) || (data.pedidos || []).some(p => p?.dataEntregaLogistica === dataBr);
+          if (!temData) continue;
+          (data.veiculos || []).forEach(v => {
+            const viagens = data.resultado[v.id];
+            if (!Array.isArray(viagens)) return;
+            const base = _histBaseDate(data, viagens.find(x => x && (x.paradas || []).length));
+            const desloc = Math.round((base.getTime() - diaRef.getTime()) / 60000);
+            const k = _pmapaNormPlaca(v.placa);
+            if (!porPlaca.has(k)) porPlaca.set(k, []);
+            porPlaca.get(k).push(..._pmapaViagensDoVeiculo(v, viagens, desloc, name));
+          });
+        }
+      }
+    } catch (e) { console.warn('[mapa] viagens do dia no Histórico', e); }
+    _pmapaDiaHist = { chave, em: Date.now(), porPlaca, carregando: null };
+    return porPlaca;
+  })();
+  return _pmapaDiaHist.carregando;
+}
+// Tempo aproximado que a carga selecionada precisa (ida + volta + carga/descarga).
+function _pmapaNecessidadeMin(selecionados, terminalNome) {
+  const t = _terminalPorNomeFlex?.(terminalNome) || terminaisCad.find(x => x.nome === terminalNome);
+  let maxKm = 0;
+  selecionados.forEach(p => {
+    const c = latLonEfetivo(p);
+    if (t?.lat && t?.lon && c?.lat && c?.lon) maxKm = Math.max(maxKm, haversine(t.lat, t.lon, c.lat, c.lon) * 1.3);
+  });
+  if (!maxKm) return 240; // sem coordenada: considera ~4h
+  return Math.round((maxKm * 2) / 50 * 60 + 60 + 40 * selecionados.length);
+}
+// Mesmo cálculo de tempo da montagem da viagem (velocidades do veículo,
+// carga, descarga e retorno), na ordem selecionada.
+function _pmapaNecessidadeVeicMin(v, selecionados, terminalNome) {
+  try {
+    const viagem = { paradas: [], terminalOrigem: terminalNome };
+    let tot = 0;
+    selecionados.forEach(p => {
+      const d = dadosIncrementoParada(viagem, v, p, p.terminal || terminalNome);
+      tot += d.incrementoMin || 0;
+      viagem.paradas.push({ pedido: p, deslocVazioMin: d.deslocVazioMin || 0 });
+    });
+    if (tot > 0) return Math.round(tot);
+  } catch (e) {}
+  return _pmapaNecessidadeMin(selecionados, terminalNome);
+}
+function _pmapaSituacaoVeiculo(v, histPorPlaca, necessidadeMin) {
+  const hhmm = m => `${String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, '0')}:${String(((Math.round(m) % 60) + 60) % 60).padStart(2, '0')}`;
+  const durTxt = m => `${Math.floor(Math.max(0, m) / 60)}h${String(Math.round(Math.max(0, m) % 60)).padStart(2, '0')}`;
+  const atuais = _pmapaViagensDoVeiculo(v, ultimoResultado?.[v.id] || [], 0, 'esta programação');
+  const pets = new Set(atuais.map(x => x.petId).filter(Boolean));
+  const outras = (histPorPlaca.get(_pmapaNormPlaca(v.placa)) || []).filter(x => !x.petId || !pets.has(x.petId));
+  const todas = [...outras, ...atuais].sort((a, b) => (a.inicio ?? 0) - (b.inicio ?? 0));
+  let jIni = parseHoraMin(v.jornadaInicio || '06:00'); if (isNaN(jIni)) jIni = 360;
+  const dMin = parseHoraMin(v._horarioDisponivelAPartirDe || ''); if (!isNaN(dMin) && dMin > jIni) jIni = dMin;
+  let jFim = parseHoraMin(v.jornadaFim || '18:00'); if (isNaN(jFim)) jFim = jIni + 720;
+  if (jFim <= jIni) jFim += 1440;
+  if (doisTurnos(v)) jFim = Math.max(jFim, jIni + 1440 - 60);
+  if (!todas.length) return { nivel: 0, cor: '#16A34A', fundo: '#F0FDF4', borda: '#86EFAC', titulo: 'Livre no dia', detalhe: _pmapaDisponivelAsLabel(v), todas };
+  const fims = todas.map(x => x.fim).filter(x => x != null);
+  const livreDesde = Math.max(jIni, fims.length ? Math.max(...fims) : jIni + todas.reduce((s, x) => s + x.dur, 0));
+  const sobra = jFim - livreDesde;
+  const viagTxt = todas.map(x => `${x.petId || 'viagem'}${x.destinos.length ? ' → ' + x.destinos.slice(0, 2).join(', ') : ''}${x.origem !== 'esta programação' ? ' (outra programação)' : ''}`).join(' · ');
+  const base = `${todas.length} viagem(ns) no dia · volta ~${hhmm(livreDesde)} · sobra ${durTxt(sobra)} de jornada`;
+  if (sobra >= necessidadeMin) return { nivel: 1, cor: '#CA8A04', fundo: '#FEFCE8', borda: '#FDE047', titulo: 'Já rodou — jornada OK', detalhe: base, extra: viagTxt, sobra, todas };
+  return { nivel: 2, cor: '#DC2626', fundo: '#FEF2F2', borda: '#FCA5A5', titulo: 'Jornada apertada', detalhe: `${base} · esta carga precisa ~${durTxt(necessidadeMin)}`, extra: viagTxt, sobra, todas };
+}
+function pmapaEscolherVeiculo(id) {
+  _pmapaVeicEscolhido = id;
+  const inp = document.getElementById('pmapa-veiculo'); if (inp) inp.value = id;
+  document.querySelectorAll('#pmapa-veic-lista [data-veic]').forEach(el => {
+    const sel = String(el.dataset.veic) === String(id);
+    el.style.outline = sel ? '2px solid var(--pet-green, #16A34A)' : 'none';
+    el.querySelector('input[type=radio]').checked = sel;
+  });
+}
+window.pmapaEscolherVeiculo = pmapaEscolherVeiculo;
+function _pmapaListaVeiculosHtml(veicsOk, selecionados, terminalNome, histPorPlaca, carregandoHist) {
+  if (!veicsOk.length) return `<input type="hidden" id="pmapa-veiculo" value=""><div style="font-size:12px;color:var(--text-3);margin:4px 0 10px;">Nenhum veículo compatível com o(s) terminal(is)/restrições</div>`;
+  const itens = veicsOk.map(v => ({ v, s: _pmapaSituacaoVeiculo(v, histPorPlaca, _pmapaNecessidadeVeicMin(v, selecionados, terminalNome)) }))
+    .sort((a, b) => a.s.nivel - b.s.nivel || (b.s.sobra || 0) - (a.s.sobra || 0));
+  if (!itens.some(x => x.v.id === _pmapaVeicEscolhido)) _pmapaVeicEscolhido = itens[0].v.id;
+  const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  return `<input type="hidden" id="pmapa-veiculo" value="${_pmapaVeicEscolhido}">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--text-3);margin:4px 0 6px;">
+      <span><span style="color:#16A34A;">●</span> livre</span><span><span style="color:#CA8A04;">●</span> já rodou, cabe</span><span><span style="color:#DC2626;">●</span> jornada apertada</span>
+      ${carregandoHist ? '<span style="font-style:italic;">· conferindo o Histórico do dia…</span>' : ''}
+    </div>
+    <div id="pmapa-veic-lista" style="max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;margin-bottom:10px;">
+      ${itens.map(({ v, s }) => `<label data-veic="${v.id}" onclick="pmapaEscolherVeiculo(${v.id})" title="${esc(s.extra || s.detalhe)}"
+          style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;border:1px solid ${s.borda};border-left:4px solid ${s.cor};background:${s.fundo};border-radius:6px;padding:6px 8px;${v.id === _pmapaVeicEscolhido ? 'outline:2px solid var(--pet-green, #16A34A);' : ''}">
+        <input type="radio" name="pmapa-veic-radio" ${v.id === _pmapaVeicEscolhido ? 'checked' : ''} style="margin-top:2px;">
+        <div style="min-width:0;flex:1;">
+          <div style="font-size:12px;font-weight:700;color:#111827;"><span style="color:${s.cor};">●</span> ${esc(v.placa)} <span style="font-weight:500;color:#4B5563;">· ${esc(v.tipo || '')} · ${esc(v.capacidade)}m³</span></div>
+          <div style="font-size:10.5px;font-weight:700;color:${s.cor};">${esc(s.titulo)}</div>
+          <div style="font-size:10.5px;color:#4B5563;line-height:1.35;">${esc(s.detalhe)}</div>
+          ${s.extra ? `<div style="font-size:10px;color:#6B7280;line-height:1.3;margin-top:1px;">${esc(s.extra)}</div>` : ''}
+        </div>
+      </label>`).join('')}
+    </div>`;
+}
 function pmapaAtualizarPainel() {
   const box = document.getElementById('pmapa-painel');
   if (!box) return;
@@ -5998,6 +6137,7 @@ function pmapaAtualizarPainel() {
   }
   const totalVol = selecionados.reduce((s, p) => s + _pmapaVolumePendente(p), 0);
   const veicsOk  = _pmapaVeiculosCompativeis(selecionados, terminaisDistintos);
+  const _pmapaHistPronto = _pmapaDiaHist.chave === (_pmapaDataOpBr() + '|' + (arquivoHistoricoAberto || '')) && !_pmapaDiaHist.carregando && (Date.now() - _pmapaDiaHist.em < 120000);
   const listaHtml = selecionados.map(p => `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;">
       <div style="min-width:0;">
@@ -6014,13 +6154,14 @@ function pmapaAtualizarPainel() {
     <div style="max-height:220px;overflow-y:auto;margin-bottom:8px;">${listaHtml}</div>
     <div style="font-size:12px;font-weight:700;color:var(--pet-green);margin-bottom:10px;">Total pendente: ${totalVol.toFixed(1)} m³</div>
     <label style="font-size:11px;font-weight:700;color:var(--text-3);">Veículo</label>
-    <select id="pmapa-veiculo" style="width:100%;padding:6px 8px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;margin:4px 0 10px;">
-      ${veicsOk.length
-        ? veicsOk.map(v => `<option value="${v.id}">${v.placa} · ${v.tipo} · ${v.capacidade}m³ · ${_pmapaDisponivelAsLabel(v)}</option>`).join('')
-        : '<option value="">Nenhum veículo compatível com o(s) terminal(is)/restrições</option>'}
-    </select>
+    ${_pmapaListaVeiculosHtml(veicsOk, selecionados, terminaisDistintos[0], _pmapaHistPronto ? _pmapaDiaHist.porPlaca : new Map(), !_pmapaHistPronto)}
     <button class="btn btn-green btn-sm" style="width:100%;" ${veicsOk.length ? '' : 'disabled'} onclick="pmapaFecharCarga()">🚚 Fechar Carga</button>
   `;
+  // Viagens de outras programações do dia (Histórico): carrega em segundo plano e redesenha.
+  if (!_pmapaHistPronto && veicsOk.length) {
+    const dataBr = _pmapaDataOpBr();
+    _pmapaCarregarDiaHist(dataBr).then(() => { if (document.getElementById('pmapa-veic-lista')) pmapaAtualizarPainel(); }).catch(() => {});
+  }
 }
 // ── Constrói a viagem de verdade (mesma engine da roteirização automática) ──
 function _pmapaGarantirEstruturaResultado() {
@@ -11564,6 +11705,7 @@ async function _histGarantirPermissao() {
   if (!dirHandleHistorico) return false;
   let perm = await dirHandleHistorico.queryPermission({ mode: 'readwrite' });
   if (perm !== 'granted') perm = await dirHandleHistorico.requestPermission({ mode: 'readwrite' });
+  if (perm === 'granted' && window._histPrecisaReautorizar) _histMostrarPasta(dirHandleHistorico.name, false);
   return perm === 'granted';
 }
 async function recuperarHandleHistorico() {
@@ -11572,16 +11714,50 @@ async function recuperarHandleHistorico() {
     if (!handle) return;
     const perm = await handle.queryPermission({ mode: 'readwrite' });
     dirHandleHistorico = handle;
-    const el = document.getElementById('hist-pasta-path');
     if (perm === 'granted') {
-      el.textContent = handle.name;
+      _histMostrarPasta(handle.name, false);
       popularDropdownRoteirizacoes();
       popularSeletorResumoDia().catch(()=>{});
     } else {
-      el.textContent = handle.name + '  (clique em "Atualizar lista" para reautorizar)';
+      // A pasta é lembrada (IndexedDB); o Chrome é que pede a permissão de
+      // novo a cada sessão. Um clique reautoriza — sem procurar no OneDrive.
+      _histMostrarPasta(handle.name, true);
     }
-  } catch(e) { /* IDB indisponível ou handle inválido */ }
+  } catch(e) { console.warn('[Histórico] não consegui recuperar a pasta salva', e); }
 }
+// Mostra só o nome da pasta lembrada. Se o Chrome não tiver guardado a
+// permissão, ela é pedida SOZINHA no primeiro clique em qualquer lugar do
+// sistema (o navegador só deixa pedir junto de um clique) — sem botão, sem
+// precisar procurar a pasta no OneDrive. Escolhendo "Permitir em todas as
+// visitas" uma vez, o Chrome não pergunta mais.
+let _histAutoPedidoArmado = false;
+function _histMostrarPasta(nome, precisaAutorizar) {
+  const el = document.getElementById('hist-pasta-path');
+  window._histPrecisaReautorizar = !!precisaAutorizar;
+  if (el) el.textContent = nome;
+  if (precisaAutorizar && !_histAutoPedidoArmado) {
+    _histAutoPedidoArmado = true;
+    const pedir = async () => {
+      document.removeEventListener('pointerdown', pedir, true);
+      _histAutoPedidoArmado = false;
+      if (!dirHandleHistorico || !window._histPrecisaReautorizar) return;
+      let perm = 'denied';
+      try { perm = await dirHandleHistorico.requestPermission({ mode: 'readwrite' }); } catch (e) {}
+      if (perm !== 'granted') return; // recusou: pede de novo quando o Histórico for usado
+      window._histPrecisaReautorizar = false;
+      try { await carregarListaHistorico(); } catch (e) {}
+      try { await popularDropdownRoteirizacoes(); } catch (e) {}
+      popularSeletorResumoDia().catch(() => {});
+      if (typeof window.dashRecarregarAposPasta === 'function') { try { window.dashRecarregarAposPasta(); } catch (e) {} }
+    };
+    document.addEventListener('pointerdown', pedir, true);
+  }
+}
+async function reautorizarPastaHistorico() {
+  if (!dirHandleHistorico) { await selecionarPastaHistorico(); return; }
+  if (await _histGarantirPermissao()) { try { await carregarListaHistorico(); } catch (e) {} }
+}
+window.reautorizarPastaHistorico = reautorizarPastaHistorico;
 async function selecionarPastaHistorico() {
   if (!window.showDirectoryPicker) {
     alert('Seu navegador não suporta File System Access API.\nUse Chrome ou Edge via HTTPS.');
@@ -14339,6 +14515,13 @@ window.recuperarHandleHistoricoPromise = recuperarHandleHistorico();
 window.initRoteirizadorIntegrado = async function(){
   const root = document.getElementById('roteirizador-shell');
   if(!root) return;
+  // Pasta do Histórico: mostra a lembrada (e o botão de liberar, se o Chrome pedir permissão de novo)
+  (async () => {
+    try { await window.recuperarHandleHistoricoPromise; } catch (e) {}
+    if (!dirHandleHistorico) return;
+    let p = 'prompt'; try { p = await dirHandleHistorico.queryPermission({ mode: 'readwrite' }); } catch (e) {}
+    _histMostrarPasta(dirHandleHistorico.name, p !== 'granted');
+  })();
   if(!window.__roteirizadorDadosCarregados){
     window.__roteirizadorDadosCarregados = true;
     try { await carregarDadosFixos(); } catch(e) { console.warn('Roteirizador: falha ao carregar dados fixos', e); }
