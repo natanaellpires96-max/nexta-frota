@@ -6538,6 +6538,9 @@ document.addEventListener('click', function(e) {
 const RP_DIMS = [
   { id: 'transportadora', nome: 'Transportadora' },
   { id: 'placa', nome: 'Placa' },
+  { id: 'capVeic', nome: 'Capacidade do veículo' },
+  { id: 'transpCap', nome: 'Transportadora + capacidade' },
+  { id: 'placaDet', nome: 'Placa (com transportadora e capacidade)' },
   { id: 'contrato', nome: 'Tipo de contrato' },
   { id: 'base', nome: 'Base de carregamento' },
   { id: 'operacao', nome: 'Operação (cidade da base)' },
@@ -6584,6 +6587,8 @@ const RP_DIM = Object.fromEntries(RP_DIMS.map(d => [d.id, d]));
 const RP_MET = Object.fromEntries(RP_METS.map(m => [m.id, m]));
 // Modelos prontos (não dá pra excluir; "Salvar como" cria uma cópia editável).
 const RP_PADRAO = [
+  { id: 'p_kmcap', nome: 'Km rodado por transportadora e capacidade (mês a mês)', padrao: true, cfg: { dims: ['transpCap', 'mes'], mets: ['placas', 'km'], matriz: true, ordem: { met: '_rotulo', dir: 'asc' }, grafico: { tipo: 'auto', met: 'km' } } },
+  { id: 'p_kmplaca', nome: 'Km rodado por placa (mês a mês)', padrao: true, cfg: { dims: ['placaDet', 'mes'], mets: ['km', 'viagens', 'kmViagem'], matriz: true, ordem: { met: '_rotulo', dir: 'asc' }, grafico: { tipo: 'nenhum', met: 'km' } } },
   { id: 'p_fech', nome: 'Fechamento por transportadora', padrao: true, cfg: { dims: ['transportadora'], mets: ['viagens', 'entregas', 'volume', 'participacao', 'ocupacao', 'km', 'custo', 'custoM3'], ordem: { met: 'volume', dir: 'desc' }, grafico: { tipo: 'auto', met: 'volume' } } },
   { id: 'p_cli', nome: 'Clientes por volume e drop', padrao: true, cfg: { dims: ['cliente'], mets: ['volume', 'participacao', 'entregas', 'drop', 'kmEntrega', 'ocorrencias'], ordem: { met: 'volume', dir: 'desc' }, limite: 50, grafico: { tipo: 'auto', met: 'volume' } } },
   { id: 'p_base', nome: 'Ocupação por base', padrao: true, cfg: { dims: ['base'], mets: ['viagens', 'volume', 'capacidade', 'ocupacao', 'entregasViagem', 'drop'], ordem: { met: 'volume', dir: 'desc' }, grafico: { tipo: 'auto', met: 'ocupacao' } } },
@@ -6592,7 +6597,7 @@ const RP_PADRAO = [
   { id: 'p_ocorr', nome: 'Ocorrências por cliente', padrao: true, cfg: { dims: ['cliente'], mets: ['entregas', 'ocorrencias', 'devolucoes', 'reentregas', 'volDevolvido', 'indiceOcorr'], ordem: { met: 'ocorrencias', dir: 'desc' }, limite: 30, filtros: { minEntregas: 0 }, grafico: { tipo: 'auto', met: 'ocorrencias' } } },
   { id: 'p_prod', nome: 'Volume por produto e base', padrao: true, cfg: { dims: ['produto', 'base'], mets: ['entregas', 'volume', 'participacao', 'drop'], ordem: { met: 'volume', dir: 'desc' }, grafico: { tipo: 'auto', met: 'volume' } } },
 ];
-const RP_CFG_VAZIA = () => ({ dims: ['transportadora'], mets: ['viagens', 'entregas', 'volume', 'ocupacao', 'drop'], ordem: { met: 'volume', dir: 'desc' }, limite: 0, filtros: { de: '', ate: '', dim: '', texto: '', minEntregas: 0 }, grafico: { tipo: 'auto', met: 'volume' } });
+const RP_CFG_VAZIA = () => ({ dims: ['transportadora'], mets: ['viagens', 'entregas', 'volume', 'ocupacao', 'drop'], ordem: { met: 'volume', dir: 'desc' }, limite: 0, filtros: { de: '', ate: '', dim: '', texto: '', modo: 'sim', minEntregas: 0 }, grafico: { tipo: 'auto', met: 'volume' } });
 let _rp = { cfg: RP_CFG_VAZIA(), modeloId: '', modelos: null, linhas: null, resultado: null, timer: null };
 // Cores (paleta categórica validada, tema claro) — só no gráfico com 2 agrupamentos.
 const RP_SERIE = '#2a78d6';
@@ -6654,6 +6659,10 @@ function _rpExtrair() {
           viagem.kmIda += km; viagem.volume += vol;
           const L = { vk, ek: vk + '|' + ip, temContrato: false, data, transportadora: v.transportadora || '(sem transportadora)', placa: v.placa || '', contrato: v.contrato || '—', base, operacao,
             ck, nomeRaw, cidade: ped.cidade || '—', vol, volBruto, km, custo: 0,
+            capVeic: capV > 0 ? String(Math.round(capV)).padStart(4, '0') : '—', // ordena 15 < 20 < 35
+            transpCap: `${v.transportadora || '(sem transportadora)'} (${capV > 0 ? Math.round(capV) + ' m³' : 's/ cap.'})`,
+            // ordena por transportadora → capacidade → placa; rótulo "PLACA — TRANSPORTADORA (20 m³)"
+            placaDet: `${v.transportadora || '(sem transportadora)'}\u0002${capV > 0 ? String(Math.round(capV)).padStart(4, '0') : '9999'}\u0002${v.placa || '—'}`,
             itens: (par.itens || []).filter(it => it && it.produto).map(it => ({ produto: it.produto, volume: Number(it.volume) || 0 })),
             ocorr: oc?.n || 0, dev: oc?.dev || 0, reent: oc?.reent || 0, volDev: oc?.vol || 0 };
           viagem.linhas.push(L); linhas.push(L);
@@ -6710,6 +6719,8 @@ function _rpRotuloDim(id, v) {
   if (id === 'dia') return `${v.slice(8, 10)}/${v.slice(5, 7)}/${v.slice(0, 4)}`;
   if (id === 'mes') return `${_RP_MESES[+v.slice(5, 7) - 1]}/${v.slice(0, 4)}`;
   if (id === 'diasemana') return _RP_DIAS[+v];
+  if (id === 'capVeic') return `${+v} m³`;
+  if (id === 'placaDet') { const [t, c, pl] = v.split('\u0002'); return `${pl} — ${t}${c !== '9999' ? ` (${+c} m³)` : ''}`; }
   if (id === 'semana') {
     const [a, s] = v.split('-S'); const j4 = new Date(+a, 0, 4); const seg = new Date(j4); seg.setDate(j4.getDate() - ((j4.getDay() + 6) % 7) + (+s - 1) * 7);
     const dom = new Date(seg); dom.setDate(seg.getDate() + 6); const f = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -6759,7 +6770,8 @@ function _rpCalcular(base, cfg) {
   }
   if (f.dim && f.texto) {
     const termos = f.texto.split(/[;,]/).map(_rpNorm).filter(Boolean);
-    linhas = linhas.filter(l => { const v = _rpNorm(_rpRotuloDim(f.dim, _rpValorDim(l, f.dim))); return termos.some(t => v.includes(t)); });
+    const excluir = f.modo === 'nao';
+    linhas = linhas.filter(l => { const v = _rpNorm(_rpRotuloDim(f.dim, _rpValorDim(l, f.dim))); const bate = termos.some(t => v.includes(t)); return excluir ? !bate : bate; });
   }
   const accTot = _rpNovoAcc(); linhas.forEach(l => _rpSomar(accTot, l));
   const total = _rpFechar(accTot, base.viagens, accTot.volume);
@@ -6802,6 +6814,35 @@ function _rpCalcular(base, cfg) {
   return { linhas: linhasRes, blocos, total, totalGrupos, nEntregas: linhas.length };
 }
 
+// ── Matriz (2 agrupamentos): um nas linhas, o outro nas colunas ─────────────
+// Ex.: Transportadora + capacidade nas linhas × meses nas colunas. O agrupamento
+// de tempo vai pras colunas (se houver). Totais de linha/coluna são recalculados
+// pela base (médias e % ficam certos, não é soma de médias).
+function _rpMatrizPossivel(cfg) { return cfg.dims.length === 2; }
+function _rpMatriz(res, cfg) {
+  const t0 = RP_DIM[cfg.dims[0]]?.tempo, t1 = RP_DIM[cfg.dims[1]]?.tempo;
+  const iC = t1 ? 1 : (t0 ? 0 : 1), iR = 1 - iC;
+  const dimR = cfg.dims[iR], dimC = cfg.dims[iC];
+  const semLimite = { ...cfg, limite: 0 };
+  const totR = new Map(_rpCalcular(_rp.linhas, { ...semLimite, dims: [dimR] }).linhas.map(r => [r.vals[0], r]));
+  const totC = new Map(_rpCalcular(_rp.linhas, { ...semLimite, dims: [dimC] }).linhas.map(r => [r.vals[0], r]));
+  const cel = new Map();
+  const todas = _rpCalcular(_rp.linhas, semLimite).linhas;
+  todas.forEach(r => cel.set(r.vals[iR] + '\u0001' + r.vals[iC], r.m));
+  const colunas = [...totC.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR', { numeric: true }));
+  const o = cfg.ordem || { met: '_rotulo', dir: 'asc' }, sinal = o.dir === 'asc' ? 1 : -1;
+  let linhas = [...totR.entries()];
+  linhas.sort((a, b) => o.met === '_rotulo' || !RP_MET[o.met]
+    ? a[0].localeCompare(b[0], 'pt-BR', { numeric: true }) * sinal
+    : ((a[1].m[o.met] ?? -Infinity) - (b[1].m[o.met] ?? -Infinity)) * sinal);
+  if (cfg.limite > 0) linhas = linhas.slice(0, cfg.limite);
+  return {
+    dimR, dimC,
+    colunas: colunas.map(v => ({ val: v, rotulo: _rpRotuloDim(dimC, v), m: totC.get(v).m })),
+    linhas: linhas.map(([v, r]) => ({ val: v, rotulo: _rpRotuloDim(dimR, v), m: r.m, cel: c => cel.get(v + '\u0001' + c) || null })),
+    total: res.total,
+  };
+}
 // ── Formatação ───────────────────────────────────────────────────────────────
 function _rpFmt(id, v) {
   if (v == null || !isFinite(v)) return '—';
@@ -7007,13 +7048,18 @@ function _rpRenderSide() {
       <select onchange="rpSetDim(0, this.value)">${_rpOpts(RP_DIMS, c.dims[0], '')}</select>
       <select style="margin-top:6px" onchange="rpSetDim(1, this.value)">${_rpOpts(RP_DIMS.filter(d => d.id !== c.dims[0]), c.dims[1] || '', '+ segundo agrupamento (opcional)')}</select>
       <div class="rp-dica">Ex.: Transportadora + Mês mostra cada transportadora mês a mês.</div>
+      ${c.dims.length === 2 ? `<label style="display:flex;gap:6px;align-items:center;margin-top:8px;font-size:12px;color:#374151;font-weight:600;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" ${c.matriz ? 'checked' : ''} onchange="rpSet('matriz', this.checked)"> Mostrar como matriz (${_rpEsc(RP_DIM[RP_DIM[c.dims[1]]?.tempo || !RP_DIM[c.dims[0]]?.tempo ? c.dims[1] : c.dims[0]].nome.toLowerCase())} nas colunas)</label>
+        <div class="rp-dica">Uma tabela por coluna marcada (ex.: Km e Placas distintas).</div>` : ''}
     </div>
     <div class="rp-sec"><label>Colunas (${c.mets.length})</label><div class="rp-mets">${metsHtml}</div></div>
     <div class="rp-sec"><label>Filtros do relatório</label>
       <div class="rp-row"><input type="date" value="${f.de || ''}" onchange="rpSetFiltro('de', this.value)" title="Entrega de"><input type="date" value="${f.ate || ''}" onchange="rpSetFiltro('ate', this.value)" title="Entrega até"></div>
       <div class="rp-dica" style="margin:3px 0 8px">Data de entrega (opcional), dentro do período carregado no Dashboard.</div>
       <select onchange="rpSetFiltro('dim', this.value)">${_rpOpts(RP_DIMS.filter(d => d.id !== 'diasemana'), f.dim || '', 'Filtrar por… (opcional)')}</select>
-      <input type="text" style="margin-top:6px" placeholder="contém… (separe vários por vírgula)" value="${_rpEsc(f.texto || '')}" oninput="rpSetFiltro('texto', this.value)" ${f.dim ? '' : 'disabled'}>
+      <div class="rp-row" style="margin-top:6px">
+        <select style="flex:.8" onchange="rpSetFiltro('modo', this.value)" ${f.dim ? '' : 'disabled'} title="Contém = mostra só o que bate · Não contém = tira o que bate"><option value="sim"${f.modo !== 'nao' ? ' selected' : ''}>Contém</option><option value="nao"${f.modo === 'nao' ? ' selected' : ''}>Não contém</option></select>
+        <input type="text" style="flex:2" placeholder="${f.modo === 'nao' ? 'tirar…' : 'mostrar só…'} (separe vários por vírgula)" value="${_rpEsc(f.texto || '')}" oninput="rpSetFiltro('texto', this.value)" ${f.dim ? '' : 'disabled'}>
+      </div>
       <div class="rp-row" style="margin-top:6px"><span style="font-size:12px;color:#374151;flex:2">Mínimo de entregas por linha</span><input type="number" min="0" value="${f.minEntregas || 0}" onchange="rpSetFiltro('minEntregas', +this.value || 0)"></div>
       <div class="rp-dica">Os filtros do topo do Dashboard (período, operação, transportadora, clientes, segmento e bandeira) também valem aqui.</div>
     </div>
@@ -7044,10 +7090,18 @@ function _rpRenderMain() {
         + `<tr class="rp-bl-t"><td></td><td colspan="2">Total ${_rpEsc(b.rotulo)}</td>${mets.map(m => `<td class="n">${m.id === 'participacao' ? _rpFmt(m.id, b.m.participacao) : _rpFmt(m.id, b.m[m.id])}</td>`).join('')}</tr>`).join('')
     : res.linhas.map((r, i) => linhaHtml(r, i, false)).join('');
   const rod = `<tr><td></td><td colspan="${c.dims.length}">Total${res.totalGrupos > res.linhas.length ? ` (todas as ${res.totalGrupos} linhas)` : ''}</td>${mets.map(m => `<td class="n">${_rpFmt(m.id, res.total[m.id])}</td>`).join('')}</tr>`;
+  let tabelaHtml = `<div class="rp-tabw"><table class="rp-tab"><thead>${cab}</thead><tbody>${corpo}</tbody><tfoot>${rod}</tfoot></table></div>`;
+  if (c.matriz && _rpMatrizPossivel(c)) {
+    const mx = _rp.matriz = _rpMatriz(res, c);
+    tabelaHtml = mets.map(m => `<div style="font-size:12px;font-weight:800;color:#111827;margin:14px 0 6px;text-transform:uppercase;letter-spacing:.04em">${_rpEsc(m.nome)} · ${_rpEsc(RP_DIM[mx.dimR].nome)} × ${_rpEsc(RP_DIM[mx.dimC].nome)}</div>
+      <div class="rp-tabw"><table class="rp-tab"><thead><tr><th>${_rpEsc(RP_DIM[mx.dimR].nome)}</th>${mx.colunas.map(col => `<th class="n">${_rpEsc(col.rotulo)}</th>`).join('')}<th class="n">Total</th></tr></thead>
+      <tbody>${mx.linhas.map(l => `<tr><td>${_rpEsc(l.rotulo)}</td>${mx.colunas.map(col => { const v = l.cel(col.val); return `<td class="n">${v ? _rpFmt(m.id, v[m.id]) : '<span style="color:#9CA3AF">—</span>'}</td>`; }).join('')}<td class="n" style="font-weight:700">${_rpFmt(m.id, l.m[m.id])}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Total</td>${mx.colunas.map(col => `<td class="n">${_rpFmt(m.id, col.m[m.id])}</td>`).join('')}<td class="n">${_rpFmt(m.id, mx.total[m.id])}</td></tr></tfoot></table></div>`).join('');
+  } else _rp.matriz = null;
   box.innerHTML = `
     <div class="rp-resumo"><span><b>${res.linhas.length}</b>${res.totalGrupos > res.linhas.length ? ` de ${res.totalGrupos}` : ''} linha(s)</span><span><b>${res.total.viagens.toLocaleString('pt-BR')}</b> viagens</span><span><b>${res.nEntregas.toLocaleString('pt-BR')}</b> entregas na base</span><span>${_rpEsc(_dashDescricaoFiltroAtual())}</span></div>
     ${_rpGrafico(res, c)}
-    <div class="rp-tabw"><table class="rp-tab"><thead>${cab}</thead><tbody>${corpo}</tbody><tfoot>${rod}</tfoot></table></div>
+    ${tabelaHtml}
     <div class="rp-nota">Volume líquido de devoluções · km real quando a viagem já tem trajeto calculado · custo pelo contrato da placa cadastrado no Frete (placas sem contrato somam R$ 0 e ficam fora do custo por m³/viagem/entrega) · com Produto, a entrega é dividida pelo volume de cada produto.</div>`;
 }
 function _rpRecalcular() { clearTimeout(_rp.timer); _rp.timer = setTimeout(() => { try { _rpRenderMain(); } catch (e) { console.error('[relatório]', e); document.getElementById('rp-main').innerHTML = `<div class="rp-vazio">Erro ao montar: ${_rpEsc(e.message)}</div>`; } }, 120); }
@@ -7068,7 +7122,7 @@ function rpToggleMet(id, on) {
   if (_rp.cfg.ordem.met !== '_rotulo' && !s.includes(_rp.cfg.ordem.met)) _rp.cfg.ordem = { met: _rp.cfg.mets[0] || '_rotulo', dir: 'desc' };
   _rpTudo();
 }
-function rpSetFiltro(k, v) { _rp.cfg.filtros = { ..._rp.cfg.filtros, [k]: v }; if (k === 'dim') _rpRenderSide(); _rpRecalcular(); }
+function rpSetFiltro(k, v) { _rp.cfg.filtros = { ..._rp.cfg.filtros, [k]: v }; if (k === 'dim' || k === 'modo') _rpRenderSide(); _rpRecalcular(); }
 function rpSetOrdem(met, dir) { _rp.cfg.ordem = { met: met ?? _rp.cfg.ordem.met, dir: dir ?? _rp.cfg.ordem.dir }; _rpRecalcular(); }
 function rpOrdenarPor(met) {
   const o = _rp.cfg.ordem; _rp.cfg.ordem = o.met === met ? { met, dir: o.dir === 'asc' ? 'desc' : 'asc' } : { met, dir: met === '_rotulo' ? 'asc' : 'desc' };
@@ -7135,19 +7189,41 @@ function _rpTabelaPlana() {
   return { cab, linhas, total, mets, subtot, titulos };
 }
 function _rpNomeArquivo() { const d = new Date(), p = n => String(n).padStart(2, '0'); return `${(document.getElementById('rp-titulo')?.textContent || 'Relatorio').replace(/[^\w\-]+/g, '_')}_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`; }
+// Matriz em linhas planas (uma tabela por coluna marcada, empilhadas).
+function _rpMatrizPlana() {
+  const mx = _rp.matriz; if (!mx) return null;
+  const mets = _rp.cfg.mets.map(id => RP_MET[id]).filter(Boolean);
+  const arred = (m, v) => (v == null || !isFinite(v)) ? '' : +Number(v).toFixed(m.dec);
+  return mets.map(m => ({
+    met: m,
+    titulo: `${m.nome} · ${RP_DIM[mx.dimR].nome} × ${RP_DIM[mx.dimC].nome}`,
+    cab: [RP_DIM[mx.dimR].nome, ...mx.colunas.map(c => c.rotulo), 'Total'],
+    linhas: mx.linhas.map(l => [l.rotulo, ...mx.colunas.map(c => { const v = l.cel(c.val); return v ? arred(m, v[m.id]) : ''; }), arred(m, l.m[m.id])]),
+    total: ['Total', ...mx.colunas.map(c => arred(m, c.m[m.id])), arred(m, mx.total[m.id])],
+  }));
+}
 function rpExportarExcel() {
   if (!_rp.resultado || typeof XLSX === 'undefined') { alert('Nada para exportar (ou biblioteca de Excel não carregada).'); return; }
-  const { cab, linhas, total } = _rpTabelaPlana();
   const wb = XLSX.utils.book_new();
+  const mxp = _rp.cfg.matriz ? _rpMatrizPlana() : null;
+  if (mxp) {
+    const aoa = [];
+    mxp.forEach((t, i) => { if (i) aoa.push([]); aoa.push([t.titulo]); aoa.push(t.cab, ...t.linhas, t.total); });
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: Math.min(40, Math.max(...mxp.flatMap(t => t.linhas.map(l => String(l[0]).length)), 14) + 2) }, ...mxp[0].cab.slice(1).map(() => ({ wch: 11 }))];
+    XLSX.utils.book_append_sheet(wb, ws, 'Relatório');
+  } else {
+  const { cab, linhas, total } = _rpTabelaPlana();
   const ws = XLSX.utils.aoa_to_sheet([cab, ...linhas, total]);
   ws['!cols'] = cab.map((h, i) => ({ wch: Math.min(40, Math.max(h.length, ...linhas.slice(0, 200).map(l => String(l[i] ?? '').length)) + 2) }));
   ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: linhas.length, c: cab.length - 1 } }) };
   XLSX.utils.book_append_sheet(wb, ws, 'Relatório');
+  }
   const f = _rp.cfg.filtros || {};
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
     ['Relatório', document.getElementById('rp-titulo')?.textContent || ''], ['Gerado em', new Date().toLocaleString('pt-BR')], ['Gerado por', (window.S && window.S.user) || ''],
     ['Filtros do Dashboard', _dashDescricaoFiltroAtual()], ['Entrega de/até', `${f.de || '—'} / ${f.ate || '—'}`],
-    ['Filtro do relatório', f.dim && f.texto ? `${RP_DIM[f.dim]?.nome} contém "${f.texto}"` : '—'], ['Mínimo de entregas', f.minEntregas || 0],
+    ['Filtro do relatório', f.dim && f.texto ? `${RP_DIM[f.dim]?.nome} ${f.modo === 'nao' ? 'não contém' : 'contém'} "${f.texto}"` : '—'], ['Mínimo de entregas', f.minEntregas || 0],
     [], ['Regras', 'Volume líquido de devoluções; km real quando calculado; custo pelo contrato da placa (Frete).'],
   ]), 'Filtros');
   XLSX.writeFile(wb, _rpNomeArquivo() + '.xlsx');
@@ -7177,7 +7253,7 @@ async function rpExportarPDF() {
   doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.text(semSobrescrito(`NEXTA — ${titulo.toUpperCase()}`), 10, 12);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
   const f = _rp.cfg.filtros || {};
-  doc.text(doc.splitTextToSize(`${_dashDescricaoFiltroAtual()}${f.de || f.ate ? ` · entrega ${f.de || '…'} a ${f.ate || '…'}` : ''}${f.dim && f.texto ? ` · ${RP_DIM[f.dim]?.nome} contém "${f.texto}"` : ''} · gerado em ${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, 275), 10, 17);
+  doc.text(doc.splitTextToSize(`${_dashDescricaoFiltroAtual()}${f.de || f.ate ? ` · entrega ${f.de || '…'} a ${f.ate || '…'}` : ''}${f.dim && f.texto ? ` · ${RP_DIM[f.dim]?.nome} ${f.modo === 'nao' ? 'não contém' : 'contém'} "${f.texto}"` : ''} · gerado em ${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, 275), 10, 17);
   let y = 23;
   // Legenda do gráfico (cor + nome + total) — o gráfico vai como imagem e a legenda fica em HTML na tela.
   const leg = [...document.querySelectorAll('#rp-main .rp-leg span')].map(sp => ({ cor: sp.querySelector('i')?.style.background || '#999', txt: semSobrescrito(sp.textContent.trim()) }));
@@ -7201,6 +7277,24 @@ async function rpExportarPDF() {
   } catch (e) { console.warn('[relatório] gráfico fora do PDF:', e); }
   if (typeof doc.autoTable !== 'function') { alert('Biblioteca de tabela do PDF não carregada.'); return; }
   const fmtCel = (m, v) => v === '' ? '—' : _rpFmt(m.id, v);
+  const mxp = _rp.cfg.matriz ? _rpMatrizPlana() : null;
+  if (mxp) {
+    mxp.forEach(t => {
+      if (y > 180) { doc.addPage(); y = 12; }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(17, 24, 39); doc.text(semSobrescrito(t.titulo.toUpperCase()), 10, y + 3); y += 5;
+      doc.autoTable({
+        head: [t.cab.map(semSobrescrito)], body: t.linhas.map(l => [semSobrescrito(l[0]), ...l.slice(1).map(v => fmtCel(t.met, v))]),
+        foot: [[t.total[0], ...t.total.slice(1).map(v => fmtCel(t.met, v))]],
+        startY: y, styles: { fontSize: 7.5, cellPadding: 1.6 }, headStyles: { fillColor: [31, 41, 55], textColor: 255, fontStyle: 'bold' },
+        footStyles: { fillColor: [229, 231, 235], textColor: [17, 24, 39], fontStyle: 'bold' }, alternateRowStyles: { fillColor: [248, 249, 250] },
+        columnStyles: Object.fromEntries(t.cab.slice(1).map((_, i) => [i + 1, { halign: 'right' }])), margin: { left: 10, right: 10 }, theme: 'grid',
+      });
+      y = doc.lastAutoTable.finalY + 8;
+    });
+    doc.save(_rpNomeArquivo() + '.pdf');
+    showToast('📄 PDF gerado.', true);
+    return;
+  }
   const nd = _rp.cfg.dims.length;
   doc.autoTable({
     head: [cab], body: linhas.map((l, li) => titulos.has(li) ? [semSobrescrito(l[0]), ...l.slice(1).map(() => '')] : [...l.slice(0, nd).map(semSobrescrito), ...mets.map((m, i) => fmtCel(m, l[nd + i]))]),
