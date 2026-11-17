@@ -13521,7 +13521,7 @@ function _otifRender() {
   let html = `
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
     <div style="font-size:18px;font-weight:800;">📈 OTIF — entregas no prazo</div>
-    <div style="margin-left:auto;display:flex;gap:8px;">${r ? `<button class="btn btn-sm" onclick="otifExportarExcel()">📊 Excel</button>` : ''}<button class="btn btn-sm" onclick="document.getElementById('otif-modal').remove()">Fechar</button></div>
+    <div style="margin-left:auto;display:flex;gap:8px;">${r ? `<button class="btn btn-green btn-sm" onclick="otifExportarPDF()">📄 PDF para apresentação</button><button class="btn btn-sm" onclick="otifExportarExcel()">📊 Excel</button>` : ''}<button class="btn btn-sm" onclick="document.getElementById('otif-modal').remove()">Fechar</button></div>
   </div>
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
     ${passo('1', !!_otif.prazos, 'Tabela de prazos', _otif.prazos ? `${_otif.prazos.length} postos${_otif.prazosArq ? ` · ${esc(_otif.prazosArq)}` : ''} · <a href="#" onclick="document.getElementById('otif-prazos-in').click();return false;">trocar</a>` : `<button class="btn btn-sm" onclick="document.getElementById('otif-prazos-in').click()">Escolher planilha de prazos</button> <span style="color:#6B7280">(fica guardada)</span>`)}
@@ -13652,6 +13652,171 @@ function otifExportarExcel() {
   XLSX.utils.book_append_sheet(wb, wsH, 'Herrlog sem programação');
   XLSX.writeFile(wb, `OTIF_${r.de}_a_${r.ate}.xlsx`, { cellDates: true });
 }
+// ── PDF de apresentação do OTIF (A4 paisagem, pronto pra enviar ao gestor) ──
+function otifExportarPDF() {
+  const r = _otif.res, S = _otif.resumo;
+  const { jsPDF } = window.jspdf || {};
+  if (!r || !S) return;
+  if (!jsPDF) { alert('Biblioteca de PDF não carregada.'); return; }
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const W = 297, H = 210, M = 14;
+  const C = { ink: [17, 24, 39], muted: [107, 114, 128], line: [229, 231, 235], track: [243, 244, 246], ok: [22, 163, 74], bad: [220, 38, 38], warn: [180, 83, 9], head: [31, 41, 55], soft: [249, 250, 251] };
+  const t = s => String(s ?? '').replace(/³/g, '3').replace(/[–—]/g, '-').replace(/→/g, '>').replace(/[^\x00-\xFF]/g, '');
+  const f1 = n => n == null || !isFinite(n) ? '-' : n.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const n0 = n => Number(n || 0).toLocaleString('pt-BR');
+  const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+  const mesTit = r.de.slice(0, 7) === r.ate.slice(0, 7) ? `${MESES[+r.de.slice(5, 7) - 1]}/${r.de.slice(0, 4)}` : `${_otifBr(r.de)} a ${_otifBr(r.ate)}`;
+  const aval = r.entregas.filter(e => e.status === 'no prazo' || e.status === 'fora do prazo');
+  const porBase = _otifAgrupar(aval, e => e.cidadeBase).sort((a, b) => b.total - a.total);
+  const porTransp = _otifAgrupar(aval, e => e.transportadora).sort((a, b) => b.total - a.total);
+  const porSem = _otifAgrupar(aval, e => _otifSemana(e.d0)).sort((a, b) => a.k.localeCompare(b.k)).map(g => ({ ...g, rot: g.k.split('|')[1] }));
+  const porPrazo = _otifAgrupar(aval, e => `D+${e.prazoDias}`).sort((a, b) => a.k.localeCompare(b.k));
+  const piores = _otifAgrupar(aval, e => e.cliente).filter(g => g.fora).sort((a, b) => b.fora - a.fora || a.pct - b.pct).slice(0, 10);
+  const atrasos = aval.filter(e => e.status === 'fora do prazo').sort((a, b) => b.atraso - a.atraso || a.d0.localeCompare(b.d0));
+  const txt = (s, x, y, o = {}) => { doc.setFont('helvetica', o.b ? 'bold' : 'normal'); doc.setFontSize(o.s || 9); doc.setTextColor(...(o.c || C.ink)); doc.text(t(s), x, y, o.a ? { align: o.a } : undefined); };
+  const cabecalho = (sub) => {
+    doc.setFillColor(...C.head); doc.rect(0, 0, W, 22, 'F');
+    doc.setFillColor(...C.ok); doc.rect(0, 22, W, 1.2, 'F');
+    txt('NEXTA', M, 10, { b: 1, s: 15, c: [255, 255, 255] });
+    txt(`OTIF - Entregas no prazo · ${mesTit}`, M, 17, { s: 10, c: [209, 213, 219] });
+    txt(sub, W - M, 10, { b: 1, s: 11, c: [255, 255, 255], a: 'right' });
+    txt(`Carregamentos de ${_otifBr(r.de)} a ${_otifBr(r.ate)}`, W - M, 17, { s: 8.5, c: [209, 213, 219], a: 'right' });
+  };
+  const titulo = (s, x, y) => { txt(s.toUpperCase(), x, y, { b: 1, s: 8.5, c: C.muted }); };
+  // Barras horizontais de % no prazo (uma série; rótulo do valor em texto, nunca só cor)
+  const hBars = (x, y, w, linhas, tit, maxL = 9) => {
+    titulo(tit, x, y); y += 5;
+    const ls = linhas.slice(0, maxL), lw = 44, bw = w - lw - 30, rh = 6.3;
+    ls.forEach((g, i) => {
+      const yy = y + i * rh;
+      txt(g.rot || g.k, x, yy + 3.6, { s: 8.5 });
+      doc.setFillColor(...C.track); doc.roundedRect(x + lw, yy + 0.8, bw, 3.6, 1.2, 1.2, 'F');
+      const cor = g.pct >= 95 ? C.ok : g.pct >= 85 ? C.warn : C.bad;
+      if (g.pct > 0) { doc.setFillColor(...cor); doc.roundedRect(x + lw, yy + 0.8, Math.max(2.4, bw * g.pct / 100), 3.6, 1.2, 1.2, 'F'); }
+      txt(`${f1(g.pct)}%`, x + lw + bw + 2, yy + 3.6, { b: 1, s: 8.5 });
+      txt(`${g.total} entr. · ${g.fora} fora`, x + lw + bw + 14, yy + 3.6, { s: 7, c: C.muted });
+    });
+    if (linhas.length > maxL) txt(`+ ${linhas.length - maxL} no Excel`, x, y + ls.length * rh + 3, { s: 7, c: C.muted });
+    return y + ls.length * rh + 4;
+  };
+  const meta = 95;
+
+  // ── Página 1: resumo executivo ──
+  cabecalho('Resumo executivo');
+  let y = 32;
+  // Destaque
+  doc.setFillColor(240, 253, 244); doc.roundedRect(M, y, 88, 40, 3, 3, 'F');
+  txt('ENTREGAS NO PRAZO', M + 6, y + 8, { b: 1, s: 8, c: C.ok });
+  txt(`${f1(S.pct)}%`, M + 6, y + 24, { b: 1, s: 32, c: C.ok });
+  txt(`${n0(S.ok)} de ${n0(S.aval)} entregas avaliadas`, M + 6, y + 30.5, { s: 8.5, c: C.muted });
+  const bx = M + 6, bwid = 76;
+  doc.setFillColor(...C.bad); doc.roundedRect(bx, y + 33.5, bwid, 3.2, 1.2, 1.2, 'F');
+  doc.setFillColor(...C.ok); doc.roundedRect(bx, y + 33.5, bwid * S.pct / 100, 3.2, 1.2, 1.2, 'F');
+  // Tiles
+  const tile = (x, tt, v, sub, cor) => {
+    doc.setDrawColor(...C.line); doc.setFillColor(255, 255, 255); doc.roundedRect(x, y, 41, 40, 3, 3, 'FD');
+    txt(tt, x + 4, y + 8, { b: 1, s: 7, c: C.muted });
+    txt(v, x + 4, y + 20, { b: 1, s: 18, c: cor });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.2); doc.setTextColor(...C.muted);
+    doc.text(doc.splitTextToSize(t(sub), 34), x + 4, y + 27);
+  };
+  const tx = M + 92;
+  tile(tx, 'FORA DO PRAZO', `${f1(100 - S.pct)}%`, `${n0(S.fora)} entregas · atraso médio de ${f1(S.atrMed)} dia(s)`, C.bad);
+  tile(tx + 44, 'PROGRAMADAS APÓS 18H', n0(S.ap18), `${f1(S.progUteis ? S.ap18 / S.progUteis * 100 : 0)}% das programadas em dia útil`, C.warn);
+  tile(tx + 88, 'NO PRAZO APÓS 18H', `${f1(S.pct18)}%`, `contra ${f1(S.pctAntes)}% das programadas até 18h`, C.warn);
+  tile(tx + 132, 'COBERTURA', n0(S.total), `entregas no Histórico · ${n0(S.semPz)} sem prazo e ${n0(S.semCheg)} sem chegada (fora do %)`, C.ink);
+  y += 48;
+  // Gráficos
+  const yb = hBars(M, y, 132, porBase.map(g => ({ ...g })), 'No prazo por base (% das entregas)');
+  const yt = hBars(M + 142, y, 127, porTransp.map(g => ({ ...g })), 'No prazo por transportadora (% das entregas)');
+  y = Math.max(yb, yt) + 2;
+  // Pontos de atenção (gerados dos números)
+  const relevantes = l => l.filter(g => g.total >= 10);
+  const pior = l => relevantes(l).sort((a, b) => a.pct - b.pct)[0];
+  const pb = pior(porBase), pt = pior(porTransp), pp = porPrazo.slice().sort((a, b) => b.fora - a.fora)[0];
+  const pontos = [];
+  pontos.push(`${f1(S.pct)}% das entregas chegaram no prazo (${n0(S.ok)} de ${n0(S.aval)}); ${n0(S.fora)} atrasaram, em média ${f1(S.atrMed)} dia(s).`);
+  if (pb && pb.pct < meta) pontos.push(`Base com menor desempenho: ${pb.k} - ${f1(pb.pct)}% no prazo (${pb.fora} atrasos em ${pb.total} entregas).`);
+  if (pt && pt.pct < meta) pontos.push(`Transportadora com menor desempenho: ${pt.k} - ${f1(pt.pct)}% (${pt.fora} atrasos em ${pt.total}).`);
+  if (pp && pp.fora) pontos.push(`Prazo ${pp.k} concentra ${pp.fora} dos ${S.fora} atrasos (${f1(pp.fora / Math.max(1, S.fora) * 100)}%), com ${f1(pp.pct)}% no prazo.`);
+  if (S.pct18 != null && S.pctAntes != null) pontos.push(`${n0(S.ap18)} entregas foram programadas após 18h; dessas, ${f1(S.pct18)}% chegaram no prazo, contra ${f1(S.pctAntes)}% das programadas até 18h.`);
+  if (S.semPz) pontos.push(`${n0(S.semPz)} entregas de postos fora da tabela de prazos não entraram no cálculo.`);
+  if (y + 8 + pontos.length * 5.2 > H - 12) { doc.addPage(); cabecalho('Resumo executivo'); y = 32; }
+  doc.setFillColor(...C.soft); doc.roundedRect(M, y, W - 2 * M, 8 + pontos.length * 5.2, 3, 3, 'F');
+  titulo('Pontos de atenção', M + 5, y + 6);
+  pontos.forEach((p, i) => { doc.setFillColor(...C.ok); doc.circle(M + 6.5, y + 10.2 + i * 5.2, 0.8, 'F'); txt(p, M + 9, y + 11.2 + i * 5.2, { s: 8.4 }); });
+
+  // ── Página 2: evolução e detalhes ──
+  doc.addPage(); cabecalho('Evolução e detalhes');
+  y = 32;
+  titulo('No prazo por semana de carregamento (%)', M, y);
+  const gx = M, gy = y + 6, gw = 160, gh = 52;
+  doc.setDrawColor(...C.line); doc.setLineWidth(0.2);
+  [0, 50, 100].forEach(v => { const yy = gy + gh - gh * v / 100; doc.line(gx + 8, yy, gx + gw, yy); txt(`${v}%`, gx + 6, yy + 1, { s: 6.5, c: C.muted, a: 'right' }); });
+  doc.setDrawColor(...C.ok); doc.setLineDashPattern([1, 1], 0); const ym = gy + gh - gh * meta / 100; doc.line(gx + 8, ym, gx + gw, ym); doc.setLineDashPattern([], 0);
+  txt(`meta ${meta}%`, gx + gw, ym - 1.2, { s: 6.5, c: C.ok, a: 'right' });
+  const nS = Math.max(1, porSem.length), slot = (gw - 10) / nS, bw2 = Math.min(13, slot * 0.45);
+  porSem.forEach((g, i) => {
+    const cx = gx + 10 + slot * i + slot / 2, hh = gh * g.pct / 100;
+    doc.setFillColor(...(g.pct >= meta ? C.ok : g.pct >= 85 ? C.warn : C.bad));
+    doc.roundedRect(cx - bw2 / 2, gy + gh - hh, bw2, hh, 1, 1, 'F');
+    if (hh > 8) txt(`${f1(g.pct)}%`, cx, gy + gh - hh + 4.5, { b: 1, s: 7, c: [255, 255, 255], a: 'center' }); else txt(`${f1(g.pct)}%`, cx, gy + gh - hh - 1.5, { b: 1, s: 7, a: 'center' });
+    txt(g.rot, cx, gy + gh + 4.5, { s: 7, a: 'center' });
+    txt(`${g.total} entr. · ${g.fora} fora`, cx, gy + gh + 8.5, { s: 6.3, c: C.muted, a: 'center' });
+  });
+  // Por prazo (tiles)
+  titulo('Por prazo da tabela', M + 172, y);
+  porPrazo.forEach((g, i) => {
+    const yy = y + 5 + i * 21;
+    doc.setDrawColor(...C.line); doc.roundedRect(M + 172, yy, W - 2 * M - 172, 18, 2, 2, 'S');
+    txt(g.k, M + 176, yy + 7, { b: 1, s: 11 });
+    txt(`${g.total} entregas · ${g.fora} fora · atraso médio ${f1(g.atrasoMed)} dia(s)`, M + 176, yy + 13, { s: 7.5, c: C.muted });
+    txt(`${f1(g.pct)}%`, W - M - 4, yy + 11, { b: 1, s: 14, c: g.pct >= meta ? C.ok : g.pct >= 85 ? C.warn : C.bad, a: 'right' });
+  });
+  y = Math.max(gy + gh + 16, y + 5 + porPrazo.length * 21 + 4);
+  titulo('Postos com mais entregas fora do prazo', M, y);
+  doc.autoTable({
+    startY: y + 3, margin: { left: M, right: M }, theme: 'plain',
+    head: [['Posto', 'Entregas', 'No prazo', 'Fora', '% no prazo', 'Atraso médio']],
+    body: piores.map(g => [t(g.k), g.total, g.ok, g.fora, `${f1(g.pct)}%`, `${f1(g.atrasoMed)} dia(s)`]),
+    styles: { fontSize: 8, cellPadding: 1.8, textColor: C.ink }, headStyles: { fontStyle: 'bold', textColor: C.muted, fontSize: 7.2, lineWidth: { bottom: 0.3 }, lineColor: C.line },
+    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right', textColor: C.bad, fontStyle: 'bold' }, 4: { halign: 'right', fontStyle: 'bold' }, 5: { halign: 'right' } },
+    alternateRowStyles: { fillColor: C.soft },
+  });
+
+  // ── Página 3+: atrasos + metodologia ──
+  doc.addPage(); cabecalho(`Entregas fora do prazo (${atrasos.length})`);
+  const hm = d => d ? `${_otifBr(_otifIso(d)).slice(0, 5)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '-';
+  doc.autoTable({
+    startY: 30, margin: { left: M, right: M, top: 30 }, theme: 'plain',
+    head: [['Viagem', 'Placa', 'Transportadora', 'Base', 'Posto', 'Programado', 'Carreg.', 'Prazo', 'Limite', 'Chegada', 'Atraso']],
+    body: atrasos.map(e => [e.petId, e.placa, t(e.transportadora), t(e.cidadeBase), t(e.cliente), hm(e.prog) + (e.apos18 ? ' *' : ''), _otifBr(e.d0).slice(0, 5), `D+${e.prazoDias}`, _otifBr(e.limite).slice(0, 5), hm(e.chegada), `${e.atraso} d`]),
+    styles: { fontSize: 7.2, cellPadding: 1.4, textColor: C.ink }, headStyles: { fontStyle: 'bold', textColor: C.muted, fontSize: 6.8, lineWidth: { bottom: 0.3 }, lineColor: C.line },
+    columnStyles: { 0: { fontStyle: 'bold' }, 4: { cellWidth: 62 }, 10: { halign: 'right', textColor: C.bad, fontStyle: 'bold' } },
+    alternateRowStyles: { fillColor: C.soft },
+    didDrawPage: () => { cabecalho(`Entregas fora do prazo (${atrasos.length})`); },
+  });
+  let ym2 = doc.lastAutoTable.finalY + 6;
+  if (ym2 > H - 42) { doc.addPage(); cabecalho('Metodologia'); ym2 = 32; }
+  titulo('Como foi calculado', M, ym2);
+  const met = [
+    'No prazo: chegada real no posto (Herrlog) até o fim do dia limite = data do carregamento (D0) + prazo do posto na tabela (D+0, D+1, D+2), em dias corridos.',
+    'Entregas: todas as entregas das programações vigentes do Histórico do Roteirizador com carregamento no período; chegada casada pelo nº da viagem e pelo cliente.',
+    'Programada após 18h (*): primeira vez que a entrega foi salva no Histórico depois das 18h em dia útil (sábados, domingos e feriados fora dessa conta).',
+    'Fora do %: entregas de postos sem prazo na tabela e entregas sem chegada registrada na Herrlog. In Full não incluído (sem volume pedido x entregue).',
+  ];
+  met.forEach((m, i) => { doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...C.muted); doc.text(doc.splitTextToSize(t(m), W - 2 * M - 4), M + 2, ym2 + 6 + i * 6.5); });
+  // Rodapé
+  const nP = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= nP; i++) {
+    doc.setPage(i); doc.setDrawColor(...C.line); doc.setLineWidth(0.2); doc.line(M, H - 9, W - M, H - 9);
+    txt(`Gerado em ${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} · NEXTA Frota`, M, H - 5, { s: 7, c: C.muted });
+    txt(`${i} / ${nP}`, W - M, H - 5, { s: 7, c: C.muted, a: 'right' });
+  }
+  doc.save(`OTIF_${mesTit.replace('/', '_')}.pdf`);
+  showToast('📄 PDF do OTIF gerado.', true);
+}
+window.otifExportarPDF = otifExportarPDF;
 window.otifCarregarPrazos = otifCarregarPrazos; window.otifCarregarHerrlog = otifCarregarHerrlog; window.otifCalcular = otifCalcular; window.otifExportarExcel = otifExportarExcel;
 // Exclui UMA entrega (parada) de uma viagem salva, mantendo as demais.
 // Mesmo mecanismo de revisão: nunca sobrescreve o original. Não recalcula
