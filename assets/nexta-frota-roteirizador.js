@@ -12548,6 +12548,11 @@ async function abrirDetalheHistorico(filename) {
                      ? `<div onclick="renumerarViagemHistorico('${v.id}', '${String(petId).replace(/'/g, "\\'")}')" title="Este nº também está em: ${outros.join(', ')} — clique para dar um nº novo a ESTA viagem" style="cursor:pointer;margin:3px 0;display:inline-block;font-size:10px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:4px;padding:1px 6px;font-family:var(--font);letter-spacing:0;">⚠ nº repetido · 🔢 dar nº novo</div>`
                      : '';
                  })()}
+                 ${(() => {
+                   // Transportadora: do veículo gravado na programação; se faltar, do cadastro atual da placa.
+                   const tr = v.transportadora || (veiculos || []).find(x => x.placa && x.placa === v.placa)?.transportadora || '';
+                   return tr ? `<div style="font-weight:700;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;white-space:normal;max-width:150px;margin:1px 0;">${String(tr).replace(/</g, '&lt;')}</div>` : '';
+                 })()}
                  <span style="font-weight:500;color:var(--text-3);font-family:var(--font);font-size:11px;letter-spacing:0;">${v.placa || '—'}${(() => {
                    // Eixos: do veículo gravado na programação; se o arquivo for
                    // antigo e não tiver, usa o cadastro atual da mesma placa.
@@ -12555,6 +12560,7 @@ async function abrirDetalheHistorico(filename) {
                    return ex ? ` · <b style="color:var(--text-2);">${ex} eixos</b>` : '';
                  })()}</span>
                  <div style="margin:5px 0;white-space:normal;max-width:150px;font-weight:500;color:var(--text-2);font-family:var(--font);font-size:11px;letter-spacing:0;user-select:text;">${baseCarregamento}</div>
+                 <div style="margin:0 0 4px;font-weight:800;color:var(--text-3);font-family:var(--font);font-size:10px;letter-spacing:.08em;">OUTBOUND</div>
                  <span style="font-weight:700;font-family:var(--font);font-size:11.5px;letter-spacing:0;">${volViagem.toFixed(1)} m³</span>
                  ${(() => {
                    // Horário de carregamento (mesma conta da OR/Herrlog) — e
