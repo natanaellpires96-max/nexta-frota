@@ -4018,6 +4018,42 @@ function alternarOfertasSob(){
   renderTabBody();
 }
 window.alternarOfertasSob = alternarOfertasSob;
+// Base do dia escolhida na oferta → grava no cadastro do veículo do
+// Roteirizador (Veículos & Turnos): "Cidade base" = a cidade escolhida. Se o
+// terminal de origem cadastrado for de OUTRA cidade, ele é limpo (senão o
+// Roteirizador continuaria saindo do terminal antigo). Grava direto no
+// Firestore (vale pra todos os computadores) e atualiza a memória do
+// Roteirizador aberto. "Qualquer" (vazio) não mexe no cadastro.
+async function _aplicarBaseOfertaNoCadastro(carrier, plate, baseCidade) {
+  if (!baseCidade) return null;
+  const norm = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s*[-\/]\s*[A-Z]{2}$/, '').replace(/[^A-Z0-9]+/g, ' ').trim();
+  const mesmaCidade = (a, b) => { const x = norm(a), y = norm(b); return !!x && !!y && (x === y || x.includes(y) || y.includes(x)); };
+  cacheInvalidate('cadastro||veiculos');
+  const cad = await dbGetCadastro('veiculos');
+  const np = _normPlaca(plate), nc = _normCarrier(carrier);
+  const achados = Object.entries(cad || {}).filter(([, v]) => _normPlaca(v?.placa) === np);
+  const par = achados.find(([, v]) => _normCarrier(v?.transportadora) === nc) || achados[0];
+  if (!par) return { semCadastro: true };
+  const [chave, item] = par;
+  let terminal = item.terminal || '';
+  if (terminal) {
+    const terms = await dbGetCadastro('terminais').catch(() => ({}));
+    const t = Object.values(terms || {}).find(x => x?.nome === terminal);
+    const cidTerm = t?.cidade || terminal;
+    if (!mesmaCidade(cidTerm, baseCidade)) terminal = '';
+  }
+  const mudou = item.cidadeBase !== baseCidade || terminal !== (item.terminal || '');
+  if (!mudou) return { inalterado: true };
+  const novo = { ...item, cidadeBase: baseCidade, terminal };
+  await dbAtualizarCadastroLote('veiculos', { [chave]: { campos: { cidadeBase: baseCidade, terminal }, item: novo } });
+  // Roteirizador aberto nesta aba: atualiza a memória e redesenha
+  try {
+    const vs = window.veiculos;
+    if (Array.isArray(vs)) vs.filter(v => _normPlaca(v.placa) === np).forEach(v => { v.cidadeBase = baseCidade; v.terminal = terminal; });
+    if (document.getElementById('tab-veiculos')?.classList.contains('active') && typeof window._renderVeiculosInterno === 'function') window._renderVeiculosInterno();
+  } catch (e) {}
+  return { atualizado: true, terminalLimpo: !!item.terminal && !terminal, terminalAntigo: item.terminal || '' };
+}
 async function salvarOfertaSobDemanda(carrier, plate, ds, rid){
   const row = document.getElementById(rid); if (!row) return;
   const ofertada = row.querySelector('.of-chk').checked;
@@ -4038,7 +4074,13 @@ async function salvarOfertaSobDemanda(carrier, plate, ds, rid){
       await setDoc(doc(db, "availability", id), data);
       cacheSet(cKey, { status: 'disponivel', time: data.time, motoristaDiurno: data.motoristaDiurno, motoristaNoturno: data.motoristaNoturno, hodometro: null, hodometroFotoUrl: null,
         oferta: true, baseOferta: data.baseOferta, obsOferta: data.obsOferta, ofertadoPor: data.ofertadoPor, ofertadoEm: data.ofertadoEm });
-      showToast(`${plate} ofertada para ${fmtDateStr(ds)}${data.time?' a partir das '+data.time:''}.`, true);
+      let notaCad = '';
+      try {
+        const rc = await _aplicarBaseOfertaNoCadastro(carrier, plate, data.baseOferta);
+        if (rc?.atualizado) notaCad = ` · cadastro do Roteirizador: cidade base ${data.baseOferta}${rc.terminalLimpo ? ` (terminal ${rc.terminalAntigo} removido)` : ''}`;
+        else if (rc?.semCadastro) notaCad = ' · ⚠ placa sem cadastro em Veículos & Turnos';
+      } catch (e) { console.warn('[oferta] cadastro do veículo', e); notaCad = ' · ⚠ não consegui atualizar o cadastro do Roteirizador'; }
+      showToast(`${plate} ofertada para ${fmtDateStr(ds)}${data.time?' a partir das '+data.time:''}${notaCad}.`, !notaCad.includes('⚠'));
     }
     try { await dbAddAudit(ofertada ? "oferta_sob_demanda" : "oferta_sob_demanda_retirada", { carrier, plate, date: ds }); } catch(e) {}
     try { window._rotAposOferta?.([{ plate, dateStr: ds, tipo: ofertada ? 'added' : 'removed' }]); } catch(e) {}
