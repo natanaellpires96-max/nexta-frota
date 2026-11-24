@@ -6536,6 +6536,7 @@ document.addEventListener('click', function(e) {
 // da viagem e contam UMA vez por grupo (conjunto de viagens distintas), igual
 // ao Dashboard faz pra ocupação por cliente.
 const RP_DIMS = [
+  { id: 'viagem', nome: 'Nº da viagem' },
   { id: 'transportadora', nome: 'Transportadora' },
   { id: 'placa', nome: 'Placa' },
   { id: 'capVeic', nome: 'Capacidade do veículo' },
@@ -6587,6 +6588,7 @@ const RP_DIM = Object.fromEntries(RP_DIMS.map(d => [d.id, d]));
 const RP_MET = Object.fromEntries(RP_METS.map(m => [m.id, m]));
 // Modelos prontos (não dá pra excluir; "Salvar como" cria uma cópia editável).
 const RP_PADRAO = [
+  { id: 'p_viagprod', nome: 'Volume por viagem, cliente e produto', padrao: true, cfg: { dims: ['viagem', 'dia', 'cliente', 'produto'], mets: ['volume'], ordem: { met: '_rotulo', dir: 'asc' }, grafico: { tipo: 'nenhum', met: 'volume' } } },
   { id: 'p_kmcap', nome: 'Km rodado por transportadora e capacidade (mês a mês)', padrao: true, cfg: { dims: ['transpCap', 'mes'], mets: ['placas', 'km'], matriz: true, ordem: { met: '_rotulo', dir: 'asc' }, grafico: { tipo: 'auto', met: 'km' } } },
   { id: 'p_kmplaca', nome: 'Km rodado por placa (mês a mês)', padrao: true, cfg: { dims: ['placaDet', 'mes'], mets: ['km', 'viagens', 'kmViagem'], matriz: true, ordem: { met: '_rotulo', dir: 'asc' }, grafico: { tipo: 'nenhum', met: 'km' } } },
   { id: 'p_fech', nome: 'Fechamento por transportadora', padrao: true, cfg: { dims: ['transportadora'], mets: ['viagens', 'entregas', 'volume', 'participacao', 'ocupacao', 'km', 'custo', 'custoM3'], ordem: { met: 'volume', dir: 'desc' }, grafico: { tipo: 'auto', met: 'volume' } } },
@@ -6660,6 +6662,7 @@ function _rpExtrair() {
           const L = { vk, ek: vk + '|' + ip, temContrato: false, data, transportadora: v.transportadora || '(sem transportadora)', placa: v.placa || '', contrato: v.contrato || '—', base, operacao,
             ck, nomeRaw, cidade: ped.cidade || '—', vol, volBruto, km, custo: 0,
             capVeic: capV > 0 ? String(Math.round(capV)).padStart(4, '0') : '—', // ordena 15 < 20 < 35
+            viagem: vi.petId || '—', // nº da viagem (P1126206)
             transpCap: `${v.transportadora || '(sem transportadora)'} (${capV > 0 ? Math.round(capV) + ' m³' : 's/ cap.'})`,
             // ordena por transportadora → capacidade → placa; rótulo "PLACA — TRANSPORTADORA (20 m³)"
             placaDet: `${v.transportadora || '(sem transportadora)'}\u0002${capV > 0 ? String(Math.round(capV)).padStart(4, '0') : '9999'}\u0002${v.placa || '—'}`,
@@ -6855,7 +6858,7 @@ const _rpEsc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<
 // ── Gráfico (SVG, série única ou até 6 séries) ──────────────────────────────
 function _rpGrafico(res, cfg) {
   const g = cfg.grafico || {}; const met = RP_MET[g.met] ? g.met : cfg.mets[0];
-  if (g.tipo === 'nenhum' || !met || !res.linhas.length) return '';
+  if (g.tipo === 'nenhum' || !met || !res.linhas.length || cfg.dims.length > 2) return '';
   const dims = cfg.dims, tempo0 = RP_DIM[dims[0]]?.tempo, tempo1 = RP_DIM[dims[1]]?.tempo;
   const nomeMet = RP_MET[met].nome;
   // 2 agrupamentos com 1 de tempo → uma série por item do outro agrupamento
@@ -7046,8 +7049,8 @@ function _rpRenderSide() {
     </div>
     <div class="rp-sec"><label>Agrupar por</label>
       <select onchange="rpSetDim(0, this.value)">${_rpOpts(RP_DIMS, c.dims[0], '')}</select>
-      <select style="margin-top:6px" onchange="rpSetDim(1, this.value)">${_rpOpts(RP_DIMS.filter(d => d.id !== c.dims[0]), c.dims[1] || '', '+ segundo agrupamento (opcional)')}</select>
-      <div class="rp-dica">Ex.: Transportadora + Mês mostra cada transportadora mês a mês.</div>
+      ${[1, 2, 3].filter(i => i <= c.dims.length).map(i => `<select style="margin-top:6px" onchange="rpSetDim(${i}, this.value)">${_rpOpts(RP_DIMS.filter(d => !c.dims.slice(0, i).includes(d.id) && !c.dims.slice(i + 1).includes(d.id)), c.dims[i] || '', ['', '+ segundo agrupamento (opcional)', '+ terceiro agrupamento (opcional)', '+ quarto agrupamento (opcional)'][i])}</select>`).join('')}
+      <div class="rp-dica">Ex.: Transportadora + Mês mostra cada transportadora mês a mês. Com 3 ou 4 agrupamentos a tabela sai detalhada, uma linha por combinação (ex.: Viagem + Dia + Cliente + Produto).</div>
       ${c.dims.length === 2 ? `<label style="display:flex;gap:6px;align-items:center;margin-top:8px;font-size:12px;color:#374151;font-weight:600;cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" ${c.matriz ? 'checked' : ''} onchange="rpSet('matriz', this.checked)"> Mostrar como matriz (${_rpEsc(RP_DIM[RP_DIM[c.dims[1]]?.tempo || !RP_DIM[c.dims[0]]?.tempo ? c.dims[1] : c.dims[0]].nome.toLowerCase())} nas colunas)</label>
         <div class="rp-dica">Uma tabela por coluna marcada (ex.: Km e Placas distintas).</div>` : ''}
     </div>
@@ -7088,7 +7091,20 @@ function _rpRenderMain() {
     ? res.blocos.map(b => `<tr class="rp-bl-h"><td></td><td colspan="${1 + c.dims.length - 1 + mets.length}">${_rpEsc(b.rotulo)} <span>· ${b.totalLinhas} ${_rpEsc(RP_DIM[c.dims[1]].nome.toLowerCase())}(s)${b.linhas.length < b.totalLinhas ? `, mostrando ${b.linhas.length}` : ''}</span></td></tr>`
         + b.linhas.map((r, i) => linhaHtml(r, i, true)).join('')
         + `<tr class="rp-bl-t"><td></td><td colspan="2">Total ${_rpEsc(b.rotulo)}</td>${mets.map(m => `<td class="n">${m.id === 'participacao' ? _rpFmt(m.id, b.m.participacao) : _rpFmt(m.id, b.m[m.id])}</td>`).join('')}</tr>`).join('')
-    : res.linhas.map((r, i) => linhaHtml(r, i, false)).join('');
+    : (c.dims.length >= 2
+        // Agrupamento só VISUAL pelo 1º campo (ex.: a viagem): mesmo fundo nas
+        // linhas do grupo, alternando entre grupos, e uma linha mais forte
+        // separando um grupo do outro. Não muda totais nem a exportação.
+        ? (() => { let g = -1, ant = null; return res.linhas.map((r, i) => {
+            const inicio = r.vals[0] !== ant; if (inicio) { g++; ant = r.vals[0]; }
+            const fundo = g % 2 ? '#F1F5F9' : '#FFFFFF';
+            const borda = inicio && i > 0 ? 'border-top:2px solid #94A3B8;' : '';
+            const cel = (x, k) => k === 0
+              ? `<td style="background:${fundo};${borda}${inicio ? 'font-weight:800;color:#111827;' : 'color:#CBD5E1;'}">${_rpEsc(x)}</td>`
+              : `<td style="background:${fundo};${borda}">${_rpEsc(x)}</td>`;
+            return `<tr><td class="rk" style="background:${fundo};${borda}">${i + 1}</td>${r.rotulos.map(cel).join('')}${mets.map(m => `<td class="n" style="background:${fundo};${borda}">${_rpFmt(m.id, r.m[m.id])}</td>`).join('')}</tr>`;
+          }).join(''); })()
+        : res.linhas.map((r, i) => linhaHtml(r, i, false)).join(''));
   const rod = `<tr><td></td><td colspan="${c.dims.length}">Total${res.totalGrupos > res.linhas.length ? ` (todas as ${res.totalGrupos} linhas)` : ''}</td>${mets.map(m => `<td class="n">${_rpFmt(m.id, res.total[m.id])}</td>`).join('')}</tr>`;
   let tabelaHtml = `<div class="rp-tabw"><table class="rp-tab"><thead>${cab}</thead><tbody>${corpo}</tbody><tfoot>${rod}</tfoot></table></div>`;
   if (c.matriz && _rpMatrizPossivel(c)) {
@@ -7111,9 +7127,14 @@ function _rpTitulo() { const m = [...RP_PADRAO, ...(_rp.modelos || [])].find(x =
 // ── Ações ────────────────────────────────────────────────────────────────────
 function rpSet(k, v) { _rp.cfg[k] = v; _rpTudo(); }
 function rpSetDim(i, v) {
-  const d = _rp.cfg.dims.slice();
-  if (i === 0) { d[0] = v || 'transportadora'; if (d[1] === d[0]) d.splice(1, 1); } else { if (v) d[1] = v; else d.splice(1, 1); }
-  _rp.cfg.dims = d; _rpTudo();
+  let d = _rp.cfg.dims.slice();
+  if (i === 0) d[0] = v || 'transportadora';
+  else if (v) d[i] = v;
+  else d = d.slice(0, i); // tirou um agrupamento: tira os seguintes também
+  d = d.filter((x, k) => x && d.indexOf(x) === k).slice(0, 4); // sem repetidos, até 4
+  _rp.cfg.dims = d;
+  if (d.length !== 2) _rp.cfg.matriz = false;
+  _rpTudo();
 }
 function rpToggleMet(id, on) {
   const s = _rp.cfg.mets.filter(x => x !== id); if (on) s.push(id);
@@ -7296,12 +7317,24 @@ async function rpExportarPDF() {
     return;
   }
   const nd = _rp.cfg.dims.length;
+  // Mesmo agrupamento visual da tela (pelo 1º campo), só quando não há blocos.
+  const grupoVis = [], inicioVis = new Set();
+  if (!_rp.resultado.blocos && nd >= 2) { let g = -1, ant = null; _rp.resultado.linhas.forEach((r, i) => { if (r.vals[0] !== ant) { g++; ant = r.vals[0]; inicioVis.add(i); } grupoVis[i] = g; }); }
   doc.autoTable({
     head: [cab], body: linhas.map((l, li) => titulos.has(li) ? [semSobrescrito(l[0]), ...l.slice(1).map(() => '')] : [...l.slice(0, nd).map(semSobrescrito), ...mets.map((m, i) => fmtCel(m, l[nd + i]))]),
     didParseCell: d => {
       if (d.section !== 'body') return;
       if (subtot.has(d.row.index)) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.textColor = [3, 7, 18]; d.cell.styles.fillColor = [229, 231, 235]; }
       if (titulos.has(d.row.index)) { d.cell.styles.fontStyle = 'bold'; d.cell.styles.fillColor = [238, 242, 255]; }
+      if (grupoVis.length) {
+        const ri = d.row.index;
+        d.cell.styles.fillColor = grupoVis[ri] % 2 ? [241, 245, 249] : [255, 255, 255];
+        if (d.column.index === 0) { if (inicioVis.has(ri)) d.cell.styles.fontStyle = 'bold'; else d.cell.styles.textColor = [203, 213, 225]; }
+      }
+    },
+    didDrawCell: d => {
+      if (!grupoVis.length || d.section !== 'body' || d.row.index === 0 || !inicioVis.has(d.row.index)) return;
+      doc.setDrawColor(148, 163, 184); doc.setLineWidth(0.5); doc.line(d.cell.x, d.cell.y, d.cell.x + d.cell.width, d.cell.y);
     },
     foot: [[...total.slice(0, nd), ...mets.map((m, i) => fmtCel(m, total[nd + i]))]],
     startY: y, styles: { fontSize: 7.5, cellPadding: 1.6 }, headStyles: { fillColor: [31, 41, 55], textColor: 255, fontStyle: 'bold' },
