@@ -734,7 +734,11 @@ function xlsxMapCliente(r, i) {
     restricaoHorario:  xlsxStr(r, 'Restrição Horário', 'Restricao', 'Restrição'),
     tiposCaminhao:     tiposStr ? tiposStr.split(';').map(t => t.trim()).filter(Boolean) : [],
     observacoes:       xlsxStr(r, 'Observações', 'Observacoes', 'Obs'),
-    identidadePetronas: ['sim','s','true','1','yes'].includes((xlsxStr(r, 'Identidade Petronas', 'IdentidadePetronas') || '').toLowerCase()),
+    ...(() => {
+      const lst = _identsParsePlanilha(xlsxStr(r, 'Identificações aceitas', 'Identificacoes aceitas', 'Identificações Aceitas'));
+      const idPet = ['sim','s','true','1','yes'].includes((xlsxStr(r, 'Identidade Petronas', 'IdentidadePetronas') || '').toLowerCase());
+      return lst ? { identsAceitas: lst, identidadePetronas: _identsExigePetronas(lst) } : { identidadePetronas: idPet };
+    })(),
   };
 }
 function xlsxMapPlaca(r, i) {
@@ -1059,6 +1063,7 @@ function exportarDadosPainel() {
       'Tipos Caminhão': (c.tiposCaminhao || []).join(';'),
       'Observações': c.observacoes || '',
       'Identidade Petronas': c.identidadePetronas ? 'Sim' : 'Não',
+      'Identificações aceitas': identsAceitasDe(c).length ? identsAceitasDe(c).join(' / ') : 'Todas',
     }));
     const rowsPlaca = (veiculos || []).map(v => {
       const row = {
@@ -2911,7 +2916,7 @@ function chegadaInsercaoAbsMin(viagem, det, insertIdx, viagensVeiculo, idxViagem
 function contarCandidatosItem(item) {
   return veiculos
     .filter(v => !item.tiposCaminhao.length || item.tiposCaminhao.includes(v.tipo))
-    .filter(v => !item.pedido.identidadePetronas || !!v.identidadePetronas)
+    .filter(v => veicAtendeIdent(item.pedido, v))
     .filter(v => veiculoAtendeTerminal(v, item.terminal) && veiculoAtendeDestino(v, item.pedido)).length;
 }
 function optsTerminais(valorSel) {
@@ -3231,7 +3236,7 @@ function abrirFormCliente(id) {
     document.getElementById('cl-descarga').value = c.tempoDescargaMediaMin || 45;
     document.getElementById('cl-restricao').value= c.restricaoHorario || '';
     document.getElementById('cl-obs').value      = c.observacoes || '';
-    document.getElementById('cl-identidade-petronas').checked = !!c.identidadePetronas;
+    _identsMarcarChecks('cl-idents', identsAceitasDe(c));
     { const el = document.getElementById('cl-operacao-sob-demanda'); if (el) el.checked = !!c.operacaoSobDemanda; }
     document.getElementById('cl-segmento').value = c.segmento || '';
     document.getElementById('cl-operacao').value = c.operacao || '';
@@ -3252,7 +3257,7 @@ function abrirFormCliente(id) {
       const e = document.getElementById(fid); if (e) e.value = '';
     });
     document.getElementById('cl-descarga').value = 45;
-    document.getElementById('cl-identidade-petronas').checked = false;
+    _identsMarcarChecks('cl-idents', []);
     { const el = document.getElementById('cl-operacao-sob-demanda'); if (el) el.checked = false; }
     document.getElementById('cl-segmento').value = '';
     document.getElementById('cl-operacao').value = '';
@@ -3310,7 +3315,8 @@ async function salvarCliente() {
     restricaoHorario: document.getElementById('cl-restricao').value.trim(),
     observacoes:     document.getElementById('cl-obs').value.trim(),
     tiposCaminhao:   lerTiposSelecionados('cl-tipos-btns'),
-    identidadePetronas: document.getElementById('cl-identidade-petronas').checked,
+    identsAceitas:   _identsLerChecks('cl-idents'),
+    identidadePetronas: _identsExigePetronas(_identsLerChecks('cl-idents')),
     operacaoSobDemanda: !!document.getElementById('cl-operacao-sob-demanda')?.checked,
     segmento:        document.getElementById('cl-segmento').value,
     operacao:        document.getElementById('cl-operacao').value,
@@ -3331,6 +3337,14 @@ async function salvarCliente() {
     clientes.push(novo);
     _persistirCadastroManual('clientes', novo);
   }
+  // Pedidos já carregados deste cliente passam a seguir a nova regra na hora
+  try {
+    (pedidos || []).forEach(p => {
+      if ((dados.codigoSAP && p.codigoSAP === dados.codigoSAP) || (p.cliente || '').trim().toUpperCase() === nome.toUpperCase()) {
+        p.identsAceitas = [...dados.identsAceitas]; p.identidadePetronas = dados.identidadePetronas;
+      }
+    });
+  } catch (e) {}
   editandoClienteId = null;
   cancelarFormCliente();
   _mesclarClientesDuplicadosSilencioso();
@@ -3845,7 +3859,7 @@ function renderClientes() {
             ${c.bandeira ? `<span class="tag" style="font-size:9px;background:rgba(139,92,246,0.12);color:#6D28D9;">🚩 ${c.bandeira}</span>` : ''}
             ${c.tipoContrato ? `<span class="tag" style="font-size:9px;background:rgba(8,145,178,0.12);color:#0E7490;">📄 ${c.tipoContrato}</span>` : ''}
             ${c.cadastroIncompleto ? `<span style="font-size:9px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #F59E0B;padding:2px 8px;border-radius:99px;">⚠️ Cadastro incompleto</span>` : ''}
-            ${c.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
+            ${identsAceitasTagHtml(c)}
             ${c.operacaoSobDemanda ? `<span class="tag" style="font-size:9px;background:#EFF6FF;color:#1D4ED8;border:1px solid #BFDBFE;" title="Pedidos deste cliente vão só para placas da operação sob demanda">🚚 Operação sob demanda</span>` : ''}
             <span class="tag tag-lime" style="font-size:9px;">Descarga média: ${(c.tempoDescargaMediaMin||45).toFixed(0)} min</span>
             ${_kmOrigemHtml(c)}
@@ -4298,7 +4312,7 @@ function preencherPedidoDeCliente(clienteId) {
   document.getElementById('p-lat').value      = c.lat;
   document.getElementById('p-lon').value      = c.lon;
   document.getElementById('p-restricao').value = c.restricaoHorario || '';
-  document.getElementById('p-identidade-petronas').checked = !!c.identidadePetronas;
+  _identsMarcarChecks('p-idents', identsAceitasDe(c));
   renderTipoBtns('p-tipos-btns', c.tiposCaminhao || []);
 }
 function carregarExemplosClientes() {
@@ -4370,7 +4384,7 @@ function abrirFormPedido(id) {
     const _dlPts = _dlEdit.split('/');
     document.getElementById('p-data-entrega').value = _dlPts.length === 3
       ? `${_dlPts[2]}-${_dlPts[1].padStart(2,'0')}-${_dlPts[0].padStart(2,'0')}` : '';
-    document.getElementById('p-identidade-petronas').checked = !!p.identidadePetronas;
+    _identsMarcarChecks('p-idents', identsAceitasDe(p));
     document.getElementById('p-terminal').innerHTML = optsTerminais(p.terminal || '');
     renderTipoBtns('p-tipos-btns', p.tiposCaminhao || []);
     p.produtos.forEach(pr => addProdutoForm(pr.produto, pr.volume, pr.ordemSAP || ''));
@@ -4378,7 +4392,7 @@ function abrirFormPedido(id) {
   } else {
     document.getElementById('form-pedido-title').textContent = 'Novo pedido';
     ['p-sap','p-cliente','p-cidade','p-lat','p-lon','p-restricao','p-data-entrega','p-turno'].forEach(fid => { const e=document.getElementById(fid); if(e) e.value=''; });
-    document.getElementById('p-identidade-petronas').checked = false;
+    _identsMarcarChecks('p-idents', []);
     document.getElementById('p-terminal').innerHTML = optsTerminais('');
     if (document.getElementById('p-tipos-btns')) renderTipoBtns('p-tipos-btns', []);
     addProdutoForm();
@@ -4938,7 +4952,8 @@ async function salvarPedido() {
     restricao:     document.getElementById('p-restricao').value || null,
     turnoEntrega:  document.getElementById('p-turno')?.value.trim() || '',
     tiposCaminhao: lerTiposSelecionados('p-tipos-btns'),
-    identidadePetronas: document.getElementById('p-identidade-petronas').checked,
+    identsAceitas: _identsLerChecks('p-idents'),
+    identidadePetronas: _identsExigePetronas(_identsLerChecks('p-idents')),
     dataEntregaLogistica: (() => {
       const v = document.getElementById('p-data-entrega').value; // YYYY-MM-DD
       if (!v) return '';
@@ -5271,7 +5286,7 @@ function renderPedidos() {
               : `<span class="tag tag-blue" style="font-size:9px;">📅 ${p.dataEntregaLogistica}</span>`) : ''}
             ${p.restricao ? `<span class="tag tag-yellow">${p.restricao}</span>` : ''}
             ${p.turnoEntrega ? `<span class="tag" title="Turno de entrega informado no pedido" style="font-size:9px;background:#FFF7ED;color:#9A3412;border-color:#FDBA74;">${iconeTurnoEntrega(p.turnoEntrega)} Turno: ${p.turnoEntrega}</span>` : ''}
-            ${p.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ ID Petronas</span>` : ''}
+            ${identsAceitasTagHtml(p)}
             ${pernoiteTag}
             ${p._alertasProduto?.length ? `<span class="tag" onclick="_confProdDiagnostico(${p.id})" title="Clique pra ver o histórico de compras do cliente · ${p._alertasProduto.map(a => a.texto).join(' · ').replace(/"/g, '&quot;')}" style="font-size:9px;background:#FEF2F2;color:#B91C1C;border-color:#FCA5A5;font-weight:700;cursor:pointer;">⚠️ Produto fora do padrão do cliente</span>` : ''}
             ${tiposHtml}
@@ -5965,7 +5980,7 @@ function _pmapaVeiculosCompativeis(pedidosSel, terminaisNomes) {
     if (listaTerminais.some(t => t && !veiculoAtendeTerminal(v, t))) return false;
     return pedidosSel.every(p =>
       (!p.tiposCaminhao?.length || p.tiposCaminhao.includes(v.tipo)) &&
-      (!p.identidadePetronas || !!v.identidadePetronas) &&
+      veicAtendeIdent(p, v) &&
       veiculoAtendeDestino(v, p)
     );
   });
@@ -6405,6 +6420,7 @@ function confirmarQuebraPedido() {
     restricao:            p.restricao,
     tiposCaminhao:        [...(p.tiposCaminhao || [])],
     identidadePetronas:   p.identidadePetronas,
+    identsAceitas:        Array.isArray(p.identsAceitas) ? [...p.identsAceitas] : undefined,
     dataEntregaLogistica: p.dataEntregaLogistica,
     produtos:             prodsPt2,
     _quebraGrupo:         grupo,
@@ -6565,6 +6581,7 @@ function xlsxMapPedidosLiberadosRows(rows) {
         restricao: cliCad?.restricaoHorario ?? null,
         tiposCaminhao: cliCad?.tiposCaminhao ?? [],
         identidadePetronas: cliCad?.identidadePetronas ?? false,
+        identsAceitas: cliCad ? identsAceitasDe(cliCad) : [],
         dataEntregaLogistica: dataEntrega,
         turnoEntrega: '',
         produtos: [],
@@ -7937,9 +7954,9 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         //    mas NÃO é obrigatório (só desempate): se o único candidato com
         //    compartimento certo não tiver a credencial, ele ainda é usado,
         //    só perde a prioridade para quem tem quando os dois servem.
-        if (pedido.identidadePetronas) {
-          const aCred = a.identidadePetronas ? 1 : 0;
-          const bCred = b.identidadePetronas ? 1 : 0;
+        if (_identsRestringe(pedido)) {
+          const aCred = veicAtendeIdent(pedido, a) ? 1 : 0;
+          const bCred = veicAtendeIdent(pedido, b) ? 1 : 0;
           if (bCred !== aCred) return bCred - aCred;
         }
         // 1. Dedicado antes de Spot
@@ -8074,7 +8091,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
         const placaFr = _padroesAtivo ? _padroesPlacaFracao(_padroesAtivo, pedido, v.placa) : 0;
         const opc = {
           v, vi, t, rank, afin, desvioMin, sozinhoMin,
-          camada: ((pedido.identidadePetronas && !v.identidadePetronas) ? 2 : 0) + ((v.contrato || 'Dedicado') === 'Spot' ? 1 : 0),
+          camada: (!veicAtendeIdent(pedido, v) ? 2 : 0) + ((v.contrato || 'Dedicado') === 'Spot' ? 1 : 0),
           score: (t.custoProdutivo || 0) - 40 * afin - 15 * placaFr - (mesmoPedido ? 60 : 0),
         };
         const contramao = !mesmoPedido && afin < 0.2 && sozinhoMin > 0 && desvioMin >= ENCAIXE_RAZAO_CONTRAMAO * sozinhoMin;
@@ -8314,8 +8331,8 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
   const fila = [...pedidos]
     .filter(p => !pedidosLocadosIds.has(p.id) && p.produtos?.length && totalVolPedido(p) > 0.001)
     .sort((a, b) => {
-      if (b.identidadePetronas !== a.identidadePetronas)
-        return (b.identidadePetronas ? 1 : 0) - (a.identidadePetronas ? 1 : 0);
+      { const rA = _identsRestringe(a) ? 1 : 0, rB = _identsRestringe(b) ? 1 : 0;
+        if (rB !== rA) return rB - rA; }
       // Dentro do mesmo terminal: noturnas primeiro (evita big truck ser alocado em diurno)
       const termA = a.terminal || '', termB = b.terminal || '';
       if (termA === termB) {
@@ -8777,7 +8794,7 @@ async function otimizar(modo = 'padrao', dataCarregamento = null) {
           const ociosoOk = dedicOciosos.find(vO =>
             veiculoAtendeTerminal(vO, pedido.terminal) &&
             (!pedido.tiposCaminhao?.length || pedido.tiposCaminhao.includes(vO.tipo)) &&
-            (!pedido.identidadePetronas || vO.identidadePetronas)
+            veicAtendeIdent(pedido, vO)
           );
           if (!ociosoOk) continue;
           _sugestoesSplitDedicado.push({
@@ -9797,7 +9814,7 @@ function dropNaCard(event, veiculoDestId) {
     const motivos = [];
     if (!veiculoAtendeTerminal(v, pedido.terminal)) motivos.push(`veículo não atende o terminal "${pedido.terminal || '-'}"`);
     if (pedido.tiposCaminhao?.length && !pedido.tiposCaminhao.includes(v.tipo)) motivos.push(`tipo de veículo incompatível (pedido exige ${pedido.tiposCaminhao.join('/')}, veículo é ${v.tipo})`);
-    if (pedido.identidadePetronas && !v.identidadePetronas) motivos.push('veículo sem credencial ID Petronas exigida pelo pedido');
+    if (!veicAtendeIdent(pedido, v)) motivos.push(`cliente não aceita veículo ${identificacaoVeiculo(v)} (aceita: ${identsAceitasDe(pedido).join(', ')})`);
     const compOk = itensCabemNosCompartimentos(pend, v);
     if (!compOk) motivos.push('compartimentação não bate exatamente com os volumes do pedido (vai sobrar espaço não utilizável no(s) compartimento(s))');
     let forcar = false;
@@ -10855,6 +10872,194 @@ function identTagHtml(v, tam = 9) {
   return `<span class="tag" style="font-size:${tam}px;${est}" title="${tit}">${id === 'Branco' ? '◻' : '⬡'} ${id}</span>`;
 }
 window.identificacaoVeiculo = identificacaoVeiculo;
+
+// ── Identificação aceita pelo cliente ───────────────────────────────────
+// Cada cliente marca quais identificações de veículo aceita na entrega
+// (Branco / Verde / Preto / Plotado Petronas). Nenhuma marcada = qualquer.
+// Cadastro antigo (só o booleano "Exige ID Petronas") vale como
+// "Verde + Preto + Plotado Petronas" até ser reeditado.
+const IDENTS_PETRONAS = ['Verde Petronas', 'Preto Petronas', 'Plotado Petronas'];
+function identsAceitasDe(o) {
+  if (!o) return [];
+  if (Array.isArray(o.identsAceitas)) return o.identsAceitas.filter(x => IDENTS_VEICULO.includes(x));
+  return o.identidadePetronas ? [...IDENTS_PETRONAS] : [];
+}
+function _identsRestringe(o) { const l = identsAceitasDe(o); return l.length > 0 && l.length < IDENTS_VEICULO.length; }
+function _identsExigePetronas(lista) { return lista.length > 0 && !lista.includes('Branco'); }
+function veicAtendeIdent(pedidoOuCliente, v) {
+  const aceitas = identsAceitasDe(pedidoOuCliente);
+  if (!aceitas.length || aceitas.length >= IDENTS_VEICULO.length) return true;
+  const idV = identificacaoVeiculo(v);
+  // Veículo com cadastro antigo "Petronas" (sem cor): serve se o cliente aceita alguma Petronas
+  if (idV === 'Petronas') return aceitas.some(x => IDENTS_PETRONAS.includes(x));
+  return aceitas.includes(idV);
+}
+function _identsLerChecks(contId) {
+  const c = document.getElementById(contId); if (!c) return [];
+  return [...c.querySelectorAll('input[data-ident]')].filter(i => i.checked).map(i => i.dataset.ident);
+}
+function _identsMarcarChecks(contId, lista) {
+  const c = document.getElementById(contId); if (!c) return;
+  c.querySelectorAll('input[data-ident]').forEach(i => { i.checked = (lista || []).includes(i.dataset.ident); });
+}
+function _identsCurto(id) { return id === 'Branco' ? 'Branco' : id.replace(' Petronas', ''); }
+function identsAceitasTagHtml(o, prefixo = 'Aceita') {
+  if (!_identsRestringe(o)) return '';
+  const l = identsAceitasDe(o);
+  const leg = !Array.isArray(o.identsAceitas);
+  const txt = l.length === 3 && _identsExigePetronas(l) ? 'só Petronas' : l.map(_identsCurto).join(' · ');
+  return `<span class="tag tag-yellow" style="font-size:9px;" title="${leg ? 'Cadastro antigo (Exige ID Petronas) — edite o cliente para escolher as identificações' : 'Identificações de veículo aceitas na entrega: ' + l.join(', ')}">⬡ ${prefixo}: ${txt}</span>`;
+}
+function _identsParsePlanilha(txt) {
+  const t = String(txt || '').trim(); if (!t) return null;
+  const n = t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  if (/^(todas|qualquer)/.test(n)) return [];
+  const l = [];
+  if (/branc/.test(n)) l.push('Branco');
+  if (/verde/.test(n)) l.push('Verde Petronas');
+  if (/pret/.test(n)) l.push('Preto Petronas');
+  if (/plot/.test(n)) l.push('Plotado Petronas');
+  return l;
+}
+window.veicAtendeIdent = veicAtendeIdent;
+
+// ── Sugestão de identificações aceitas a partir do Histórico ────────────
+// Lê todas as programações vigentes da pasta do Histórico, vê qual
+// identificação (pelo cadastro ATUAL de cada placa) já entregou em cada
+// cliente e propõe marcar essas. Só mexe em cliente que ainda não teve as
+// identificações escolhidas. Mostra a prévia e só grava o que ficar marcado.
+let _identSug = [];
+function _identSugNorm(t) { return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim(); }
+function _identSugModal(html) {
+  let m = document.getElementById('ident-sug-modal');
+  if (!m) {
+    m = document.createElement('div'); m.id = 'ident-sug-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1rem;';
+    document.body.appendChild(m);
+  }
+  m.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:980px;width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(0,0,0,.3);">${html}</div>`;
+  return m;
+}
+async function sugerirIdentsClientesPeloHistorico() {
+  if (!dirHandleHistorico) { alert('Selecione a pasta do Histórico primeiro (aba Histórico) — é de lá que vem quem entregou em cada cliente.'); return; }
+  if (!await _histGarantirPermissao()) { alert('Permissão negada. Selecione a pasta novamente.'); return; }
+  _identSugModal(`<div style="padding:24px;font-size:13px;">⏳ Lendo as programações do Histórico…</div>`);
+  // placa → identificação (cadastro atual)
+  const identPlaca = new Map();
+  (veiculos || []).forEach(v => { const id = identificacaoVeiculo(v); if (IDENTS_VEICULO.includes(id)) identPlaca.set(String(v.placa || '').toUpperCase().replace(/[^A-Z0-9]/g, ''), id); });
+  // índice de clientes
+  const porSapNome = new Map(), porSap = new Map(), porNome = new Map();
+  (clientes || []).forEach(c => {
+    const sap = String(c.codigoSAP || '').trim(), nm = _identSugNorm(c.nome);
+    if (sap) { porSapNome.set(sap + '|' + nm, c); if (!porSap.has(sap)) porSap.set(sap, []); porSap.get(sap).push(c); }
+    if (nm && !porNome.has(nm)) porNome.set(nm, c);
+  });
+  const achar = ped => {
+    const sap = String(ped?.codigoSAP || '').trim(), nm = _identSugNorm(ped?.cliente);
+    return (sap && porSapNome.get(sap + '|' + nm)) || (sap && porSap.get(sap)?.length === 1 && porSap.get(sap)[0]) || porNome.get(nm) || null;
+  };
+  const obs = new Map(); // cliente.id → {c, cont:{ident:n}, total, ultima}
+  let arquivos = 0, semIdent = new Set();
+  try {
+    for await (const [name, handle] of dirHandleHistorico.entries()) {
+      if (handle.kind !== 'file' || !name.endsWith('.json')) continue;
+      let data; try { data = JSON.parse(await (await handle.getFile()).text()); } catch (e) { continue; }
+      if (!data?.resultado || data.substituidoPor) continue;
+      arquivos++;
+      (data.veiculos || []).forEach(v => {
+        const np = String(v.placa || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const id = identPlaca.get(np);
+        (data.resultado[v.id] || []).forEach(vi => (vi?.paradas || []).forEach(pa => {
+          const c = achar(pa.pedido); if (!c) return;
+          if (!id) { semIdent.add(v.placa); return; }
+          if (!obs.has(c.id)) obs.set(c.id, { c, cont: {}, total: 0, ultima: '' });
+          const o = obs.get(c.id); o.cont[id] = (o.cont[id] || 0) + 1; o.total++;
+          const d = String(data.data || data.savedAt || '').slice(0, 10); if (d > o.ultima) o.ultima = d;
+        }));
+      });
+    }
+  } catch (e) { console.error('[sugestão identificações]', e); _identSugModal(`<div style="padding:24px;">Erro lendo o Histórico: ${e.message}</div>`); return; }
+  _identSug = [];
+  let jaDefinidos = 0;
+  obs.forEach(o => {
+    if (Array.isArray(o.c.identsAceitas)) { jaDefinidos++; return; }
+    const vistos = IDENTS_VEICULO.filter(x => o.cont[x]);
+    let prop = [...vistos], nota = '';
+    if (o.c.identidadePetronas) { // regra antiga "Exige ID Petronas" continua valendo
+      if (prop.includes('Branco')) nota = `Branco entregou ${o.cont.Branco}× mesmo com "Exige ID Petronas" — mantive só Petronas`;
+      prop = prop.filter(x => x !== 'Branco');
+      if (!prop.length) prop = [...IDENTS_PETRONAS];
+    }
+    if (prop.length === IDENTS_VEICULO.length) prop = []; // todas = sem restrição
+    _identSug.push({ c: o.c, cont: o.cont, total: o.total, ultima: o.ultima, prop, nota, marcado: o.total >= 2 });
+  });
+  _identSug.sort((a, b) => b.total - a.total);
+  const semHist = (clientes || []).filter(c => !obs.has(c.id) && !Array.isArray(c.identsAceitas)).length;
+  _identSugRender({ arquivos, jaDefinidos, semHist, semIdent: [...semIdent] });
+}
+function _identSugRender(info) {
+  const chip = id => identTagHtml({ identificacao: id }, 9.5);
+  const linhas = _identSug.map((x, i) => `
+    <tr style="border-top:1px solid #E5E7EB;">
+      <td style="padding:6px 8px;text-align:center;"><input type="checkbox" ${x.marcado ? 'checked' : ''} onchange="_identSug[${i}].marcado=this.checked"></td>
+      <td style="padding:6px 8px;font-size:12px;"><b>${x.c.nome}</b><div style="font-size:10.5px;color:#6B7280;">${x.c.codigoSAP ? 'SAP ' + x.c.codigoSAP + ' · ' : ''}${x.c.cidade || ''}${x.c.identidadePetronas ? ' · hoje: Exige ID Petronas' : ''}</div></td>
+      <td style="padding:6px 8px;font-size:11.5px;white-space:nowrap;">${IDENTS_VEICULO.filter(k => x.cont[k]).map(k => `${_identsCurto(k)} <b>${x.cont[k]}</b>`).join(' · ')}<div style="font-size:10px;color:#9CA3AF;">${x.total} entrega(s)${x.ultima ? ' · última ' + x.ultima.split('-').reverse().join('/') : ''}</div></td>
+      <td style="padding:6px 8px;">${x.prop.length ? x.prop.map(chip).join(' ') : '<span style="font-size:11px;color:#374151;">Todas (sem restrição)</span>'}${x.nota ? `<div style="font-size:10px;color:#B45309;margin-top:2px;">${x.nota}</div>` : ''}</td>
+    </tr>`).join('');
+  _identSugModal(`
+    <div style="padding:16px 20px 8px;border-bottom:1px solid #E5E7EB;">
+      <div style="font-size:16px;font-weight:800;">⬡ Identificações aceitas — sugestão pelo Histórico</div>
+      <div style="font-size:12px;color:#4B5563;margin-top:4px;line-height:1.45;">
+        ${info.arquivos} programação(ões) lidas. Para cada cliente, marquei as identificações de veículo que já entregaram lá (pela identificação <b>atual</b> de cada placa).
+        Confira e desmarque o que não quiser gravar — clientes com só 1 entrega vêm desmarcados.
+        ${info.jaDefinidos ? `<br>${info.jaDefinidos} cliente(s) já têm as identificações escolhidas e não entram aqui.` : ''}
+        ${info.semHist ? `<br>${info.semHist} cliente(s) sem entrega no Histórico ficam como estão.` : ''}
+        ${info.semIdent.length ? `<br><span style="color:#B45309;">${info.semIdent.length} placa(s) do Histórico sem identificação no cadastro (ou ainda "Petronas" sem cor) foram ignoradas: ${info.semIdent.slice(0, 12).join(', ')}${info.semIdent.length > 12 ? '…' : ''}</span>` : ''}
+      </div>
+    </div>
+    <div style="overflow:auto;flex:1;padding:0 12px;">
+      ${_identSug.length ? `<table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="font-size:10.5px;color:#6B7280;text-align:left;position:sticky;top:0;background:#fff;">
+          <th style="padding:8px;width:34px;"><input type="checkbox" checked onchange="_identSug.forEach(x=>x.marcado=this.checked);document.querySelectorAll('#ident-sug-modal tbody input').forEach(c=>c.checked=this.checked)"></th>
+          <th style="padding:8px;">Cliente</th><th style="padding:8px;">Já entregaram</th><th style="padding:8px;">Vai ficar marcado</th></tr></thead>
+        <tbody>${linhas}</tbody></table>` : `<div style="padding:24px;font-size:13px;color:#4B5563;">Nenhum cliente para sugerir.</div>`}
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid #E5E7EB;">
+      <button class="btn btn-sm" onclick="document.getElementById('ident-sug-modal').remove()">Cancelar</button>
+      ${_identSug.length ? `<button class="btn btn-green btn-sm" onclick="aplicarSugestaoIdents(this)">Gravar marcados</button>` : ''}
+    </div>`);
+}
+async function aplicarSugestaoIdents(btn) {
+  const sel = _identSug.filter(x => x.marcado);
+  if (!sel.length) { alert('Nenhum cliente marcado.'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Gravando…'; }
+  const alteracoes = {};
+  sel.forEach(x => {
+    const campos = { identsAceitas: [...x.prop], identidadePetronas: _identsExigePetronas(x.prop) };
+    Object.assign(x.c, campos);
+    const chave = _chavePersistCadastro('clientes', x.c);
+    if (chave) alteracoes[chave] = { campos, item: { ...x.c } };
+    (pedidos || []).forEach(p => {
+      if ((x.c.codigoSAP && p.codigoSAP === x.c.codigoSAP && _identSugNorm(p.cliente) === _identSugNorm(x.c.nome)) || _identSugNorm(p.cliente) === _identSugNorm(x.c.nome)) Object.assign(p, campos);
+    });
+  });
+  try {
+    if (typeof window.dbAtualizarCadastroLote === 'function') await window.dbAtualizarCadastroLote('clientes', alteracoes);
+    document.getElementById('ident-sug-modal')?.remove();
+    renderClientes();
+    if (typeof spSetStatus === 'function') spSetStatus('ok', `✓ Identificações gravadas em ${sel.length} cliente(s)`);
+    alert(`Identificações gravadas em ${sel.length} cliente(s).`);
+  } catch (e) {
+    console.error('[sugestão identificações] gravar', e);
+    alert('Não consegui gravar: ' + (e.message || e));
+    if (btn) { btn.disabled = false; btn.textContent = 'Gravar marcados'; }
+  }
+}
+window.sugerirIdentsClientesPeloHistorico = sugerirIdentsClientesPeloHistorico;
+window.aplicarSugestaoIdents = aplicarSugestaoIdents;
+
+window.identsAceitasDe = identsAceitasDe;
+
 window.identTagHtml = identTagHtml;
 
 
@@ -11061,15 +11266,15 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
   // contador "⚠ N restrições" no cabeçalho de cada veículo.
   const semCredencialPetronas = [];
   rotasRaw.forEach(({ v, viagens }) => (viagens || []).forEach(vi => (vi.paradas || []).forEach(pa => {
-    if (pa.pedido?.identidadePetronas && !v.identidadePetronas) {
-      semCredencialPetronas.push({ cliente: pa.pedido.cliente, placa: v.placa });
+    if (pa.pedido && !veicAtendeIdent(pa.pedido, v)) {
+      semCredencialPetronas.push({ cliente: pa.pedido.cliente, placa: `${v.placa} (${identificacaoVeiculo(v)})` });
     }
   })));
   if (semCredencialPetronas.length) {
     const itensPet = semCredencialPetronas
       .map(x => `${x.cliente} → ${x.placa}`)
       .join(', ');
-    html += `<div class="alert alert-warn">⚠ <b>Sem credencial ID Petronas</b> — roteirizado mesmo assim pra atender o cliente e priorizar a compartimentação correta: ${itensPet}. Confirme se o veículo pode acessar o terminal antes de despachar.</div>`;
+    html += `<div class="alert alert-warn">⚠ <b>Identificação do veículo não aceita pelo cliente</b> — roteirizado mesmo assim pra atender o cliente e priorizar a compartimentação correta: ${itensPet}. Confirme se o veículo pode acessar o terminal antes de despachar.</div>`;
   }
   // Avisos devem usar visão global (sem filtros da tela), para evitar falso
   // "sem alocação" ao filtrar cidade/cliente/terminal.
@@ -11400,8 +11605,8 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
           _rv = _chegada + _espVis + (p.tempoDescargaMin || 0) + (p.deslocVazioMin || 0);
           const viols = [];
           // Identidade Petronas
-          if (p.pedido?.identidadePetronas && !v.identidadePetronas)
-            viols.push({ tipo: 'petronas', label: 'Exige ID Petronas — veículo não possui' });
+          if (p.pedido && !veicAtendeIdent(p.pedido, v))
+            viols.push({ tipo: 'petronas', label: `Cliente aceita ${identsAceitasDe(p.pedido).map(_identsCurto).join('/')} — veículo é ${identificacaoVeiculo(v)}` });
           // Tipo de veículo
           if (p.pedido?.tiposCaminhao?.length && !p.pedido.tiposCaminhao.includes(v.tipo))
             viols.push({ tipo: 'veiculo', label: `Exige ${p.pedido.tiposCaminhao.join('/')} — veículo é ${v.tipo}` });
@@ -11612,7 +11817,7 @@ function _renderResultadoInterno(resultado, controleTempo={}) {
                 ${temQuebra ? '<span class="tag tag-red">quebra</span>' : ''}
                 ${p.pedido.restricao ? `<span class="tag tag-yellow">${p.pedido.restricao}</span>` : ''}
                 ${p.pedido.turnoEntrega ? `<span class="tag" title="Turno de entrega informado no pedido" style="font-size:9px;background:#FFF7ED;color:#9A3412;border-color:#FDBA74;">${iconeTurnoEntrega(p.pedido.turnoEntrega)} Turno: ${p.pedido.turnoEntrega}</span>` : ''}
-                ${p.pedido.identidadePetronas ? `<span class="tag tag-yellow" style="font-size:9px;">⬡ Exige ID Petronas</span>` : ''}
+                ${identsAceitasTagHtml(p.pedido)}
                 ${tiposStop}
                 <span class="pill" style="color:var(--pet-green);border-color:#C4E87A;margin-left:2px;">Vol. alocado: ${p.volumeTotal.toFixed(1)} m³</span>
                 ${(paradasComViolacao.get(p)||[]).map(viol => `<span class="tag tag-red" style="font-size:9px;cursor:help;" title="${viol.label}">⚠ ${viol.tipo==='petronas'?'ID Petronas':viol.tipo==='veiculo'?'Tipo veíc.':'Horário'}</span>`).join('')}
