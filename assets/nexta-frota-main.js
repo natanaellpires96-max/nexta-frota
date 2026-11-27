@@ -1122,7 +1122,28 @@ let CARRIERS = ["Transac Transportes","Transportes Cavalinho","JD Cocenzo Transp
 window.CARRIERS = CARRIERS; // disponível desde já para outros módulos (ex: Roteirizador)
 let OPERACOES = ["Paulínia","São Caetano do Sul","Ribeirão Preto","Duque de Caxias","Brasília","Cubatão","Uberaba"];
 const TIPOS_VEIC = ["Truck","Bi-Truck","Cavalo Mecânico"];
-const IDENTS     = ["Petronas","Branco"];
+const IDENTS     = ["Branco","Verde Petronas","Preto Petronas","Plotado Petronas"];
+// Identificação visual do veículo. "Petronas" (sem cor) é o valor antigo,
+// de antes da separação por cor — continua valendo até alguém reeditar a placa.
+function identEhPetronas(id){ return /petronas/i.test(String(id||'')); }
+function identBadgeHtml(id){
+  const v=String(id||'').trim();
+  if(!v) return '<span class="badge b-gray">—</span>';
+  const est={
+    'Branco':'background:#F8FAFC;color:#334155;border:1px solid #CBD5E1',
+    'Verde Petronas':'background:#00A19C;color:#fff;border:1px solid #00877F',
+    'Preto Petronas':'background:#111827;color:#fff;border:1px solid #000',
+    'Plotado Petronas':'background:repeating-linear-gradient(135deg,#00A19C 0 6px,#0E7C77 6px 12px);color:#fff;border:1px solid #00877F',
+  }[v];
+  if(est) return `<span class="badge" style="${est}">${esc(v)}</span>`;
+  return `<span class="badge ${identEhPetronas(v)?'b-teal':'b-gray'}" title="${identEhPetronas(v)?'Valor antigo — edite a placa e escolha Verde, Preto ou Plotado':''}">${esc(v)}</span>`;
+}
+function identOptsHtml(atual){
+  let h=IDENTS.map(o=>optHtml(o, o===atual)).join('');
+  if(atual && !IDENTS.includes(atual)) h=`<option value="${attr(atual)}" selected>${esc(atual)} (antigo — escolha a cor)</option>`+h;
+  return h;
+}
+window.identBadgeHtml=identBadgeHtml;
 const CONTRATOS  = ["Dedicado","Spot"];
 // ── Escala da placa ─────────────────────────────────────────────────────────
 // "Diária": a transportadora preenche a disponibilidade todo dia (como sempre).
@@ -2465,7 +2486,7 @@ const MANUAL_OPERACIONAL_HTML = `
       <tr><td>PLACA</td><td>Identificação do veículo</td></tr>
       <tr><td>OPERAÇÃO</td><td>Unidade operacional</td></tr>
       <tr><td>TIPO</td><td>Truck, Bi-Truck ou Cavalo Mecânico</td></tr>
-      <tr><td>IDENTIFICAÇÃO</td><td>Petronas ou Branco</td></tr>
+      <tr><td>IDENTIFICAÇÃO</td><td>Branco, Verde Petronas, Preto Petronas ou Plotado Petronas</td></tr>
       <tr><td>CONTRATO</td><td>Dedicado ou Spot</td></tr>
       <tr><td>STATUS</td><td>Status informado pelo transportador</td></tr>
       <tr><td>HODÔMETRO</td><td>Quilometragem registrada no dia</td></tr>
@@ -3885,7 +3906,7 @@ async function renderToday(body){
         <td style="font-weight:500;font-family:'DM Mono',monospace">${esc(p.placa)}</td>
         <td style="font-size:12px">${esc(p.operacao)}</td>
         <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
-        <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${esc(p.identificacao)}</span></td>
+        <td>${identBadgeHtml(p.identificacao)}</td>
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${esc(p.contrato)}</span></td>
         <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
         <td>${v?`<span class="badge ${st.badge}">${esc(st.label)}</span>`:`<span class="badge b-blank">Não preenchido</span>`}</td>
@@ -4275,7 +4296,7 @@ async function renderExport(body){
   const carrierOptsExp=[["",'Todas']].concat(CARRIERS.map(c=>[c,c])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.carrier===v?'selected':''}>${esc(l)}</option>`).join('');
   const opOptsExp=[["",'Todas']].concat(OPERACOES.map(o=>[o,o])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.operacao===v?'selected':''}>${esc(l)}</option>`).join('');
   const tipoOptsExp=[["",'Todos']].concat(TIPOS_VEIC.map(t=>[t,t])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.tipo===v?'selected':''}>${esc(l)}</option>`).join('');
-  const identOptsExp=[["",'Todas']].concat(IDENTS.map(i=>[i,i])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.identificacao===v?'selected':''}>${esc(l)}</option>`).join('');
+  const identOptsExp=[["",'Todas'],["__petronas",'Petronas (todas as cores)']].concat(IDENTS.map(i=>[i,i])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.identificacao===v?'selected':''}>${esc(l)}</option>`).join('');
   const ctOptsExp=[["",'Todos']].concat(CONTRATOS.map(c=>[c,c])).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.contrato===v?'selected':''}>${esc(l)}</option>`).join('');
   const stOptsExp=[["",'Todos']].concat(STATUS_OPTS.map(s=>[s.val,s.label])).concat([["nao_preenchido","Não preenchido"]]).map(([v,l])=>`<option value="${attr(v)}" ${S.expFiltro.status===v?'selected':''}>${esc(l)}</option>`).join('');
   const filtroAtivo = Object.values(S.expFiltro).some(Boolean);
@@ -4521,7 +4542,7 @@ async function buildRows(dates, onProgress){
   const passaFiltroPlaca = p =>
     (!f.operacao || p.operacao === f.operacao) &&
     (!f.tipo || p.tipo === f.tipo) &&
-    (!f.identificacao || p.identificacao === f.identificacao) &&
+    (!f.identificacao || p.identificacao === f.identificacao || (f.identificacao==="__petronas" && identEhPetronas(p.identificacao))) &&
     (!f.contrato || p.contrato === f.contrato);
   // Collect all active plates across all carriers (respeitando o filtro)
   const allActivePlates = [];
@@ -4967,7 +4988,7 @@ function resumoFiltroExport(){
     f.carrier && `Transportadora: ${f.carrier}`,
     f.operacao && `Operação: ${f.operacao}`,
     f.tipo && `Tipo: ${f.tipo}`,
-    f.identificacao && `Identificação: ${f.identificacao}`,
+    f.identificacao && `Identificação: ${f.identificacao==="__petronas"?"Petronas (todas)":f.identificacao}`,
     f.contrato && `Contrato: ${f.contrato}`,
     stLabel && `Status: ${stLabel}`,
   ].filter(Boolean);
@@ -5026,7 +5047,7 @@ async function renderRegister(body){
   const carrierOpts=CARRIERS.map(c=>optHtml(c)).join("");
   const opOpts=OPERACOES.map(o=>optHtml(o)).join("");
   const tvOpts=TIPOS_VEIC.map(o=>optHtml(o)).join("");
-  const idOpts=IDENTS.map(o=>optHtml(o)).join("");
+  const idOpts=identOptsHtml("");
   const ctOpts=CONTRATOS.map(o=>optHtml(o)).join("");
   let listHTML="";
   for(const carrier of CARRIERS){
@@ -5044,7 +5065,7 @@ async function renderRegister(body){
         <td style="font-family:'DM Mono',monospace;font-weight:500">${esc(p.placa)}</td>
         <td style="font-size:12px">${esc(p.operacao)}</td>
         <td><span class="badge b-lime">${esc(p.tipo)}</span></td>
-        <td><span class="badge ${p.identificacao==="Petronas"?"b-teal":"b-gray"}">${esc(p.identificacao)}</span></td>
+        <td>${identBadgeHtml(p.identificacao)}</td>
         <td><span class="badge ${p.contrato==="Dedicado"?"b-ded":"b-spot"}">${esc(p.contrato)}</span>${ehSobDemanda(p)?`<div style="margin-top:4px"><span class="badge b-blue" style="font-size:10px" title="Fora da disponibilidade diária — a operação oferta a placa. Bases: ${attr((p.basesCarregamento||[]).join(', ')||p.operacao||'—')}">Sob demanda</span></div>`:''}</td>
         <td><span class="cap-tag">${esc(p.capacidade)}m³</span></td>
         <td>${statusBadge}</td>
@@ -6163,7 +6184,7 @@ async function openEditModal(carrier, idx){
   _editPending = { carrier, idx, placa: p.placa };
   const opOpts=OPERACOES.map(o=>optHtml(o, o===p.operacao)).join('');
   const tvOpts=TIPOS_VEIC.map(o=>optHtml(o, o===p.tipo)).join('');
-  const idOpts=IDENTS.map(o=>optHtml(o, o===p.identificacao)).join('');
+  const idOpts=identOptsHtml(p.identificacao);
   const ctOpts=CONTRATOS.map(o=>optHtml(o, o===p.contrato)).join('');
   // Load drivers for this carrier + operation
   const allDrivers = await dbGetDrivers();
