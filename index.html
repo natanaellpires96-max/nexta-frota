@@ -155,6 +155,7 @@
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <div class="sec-title" style="margin:0;">Cadastro de clientes</div>
       <div style="display:flex;gap:6px;">
+        <button class="btn btn-sm" onclick="sugerirIdentsClientesPeloHistorico()" title="Marca as identificações de veículo aceitas em cada cliente a partir de quem já entregou lá (Histórico). Mostra a prévia antes de gravar.">⬡ Identificações pelo histórico</button>
         <button class="btn btn-green btn-sm" onclick="abrirFormCliente(null)">+ Cliente</button>
       </div>
     </div>
@@ -343,11 +344,13 @@
         <!-- gerado pelo JS -->
       </div>
       <div style="margin-top:12px;">
-        <label class="toggle-label">
-          <span class="toggle-dot"></span>
-          <input type="checkbox" id="cl-identidade-petronas"/>
-          Exige identidade Petronas na entrega
-        </label>
+        <div style="font-size:11px;font-weight:700;margin-bottom:6px;color:var(--text-2,#374151);">Identificação de veículo aceita na entrega <span style="font-weight:400;color:var(--text-3);">— nenhuma marcada = aceita qualquer veículo</span></div>
+          <div id="cl-idents" style="display:flex;gap:8px;flex-wrap:wrap;">
+            <label class="toggle-label"><span class="toggle-dot"></span><input type="checkbox" data-ident="Branco"/>Veículo Branco</label>
+            <label class="toggle-label"><span class="toggle-dot"></span><input type="checkbox" data-ident="Verde Petronas"/>Veículo Verde Petronas</label>
+            <label class="toggle-label"><span class="toggle-dot"></span><input type="checkbox" data-ident="Preto Petronas"/>Veículo Preto Petronas</label>
+            <label class="toggle-label"><span class="toggle-dot"></span><input type="checkbox" data-ident="Plotado Petronas"/>Veículo Plotado Petronas</label>
+          </div>
       </div>
       <div style="margin-top:8px;">
         <label class="toggle-label" title="Pedidos deste cliente só vão para placas da operação sob demanda (ofertadas no Painel de Disponibilidade) — e essas placas só atendem clientes marcados aqui.">
@@ -444,11 +447,13 @@
         </div>
       </div>
       <div style="margin-bottom:12px;">
-        <label class="toggle-label">
-          <span class="toggle-dot"></span>
-          <input type="checkbox" id="p-identidade-petronas"/>
-          Exige identidade Petronas na entrega
-        </label>
+        <div style="font-size:11px;font-weight:700;margin-bottom:6px;color:var(--text-2,#374151);">Identificação de veículo aceita na entrega <span style="font-weight:400;color:var(--text-3);">— nenhuma marcada = aceita qualquer veículo</span></div>
+          <div id="p-idents" style="display:flex;gap:8px;flex-wrap:wrap;">
+            <label class="toggle-label"><span class="toggle-dot"></span><input type="checkbox" data-ident="Branco"/>Veículo Branco</label>
+            <label class="toggle-label"><span class="toggle-dot"></span><input type="checkbox" data-ident="Verde Petronas"/>Veículo Verde Petronas</label>
+            <label class="toggle-label"><span class="toggle-dot"></span><input type="checkbox" data-ident="Preto Petronas"/>Veículo Preto Petronas</label>
+            <label class="toggle-label"><span class="toggle-dot"></span><input type="checkbox" data-ident="Plotado Petronas"/>Veículo Plotado Petronas</label>
+          </div>
       </div>
       <hr class="divider"/>
       <div class="sec-title">Produtos do pedido</div>
@@ -1856,7 +1861,7 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=identsync1"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=identcli1"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <script defer src="assets/nexta-frota-dashboard.js?v=2c04481a"></script>
