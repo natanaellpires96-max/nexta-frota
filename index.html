@@ -10,7 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="assets/pedagios-utils.js?v=0b3e17c8"></script>
 <script src="assets/km-utils.js?v=690925e3"></script>
-<script type="module" src="assets/nexta-frota-main.js?v=2ef5ad78"></script>
+<script type="module" src="assets/nexta-frota-main.js?v=ident4c"></script>
 <link rel="stylesheet" href="assets/nexta-frota-main.css?v=bde92fa5">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
 <link rel="stylesheet" href="assets/nexta-frota-roteirizador.css?v=7699b38f">
@@ -528,12 +528,13 @@
       <div class="row">
         <div class="field"><label>Velocidade média carregado (km/h)</label><input id="v-vel-carregado" type="number" min="1" step="1" value="45" placeholder="45"/></div>
         <div class="field"><label>Velocidade média vazio (km/h)</label><input id="v-vel-vazio" type="number" min="1" step="1" value="55" placeholder="55"/></div>
-        <div class="field" style="flex:0;display:flex;align-items:flex-end;padding-bottom:2px;">
-          <label class="toggle-label">
-            <span class="toggle-dot"></span>
-            <input type="checkbox" id="v-identidade-petronas"/>
-            Identidade Petronas
-          </label>
+        <div class="field"><label>Identificação</label>
+          <select id="v-identificacao">
+            <option value="Branco">Branco</option>
+            <option value="Verde Petronas">Verde Petronas</option>
+            <option value="Preto Petronas">Preto Petronas</option>
+            <option value="Plotado Petronas">Plotado Petronas</option>
+          </select>
         </div>
       </div>
       <div class="row">
@@ -1855,7 +1856,7 @@
       💚 <span style="color:rgba(200,240,50,.35);">"Sentimento de dono, de uma equipe que se realiza com as conquistas."</span>
     </div>
   </div>
-<script defer src="assets/nexta-frota-roteirizador.js?v=fe59d7a0"></script>
+<script defer src="assets/nexta-frota-roteirizador.js?v=peddup1"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <script defer src="assets/nexta-frota-dashboard.js?v=2c04481a"></script>
