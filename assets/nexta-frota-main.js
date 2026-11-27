@@ -4045,6 +4045,55 @@ window.alternarOfertasSob = alternarOfertasSob;
 // Roteirizador continuaria saindo do terminal antigo). Grava direto no
 // Firestore (vale pra todos os computadores) e atualiza a memória do
 // Roteirizador aberto. "Qualquer" (vazio) não mexe no cadastro.
+// ── Identificação: Painel de Disponibilidade → cadastro do Roteirizador ──
+// A identificação (Branco / Verde / Preto / Plotado Petronas) é cadastrada
+// UMA vez, no Painel. Esta rotina copia para o cadastro de veículos do
+// Roteirizador (config/roteirizador_veiculos) toda placa que estiver
+// diferente — 2 leituras e, só se houver diferença, 1 gravação. Roda
+// sozinha ao abrir o Roteirizador e depois de salvar/cadastrar uma placa.
+let _identSyncEmCurso = null;
+async function _identSincronizarDoPainel(opts = {}) {
+  if (_identSyncEmCurso) return _identSyncEmCurso;
+  _identSyncEmCurso = (async () => {
+    if (opts.fresco) cacheInvalidate('plates');
+    const plates = await dbGetPlates();
+    cacheInvalidate('cadastro||veiculos');
+    const cad = await dbGetCadastro('veiculos');
+    const porPlaca = new Map(); // placa → [{carrier, ident}]
+    Object.entries(plates || {}).forEach(([carrier, lista]) => (lista || []).forEach(p => {
+      const id = String(p?.identificacao || '').trim();
+      if (!IDENTS.includes(id)) return; // só as 4 opções novas — "Petronas" antigo/vazio não sobrescreve nada
+      const np = _normPlaca(p.placa);
+      if (!porPlaca.has(np)) porPlaca.set(np, []);
+      porPlaca.get(np).push({ carrier, id });
+    }));
+    const alteracoes = {}, mudadas = [];
+    Object.entries(cad || {}).forEach(([chave, item]) => {
+      const cands = porPlaca.get(_normPlaca(item?.placa));
+      if (!cands?.length) return;
+      const nc = _normCarrier(item.transportadora);
+      const id = (cands.find(c => _normCarrier(c.carrier) === nc) || cands[0]).id;
+      const pet = identEhPetronas(id);
+      if (item.identificacao === id && !!item.identidadePetronas === pet) return;
+      alteracoes[chave] = { campos: { identificacao: id, identidadePetronas: pet }, item: { ...item, identificacao: id, identidadePetronas: pet } };
+      mudadas.push({ placa: item.placa, id, pet });
+    });
+    if (mudadas.length) await dbAtualizarCadastroLote('veiculos', alteracoes);
+    // Roteirizador aberto nesta aba: atualiza a memória também
+    try {
+      const vs = window.veiculos;
+      if (Array.isArray(vs) && mudadas.length) {
+        const m = new Map(mudadas.map(x => [_normPlaca(x.placa), x]));
+        vs.forEach(v => { const x = m.get(_normPlaca(v.placa)); if (x) { v.identificacao = x.id; v.identidadePetronas = x.pet; } });
+        if (document.getElementById('tab-veiculos')?.classList.contains('active') && typeof window._renderVeiculosInterno === 'function') window._renderVeiculosInterno();
+      }
+    } catch (e) {}
+    if (mudadas.length) console.info(`[identificação] ${mudadas.length} veículo(s) do Roteirizador atualizados a partir do Painel`);
+    return { atualizados: mudadas.length, placas: mudadas.map(x => x.placa) };
+  })();
+  try { return await _identSyncEmCurso; } finally { _identSyncEmCurso = null; }
+}
+window._identSincronizarDoPainel = _identSincronizarDoPainel;
 async function _aplicarBaseOfertaNoCadastro(carrier, plate, baseCidade) {
   if (!baseCidade) return null;
   const norm = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s*[-\/]\s*[A-Z]{2}$/, '').replace(/[^A-Z0-9]+/g, ' ').trim();
@@ -5172,6 +5221,7 @@ async function addPlate(){
     document.getElementById("r-cap").value="";
     msg.textContent=`Placa ${placa} cadastrada!`;msg.style.color="var(--green)";
     showToast(`Placa ${placa} cadastrada!`);
+    _identSincronizarDoPainel().catch(e=>console.warn('[identificação → roteirizador]', e));
     setTimeout(()=>{msg.textContent="";},3000);
     btn.disabled=false;btn.textContent="+ Cadastrar placa";
     await renderTabBody();
@@ -6276,7 +6326,9 @@ async function saveEdit(){
     const modal=document.getElementById('edit-modal');
     if(modal) modal.remove();
     _editPending={};
-    showToast('Placa atualizada com sucesso!');
+    let _notaId='';
+    try { const r=await _identSincronizarDoPainel(); if(r?.atualizados) _notaId=' Identificação levada para o Roteirizador.'; } catch(e){ console.warn('[identificação → roteirizador]', e); }
+    showToast('Placa atualizada com sucesso!'+_notaId);
     await renderTabBody();
   } catch(e) {
     // Antes, uma falha aqui (permissão do Firestore, rede, etc.) parava a

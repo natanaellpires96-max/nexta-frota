@@ -899,6 +899,12 @@ async function carregarDadosFixos() {
         let id = 200;
         veiculos = Object.values(fsVei).map(v => ({ ...v, id: v.id ?? id++ }));
         renderVeiculos();
+        // Identificação vem do Painel de Disponibilidade (cadastrada lá uma vez só)
+        if (typeof window._identSincronizarDoPainel === 'function') {
+          window._identSincronizarDoPainel({ fresco: true })
+            .then(r => { if (r?.atualizados) { renderVeiculos(); spSetStatus('ok', `✓ Identificação de ${r.atualizados} veículo(s) trazida do Painel`); } })
+            .catch(e => console.warn('[identificação ← painel]', e));
+        }
       }
       if (terminaisCad.length || clientes.length || veiculos.length) {
         spSetStatus('ok', '✓ Cadastros carregados da nuvem');
